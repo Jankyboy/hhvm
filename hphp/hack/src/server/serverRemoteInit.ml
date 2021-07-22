@@ -10,10 +10,11 @@ let init
     (ctx : Provider_context.t)
     (workers : MultiWorker.worker list option)
     ~(worker_key : string)
+    ~(nonce : Int64.t)
     ~(check_id : string)
     ~(recli_version : string)
     ~(transport_channel : string option)
-    ~(file_system_mode : ArtifactStore.file_system_mode)
+    ~(remote_type_check_config : ServerLocalConfig.RemoteTypeCheck.t)
     ~(ci_info : Ci_util.info option Future.t option)
     ~(init_id : string)
     ~(init_start_t : float)
@@ -24,12 +25,22 @@ let init
              with type naming_table = Naming_table.t option)) =
     ServerApi.make_remote_server_api ctx workers
   in
+  let file_system_mode =
+    remote_type_check_config.ServerLocalConfig.RemoteTypeCheck.file_system_mode
+  in
+  let max_cas_bytes =
+    remote_type_check_config.ServerLocalConfig.RemoteTypeCheck.max_cas_bytes
+  in
+  let max_inline_bytes =
+    remote_type_check_config
+      .ServerLocalConfig.RemoteTypeCheck.max_artifact_inline_bytes
+  in
   let artifact_store_config =
     let open ArtifactStore in
     let config =
       default_config ~recli_version ~temp_dir:(Path.make GlobalConfig.tmp_dir)
     in
-    { config with mode = file_system_mode }
+    { config with mode = file_system_mode; max_cas_bytes; max_inline_bytes }
   in
   let (worker_env : Naming_table.t option RemoteWorker.work_env) =
     RemoteWorker.make_env
@@ -40,6 +51,7 @@ let init
       ~init_id
       ~init_start_t
       ~key:worker_key
+      ~nonce
       ~transport_channel
       ~root
       artifact_store_config

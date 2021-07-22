@@ -193,7 +193,7 @@ function test_preg_replace() {
   $expFoo[0] = "FOO";
   $expFoo[1] = "FOO";
   $expFoo[2] = "FOO";
-  VS(preg_replace("/some pattern/", "", __hhvm_intrinsics\dummy_cast_to_kindofarray(vec[])), dict[]);
+  VS(preg_replace("/some pattern/", "", darray[]), dict[]);
   VS(preg_replace("/foo/i", "FOO", $foos), $expFoo);
 
   $patterns = varray["/(19|20)(\\d{2})-(\\d{1,2})-(\\d{1,2})/",
@@ -233,7 +233,7 @@ function test_preg_replace_callback() {
   $text = "April fools day is 04/01/2002\n".
     "Last christmas was 12/24/2001\n";
   $count = -1;
-  $text = preg_replace_callback("|(\\d{2}/\\d{2}/)(\\d{4})|", fun("next_year"),
+  $text = preg_replace_callback("|(\\d{2}/\\d{2}/)(\\d{4})|", next_year<>,
                                 $text, -1, inout $count);
   VS($text, "April fools day is 04/01/2003\nLast christmas was 12/24/2002\n");
 }

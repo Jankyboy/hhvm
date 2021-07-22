@@ -21,9 +21,9 @@
 
 #include "hphp/runtime/base/array-data.h"
 #include "hphp/runtime/base/array-init.h"
-#include "hphp/runtime/base/bespoke/layout.h"
 #include "hphp/runtime/base/repo-auth-type-array.h"
 #include "hphp/runtime/test/bespoke-layout-mock.h"
+#include "hphp/runtime/vm/jit/array-layout.h"
 #include "hphp/runtime/vm/jit/guard-constraint.h"
 #include "hphp/runtime/vm/jit/print.h"
 #include "hphp/runtime/vm/jit/type.h"
@@ -99,10 +99,6 @@ TEST(Type, KnownDataType) {
     TObj,
     TRecord,
     TDbl,
-    TVArr,
-    TPersistentVArr,
-    TStaticVArr,
-    TCountedVArr,
     TVec,
     TPersistentVec,
     TStaticVec,
@@ -129,10 +125,6 @@ TEST(Type, KnownDataType) {
     TNull,
     TCell,
     TInt | TDbl,
-    TArr,
-    TPersistentArr,
-    TStaticArr,
-    TCountedArr,
     TArrLike,
     TPersistentArrLike
   };
@@ -140,6 +132,117 @@ TEST(Type, KnownDataType) {
     EXPECT_FALSE(t.isKnownDataType())
       << "!" << t.toString() << ".isKnownDataType()";
   }
+}
+
+TEST(Type, ArrayLayout) {
+  auto const top     = ArrayLayout::Top();
+  auto const vanilla = ArrayLayout::Vanilla();
+  auto const bespoke = ArrayLayout::Bespoke();
+  auto const bottom  = ArrayLayout::Bottom();
+  auto const foo = ArrayLayout{
+    bespoke::testing::makeDummyLayout("foo", {ArrayLayout::Bespoke()})
+  };
+
+  EXPECT_EQ("Top",     top.describe());
+  EXPECT_EQ("Vanilla", vanilla.describe());
+  EXPECT_EQ("Bespoke", bespoke.describe());
+  EXPECT_EQ("Bottom",  bottom.describe());
+  EXPECT_EQ("foo",     foo.describe());
+
+  EXPECT_EQ(top, top);
+  EXPECT_EQ(vanilla, vanilla);
+  EXPECT_EQ(bespoke, bespoke);
+  EXPECT_EQ(bottom, bottom);
+  EXPECT_EQ(foo, foo);
+
+  EXPECT_NE(top, vanilla);
+  EXPECT_NE(top, bespoke);
+  EXPECT_NE(top, bottom);
+  EXPECT_NE(top, foo);
+  EXPECT_NE(vanilla, bespoke);
+  EXPECT_NE(vanilla, bottom);
+  EXPECT_NE(vanilla, foo);
+  EXPECT_NE(bespoke, bottom);
+  EXPECT_NE(bespoke, foo);
+  EXPECT_NE(bottom, foo);
+
+  EXPECT_TRUE(top <= top);
+  EXPECT_FALSE(top <= vanilla);
+  EXPECT_FALSE(top <= bespoke);
+  EXPECT_FALSE(top <= bottom);
+  EXPECT_FALSE(top <= foo);
+  EXPECT_TRUE(vanilla <= top);
+  EXPECT_TRUE(vanilla <= vanilla);
+  EXPECT_FALSE(vanilla <= bespoke);
+  EXPECT_FALSE(vanilla <= bottom);
+  EXPECT_FALSE(vanilla <= foo);
+  EXPECT_TRUE(bespoke <= top);
+  EXPECT_FALSE(bespoke <= vanilla);
+  EXPECT_TRUE(bespoke <= bespoke);
+  EXPECT_FALSE(bespoke <= bottom);
+  EXPECT_FALSE(bespoke <= foo);
+  EXPECT_TRUE(bottom <= top);
+  EXPECT_TRUE(bottom <= vanilla);
+  EXPECT_TRUE(bottom <= bespoke);
+  EXPECT_TRUE(bottom <= bottom);
+  EXPECT_TRUE(bottom <= foo);
+  EXPECT_TRUE(foo <= top);
+  EXPECT_FALSE(foo <= vanilla);
+  EXPECT_TRUE(foo <= bespoke);
+  EXPECT_FALSE(foo <= bottom);
+  EXPECT_TRUE(foo <= foo);
+
+  EXPECT_EQ(top | top,         top);
+  EXPECT_EQ(top | vanilla,     top);
+  EXPECT_EQ(top | bespoke,     top);
+  EXPECT_EQ(top | bottom,      top);
+  EXPECT_EQ(top | foo,         top);
+  EXPECT_EQ(vanilla | top,     top);
+  EXPECT_EQ(vanilla | vanilla, vanilla);
+  EXPECT_EQ(vanilla | bespoke, top);
+  EXPECT_EQ(vanilla | bottom,  vanilla);
+  EXPECT_EQ(vanilla | foo,     top);
+  EXPECT_EQ(bespoke | top,     top);
+  EXPECT_EQ(bespoke | vanilla, top);
+  EXPECT_EQ(bespoke | bespoke, bespoke);
+  EXPECT_EQ(bespoke | bottom,  bespoke);
+  EXPECT_EQ(bespoke | foo,     bespoke);
+  EXPECT_EQ(bottom | top,      top);
+  EXPECT_EQ(bottom | vanilla,  vanilla);
+  EXPECT_EQ(bottom | bespoke,  bespoke);
+  EXPECT_EQ(bottom | bottom,   bottom);
+  EXPECT_EQ(bottom | foo,      foo);
+  EXPECT_EQ(foo | top,         top);
+  EXPECT_EQ(foo | vanilla,     top);
+  EXPECT_EQ(foo | bespoke,     bespoke);
+  EXPECT_EQ(foo | bottom,      foo);
+  EXPECT_EQ(foo | foo,         foo);
+
+  EXPECT_EQ(top & top,         top);
+  EXPECT_EQ(top & vanilla,     vanilla);
+  EXPECT_EQ(top & bespoke,     bespoke);
+  EXPECT_EQ(top & bottom,      bottom);
+  EXPECT_EQ(top & foo,         foo);
+  EXPECT_EQ(vanilla & top,     vanilla);
+  EXPECT_EQ(vanilla & vanilla, vanilla);
+  EXPECT_EQ(vanilla & bespoke, bottom);
+  EXPECT_EQ(vanilla & bottom,  bottom);
+  EXPECT_EQ(vanilla & foo,     bottom);
+  EXPECT_EQ(bespoke & top,     bespoke);
+  EXPECT_EQ(bespoke & vanilla, bottom);
+  EXPECT_EQ(bespoke & bespoke, bespoke);
+  EXPECT_EQ(bespoke & bottom,  bottom);
+  EXPECT_EQ(bespoke & foo,     foo);
+  EXPECT_EQ(bottom & top,      bottom);
+  EXPECT_EQ(bottom & vanilla,  bottom);
+  EXPECT_EQ(bottom & bespoke,  bottom);
+  EXPECT_EQ(bottom & bottom,   bottom);
+  EXPECT_EQ(bottom & foo,      bottom);
+  EXPECT_EQ(foo & top,         foo);
+  EXPECT_EQ(foo & vanilla,     bottom);
+  EXPECT_EQ(foo & bespoke,     foo);
+  EXPECT_EQ(foo & bottom,      bottom);
+  EXPECT_EQ(foo & foo,         foo);
 }
 
 TEST(Type, ToString) {
@@ -220,8 +323,8 @@ TEST(Type, Ptr) {
   EXPECT_EQ(TInt | TStr, t - (TPtrToInt | TPtrToStr));
 
   EXPECT_EQ(TBottom, TPtrToInt & TInt);
-  auto const a1 = TVArr.ptr(Ptr::Frame);
-  auto const a2 = TDArr.ptr(Ptr::Frame);
+  auto const a1 = TVec.ptr(Ptr::Frame);
+  auto const a2 = TDict.ptr(Ptr::Frame);
   EXPECT_EQ(TBottom, a1 & a2);
   EXPECT_EQ(a1, a1 - a2);
 
@@ -231,7 +334,7 @@ TEST(Type, Ptr) {
 
   EXPECT_EQ(TBottom, TBottom.deref());
 
-  auto const vanillaSpec = ArraySpec::Top().narrowToVanilla();
+  auto const vanillaSpec = ArraySpec(ArrayLayout::Vanilla());
   auto const vecData = ArrayData::GetScalarArray(make_vec_array(1, 2, 3, 4));
   auto const ptrToConstVec  = Type::cns(vecData).ptr(Ptr::Ptr);
   EXPECT_TRUE(ptrToConstVec < TPtrToStaticVec);
@@ -373,15 +476,9 @@ TEST(Type, Subtypes) {
   EXPECT_TRUE(TFunc <= TCell);
   EXPECT_FALSE(TTCA <= TCell);
 
-  EXPECT_TRUE(TVArr <= TArr);
-  EXPECT_TRUE(TDArr <= TArr);
-
   EXPECT_TRUE(TVec <= TArrLike);
   EXPECT_TRUE(TDict <= TArrLike);
   EXPECT_TRUE(TKeyset <= TArrLike);
-  EXPECT_TRUE(TVArr <= TArrLike);
-  EXPECT_TRUE(TDArr <= TArrLike);
-  EXPECT_TRUE(TArr <= TArrLike);
 
   Type funcOrlcls = TFunc | TLazyCls;
   EXPECT_EQ("{Func|LazyCls}", funcOrlcls.toString());
@@ -407,18 +504,17 @@ inline bool fits(Type t, GuardConstraint gc) {
 
 TEST(Type, GuardConstraints) {
   EXPECT_TRUE(fits(TCell, DataTypeGeneric));
-  EXPECT_FALSE(fits(TCell, DataTypeCountness));
   EXPECT_FALSE(fits(TCell, DataTypeCountnessInit));
   EXPECT_FALSE(fits(TCell, DataTypeSpecific));
 
   EXPECT_TRUE(fits(TCell, {DataTypeGeneric}));
 
   auto const vanillaConstraint =
-    GuardConstraint(DataTypeSpecialized).setWantVanillaArray();
+    GuardConstraint(DataTypeSpecialized).setArrayLayoutSensitive();
   EXPECT_FALSE(fits(TCell, vanillaConstraint));
-  EXPECT_FALSE(fits(TArr, vanillaConstraint));
+  EXPECT_FALSE(fits(TArrLike, vanillaConstraint));
   EXPECT_FALSE(fits(TVec, vanillaConstraint));
-  EXPECT_FALSE(fits(TVanillaArr, vanillaConstraint));
+  EXPECT_FALSE(fits(TVanillaArrLike, vanillaConstraint));
   EXPECT_TRUE(fits(TVanillaVec, vanillaConstraint));
 }
 
@@ -442,51 +538,67 @@ TEST(Type, RelaxType) {
 TEST(Type, RelaxConstraint) {
   EXPECT_EQ(GuardConstraint(DataTypeCountnessInit),
             relaxConstraint(GuardConstraint{DataTypeSpecific}, TCell, TDict));
-  EXPECT_EQ(GuardConstraint(DataTypeGeneric),
-            relaxConstraint(GuardConstraint{DataTypeCountness}, TDict, TCell));
 }
 
 TEST(Type, Specialized) {
-  EXPECT_LE(TVanillaArr, TArr);
-  EXPECT_LT(TVanillaArr, TArr);
-  EXPECT_FALSE(TArr <= TVanillaArr);
-  EXPECT_LT(TVanillaArr, TArr | TObj);
-  EXPECT_LT(TVanillaArr, TArr | TRecord);
-  EXPECT_EQ(TVanillaArr, TVanillaArr & (TArr | TCounted));
-  EXPECT_GE(TVanillaArr, TBottom);
-  EXPECT_GT(TVanillaArr, TBottom);
+  EXPECT_LE(TVanillaArrLike, TArrLike);
+  EXPECT_LT(TVanillaArrLike, TArrLike);
+  EXPECT_FALSE(TArrLike <= TVanillaArrLike);
+  EXPECT_LT(TVanillaArrLike, TArrLike | TObj);
+  EXPECT_LT(TVanillaArrLike, TArrLike | TRecord);
+  EXPECT_EQ(TVanillaArrLike, TVanillaArrLike & (TArrLike | TCounted));
+  EXPECT_GE(TVanillaArrLike, TBottom);
+  EXPECT_GT(TVanillaArrLike, TBottom);
 
-  EXPECT_TRUE(TInt <= (TVanillaArr | TInt));
+  EXPECT_TRUE(TInt <= (TVanillaArrLike | TInt));
 
-  EXPECT_EQ(TBottom, TVanillaArr & TVec);
-  EXPECT_EQ(TBottom, TVanillaArr - TArr);
+  EXPECT_EQ(TBottom, TVanillaArrLike & TObj);
+  EXPECT_EQ(TBottom, TVanillaArrLike - TArrLike);
 
-  auto const varrData = ArrayData::GetScalarArray(make_varray(1, 2, 3, 4));
-  auto const darrData = ArrayData::GetScalarArray(make_darray(1, 1, 2, 2));
-  auto const constVArr = Type::cns(varrData);
-  auto const constDArr = Type::cns(darrData);
+  auto const vecData = ArrayData::GetScalarArray(make_vec_array(1, 2, 3, 4));
+  auto const dictData = ArrayData::GetScalarArray(make_dict_array(1, 1, 2, 2));
+  auto const constVec = Type::cns(vecData);
+  auto const constDict = Type::cns(dictData);
+
+  // Basic checks on constant array types.
+
+  EXPECT_TRUE(constDict.hasConstVal());
+  EXPECT_TRUE(constDict <= TArrLike);
+  EXPECT_TRUE(constDict <= TDict);
+  EXPECT_TRUE(constDict < TDict);
+  EXPECT_TRUE(constDict <= TStaticDict);
+  EXPECT_TRUE(constDict < TStaticDict);
+  EXPECT_FALSE(constDict <= TVec);
+
+  EXPECT_TRUE(constVec.hasConstVal());
+  EXPECT_TRUE(constVec <= TArrLike);
+  EXPECT_TRUE(constVec <= TVec);
+  EXPECT_TRUE(constVec < TVec);
+  EXPECT_TRUE(constVec <= TStaticVec);
+  EXPECT_TRUE(constVec < TStaticVec);
+  EXPECT_FALSE(constVec <= TDict);
 
   // For some difference types, we are pessimistic: we had better not narrow
   // these differences to TBottom, but we can't represent them finely.
-  EXPECT_EQ(TStaticVArr, TStaticVArr - constVArr);
-  EXPECT_EQ(TBottom, constVArr - TStaticVArr);
-  EXPECT_EQ(constDArr, constDArr - TStaticVArr);
-  EXPECT_EQ(TBottom, constDArr - TDArr);
+  EXPECT_EQ(TStaticVec, TStaticVec - constVec);
+  EXPECT_EQ(TBottom, constVec - TStaticVec);
+  EXPECT_EQ(constDict, constDict - TStaticVec);
+  EXPECT_EQ(TBottom, constDict - TDict);
 
   // Checking specialization dropping.  We cannot specialize on two dimensions
   // (e.g. array-like and object, or array-like and record) at the same time.
-  EXPECT_EQ(TStaticVArr | TObj, constVArr | TObj);
+  EXPECT_EQ(TStaticVec | TObj, constVec | TObj);
   auto const subIter = Type::SubObj(SystemLib::s_HH_IteratorClass);
-  EXPECT_EQ(TVArr | TObj, TVArr | subIter);
+  EXPECT_EQ(TVec | TObj, TVec | subIter);
   auto const recA = testRecordDesc("A");
   auto const subRec = Type::SubRecord(recA.get());
-  EXPECT_EQ(TVArr | TRecord, TVArr | subRec);
+  EXPECT_EQ(TVec | TRecord, TVec | subRec);
 
-  auto const varrOrInt = TVArr | TInt;
-  EXPECT_EQ(TInt, varrOrInt - TArr);
-  EXPECT_EQ(TInt, varrOrInt - TVArr);
-  EXPECT_EQ(TVArr, varrOrInt - TInt);
-  EXPECT_EQ(TPtrToVArr, TPtrToVArr - constVArr.ptr(Ptr::Ptr));
+  auto const vecOrInt = TVec | TInt;
+  EXPECT_EQ(TInt, vecOrInt - TArrLike);
+  EXPECT_EQ(TInt, vecOrInt - TVec);
+  EXPECT_EQ(TVec, vecOrInt - TInt);
+  EXPECT_EQ(TPtrToVec, TPtrToVec - constVec.ptr(Ptr::Ptr));
 
   auto const iterOrStr = subIter | TStr;
   EXPECT_EQ(TStr, iterOrStr - TObj);
@@ -521,55 +633,55 @@ TEST(Type, ArrayFitsSpec) {
   auto const rat2 = builder.packed(maybe_empty, {int_rat, str_rat});
   auto const rat3 = builder.packedn(nonempty, int_rat);
 
-  auto const ratType1 = Type::Array(rat1);
-  auto const ratType2 = Type::Array(rat2);
-  auto const ratType3 = Type::Array(rat3);
+  auto const ratType1 = Type::Vec(rat1);
+  auto const ratType2 = Type::Vec(rat2);
+  auto const ratType3 = Type::Vec(rat3);
 
-  auto const varr1 = ArrayData::GetScalarArray(make_varray(2, 3));
-  auto const varr2 = ArrayData::GetScalarArray(make_varray(2, ""));
-  auto const varr3 = ArrayData::GetScalarArray(make_varray(2, 3, 5));
+  auto const vec1 = ArrayData::GetScalarArray(make_vec_array(2, 3));
+  auto const vec2 = ArrayData::GetScalarArray(make_vec_array(2, ""));
+  auto const vec3 = ArrayData::GetScalarArray(make_vec_array(2, 3, 5));
 
-  DArrayInit darr_init1{2};
-  darr_init1.set(make_tv<KindOfInt64>(0), 2);
-  darr_init1.set(make_tv<KindOfInt64>(1), 3);
-  auto const darr1 = ArrayData::GetScalarArray(darr_init1.toArray());
+  DictInit dict_init1{2};
+  dict_init1.set((int64_t)0, 2);
+  dict_init1.set((int64_t)1, 3);
+  auto const dict1 = ArrayData::GetScalarArray(dict_init1.toArray());
 
-  DArrayInit darr_init2{2};
-  darr_init2.set(make_tv<KindOfInt64>(17), 2);
-  darr_init2.set(make_tv<KindOfInt64>(19), 3);
-  auto const darr2 = ArrayData::GetScalarArray(darr_init2.toArray());
+  DictInit dict_init2{2};
+  dict_init2.set(17, 2);
+  dict_init2.set(19, 3);
+  auto const dict2 = ArrayData::GetScalarArray(dict_init2.toArray());
 
-  EXPECT_FALSE(Type::cns(staticEmptyVArray()) <= ratType1);
-  EXPECT_TRUE(Type::cns(staticEmptyVArray()) <= ratType2);
-  EXPECT_FALSE(Type::cns(staticEmptyVArray()) <= ratType3);
+  EXPECT_FALSE(Type::cns(staticEmptyVec()) <= ratType1);
+  EXPECT_TRUE(Type::cns(staticEmptyVec()) <= ratType2);
+  EXPECT_FALSE(Type::cns(staticEmptyVec()) <= ratType3);
 
-  EXPECT_TRUE(Type::cns(varr1) <= ratType1);
-  EXPECT_FALSE(Type::cns(varr1) <= ratType2);
-  EXPECT_TRUE(Type::cns(varr1) <= ratType3);
+  EXPECT_TRUE(Type::cns(vec1) <= ratType1);
+  EXPECT_FALSE(Type::cns(vec1) <= ratType2);
+  EXPECT_TRUE(Type::cns(vec1) <= ratType3);
 
-  EXPECT_FALSE(Type::cns(varr2) <= ratType1);
-  EXPECT_TRUE(Type::cns(varr2) <= ratType2);
-  EXPECT_FALSE(Type::cns(varr2) <= ratType3);
+  EXPECT_FALSE(Type::cns(vec2) <= ratType1);
+  EXPECT_TRUE(Type::cns(vec2) <= ratType2);
+  EXPECT_FALSE(Type::cns(vec2) <= ratType3);
 
-  EXPECT_FALSE(Type::cns(varr3) <= ratType1);
-  EXPECT_FALSE(Type::cns(varr3) <= ratType2);
-  EXPECT_TRUE(Type::cns(varr3) <= ratType3);
+  EXPECT_FALSE(Type::cns(vec3) <= ratType1);
+  EXPECT_FALSE(Type::cns(vec3) <= ratType2);
+  EXPECT_TRUE(Type::cns(vec3) <= ratType3);
 
-  EXPECT_TRUE(Type::cns(darr1) <= ratType1);
-  EXPECT_FALSE(Type::cns(darr1) <= ratType2);
-  EXPECT_TRUE(Type::cns(darr1) <= ratType3);
+  EXPECT_FALSE(Type::cns(dict1) <= ratType1);
+  EXPECT_FALSE(Type::cns(dict1) <= ratType2);
+  EXPECT_FALSE(Type::cns(dict1) <= ratType3);
 
-  EXPECT_FALSE(Type::cns(darr2) <= ratType1);
-  EXPECT_FALSE(Type::cns(darr2) <= ratType2);
-  EXPECT_FALSE(Type::cns(darr2) <= ratType3);
+  EXPECT_FALSE(Type::cns(dict2) <= ratType1);
+  EXPECT_FALSE(Type::cns(dict2) <= ratType2);
+  EXPECT_FALSE(Type::cns(dict2) <= ratType3);
 }
 
 TEST(Type, SpecializedArrays) {
-  EXPECT_FALSE(TArr.isSpecialized());
-  EXPECT_FALSE(TArr.arrSpec());
-  EXPECT_FALSE(TArr.arrSpec().vanilla());
+  EXPECT_FALSE(TArrLike.isSpecialized());
+  EXPECT_FALSE(TArrLike.arrSpec());
+  EXPECT_FALSE(TArrLike.arrSpec().vanilla());
 
-  auto const const_array = Type::cns(staticEmptyVArray());
+  auto const const_array = Type::cns(staticEmptyVec());
   EXPECT_TRUE(const_array.isSpecialized());
   EXPECT_TRUE(const_array.arrSpec());
   EXPECT_TRUE(const_array.arrSpec().vanilla());
@@ -714,7 +826,7 @@ TEST(Type, SpecializedClass) {
 
 TEST(Type, Const) {
   auto five = Type::cns(5);
-  auto fiveArr = five | TArr;
+  auto fiveArr = five | TArrLike;
   EXPECT_LT(five, TInt);
   EXPECT_NE(five, TInt);
   EXPECT_TRUE(five.hasConstVal());
@@ -730,12 +842,12 @@ TEST(Type, Const) {
   EXPECT_EQ(five, five & TInt);
   EXPECT_EQ(five, TCell & five);
   EXPECT_EQ("Int<5>", five.toString());
-  EXPECT_EQ(five, five - TArr);
+  EXPECT_EQ(five, five - TArrLike);
   EXPECT_EQ(five, five - Type::cns(1));
   EXPECT_EQ(TInt, TInt - five); // conservative
-  EXPECT_EQ(TInt, fiveArr - TArr);
+  EXPECT_EQ(TInt, fiveArr - TArrLike);
   EXPECT_EQ(fiveArr, fiveArr - five);
-  EXPECT_EQ(TArr, fiveArr - TInt);
+  EXPECT_EQ(TArrLike, fiveArr - TInt);
   EXPECT_EQ(TBottom, five - TInt);
   EXPECT_EQ(TBottom, five - five);
   EXPECT_EQ(TPtrToCell,
@@ -758,80 +870,69 @@ TEST(Type, Const) {
   EXPECT_EQ(TBottom, five & True);
   EXPECT_EQ(Type::cns(false), TBool - True);
 
-  auto const arrData = ArrayData::GetScalarArray(make_map_array(1, 2, 3, 4));
+  auto const arrData = ArrayData::GetScalarArray(make_dict_array(1, 2, 3, 4));
   auto const constArray = Type::cns(arrData);
 
-  EXPECT_EQ(constArray, constArray & TDArr);
+  EXPECT_EQ(constArray, constArray & TDict);
   EXPECT_TRUE(constArray <= constArray);
-  EXPECT_TRUE(constArray <= TDArr);
-  EXPECT_TRUE(constArray < TDArr);
-  EXPECT_FALSE(TDArr <= constArray);
-  EXPECT_FALSE(TDArr <= TVArr);
+  EXPECT_TRUE(constArray <= TDict);
+  EXPECT_TRUE(constArray < TDict);
+  EXPECT_FALSE(TDict <= constArray);
+  EXPECT_FALSE(TDict <= TVec);
 
   ArrayTypeTable::Builder ratBuilder;
   auto const rat1 = ratBuilder.packedn(RepoAuthType::Array::Empty::No,
                                        RepoAuthType(RepoAuthType::Tag::Str));
-  auto const ratArray1 = Type::Array(rat1);
+  auto const ratArray1 = Type::Dict(rat1);
   auto const rat2 = ratBuilder.packedn(RepoAuthType::Array::Empty::No,
                                        RepoAuthType(RepoAuthType::Tag::Int));
-  auto const ratArray2 = Type::Array(rat2);
+  auto const ratArray2 = Type::Dict(rat2);
   EXPECT_EQ(ratArray1, ratArray1 & ratArray2);
   EXPECT_EQ(ratArray1, ratArray2 & ratArray1);
-  EXPECT_TRUE(ratArray1 < TArr);
+  EXPECT_TRUE(ratArray1 <= TArrLike);
+  EXPECT_TRUE(ratArray1 < TArrLike);
+  EXPECT_TRUE(ratArray1 <= TDict);
+  EXPECT_TRUE(ratArray1 < TDict);
   EXPECT_TRUE(ratArray1 <= ratArray1);
-  EXPECT_TRUE(ratArray1 < (TArr|TObj));
-  EXPECT_TRUE(ratArray1 < (TArr|TRecord));
+  EXPECT_TRUE(ratArray1 < (TDict|TObj));
+  EXPECT_TRUE(ratArray1 < (TDict|TRecord));
   EXPECT_FALSE(ratArray1 < ratArray2);
   EXPECT_NE(ratArray1, ratArray2);
 
-  auto const vanillaRat = ratArray1 & TVanillaArr;
-  EXPECT_EQ("Arr=Vanilla", TVanillaArr.toString());
-  EXPECT_EQ("Arr=Vanilla:N([Str])", vanillaRat.toString());
-  EXPECT_TRUE(vanillaRat <= TVanillaArr);
-  EXPECT_TRUE(vanillaRat < TVanillaArr);
+  auto const vanillaRat = ratArray1 & TVanillaArrLike;
+  EXPECT_EQ("ArrLike=Vanilla", TVanillaArrLike.toString());
+  EXPECT_EQ("Dict=Vanilla:N([Str])", vanillaRat.toString());
+  EXPECT_TRUE(vanillaRat <= TVanillaArrLike);
+  EXPECT_TRUE(vanillaRat < TVanillaArrLike);
+  EXPECT_TRUE(vanillaRat <= TVanillaDict);
+  EXPECT_TRUE(vanillaRat < TVanillaDict);
   EXPECT_TRUE(vanillaRat <= ratArray1);
   EXPECT_TRUE(vanillaRat < ratArray1);
   EXPECT_TRUE(vanillaRat.arrSpec().vanilla());
 
   auto const narrowedRat = ratArray1.narrowToVanilla();
-  EXPECT_EQ("Arr=N([Str])", ratArray1.toString());
-  EXPECT_EQ("Arr=Vanilla:N([Str])", narrowedRat.toString());
+  EXPECT_EQ("Dict=N([Str])", ratArray1.toString());
+  EXPECT_EQ("Dict=Vanilla:N([Str])", narrowedRat.toString());
   EXPECT_TRUE(narrowedRat < ratArray1);
   EXPECT_TRUE(narrowedRat <= ratArray1);
   EXPECT_FALSE(ratArray1 < narrowedRat);
   EXPECT_FALSE(ratArray1 <= narrowedRat);
-  EXPECT_EQ(narrowedRat, ratArray1 & TVanillaArr);
+  EXPECT_EQ(narrowedRat, ratArray1 & TVanillaArrLike);
   EXPECT_FALSE(ratArray1.arrSpec().vanilla());
 
-  auto darray = ArrayData::GetScalarArray(make_darray(1, 1, 10, 10));
-  auto const constDArray = Type::cns(darray);
-  EXPECT_TRUE(constDArray.hasConstVal());
-  EXPECT_TRUE(constDArray <= TArr);
-  EXPECT_TRUE(constDArray <= TDArr);
-  EXPECT_TRUE(constDArray < TDArr);
-  EXPECT_FALSE(constDArray <= TVArr);
-
-  auto varray = ArrayData::GetScalarArray(make_varray(1, 1, 10, 10));
-  auto const constVArray = Type::cns(varray);
-  EXPECT_TRUE(constVArray.hasConstVal());
-  EXPECT_TRUE(constVArray <= TArr);
-  EXPECT_TRUE(constVArray <= TVArr);
-  EXPECT_TRUE(constVArray < TVArr);
-  EXPECT_FALSE(constVArray <= TDArr);
-
-  auto vec = make_vec_array(1, 2, 3, 4);
-  auto vecData = ArrayData::GetScalarArray(std::move(vec));
-  auto constVec = Type::cns(vecData);
+  auto const vec = make_vec_array(1, 2, 3, 4);
+  auto const vecData = ArrayData::GetScalarArray(std::move(vec));
+  auto const constVec = Type::cns(vecData);
   EXPECT_TRUE(constVec < TVec);
 
-  auto dict = make_dict_array(1, 1, 2, 2, 3, 3, 4, 4);
-  auto dictData = ArrayData::GetScalarArray(std::move(dict));
-  auto constDict = Type::cns(dictData);
+  auto const dict = make_dict_array(1, 1, 2, 2, 3, 3, 4, 4);
+  auto const dictData = ArrayData::GetScalarArray(std::move(dict));
+  auto const constDict = Type::cns(dictData);
   EXPECT_TRUE(constDict < TDict);
 
-  auto keyset = make_keyset_array(1, 2, 3, 4);
-  auto keysetData = ArrayData::GetScalarArray(std::move(keyset));
-  auto constKeyset = Type::cns(keysetData);
+  auto const keyset = make_keyset_array(1, 2, 3, 4);
+  auto const keysetData = ArrayData::GetScalarArray(std::move(keyset));
+  auto const constKeyset = Type::cns(keysetData);
   EXPECT_TRUE(constKeyset < TKeyset);
 
   auto constLazyCls = Type::cns(LazyClassData::create(makeStaticString("Foo")));
@@ -842,37 +943,19 @@ TEST(Type, Const) {
   EXPECT_EQ(TBottom, constLazyCls & True);
 }
 
-TEST(Type, DVArray) {
-  EXPECT_EQ("DArr", TDArr.toString());
-  EXPECT_TRUE(TDArr <= TArr);
-  EXPECT_FALSE(TDArr <= TVArr);
-  EXPECT_FALSE(TArr <= TDArr);
-  EXPECT_FALSE(TDArr.arrSpec().type());
-
-  EXPECT_EQ("VArr", TVArr.toString());
-  EXPECT_TRUE(TVArr <= TArr);
-  EXPECT_FALSE(TVArr <= TDArr);
-  EXPECT_FALSE(TArr <= TVArr);
-  EXPECT_FALSE(TVArr.arrSpec().type());
-
-  EXPECT_EQ(TArr, TVArr | TDArr);
-  EXPECT_EQ(TBottom, TVArr & TDArr);
-}
-
 TEST(Type, NarrowToVanilla) {
-  EXPECT_EQ("Arr=Vanilla", TArr.narrowToVanilla().toString());
   EXPECT_EQ("Vec=Vanilla", TVec.narrowToVanilla().toString());
+  EXPECT_EQ("{Dict|Vec}=Vanilla", (TVec|TDict).narrowToVanilla().toString());
   EXPECT_EQ("{Vec=Vanilla|Int}", (TVec|TInt).narrowToVanilla().toString());
   EXPECT_EQ("{Vec|Obj}", (TVec|TObj).narrowToVanilla().toString());
 }
 
 TEST(Type, VanillaArray) {
-  EXPECT_EQ("Arr=Vanilla", TVanillaArr.toString());
   EXPECT_EQ("ArrLike=Vanilla", TVanillaArrLike.toString());
-  EXPECT_TRUE(TVanillaArr <= TArr);
-  EXPECT_TRUE(TVanillaArr < TArr);
-  EXPECT_FALSE(TVanillaArr.arrSpec().type());
-  EXPECT_TRUE(TVanillaArr.arrSpec().vanilla());
+  EXPECT_TRUE(TVanillaArrLike <= TArrLike);
+  EXPECT_TRUE(TVanillaArrLike < TArrLike);
+  EXPECT_FALSE(TVanillaArrLike.arrSpec().type());
+  EXPECT_TRUE(TVanillaArrLike.arrSpec().vanilla());
 }
 
 TEST(Type, VanillaVec) {
@@ -893,11 +976,15 @@ TEST(Type, VanillaVec) {
 }
 
 TEST(Type, BespokeVec) {
-  auto const foo_layout = BespokeLayout{bespoke::testing::makeDummyLayout("foo")};
-  auto const bar_layout = BespokeLayout{bespoke::testing::makeDummyLayout("bar")};
+  auto const foo_layout = ArrayLayout{
+    bespoke::testing::makeDummyLayout("foo", {ArrayLayout::Bespoke()})
+  };
+  auto const bar_layout = ArrayLayout{
+    bespoke::testing::makeDummyLayout("bar", {ArrayLayout::Bespoke()})
+  };
 
-  auto const vecFoo = TVec.narrowToBespokeLayout(foo_layout);
-  EXPECT_EQ("Vec=Bespoke(foo)", vecFoo.toString());
+  auto const vecFoo = TVec.narrowToLayout(foo_layout);
+  EXPECT_EQ("Vec=foo", vecFoo.toString());
   EXPECT_FALSE(TVec <= vecFoo);
   EXPECT_FALSE(TVanillaVec <= vecFoo);
   EXPECT_FALSE(vecFoo <= TVanillaVec);
@@ -906,34 +993,36 @@ TEST(Type, BespokeVec) {
   EXPECT_EQ(vecFoo | TVec, TVec);
   EXPECT_EQ(vecFoo & TVec, vecFoo);
 
-  auto const vecBar = TVec.narrowToBespokeLayout(bar_layout);
-  EXPECT_EQ("Vec=Bespoke(bar)", vecBar.toString());
-  EXPECT_FALSE(vecFoo <= vecBar);
-  EXPECT_FALSE(vecBar <= vecFoo);
-  EXPECT_EQ(TBottom, vecFoo & vecBar);
-  EXPECT_EQ(TVec, vecFoo | vecBar);
+  auto const vecBar = TVec.narrowToLayout(bar_layout);
+  EXPECT_EQ("Vec=bar", vecBar.toString());
 
-  auto const vecVanillaBar = TVanillaVec.narrowToBespokeLayout(bar_layout);
+  auto const vecVanillaBar = TVanillaVec.narrowToLayout(bar_layout);
   EXPECT_EQ(TBottom, vecVanillaBar);
 }
 
 TEST(Type, BespokeVecRAT) {
-  auto const foo_layout = BespokeLayout{bespoke::testing::makeDummyLayout("foo")};
-  auto const bar_layout = BespokeLayout{bespoke::testing::makeDummyLayout("bar")};
+  RO::EvalBespokeArrayLikeMode = 2;
+  auto const foo_layout = ArrayLayout{
+    bespoke::testing::makeDummyLayout("foo", {ArrayLayout::Bespoke()})
+  };
+  auto const bar_layout = ArrayLayout{
+    bespoke::testing::makeDummyLayout("bar", {ArrayLayout::Bespoke()})
+  };
+  bespoke::selectBespokeLayouts();
 
   ArrayTypeTable::Builder ratBuilder;
   auto const rat = ratBuilder.packedn(RepoAuthType::Array::Empty::No,
                                       RepoAuthType(RepoAuthType::Tag::Str));
   auto const vecRat = Type::Vec(rat);
   EXPECT_EQ("Vec=N([Str])", vecRat.toString());
-  auto const vecRatBespoke = vecRat.narrowToBespokeLayout(foo_layout);
-  EXPECT_EQ("Vec=Bespoke(foo):N([Str])", vecRatBespoke.toString());
+  auto const vecRatBespoke = vecRat.narrowToLayout(foo_layout);
+  EXPECT_EQ("Vec=foo:N([Str])", vecRatBespoke.toString());
   auto const vecRatVanilla = vecRat.narrowToVanilla();
   EXPECT_EQ("Vec=Vanilla:N([Str])", vecRatVanilla.toString());
 
   EXPECT_EQ(TBottom, vecRatBespoke.narrowToVanilla());
-  EXPECT_EQ(TBottom, vecRatVanilla.narrowToBespokeLayout(foo_layout));
-  EXPECT_EQ(TBottom, vecRatBespoke.narrowToBespokeLayout(bar_layout));
+  EXPECT_EQ(TBottom, vecRatVanilla.narrowToLayout(foo_layout));
+  EXPECT_EQ(TBottom, vecRatBespoke.narrowToLayout(bar_layout));
 }
 
 TEST(Type, VanillaVecRAT) {
@@ -967,6 +1056,218 @@ TEST(Type, VanillaVecRAT) {
   EXPECT_FALSE(vecRat <= TVanillaVec);
   EXPECT_TRUE(vanillaVecRat < TVanillaVec);
   EXPECT_FALSE(vecRat < TVanillaVec);
+}
+
+TEST(Type, BespokeHierarchy) {
+  /*
+   *    top(L)
+   *   /     \
+   *  foo(L)  baz
+   *  |   \   / \
+   * bar  bat(L) ter
+   */
+  RO::EvalBespokeArrayLikeMode = 2;
+  bespoke::Layout::ClearHierarchy();
+  auto const foo_layout = ArrayLayout{
+    bespoke::testing::makeDummyAbstractLayout("foo", {ArrayLayout::Bespoke()})
+  };
+  auto const baz_layout = ArrayLayout{
+    bespoke::testing::makeDummyAbstractLayout("baz", {ArrayLayout::Bespoke()})
+  };
+  auto const bar_layout = ArrayLayout{
+    bespoke::testing::makeDummyLayout("bar", {foo_layout})
+  };
+  auto const bat_layout = ArrayLayout{
+    bespoke::testing::makeDummyLayout("bat", {foo_layout, baz_layout})
+  };
+  auto const ter_layout = ArrayLayout{
+    bespoke::testing::makeDummyLayout("ter", {baz_layout})
+  };
+  bespoke::selectBespokeLayouts();
+
+  auto const top = TVec.narrowToLayout(ArrayLayout::Bespoke());
+  auto const foo = TVec.narrowToLayout(foo_layout);
+  auto const baz = TVec.narrowToLayout(baz_layout);
+  auto const bar = TVec.narrowToLayout(bar_layout);
+  auto const bat = TVec.narrowToLayout(bat_layout);
+  auto const ter = TVec.narrowToLayout(ter_layout);
+  auto const bot = TBottom;
+
+  // Subtypes
+  EXPECT_TRUE(top <= top);
+  EXPECT_TRUE(foo <= top);
+  EXPECT_TRUE(baz <= top);
+  EXPECT_TRUE(bar <= top);
+  EXPECT_TRUE(bat <= top);
+  EXPECT_TRUE(ter <= top);
+
+  EXPECT_FALSE(top <= foo);
+  EXPECT_TRUE(foo <= foo);
+  EXPECT_FALSE(baz <= foo);
+  EXPECT_TRUE(bar <= foo);
+  EXPECT_TRUE(bat <= foo);
+  EXPECT_FALSE(ter <= foo);
+
+  EXPECT_FALSE(top <= bar);
+  EXPECT_FALSE(foo <= bar);
+  EXPECT_FALSE(baz <= bar);
+  EXPECT_TRUE(bar <= bar);
+  EXPECT_FALSE(bat <= bar);
+  EXPECT_FALSE(ter <= bar);
+
+  EXPECT_FALSE(top <= bat);
+  EXPECT_FALSE(foo <= bat);
+  EXPECT_FALSE(baz <= bat);
+  EXPECT_FALSE(bar <= bat);
+  EXPECT_TRUE(bat <= bat);
+  EXPECT_FALSE(ter <= bat);
+
+  EXPECT_FALSE(top <= baz);
+  EXPECT_FALSE(foo <= baz);
+  EXPECT_TRUE(baz <= baz);
+  EXPECT_FALSE(bar <= baz);
+  EXPECT_TRUE(bat <= baz);
+  EXPECT_TRUE(ter <= baz);
+
+  EXPECT_FALSE(top <= ter);
+  EXPECT_FALSE(foo <= ter);
+  EXPECT_FALSE(baz <= ter);
+  EXPECT_FALSE(bar <= ter);
+  EXPECT_FALSE(bat <= ter);
+  EXPECT_TRUE(ter <= ter);
+
+  EXPECT_TRUE(bot <= top);
+  EXPECT_TRUE(bot <= foo);
+  EXPECT_TRUE(bot <= baz);
+  EXPECT_TRUE(bot <= bar);
+  EXPECT_TRUE(bot <= bat);
+  EXPECT_TRUE(bot <= ter);
+
+  // Joins
+  EXPECT_EQ(top, top | top);
+  EXPECT_EQ(top, top | foo);
+  EXPECT_EQ(top, top | baz);
+  EXPECT_EQ(top, top | bar);
+  EXPECT_EQ(top, top | bat);
+  EXPECT_EQ(top, top | ter);
+
+  EXPECT_EQ(top, foo | top);
+  EXPECT_EQ(foo, foo | foo);
+  EXPECT_EQ(top, foo | baz);
+  EXPECT_EQ(foo, foo | bar);
+  EXPECT_EQ(foo, foo | bat);
+  EXPECT_EQ(top, foo | ter);
+
+  EXPECT_EQ(top, baz | top);
+  EXPECT_EQ(top, baz | foo);
+  EXPECT_EQ(baz, baz | baz);
+  EXPECT_EQ(top, baz | bar);
+  EXPECT_EQ(baz, baz | bat);
+  EXPECT_EQ(baz, baz | ter);
+
+  EXPECT_EQ(top, bar | top);
+  EXPECT_EQ(foo, bar | foo);
+  EXPECT_EQ(top, bar | baz);
+  EXPECT_EQ(bar, bar | bar);
+  EXPECT_EQ(foo, bar | bat);
+  EXPECT_EQ(top, bar | ter);
+
+  EXPECT_EQ(top, bat | top);
+  EXPECT_EQ(foo, bat | foo);
+  EXPECT_EQ(baz, bat | baz);
+  EXPECT_EQ(foo, bat | bar);
+  EXPECT_EQ(bat, bat | bat);
+  EXPECT_EQ(baz, bat | ter);
+
+  EXPECT_EQ(top, ter | top);
+  EXPECT_EQ(top, ter | foo);
+  EXPECT_EQ(baz, ter | baz);
+  EXPECT_EQ(top, ter | bar);
+  EXPECT_EQ(baz, ter | bat);
+  EXPECT_EQ(ter, ter | ter);
+
+  // Meets
+  EXPECT_EQ(top, top & top);
+  EXPECT_EQ(foo, top & foo);
+  EXPECT_EQ(baz, top & baz);
+  EXPECT_EQ(bar, top & bar);
+  EXPECT_EQ(bat, top & bat);
+  EXPECT_EQ(ter, top & ter);
+
+  EXPECT_EQ(foo, foo & top);
+  EXPECT_EQ(foo, foo & foo);
+  EXPECT_EQ(bat, foo & baz);
+  EXPECT_EQ(bar, foo & bar);
+  EXPECT_EQ(bat, foo & bat);
+  EXPECT_EQ(bot, foo & ter);
+
+  EXPECT_EQ(baz, baz & top);
+  EXPECT_EQ(bat, baz & foo);
+  EXPECT_EQ(baz, baz & baz);
+  EXPECT_EQ(bot, baz & bar);
+  EXPECT_EQ(bat, baz & bat);
+  EXPECT_EQ(ter, baz & ter);
+
+  EXPECT_EQ(bar, bar & top);
+  EXPECT_EQ(bar, bar & foo);
+  EXPECT_EQ(bot, bar & baz);
+  EXPECT_EQ(bar, bar & bar);
+  EXPECT_EQ(bot, bar & bat);
+  EXPECT_EQ(bot, bar & ter);
+
+  EXPECT_EQ(bat, bat & top);
+  EXPECT_EQ(bat, bat & foo);
+  EXPECT_EQ(bat, bat & baz);
+  EXPECT_EQ(bot, bat & bar);
+  EXPECT_EQ(bat, bat & bat);
+  EXPECT_EQ(bot, bat & ter);
+
+  EXPECT_EQ(ter, ter & top);
+  EXPECT_EQ(bot, ter & foo);
+  EXPECT_EQ(ter, ter & baz);
+  EXPECT_EQ(bot, ter & bar);
+  EXPECT_EQ(bot, ter & bat);
+  EXPECT_EQ(ter, ter & ter);
+}
+
+TEST(Type, BespokeRanges) {
+  /*
+   *    top(L)
+   *   /     \
+   *  foo(L)  baz
+   *  |   \   / \
+   * bar  bat(L) ter
+   *  |
+   * qop
+   */
+  RO::EvalBespokeArrayLikeMode = 2;
+  bespoke::Layout::ClearHierarchy();
+  auto const foo_layout = ArrayLayout{
+    bespoke::testing::makeDummyAbstractLayout("foo", {ArrayLayout::Bespoke()})
+  };
+  auto const baz_layout = ArrayLayout{
+    bespoke::testing::makeDummyAbstractLayout("baz", {ArrayLayout::Bespoke()})
+  };
+  auto const bar_layout = ArrayLayout{
+    bespoke::testing::makeDummyAbstractLayout("bar", {foo_layout})
+  };
+  auto const bat_layout = ArrayLayout{
+    bespoke::testing::makeDummyLayout("bat", {foo_layout, baz_layout})
+  };
+  auto const ter_layout = ArrayLayout{
+    bespoke::testing::makeDummyLayout("ter", {baz_layout})
+  };
+  auto const qop_layout = ArrayLayout{
+    bespoke::testing::makeDummyLayout("qup", {bar_layout})
+  };
+  bespoke::selectBespokeLayouts();
+
+  foo_layout.bespokeLayoutTest();
+  baz_layout.bespokeLayoutTest();
+  bar_layout.bespokeLayoutTest();
+  bat_layout.bespokeLayoutTest();
+  ter_layout.bespokeLayoutTest();
+  qop_layout.bespokeLayoutTest();
 }
 
 TEST(Type, PtrKinds) {
@@ -1018,33 +1319,33 @@ TEST(Type, PtrKinds) {
             (TPtrToFieldCell|TNullptr) - TNullptr);
 
   auto const frameCellOrCell = frameCell | TCell;
-  auto const stackOrArrOrInt = TArr.ptr(Ptr::Stk) | TInt;
-  EXPECT_EQ(TInt | TArr, frameCellOrCell & stackOrArrOrInt);
+  auto const stackOrArrOrInt = TArrLike.ptr(Ptr::Stk) | TInt;
+  EXPECT_EQ(TInt | TArrLike, frameCellOrCell & stackOrArrOrInt);
 }
 
 TEST(Type, ConstantPtrTypes) {
-  std::vector<TypedValue> darrays;
+  std::vector<TypedValue> dicts;
   for (auto const key : {"foo", "bar"}) {
-    DArrayInit dinit{1};
-    dinit.set(key, make_tv<KindOfBoolean>(true));
-    auto const darray = dinit.toArray();
-    MixedArray::asMixed(darray.get())->onSetEvalScalar();
-    auto const static_darray = MixedArray::CopyStatic(darray.get());
-    darrays.push_back(make_persistent_array_like_tv(static_darray));
+    DictInit dinit{1};
+    dinit.set(StringData::Make(key), make_tv<KindOfBoolean>(true));
+    auto const dict = dinit.toArray();
+    MixedArray::asMixed(dict.get())->onSetEvalScalar();
+    auto const static_dict = MixedArray::CopyStatic(dict.get());
+    dicts.push_back(make_persistent_array_like_tv(static_dict));
   }
 
   // In typical iterator usage, the constant pointer may point to an invalid
   // TypedValue that's off the end of the array being iterated over.
-  auto const arr_type1 = Type::cns(darrays[0]);
-  auto const arr_type2 = Type::cns(darrays[1]);
-  auto const tv = &darrays[2];
+  auto const arr_type1 = Type::cns(dicts[0]);
+  auto const arr_type2 = Type::cns(dicts[1]);
+  auto const tv = &dicts[2];
   auto const spec_ptr_type = (arr_type1 | arr_type2).ptr(Ptr::Elem);
   auto const base_ptr_type = spec_ptr_type.unspecialize();
   auto const cons_ptr_type = Type::cns(tv, spec_ptr_type);
 
-  EXPECT_EQ("PtrToElemStaticDArr=Vanilla", spec_ptr_type.toString());
-  EXPECT_EQ("PtrToElemStaticDArr", base_ptr_type.toString());
-  auto const str = folly::format("PtrToElemStaticDArr<TV: {}>", tv).str();
+  EXPECT_EQ("PtrToElemStaticDict=Vanilla", spec_ptr_type.toString());
+  EXPECT_EQ("PtrToElemStaticDict", base_ptr_type.toString());
+  auto const str = folly::format("PtrToElemStaticDict<TV: {}>", tv).str();
   EXPECT_EQ(str, cons_ptr_type.toString());
 
   // The specialized ptr type is not constant. The constant ptr type is not

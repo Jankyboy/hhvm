@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_UTIL_FIXED_VECTOR_H_
-#define incl_HPHP_UTIL_FIXED_VECTOR_H_
+#pragma once
 
 #include <algorithm>
 #include <memory>
@@ -59,6 +58,9 @@ struct FixedVector {
    */
   explicit FixedVector(const std::vector<T>& sourceVec) {
     move(sourceVec);
+  }
+  explicit FixedVector(std::vector<T>&& sourceVec) {
+    move(std::move(sourceVec));
   }
 
   FixedVector(FixedVector<T>&& fv) {
@@ -119,7 +121,7 @@ struct FixedVector {
 
 private:
   template<class Src>
-  void move(Src& sourceVec) {
+  void move(Src&& sourceVec) {
     auto const neededSize = sourceVec.size();
 
     if (neededSize >> 16) {
@@ -162,5 +164,3 @@ private:
 //////////////////////////////////////////////////////////////////////
 
 }
-
-#endif

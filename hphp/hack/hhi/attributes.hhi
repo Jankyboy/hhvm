@@ -6,12 +6,15 @@ namespace HH {
 interface ClassLikeAttribute {}
 interface ClassAttribute extends ClassLikeAttribute {}
 interface EnumAttribute extends ClassLikeAttribute {}
+interface EnumClassAttribute extends ClassLikeAttribute {}
 
 interface TypeAliasAttribute {}
 
 // function-like
 interface FunctionAttribute {}
 interface MethodAttribute {}
+
+interface LambdaAttribute {}
 
 // properties
 interface PropertyAttribute {}

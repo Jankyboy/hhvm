@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_IRGEN_INCDEC_H
-#define incl_HPHP_JIT_IRGEN_INCDEC_H
+#pragma once
 
 #include "hphp/runtime/vm/jit/irgen-exit.h"
 #include "hphp/runtime/vm/jit/irgen-internal.h"
@@ -33,7 +32,16 @@ inline SSATmp* incDec(IRGS& env, IncDecOp op, SSATmp* src) {
   // non int/double types.
   if (RuntimeOption::EvalWarnOnIncDecInvalidType == 0) {
     if (src->isA(TNull)) {
-      return isInc(op) ? cns(env, 1) : src;
+      if (!isInc(op)) return src;
+      handleConvNoticeLevel(
+        env,
+        ConvNoticeData {
+          flagToConvNoticeLevel(RuntimeOption::EvalNoticeOnCoerceForIncDec),
+          s_ConvNoticeReasonIncDec.get()
+        },
+        "null",
+        "int");
+      return cns(env, 1);
     }
 
     if (src->type().subtypeOfAny(TBool, TArrLike, TObj, TRes)) {
@@ -64,5 +72,3 @@ inline SSATmp* incDec(IRGS& env, IncDecOp op, SSATmp* src) {
 ////////////////////////////////////////////////////////////////////////////////
 
 }}}
-
-#endif

@@ -125,7 +125,7 @@ APCHandle::Pair APCObject::Construct(ObjectData* objectData) {
       propsDontNeedCheck = propInfo[slot].typeConstraint.alwaysPasses(objProp);
     }
 
-    auto val = APCHandle::Create(const_variant_ref{objProp}, false,
+    auto val = APCHandle::Create(const_variant_ref{objProp},
                                  APCHandleLevel::Inner, true);
     size += val.size;
     apcPropVec[index] = val.handle;
@@ -136,7 +136,7 @@ APCHandle::Pair APCObject::Construct(ObjectData* objectData) {
   }
 
   if (UNLIKELY(hasDynProps)) {
-    auto val = APCHandle::Create(VarNR{objectData->dynPropArray()}, false,
+    auto val = APCHandle::Create(VarNR{objectData->dynPropArray()},
                                  APCHandleLevel::Inner, true);
     size += val.size;
     apcPropVec[numRealProps] = val.handle;
@@ -162,8 +162,8 @@ APCHandle::Pair APCObject::ConstructSlow(ObjectData* objectData,
     assertx(key.isString());
     auto const tv = it.secondVal();
     if (!isNullType(type(tv))) {
-      auto val = APCHandle::Create(tvAsCVarRef(&tv), false,
-                                   APCHandleLevel::Inner, true);
+      auto val = APCHandle::Create(tvAsCVarRef(&tv), APCHandleLevel::Inner,
+                                   true);
       prop->val = val.handle;
       size += val.size;
     } else {
@@ -180,7 +180,7 @@ APCHandle::Pair APCObject::ConstructSlow(ObjectData* objectData,
         prop->ctx = nullptr;
       } else {
         // Private.
-        auto* ctx = Unit::lookupClass(cls.get());
+        auto* ctx = Class::lookup(cls.get());
         if (ctx && ctx->attrs() & AttrUnique) {
           prop->ctx = ctx;
         } else {
@@ -239,7 +239,7 @@ APCHandle::Pair APCObject::MakeAPCObject(APCHandle* obj, const Variant& value) {
   if (features.isCircular || features.hasSerializable) {
     return {nullptr, 0};
   }
-  auto tmp = APCHandle::Create(value, false, APCHandleLevel::Inner, true);
+  auto tmp = APCHandle::Create(value, APCHandleLevel::Inner, true);
   tmp.handle->setObjAttempted();
   return tmp;
 }
@@ -262,8 +262,8 @@ Object APCObject::createObject() const {
   auto const objProp = obj->props();
   auto const apcProp = persistentProps();
 
-  // re-entry is possible while we're executing toLocal() on each
-  // property, so heap inspectors may see partially initid objects
+  // Re-entry is possible while we're executing toLocal() on each
+  // property, so heap inspectors may see partially initialized objects
   // not yet exposed to PHP.
   auto i = 0;
 
@@ -294,13 +294,12 @@ Object APCObject::createObject() const {
 
   if (UNLIKELY(numProps < m_propCount)) {
     auto dynProps = apcProp[numProps];
-    assertx(dynProps->kind() == APCKind::StaticArray ||
-           dynProps->kind() == APCKind::UncountedArray ||
-           dynProps->kind() == APCKind::SharedArray);
+    assertx(dynProps->type() == KindOfPersistentDict ||
+            dynProps->kind() == APCKind::SharedDict);
     obj->setDynProps(dynProps->toLocal().asCArrRef());
   }
 
-  if (!m_no_wakeup) obj->invokeWakeup();
+  if (!m_no_wakeup) obj->invokeWakeup(RuntimeCoeffects::fixme());
   return obj;
 }
 
@@ -309,7 +308,7 @@ Object APCObject::createObjectSlow() const {
   if (auto const c = m_cls.left()) {
     klass = c;
   } else {
-    klass = Unit::loadClass(m_cls.right());
+    klass = Class::load(m_cls.right());
     if (!klass) {
       Logger::Error("APCObject::getObject(): Cannot find class %s",
                     m_cls.right()->data());
@@ -334,7 +333,7 @@ Object APCObject::createObjectSlow() const {
         if (auto const cls = prop->ctx.left()) {
           ctx = cls;
         } else {
-          ctx = Unit::lookupClass(prop->ctx.right());
+          ctx = Class::lookup(prop->ctx.right());
           if (!ctx) continue;
         }
       }
@@ -344,7 +343,7 @@ Object APCObject::createObjectSlow() const {
     }
   }
 
-  obj->invokeWakeup();
+  obj->invokeWakeup(RuntimeCoeffects::fixme());
   return obj;
 }
 

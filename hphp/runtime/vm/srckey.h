@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_SRCKEY_H_
-#define incl_HPHP_SRCKEY_H_
+#pragma once
 
 #include "hphp/runtime/vm/hhbc.h"
 #include "hphp/runtime/vm/resumable.h"
@@ -36,7 +35,7 @@ struct Unit;
  * A SrcKey is a logical source instruction---it's enough to identify
  * these using a (Func id, hhbc instruction) pair.
  */
-struct SrcKey : private boost::totally_ordered<SrcKey> {
+struct SrcKey {
   static_assert(sizeof(FuncId) == sizeof(uint32_t), "");
   static_assert(sizeof(Offset) == sizeof(uint32_t), "");
 
@@ -46,6 +45,7 @@ struct SrcKey : private boost::totally_ordered<SrcKey> {
   using AtomicInt = uint64_t;
 
   struct Hasher;
+  struct StableHasher;
   struct TbbHashCompare;
 
   /*
@@ -68,8 +68,6 @@ struct SrcKey : private boost::totally_ordered<SrcKey> {
   SrcKey(FuncId funcId, Offset off, ResumeMode resumeMode);
 
   SrcKey(const Func* f, Offset off, PrologueTag);
-  SrcKey(const Func* f, PC pc, PrologueTag);
-  SrcKey(FuncId funcId, Offset off, PrologueTag);
 
   SrcKey(SrcKey other, Offset off);
 
@@ -79,9 +77,7 @@ struct SrcKey : private boost::totally_ordered<SrcKey> {
   /////////////////////////////////////////////////////////////////////////////
 
   /*
-   * Whether the SrcKey has a valid FuncId.
-   *
-   * Does not check for validity of any other fields.
+   * Whether this is the sentinel value of invalid SrcKey.
    */
   bool valid() const;
 
@@ -94,10 +90,19 @@ struct SrcKey : private boost::totally_ordered<SrcKey> {
   /*
    * Direct accessors.
    */
+
   FuncId funcID() const;
-  int offset() const;
-  bool prologue() const;
+
+  // Offset of the bytecode represented by this SrcKey.
+  // Valid only when !prologue().
+  Offset offset() const;
+
+  // Offset of the bytecode that will be used to enter the function.
+  // Valid only when prologue().
+  Offset entryOffset() const;
+
   ResumeMode resumeMode() const;
+  bool prologue() const;
   bool hasThis() const;
 
   /*
@@ -107,6 +112,11 @@ struct SrcKey : private boost::totally_ordered<SrcKey> {
   const Unit* unit() const;
   Op op() const;
   PC pc() const;
+  int lineNumber() const;
+
+  // Human readable offset of one of the above. Gives a std::string instead of
+  // an Offset, as this should be used only for debugging and tracing.
+  std::string printableOffset() const;
 
   /////////////////////////////////////////////////////////////////////////////
 
@@ -137,6 +147,8 @@ struct SrcKey : private boost::totally_ordered<SrcKey> {
    */
   SrcKey advanced(const Func* f = nullptr) const;
 
+  SrcKey withFuncID(FuncId funcId) const;
+
   /////////////////////////////////////////////////////////////////////////////
 
   /*
@@ -145,7 +157,7 @@ struct SrcKey : private boost::totally_ordered<SrcKey> {
    * SrcKeys are ordered by their AtomicInt values.
    */
   bool operator==(const SrcKey& r) const;
-  bool operator<(const SrcKey& r) const;
+  bool operator!=(const SrcKey& r) const;
 
   /*
    * Stringification.
@@ -161,13 +173,16 @@ private:
 
   /////////////////////////////////////////////////////////////////////////////
 
+  static constexpr size_t kNumModeBits = 2;
+  static constexpr size_t kNumOffsetBits = 32 - kNumModeBits;
+
   union {
     AtomicInt m_atomicInt;
     struct {
       FuncId m_funcID;
-      uint32_t m_offset : 30;
-      uint32_t m_resumeModeAndPrologue : 2;
-    };
+      uint32_t m_offset : kNumOffsetBits;
+      uint32_t m_resumeModeAndTags : kNumModeBits;
+    } m_s;
   };
 };
 
@@ -176,6 +191,18 @@ private:
 struct SrcKey::Hasher {
   size_t operator()(SrcKey sk) const {
     return hash_int64(sk.toAtomicInt());
+  }
+};
+
+struct SrcKey::StableHasher {
+  size_t operator()(SrcKey sk) const {
+    return folly::hash::hash_combine(
+      sk.func()->stableHash(),
+      sk.offset(),
+      sk.resumeMode(),
+      sk.prologue(),
+      sk.hasThis()
+    );
   }
 };
 
@@ -204,4 +231,3 @@ void sktrace(SrcKey sk, ATTRIBUTE_PRINTF_STRING const char *fmt, ...)
 
 #include "hphp/runtime/vm/srckey-inl.h"
 
-#endif

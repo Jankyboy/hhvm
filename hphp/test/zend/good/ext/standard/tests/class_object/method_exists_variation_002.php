@@ -9,15 +9,12 @@ function test_error_handler($err_no, $err_msg, $filename, $linenum, $vars) {
     echo "Error: $err_no - $err_msg, $filename($linenum)\n";
 }
 <<__EntryPoint>> function main(): void {
-set_error_handler(fun('test_error_handler'));
+set_error_handler(test_error_handler<>);
 echo "*** Testing method_exists() : usage variations ***\n";
 
 // Initialise function arguments not being substituted (if any)
-$object = new stdclass();
+$object = new stdClass();
 
-//get an unset variable
-$unset_var = 10;
-unset ($unset_var);
 
 //array of values to iterate over
 $values = varray[
@@ -57,19 +54,15 @@ $values = varray[
       '',
 
       // object data
-      new stdclass(),
+      new stdClass(),
 
-      // undefined data
-      $undefined_var,
 
-      // unset data
-      $unset_var,
 ];
 
 // loop through each element of the array for method
 
 foreach($values as $value) {
-      echo "\nArg value $value\n";
+      echo "\nArg value ".(string)$value."\n";
       try { var_dump( method_exists($object, $value) ); } catch (Exception $e) { echo "\n".'Warning: '.$e->getMessage().' in '.__FILE__.' on line '.__LINE__."\n"; }
 };
 

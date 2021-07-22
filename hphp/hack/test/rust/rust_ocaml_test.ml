@@ -8,14 +8,13 @@
  *)
 
 module OcamlPrintf = Printf
-open Core_kernel
+open Hh_prelude
 module Printf = OcamlPrintf
 
 [@@@warning "-3"]
 
 module SourceText = Full_fidelity_source_text
 module SyntaxError = Full_fidelity_syntax_error
-module MinimalSyntax = Full_fidelity_minimal_syntax
 module PositionedSyntax = Full_fidelity_positioned_syntax
 module EditablePositionedSyntax = Full_fidelity_editable_positioned_syntax
 module Env = Full_fidelity_parser_env
@@ -30,10 +29,7 @@ let fbcode = Printf.sprintf "/data/users/%s/fbsource/fbcode/" user
 type parser =
   | MINIMAL
   | POSITIONED
-  | COROUTINE
-  | DECL_MODE
   | LOWERER
-  | COROUTINE_ERRORS
 
 type mode =
   | RUST
@@ -113,8 +109,8 @@ module WithSyntax (Syntax : Syntax_sig.Syntax_S) = struct
           | OCAML
           | COMPARE ->
             Printf.printf "CAML: %s\n" path;
-            (try (true, Some (TreeBuilder.make ~env:ocaml_env source_text))
-             with _ -> (false, None))
+            (try (true, Some (TreeBuilder.make ~env:ocaml_env source_text)) with
+            | _ -> (false, None))
           | RUST -> (true, None)
         in
         let (ok_rust, from_rust) =
@@ -125,8 +121,8 @@ module WithSyntax (Syntax : Syntax_sig.Syntax_S) = struct
             flush stdout;
 
             (* make sure OCaml output is shown before Rust output *)
-            (try (true, Some (TreeBuilder.make ~env:rust_env source_text))
-             with _ -> (false, None))
+            (try (true, Some (TreeBuilder.make ~env:rust_env source_text)) with
+            | _ -> (false, None))
           | OCAML -> (true, None)
         in
         flush stdout;
@@ -149,7 +145,7 @@ module WithSyntax (Syntax : Syntax_sig.Syntax_S) = struct
           in
           let rust_reachable_words = reachable syntax_from_rust in
           let ocaml_reachable_words = reachable syntax_from_ocaml in
-          ( if args.check_printed_tree then
+          (if args.check_printed_tree then
             match
               Syntax.
                 (extract_text syntax_from_ocaml, extract_text syntax_from_rust)
@@ -168,7 +164,7 @@ module WithSyntax (Syntax : Syntax_sig.Syntax_S) = struct
             | _ ->
               Printf.printf
                 "Tree to source transformation is not supported for this syntax type\n";
-              failed := true );
+              failed := true);
           if not @@ args.no_tree_compare then (
             if syntax_from_rust <> syntax_from_ocaml then (
               let syntax_from_rust_as_json = to_json syntax_from_rust in
@@ -250,10 +246,10 @@ module WithSyntax (Syntax : Syntax_sig.Syntax_S) = struct
         if is_compare || !crashed <> 0 then
           Printf.printf
             "%s/%d (crashed=%d)\n"
-            ( if is_compare then
+            (if is_compare then
               string_of_int !correct
             else
-              "?" )
+              "?")
             !total
             !crashed;
         if !failed && not args.keep_going then exit 1
@@ -301,34 +297,24 @@ let get_files_in_path ~args path =
   let filter_re = Str.regexp args.filter in
   let matches_filter f =
     args.filter = ""
-    || (try Str.search_forward filter_re f 0 >= 0 with Not_found -> false)
+    ||
+    try Str.search_forward filter_re f 0 >= 0 with
+    | Not_found -> false
   in
   List.filter
     ~f:(fun f ->
       (not (Sys.is_directory f))
-      && ( String_utils.string_ends_with f ".php"
+      && (String_utils.string_ends_with f ".php"
          || String_utils.string_ends_with f ".hhi"
-         || String_utils.string_ends_with f ".hack" )
+         || String_utils.string_ends_with f ".hack")
       && matches_filter f
       &&
       match args.parser with
-      | COROUTINE -> true
-      | DECL_MODE ->
-        (* Note: these crash in both OCaml and Rust version of positioned DeclMode parser *)
-        (not @@ String_utils.string_ends_with f "ffp/yield_bad1.php")
-        && (not @@ String_utils.string_ends_with f "ffp/yield_from_bad1.php")
-        && (not @@ String_utils.string_ends_with f "test_variadic_type_hint.php")
-        && not
-           @@ String_utils.string_ends_with f "namespace_group_use_decl.php"
-        && (not @@ String_utils.string_ends_with f "parser_massive_add_exp.php")
-        && not
-           @@ String_utils.string_ends_with f "parser_massive_concat_exp.php"
-        && true
       | LOWERER ->
         (* TODO(shiqicao): parser_massive_add_exp.php and parser_massive_concat_exp.php crashs
-          Ocaml with SYNTAX ERROR: Expression recursion limit reached. Rust doesn't crash,
-          but we still need to set a limit for Rust lowerer.
-         *)
+           Ocaml with SYNTAX ERROR: Expression recursion limit reached. Rust doesn't crash,
+           but we still need to set a limit for Rust lowerer.
+        *)
         (not @@ String_utils.string_ends_with f "parser_massive_add_exp.php")
         && not
            @@ String_utils.string_ends_with f "parser_massive_concat_exp.php"
@@ -371,8 +357,6 @@ let parse_args () =
       ("--rust", Arg.Unit (fun () -> mode := RUST), "");
       ("--ocaml", Arg.Unit (fun () -> mode := OCAML), "");
       ("--positioned", Arg.Unit (fun () -> parser := POSITIONED), "");
-      ("--coroutine", Arg.Unit (fun () -> parser := COROUTINE), "");
-      ("--coroutine-errors", Arg.Unit (fun () -> parser := COROUTINE_ERRORS), "");
       ( "--decl-mode",
         Arg.Unit
           (fun () ->
@@ -414,41 +398,8 @@ let parse_args () =
     ignore_lid = !ignore_lid;
   }
 
-module MinimalTest = Runner (WithSyntax (MinimalSyntax))
 module PositionedTest_ = WithSyntax (PositionedSyntax)
 module PositionedTest = Runner (PositionedTest_)
-module CoroutineTest__ = WithSyntax (PositionedSyntax)
-module CoroutineSC = Coroutine_smart_constructor.WithSyntax (PositionedSyntax)
-module CoroutineTest_ = CoroutineTest__.WithSmartConstructors (CoroutineSC)
-module CoroutineTest = Runner (CoroutineTest_)
-
-module CoroutineErrorsTest_ = CoroutineTest_.WithTreeBuilder (struct
-  module ParserErrors_ =
-    Full_fidelity_parser_errors.WithSyntax (PositionedSyntax)
-  module ParserErrors = ParserErrors_.WithSmartConstructors (CoroutineSC)
-
-  type t = CoroutineTest_.SyntaxTree.t
-
-  let make ~env source_text =
-    (* We only care about errors here *)
-    let fake_root = PositionedSyntax.make_missing source_text 0 in
-    (* TODO:
-      - make parser_options configurable and use them
-      - make the arguments to ParserErrors.make_env configurable and use them
-    *)
-    let parser_options = ParserOptions.default in
-    let tree = CoroutineTest_.SyntaxTree.make ~env source_text in
-    let errors =
-      ParserErrors.(
-        make_env ~parser_options ~codegen:false tree |> parse_errors)
-    in
-    CoroutineTest_.SyntaxTree.build source_text fake_root None errors None false
-end)
-
-module CoroutineErrorsTest = Runner (CoroutineErrorsTest_)
-module DeclModeTest_ = WithSyntax (PositionedSyntax)
-module DeclModeSC = DeclModeSmartConstructors.WithSyntax (PositionedSyntax)
-module DeclModeTest = Runner (DeclModeTest_.WithSmartConstructors (DeclModeSC))
 module EditablePositionedSyntaxSC =
   SyntaxSmartConstructors.WithSyntax (EditablePositionedSyntax)
 
@@ -467,7 +418,7 @@ module LowererTest_ = struct
   let print_lid ~skip_lid fmt lid =
     Format.pp_print_string
       fmt
-      ( if skip_lid then
+      (if skip_lid then
         let name = Local_id.get_name lid in
         let name =
           if Naming_special_names.SpecialIdents.is_tmp_var name then
@@ -477,8 +428,7 @@ module LowererTest_ = struct
         in
         Format.asprintf "([id], %s)" name
       else
-        Format.asprintf "(%d, %s)" (Local_id.to_int lid) (Local_id.get_name lid)
-      )
+        Format.asprintf "(%d, %s)" (Local_id.to_int lid) (Local_id.get_name lid))
 
   let print_pos pos = Format.asprintf "(%a)" Pos.pp pos
 
@@ -535,11 +485,10 @@ module LowererTest_ = struct
         ~show_all_errors:true
         ~keep_errors:true
         ~elaborate_namespaces:true
-        ~lower_coroutines:false
         ~parser_options:popt
     in
-    try Tree (lower lower_env source_text)
-    with e -> Crash (Caml.Printexc.to_string e)
+    try Tree (lower lower_env source_text) with
+    | e -> Crash (Caml.Printexc.to_string e)
 
   let test args ~ocaml_env ~rust_env file contents =
     let source_text = SourceText.make file contents in
@@ -582,10 +531,10 @@ module LowererTest_ = struct
             Printf.printf
               ":%s_%sEQUAL: "
               s
-              ( if r then
+              (if r then
                 ""
               else
-                "NOT_" )
+                "NOT_")
           in
           Printf.printf ":NOT_EQUAL: ";
           print "Tree" tree;
@@ -654,7 +603,7 @@ let () =
       ~hhvm_compat_mode:args.hhvm_compat_mode
       ~php5_compat_mode:args.php5_compat_mode
       ~codegen:args.codegen
-      ~leak_rust_tree:(args.parser = COROUTINE_ERRORS)
+      ~leak_rust_tree:false
   in
   let ocaml_env = make_env ~rust:false () in
   let rust_env = make_env ~rust:true () in
@@ -662,10 +611,6 @@ let () =
     match args.parser with
     | MINIMAL -> MinimalTest.test_batch args ~ocaml_env ~rust_env
     | POSITIONED -> PositionedTest.test_batch args ~ocaml_env ~rust_env
-    | COROUTINE -> CoroutineTest.test_batch args ~ocaml_env ~rust_env
-    | COROUTINE_ERRORS ->
-      CoroutineErrorsTest.test_batch args ~ocaml_env ~rust_env
-    | DECL_MODE -> DeclModeTest.test_batch args ~ocaml_env ~rust_env
     | LOWERER -> LowererTest.test_batch args ~ocaml_env ~rust_env
   in
   let (user, runs, _mem) =

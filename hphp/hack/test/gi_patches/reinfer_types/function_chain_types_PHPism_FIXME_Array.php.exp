@@ -7,14 +7,14 @@
 //// function_chain_types_PHPism_FIXME_Array.php--file2.php
 <?hh // partial
 
-function fa(<<__Soft>> varray_or_darray<int, string> $x) : <<__Soft>> varray_or_darray<int, string> {
+function fa(<<__Soft>> vec_or_dict<int, string> $x) : <<__Soft>> vec_or_dict<int, string> {
   return $x;
 }
 
 //// function_chain_types_PHPism_FIXME_Array.php--file3.php
 <?hh // partial
 
-function fb(): <<__Soft>> varray_or_darray<int, string> {
+function fb(): <<__Soft>> vec_or_dict<int, string> {
   return darray[4 => "why type?"];
 }
 

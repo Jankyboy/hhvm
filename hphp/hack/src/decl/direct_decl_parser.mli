@@ -6,12 +6,15 @@
  *
  *)
 
-type decls = {
-  classes: Shallow_decl_defs.shallow_class SMap.t;
-  funs: Typing_defs.fun_elt SMap.t;
-  typedefs: Typing_defs.typedef_type SMap.t;
-  consts: Typing_defs.decl_ty SMap.t;
-}
-[@@deriving show]
+type decls = (string * Shallow_decl_defs.decl) list [@@deriving show]
 
-val parse_decls : ?contents:string -> Relative_path.t -> decls
+val parse_decls_ffi : DeclParserOptions.t -> Relative_path.t -> string -> decls
+
+val decls_hash : decls -> Int64.t
+
+val parse_decls_and_mode_ffi :
+  DeclParserOptions.t ->
+  Relative_path.t ->
+  string ->
+  bool ->
+  decls * FileInfo.mode option * Int64.t option

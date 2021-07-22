@@ -7,7 +7,7 @@
  *
  *)
 
-open Hh_core
+open Hh_prelude
 
 (*****************************************************************************)
 (* The file extensions we are interested in *)
@@ -35,20 +35,20 @@ let extensions =
 
 let is_dot_file path =
   let filename = Filename.basename path in
-  String.length filename > 0 && filename.[0] = '.'
+  String.length filename > 0 && Char.equal filename.[0] '.'
 
 let is_hack path =
   (not (is_dot_file path))
-  && List.exists extensions (Filename.check_suffix path)
+  && List.exists extensions ~f:(Filename.check_suffix path)
 
 (* Returns whether one of the ancestral directories of path has the given
  * name. *)
 let rec has_ancestor path ancestor_name =
   let dirname = Filename.dirname path in
-  if dirname = path then
+  if String.equal dirname path then
     (* Terminal condition *)
     false
-  else if Filename.basename dirname = ancestor_name then
+  else if String.equal (Filename.basename dirname) ancestor_name then
     true
   else
     has_ancestor dirname ancestor_name

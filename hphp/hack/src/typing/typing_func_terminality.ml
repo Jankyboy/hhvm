@@ -45,8 +45,6 @@ let funopt_is_noreturn = function
   | Some { ft_ret = { et_type; _ }; _ } -> is_prim Tnoreturn et_type
   | _ -> false
 
-let raise_exit_if_terminal f = if funopt_is_noreturn f then raise Exit
-
 let static_meth_is_noreturn env ci meth_id =
   let class_name =
     match ci with
@@ -65,21 +63,13 @@ let static_meth_is_noreturn env ci meth_id =
       (get_static_meth (Typing_env.get_ctx env) class_name (snd meth_id))
   | None -> false
 
-let typed_expression_exits ((_, ty), e) =
-  match e with
-  | Assert (AE_assert (_, False))
-  | Yield_break ->
-    true
-  | _ -> is_type_no_return (get_node ty)
+let typed_expression_exits (ty, _, _e) = is_type_no_return (get_node ty)
 
-let expression_exits env (_, e) =
+let expression_exits env (_, _, e) =
   match e with
-  | Assert (AE_assert (_, False))
-  | Yield_break ->
-    true
-  | Call ((_, Id (_, fun_name)), _, _, _) ->
+  | Call ((_, _, Id (_, fun_name)), _, _, _) ->
     funopt_is_noreturn @@ get_fun (Typing_env.get_ctx env) fun_name
-  | Call ((_, Class_const ((_, ci), meth_id)), _, _, _) ->
+  | Call ((_, _, Class_const ((_, _, ci), meth_id)), _, _, _) ->
     static_meth_is_noreturn env ci meth_id
   | _ -> false
 

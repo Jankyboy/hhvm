@@ -55,37 +55,41 @@ let get_member_def (ctx : Provider_context.t) (x : class_element) =
   | Constructor
   | Method
   | Static_method ->
-    List.find c.c_methods (fun m -> String.equal (snd m.m_name) member_name)
+    List.find c.c_methods ~f:(fun m -> String.equal (snd m.m_name) member_name)
     >>= fun m -> Some (FileOutline.summarize_method member_origin m)
   | Property
   | Static_property ->
-    let props = c.c_vars @ List.map c.c_xhp_attrs (fun (_, var, _, _) -> var) in
+    let props =
+      c.c_vars @ List.map c.c_xhp_attrs ~f:(fun (_, var, _, _) -> var)
+    in
     let get_prop_name { cv_id; _ } = snd cv_id in
-    List.find props (fun p -> String.equal (get_prop_name p) member_name)
+    List.find props ~f:(fun p -> String.equal (get_prop_name p) member_name)
     >>= fun p -> Some (FileOutline.summarize_property member_origin p)
   | Class_const ->
     let (consts, abs_consts) =
-      List.partition_map c.c_consts (fun cc ->
-          if Option.is_some cc.cc_expr then
-            `Fst cc
-          else
-            `Snd cc)
+      List.partition_map c.c_consts ~f:(fun cc ->
+          match cc.cc_kind with
+          | CCConcrete _
+          | CCAbstract (Some _) ->
+            First cc
+          | CCAbstract None -> Second cc)
     in
     let name_matches cc = String.equal (snd cc.cc_id) member_name in
     let res =
       Option.first_some
-        (List.find consts name_matches)
-        (List.find abs_consts name_matches)
+        (List.find consts ~f:name_matches)
+        (List.find abs_consts ~f:name_matches)
     in
     Option.map ~f:(FileOutline.summarize_const member_origin) res
   | Typeconst ->
     let tconsts = c.c_typeconsts in
-    List.find tconsts (fun t -> String.equal (snd t.c_tconst_name) member_name)
+    List.find tconsts ~f:(fun t ->
+        String.equal (snd t.c_tconst_name) member_name)
     >>= fun t -> Some (FileOutline.summarize_typeconst member_origin t)
 
 let get_local_var_def ast name p =
   let (line, char, _) = Pos.info_pos p in
-  let def = List.hd (ServerFindLocals.go_from_ast ast line char) in
+  let def = List.hd (ServerFindLocals.go_from_ast ~ast ~line ~char) in
   Option.map def ~f:(FileOutline.summarize_local name)
 
 (* summarize a class, typedef or record *)
@@ -112,14 +116,16 @@ let go ctx ast result =
       |> List.filter_map ~f:(Decl_provider.get_class ctx)
       (* Find all inherited methods with the same name. *)
       |> List.filter_map ~f:(fun cls ->
-             ( if is_static then
+             (if is_static then
                Cls.get_smethod
              else
-               Cls.get_method )
+               Cls.get_method)
                cls
                method_name)
-      (* Take the earliest method in the linearization, if any. *)
-      |> List.rev
+      (* It'd be nice to take the "earliest" method in the linearization,
+         whatever that is. But alas order of all_ancestor_names isn't
+         specified (in practice is alphabetical). So we'll just pick an
+         arbitrary one. *)
       |> List.hd
     in
     (match matching_method with
@@ -143,7 +149,8 @@ let go ctx ast result =
         Cls.get_smethod class_ method_name >>= fun m ->
         get_member_def ctx (Static_method, m.ce_origin, method_name)
     )
-  | SymbolOccurrence.Property (c_name, property_name) ->
+  | SymbolOccurrence.Property (c_name, property_name)
+  | SymbolOccurrence.XhpLiteralAttr (c_name, property_name) ->
     Decl_provider.get_class ctx c_name >>= fun class_ ->
     let property_name = clean_member_name property_name in
     begin
@@ -163,7 +170,7 @@ let go ctx ast result =
   | SymbolOccurrence.GConst ->
     get_gconst_by_name ctx result.SymbolOccurrence.name >>= fun cst ->
     Some (FileOutline.summarize_gconst cst)
-  | SymbolOccurrence.Class ->
+  | SymbolOccurrence.Class _ ->
     summarize_class_typedef ctx result.SymbolOccurrence.name
   | SymbolOccurrence.Record ->
     summarize_class_typedef ctx result.SymbolOccurrence.name
@@ -182,15 +189,17 @@ let go ctx ast result =
           result.SymbolOccurrence.pos
     end
   | SymbolOccurrence.Attribute _ -> None
+  | SymbolOccurrence.EnumClassLabel (class_name, _member_name) ->
+    summarize_class_typedef ctx class_name
 
 let get_definition_cst_node_from_pos ctx entry kind pos =
   try
-    let source_text = Ast_provider.compute_source_text entry in
+    let source_text = Ast_provider.compute_source_text ~entry in
     let tree =
       if Ide_parser_cache.is_enabled () then
         Ide_parser_cache.(with_ide_cache @@ fun () -> get_cst source_text)
       else
-        Ast_provider.compute_cst ctx entry
+        Ast_provider.compute_cst ~ctx ~entry
     in
     let (line, start, _) = Pos.info_pos pos in
     let offset = SourceText.position_to_offset source_text (line, start) in
@@ -201,9 +210,11 @@ let get_definition_cst_node_from_pos ctx entry kind pos =
         | (SymbolDefinition.Class, SyntaxKind.ClassishDeclaration)
         | (SymbolDefinition.Method, SyntaxKind.MethodishDeclaration)
         | (SymbolDefinition.Property, SyntaxKind.PropertyDeclaration)
+        | (SymbolDefinition.Property, SyntaxKind.XHPClassAttribute)
         | (SymbolDefinition.RecordDef, SyntaxKind.RecordDeclaration)
         | (SymbolDefinition.Const, SyntaxKind.ConstDeclaration)
         | (SymbolDefinition.Enum, SyntaxKind.EnumDeclaration)
+        | (SymbolDefinition.Enum, SyntaxKind.EnumClassDeclaration)
         | (SymbolDefinition.Interface, SyntaxKind.ClassishDeclaration)
         | (SymbolDefinition.Trait, SyntaxKind.ClassishDeclaration)
         | (SymbolDefinition.LocalVar, SyntaxKind.VariableExpression)
@@ -212,7 +223,8 @@ let get_definition_cst_node_from_pos ctx entry kind pos =
         | (SymbolDefinition.Typedef, SyntaxKind.SimpleTypeSpecifier) ->
           true
         | _ -> false)
-  with _ -> None
+  with
+  | _ -> None
 
 let get_definition_cst_node_ctx
     ~(ctx : Provider_context.t)

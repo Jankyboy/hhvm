@@ -12,6 +12,7 @@
   * Usage: hh_parse [OPTIONS] [FILES]
   *
   * --full-fidelity-json
+  * --full-fidelity-json-parse-tree
   * --full-fidelity-errors
   * --full-fidelity-errors-all
   * --full-fidelity-ast-s-expression
@@ -35,6 +36,7 @@ module ParserErrors =
 module FullFidelityParseArgs = struct
   type t = {
     (* Output options *)
+    full_fidelity_json_parse_tree: bool;
     full_fidelity_json: bool;
     full_fidelity_text_json: bool;
     full_fidelity_dot: bool;
@@ -45,6 +47,7 @@ module FullFidelityParseArgs = struct
     program_text: bool;
     pretty_print: bool;
     pretty_print_json: bool;
+    generate_hhi: bool;
     schema: bool;
     show_file_name: bool;
     (* Configuring the parser *)
@@ -54,7 +57,6 @@ module FullFidelityParseArgs = struct
     include_line_comments: bool;
     keep_errors: bool;
     quick_mode: bool;
-    lower_coroutines: bool;
     fail_open: bool;
     (* Defining the input *)
     files: string list;
@@ -70,13 +72,17 @@ module FullFidelityParseArgs = struct
     disallow_func_ptrs_in_constants: bool;
     error_php_lambdas: bool;
     disallow_discarded_nullable_awaitables: bool;
-    enable_first_class_function_pointers: bool;
     disable_xhp_element_mangling: bool;
     allow_unstable_features: bool;
     enable_xhp_class_modifier: bool;
+    disallow_hash_comments: bool;
+    disallow_fun_and_cls_meth_pseudo_funcs: bool;
+    disallow_inst_meth: bool;
+    ignore_missing_json: bool;
   }
 
   let make
+      full_fidelity_json_parse_tree
       full_fidelity_json
       full_fidelity_text_json
       full_fidelity_dot
@@ -87,6 +93,7 @@ module FullFidelityParseArgs = struct
       program_text
       pretty_print
       pretty_print_json
+      generate_hhi
       schema
       codegen
       php5_compat_mode
@@ -94,7 +101,6 @@ module FullFidelityParseArgs = struct
       include_line_comments
       keep_errors
       quick_mode
-      lower_coroutines
       fail_open
       show_file_name
       files
@@ -110,11 +116,15 @@ module FullFidelityParseArgs = struct
       disallow_func_ptrs_in_constants
       error_php_lambdas
       disallow_discarded_nullable_awaitables
-      enable_first_class_function_pointers
       disable_xhp_element_mangling
       allow_unstable_features
-      enable_xhp_class_modifier =
+      enable_xhp_class_modifier
+      disallow_hash_comments
+      disallow_fun_and_cls_meth_pseudo_funcs
+      disallow_inst_meth
+      ignore_missing_json =
     {
+      full_fidelity_json_parse_tree;
       full_fidelity_json;
       full_fidelity_dot;
       full_fidelity_dot_edges;
@@ -125,6 +135,7 @@ module FullFidelityParseArgs = struct
       program_text;
       pretty_print;
       pretty_print_json;
+      generate_hhi;
       schema;
       codegen;
       php5_compat_mode;
@@ -132,7 +143,6 @@ module FullFidelityParseArgs = struct
       include_line_comments;
       keep_errors;
       quick_mode;
-      lower_coroutines;
       fail_open;
       show_file_name;
       files;
@@ -148,14 +158,21 @@ module FullFidelityParseArgs = struct
       disallow_func_ptrs_in_constants;
       error_php_lambdas;
       disallow_discarded_nullable_awaitables;
-      enable_first_class_function_pointers;
       disable_xhp_element_mangling;
       allow_unstable_features;
       enable_xhp_class_modifier;
+      disallow_hash_comments;
+      disallow_fun_and_cls_meth_pseudo_funcs;
+      disallow_inst_meth;
+      ignore_missing_json;
     }
 
   let parse_args () =
     let usage = Printf.sprintf "Usage: %s [OPTIONS] filename\n" Sys.argv.(0) in
+    let full_fidelity_json_parse_tree = ref false in
+    let set_full_fidelity_json_parse_tree () =
+      full_fidelity_json_parse_tree := true
+    in
     let full_fidelity_json = ref false in
     let set_full_fidelity_json () = full_fidelity_json := true in
     let full_fidelity_text_json = ref false in
@@ -176,6 +193,8 @@ module FullFidelityParseArgs = struct
     let set_pretty_print () = pretty_print := true in
     let pretty_print_json = ref false in
     let set_pretty_print_json () = pretty_print_json := true in
+    let generate_hhi = ref false in
+    let set_generate_hhi () = generate_hhi := true in
     let schema = ref false in
     let set_schema () = schema := true in
     let codegen = ref false in
@@ -184,7 +203,6 @@ module FullFidelityParseArgs = struct
     let include_line_comments = ref false in
     let keep_errors = ref true in
     let quick_mode = ref false in
-    let lower_coroutines = ref true in
     let enable_hh_syntax = ref false in
     let fail_open = ref true in
     let show_file_name = ref false in
@@ -203,19 +221,26 @@ module FullFidelityParseArgs = struct
     let disallow_func_ptrs_in_constants = ref false in
     let error_php_lambdas = ref false in
     let disallow_discarded_nullable_awaitables = ref false in
-    let enable_first_class_function_pointers = ref false in
     let disable_xhp_element_mangling = ref false in
     let allow_unstable_features = ref false in
     let enable_xhp_class_modifier = ref false in
+    let disallow_hash_comments = ref false in
+    let disallow_fun_and_cls_meth_pseudo_funcs = ref false in
+    let disallow_inst_meth = ref false in
+    let ignore_missing_json = ref false in
     let options =
       [
         (* modes *)
+        ( "--full-fidelity-json-parse-tree",
+          Arg.Unit set_full_fidelity_json_parse_tree,
+          "Displays the full-fidelity parse tree in JSON format." );
         ( "--full-fidelity-json",
           Arg.Unit set_full_fidelity_json,
-          "Displays the full-fidelity parse tree in JSON format." );
+          "Displays the source text, FFP schema version, and parse tree in JSON format."
+        );
         ( "--full-fidelity-text-json",
           Arg.Unit set_full_fidelity_text_json,
-          "Displays the full-fidelity parse tree in JSON format with token text."
+          "Displays the source text, FFP schema version, and parse tree (with trivia) in JSON format."
         );
         ( "--full-fidelity-dot",
           Arg.Unit set_full_fidelity_dot,
@@ -240,6 +265,9 @@ No errors are filtered out."
         ( "--program-text",
           Arg.Unit set_program_text,
           "Displays the text of the given file." );
+        ( "--generate-hhi",
+          Arg.Unit set_generate_hhi,
+          "Generate and display a .hhi file for the given input file." );
         ( "--pretty-print",
           Arg.Unit set_pretty_print,
           "Displays the text of the given file after pretty-printing." );
@@ -283,12 +311,6 @@ No errors are filtered out."
         ( "--no-quick-mode",
           Arg.Clear quick_mode,
           "Unset the quick_mode option for the parser." );
-        ( "--lower-coroutines",
-          Arg.Set lower_coroutines,
-          "Set the lower_coroutines option for the parser." );
-        ( "--no-lower-coroutines",
-          Arg.Clear lower_coroutines,
-          "Unset the lower_coroutines option for the parser." );
         ( "--fail-open",
           Arg.Set fail_open,
           "Set the fail_open option for the parser." );
@@ -340,8 +362,8 @@ No errors are filtered out."
           Arg.Set disallow_discarded_nullable_awaitables,
           "Error on using discarded nullable awaitables" );
         ( "--enable-first-class-function-pointers",
-          Arg.Set enable_first_class_function_pointers,
-          "Enables parsing of first class function pointers" );
+          Arg.Unit (fun () -> ()),
+          "Deprecated - delete in coordination with HackAST" );
         ( "--enable-xhp-class-modifier",
           Arg.Set enable_xhp_class_modifier,
           "Enables the 'xhp class foo' syntax" );
@@ -352,11 +374,24 @@ No errors are filtered out."
         ( "--allow-unstable-features",
           Arg.Set allow_unstable_features,
           "Enables the __EnableUnstableFeatures attribute" );
+        ( "--disallow-hash-comments",
+          Arg.Set disallow_hash_comments,
+          "Disables hash-style(#) comments (except hashbangs)" );
+        ( "--disallow-fun-and-cls-meth-pseudo-funcs",
+          Arg.Set disallow_fun_and_cls_meth_pseudo_funcs,
+          "Disables parsing of fun() and class_meth()" );
+        ( "--disallow-inst-meth",
+          Arg.Set disallow_inst_meth,
+          "Disabled parsing of inst_meth()" );
+        ( "--ignore-missing-json",
+          Arg.Set ignore_missing_json,
+          "Ignore missing nodes in JSON output" );
       ]
     in
     Arg.parse options push_file usage;
     let modes =
       [
+        !full_fidelity_json_parse_tree;
         !full_fidelity_json;
         !full_fidelity_text_json;
         !full_fidelity_dot;
@@ -372,6 +407,7 @@ No errors are filtered out."
     if not (List.exists (fun x -> x) modes) then
       full_fidelity_errors_all := true;
     make
+      !full_fidelity_json_parse_tree
       !full_fidelity_json
       !full_fidelity_text_json
       !full_fidelity_dot
@@ -382,6 +418,7 @@ No errors are filtered out."
       !program_text
       !pretty_print
       !pretty_print_json
+      !generate_hhi
       !schema
       !codegen
       !php5_compat_mode
@@ -389,7 +426,6 @@ No errors are filtered out."
       !include_line_comments
       !keep_errors
       !quick_mode
-      !lower_coroutines
       !fail_open
       !show_file_name
       (List.rev !files)
@@ -405,10 +441,13 @@ No errors are filtered out."
       !disallow_func_ptrs_in_constants
       !error_php_lambdas
       !disallow_discarded_nullable_awaitables
-      !enable_first_class_function_pointers
       !disable_xhp_element_mangling
       !allow_unstable_features
       !enable_xhp_class_modifier
+      !disallow_hash_comments
+      !disallow_fun_and_cls_meth_pseudo_funcs
+      !disallow_inst_meth
+      !ignore_missing_json
 end
 
 open FullFidelityParseArgs
@@ -428,8 +467,12 @@ let print_ast_check_errors errors =
     (fun e ->
       let text = Errors.to_string (Errors.to_absolute e) in
       if
-        Core_kernel.String.is_substring text SyntaxError.this_in_static
-        || Core_kernel.String.is_substring text SyntaxError.toplevel_await_use
+        Core_kernel.String.is_substring
+          text
+          ~substring:SyntaxError.this_in_static
+        || Core_kernel.String.is_substring
+             text
+             ~substring:SyntaxError.toplevel_await_use
       then
         Printf.eprintf "%s\n%!" text)
     error_list
@@ -484,11 +527,6 @@ let handle_existing_file args filename =
       args.disallow_func_ptrs_in_constants
   in
   let popt =
-    ParserOptions.with_enable_first_class_function_pointers
-      popt
-      args.enable_first_class_function_pointers
-  in
-  let popt =
     ParserOptions.with_disable_xhp_element_mangling
       popt
       args.disable_xhp_element_mangling
@@ -500,6 +538,17 @@ let handle_existing_file args filename =
     ParserOptions.with_enable_xhp_class_modifier
       popt
       args.enable_xhp_class_modifier
+  in
+  let popt =
+    ParserOptions.with_disallow_hash_comments popt args.disallow_hash_comments
+  in
+  let popt =
+    ParserOptions.with_disallow_fun_and_cls_meth_pseudo_funcs
+      popt
+      args.disallow_fun_and_cls_meth_pseudo_funcs
+  in
+  let popt =
+    ParserOptions.with_disallow_inst_meth popt args.disallow_inst_meth
   in
   (* Parse with the full fidelity parser *)
   let file = Relative_path.create Relative_path.Dummy filename in
@@ -518,20 +567,27 @@ let handle_existing_file args filename =
         (* When print_errors is true, the leaked tree will be passed to ParserErrors,
          * which will consume it. *)
       ~leak_rust_tree:print_errors
+      ~disallow_hash_comments:args.disallow_hash_comments
+      ~disallow_fun_and_cls_meth_pseudo_funcs:
+        args.disallow_fun_and_cls_meth_pseudo_funcs
+      ~disallow_inst_meth:args.disallow_inst_meth
       ?mode
       ()
   in
   let syntax_tree = SyntaxTree.make ~env source_text in
   let editable = SyntaxTransforms.editable_from_positioned syntax_tree in
   if args.show_file_name then Printf.printf "%s\n" filename;
-  ( if args.program_text then
+  (if args.program_text then
     let text = Full_fidelity_editable_syntax.text editable in
-    Printf.printf "%s\n" text );
-  ( if args.pretty_print then
+    Printf.printf "%s\n" text);
+  (if args.pretty_print then
     let pretty = Libhackfmt.format_tree syntax_tree in
-    Printf.printf "%s\n" pretty );
+    Printf.printf "%s\n" pretty);
+  (if args.generate_hhi then
+    let hhi = Generate_hhi.go editable in
+    Printf.printf "%s\n" hhi);
 
-  ( if print_errors then
+  (if print_errors then
     let level =
       if args.full_fidelity_errors_all then
         ParserErrors.Maximum
@@ -553,7 +609,7 @@ let handle_existing_file args filename =
         ~parser_options:popt
     in
     let errors = ParserErrors.parse_errors error_env in
-    List.iter (print_full_fidelity_error source_text) errors );
+    List.iter (print_full_fidelity_error source_text) errors);
   begin
     let dump_needed = args.full_fidelity_ast_s_expr in
     let lowered =
@@ -566,7 +622,6 @@ let handle_existing_file args filename =
             ~include_line_comments:args.include_line_comments
             ~keep_errors:(args.keep_errors || print_errors)
             ~quick_mode:args.quick_mode
-            ~lower_coroutines:args.lower_coroutines
             ~parser_options:popt
             ~fail_open:args.fail_open
             file
@@ -577,7 +632,8 @@ let handle_existing_file args filename =
           in
           if print_errors then print_ast_check_errors errors;
           Some res
-        with _ when print_errors -> None
+        with
+        | _ when print_errors -> None
       else
         None
     in
@@ -589,17 +645,27 @@ let handle_existing_file args filename =
         Printf.printf "%s\n" str
     | None -> ()
   end;
-  ( if args.full_fidelity_json then
-    let json = SyntaxTree.to_json syntax_tree in
+  (if args.full_fidelity_json_parse_tree then
+    let json =
+      SyntaxTree.parse_tree_to_json
+        ~ignore_missing:args.ignore_missing_json
+        syntax_tree
+    in
     let str = Hh_json.json_to_string json ~pretty:args.pretty_print_json in
-    Printf.printf "%s\n" str );
-  ( if args.full_fidelity_text_json then
+    Printf.printf "%s\n" str);
+  (if args.full_fidelity_json then
+    let json =
+      SyntaxTree.to_json ~ignore_missing:args.ignore_missing_json syntax_tree
+    in
+    let str = Hh_json.json_to_string json ~pretty:args.pretty_print_json in
+    Printf.printf "%s\n" str);
+  (if args.full_fidelity_text_json then
     let json = Full_fidelity_editable_syntax.to_json editable in
     let str = Hh_json.json_to_string json in
-    Printf.printf "%s\n" str );
-  ( if args.full_fidelity_dot then
+    Printf.printf "%s\n" str);
+  (if args.full_fidelity_dot then
     let dot = Full_fidelity_editable_syntax.to_dot editable false in
-    Printf.printf "%s\n" dot );
+    Printf.printf "%s\n" dot);
   if args.full_fidelity_dot_edges then
     let dot = Full_fidelity_editable_syntax.to_dot editable true in
     Printf.printf "%s\n" dot
@@ -611,9 +677,9 @@ let handle_file args filename =
     Printf.printf "File %s does not exist.\n" filename
 
 let rec main args files =
-  ( if args.schema then
+  (if args.schema then
     let schema = Schema.schema_as_json () in
-    Printf.printf "%s\n" schema );
+    Printf.printf "%s\n" schema);
   match files with
   | [] -> ()
   | file :: tail ->

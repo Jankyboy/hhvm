@@ -14,14 +14,12 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VM_MEMBER_KEY_H_
-#define incl_HPHP_VM_MEMBER_KEY_H_
+#pragma once
 
 #include "hphp/runtime/base/types.h"
 
 #include "hphp/util/hash.h"
-
-#include <folly/Optional.h>
+#include "hphp/util/optional.h"
 
 #include <cstdint>
 #include <string>
@@ -59,6 +57,18 @@ enum MemberCode : uint8_t {
 
 constexpr size_t NumMemberCodes = MW + 1;
 
+#define READONLY_OPS    \
+  OP(Any)               \
+  OP(ReadOnly)          \
+  OP(Mutable)           \
+  OP(CheckROCOW)
+
+enum class ReadOnlyOp : uint8_t {
+#define OP(name) name,
+  READONLY_OPS
+#undef OP
+};
+
 /*
  * Returns string representation of `mc'. Pointer to internal static data, does
  * not need to be freed.
@@ -66,9 +76,9 @@ constexpr size_t NumMemberCodes = MW + 1;
 const char* memberCodeString(MemberCode mc);
 
 /*
- * Try to parse the input as a MemberCode, returning folly::none on failure.
+ * Try to parse the input as a MemberCode, returning std::nullopt on failure.
  */
-folly::Optional<MemberCode> parseMemberCode(const char*);
+Optional<MemberCode> parseMemberCode(const char*);
 
 constexpr bool mcodeIsProp(MemberCode mcode) {
   return mcode == MPC || mcode == MPL || mcode == MPT || mcode == MQT;
@@ -85,30 +95,36 @@ constexpr bool mcodeIsElem(MemberCode mcode) {
 struct MemberKey {
   MemberKey()
     : mcode{MW}
+    , rop{ReadOnlyOp::Any}
     , int64{0}
   {}
 
-  MemberKey(MemberCode mcode, NamedLocal loc)
+  MemberKey(MemberCode mcode, NamedLocal loc, ReadOnlyOp rop)
     : mcode{mcode}
+    , rop{rop}
     , local{loc}
   {}
 
-  MemberKey(MemberCode mcode, int32_t iva)
+  MemberKey(MemberCode mcode, int32_t iva, ReadOnlyOp rop)
     : mcode{mcode}
+    , rop{rop}
     , iva{iva}
   {}
 
-  MemberKey(MemberCode mcode, int64_t int64)
+  MemberKey(MemberCode mcode, int64_t int64, ReadOnlyOp rop)
     : mcode{mcode}
+    , rop{rop}
     , int64{int64}
   {}
 
-  MemberKey(MemberCode mcode, const StringData* litstr)
+  MemberKey(MemberCode mcode, const StringData* litstr, ReadOnlyOp rop)
     : mcode{mcode}
+    , rop{rop}
     , litstr{litstr}
   {}
 
   MemberCode mcode;
+  ReadOnlyOp rop;
   union {
     NamedLocal local;
     int32_t iva;
@@ -118,7 +134,7 @@ struct MemberKey {
 };
 
 inline bool operator==(MemberKey a, MemberKey b) {
-  return a.mcode == b.mcode && a.int64 == b.int64;
+  return a.mcode == b.mcode && a.int64 == b.int64 && a.rop == b.rop;
 }
 inline bool operator!=(MemberKey a, MemberKey b) {
   return !(a == b);
@@ -127,5 +143,3 @@ inline bool operator!=(MemberKey a, MemberKey b) {
 std::string show(MemberKey);
 
 }
-
-#endif

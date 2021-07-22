@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VM_INDEXED_STRING_MAP_H_
-#define incl_HPHP_VM_INDEXED_STRING_MAP_H_
+#pragma once
 
 #include "hphp/runtime/base/string-data.h"
 #include "hphp/runtime/vm/fixed-string-map.h"
@@ -36,7 +35,6 @@ namespace HPHP {
  * (since we use a FixedStringMap internally).
  */
 template<class T,
-         bool CaseSensitive,
          class Index,
          Index InvalidIndex = Index(-1)>
 struct IndexedStringMap {
@@ -74,11 +72,7 @@ struct IndexedStringMap {
     }
 
     std::copy(b.m_list.begin(), b.m_list.end(), mutableAccessList());
-    for (typename Builder::const_iterator it = b.begin();
-        it != b.end();
-        ++it) {
-      m_map.add(it->first, it->second);
-    }
+    m_map.addFrom(b.begin(), b.end());
   }
 
   const T* accessList() const {
@@ -122,21 +116,21 @@ struct IndexedStringMap {
 
   static constexpr ptrdiff_t vecOff() {
     return offsetof(IndexedStringMap, m_map) +
-      FixedStringMap<Index,CaseSensitive,Index>::tableOff();
+      FixedStringMap<Index,Index>::tableOff();
   }
   static constexpr ptrdiff_t sizeOff() {
     return offsetof(IndexedStringMap, m_map) +
-      FixedStringMap<Index,CaseSensitive,Index>::sizeOff();
+      FixedStringMap<Index,Index>::sizeOff();
   }
   static constexpr size_t sizeSize() {
-    return FixedStringMap<Index,CaseSensitive,Index>::sizeSize();
+    return FixedStringMap<Index,Index>::sizeSize();
   }
 
 private:
   uint32_t byteSize() const { return size() * sizeof(T); }
   void setSize(Index size) { m_map.extra() = size; }
 
-  FixedStringMap<Index,CaseSensitive,Index> m_map;
+  FixedStringMap<Index,Index> m_map;
 };
 
 //////////////////////////////////////////////////////////////////////
@@ -145,20 +139,14 @@ private:
  * Builder object for creating IndexedStringMaps.  Fill one of these
  * up, and then pass it to IndexedStringMap::create.
  */
-template<class T, bool CaseSensitive, class Index, Index InvalidIndex>
-struct IndexedStringMap<T,CaseSensitive,Index,InvalidIndex>::Builder {
+template<class T, class Index, Index InvalidIndex>
+struct IndexedStringMap<T,Index,InvalidIndex>::Builder {
 private:
-  using EqObject = typename std::conditional<
-    CaseSensitive,
-    string_data_same,
-    string_data_isame
-  >::type;
-
   using Map = hphp_hash_map<
     const StringData*,
     Index,
     string_data_hash,
-    EqObject
+    string_data_same
   >;
 
 public:
@@ -262,4 +250,3 @@ private:
 
 }
 
-#endif

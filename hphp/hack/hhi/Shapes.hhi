@@ -1,4 +1,6 @@
 <?hh
+<<file:__EnableUnstableFeatures('readonly')>>
+
 /**
  * Copyright (c) 2014, Facebook, Inc.
  * All rights reserved.
@@ -31,53 +33,47 @@ abstract final class Shapes {
  *   ...
  * )
  */
-  <<__Pure>>
   public static function idx(
     ?shape(...) $shape,
     arraykey $index,
     $default = null,
-  );
+  )[];
 
   /**
    * Check if a field in shape exists.
    * Similar to array_key_exists, but for shapes.
    */
-  <<__Pure>>
   public static function keyExists(
-    shape(...) $shape,
+    readonly shape(...) $shape,
     arraykey $index
-  ): bool;
+  )[]: bool;
 
   /**
    * Removes the $index field from the $shape (passed in as an inout argument).
    * As with all inout arguments, it can only be used with local variables.
    */
-  <<__Pure>>
   public static function removeKey<T as shape(...)>(
     inout T $shape,
     arraykey $index
-  ): void;
+  )[]: void;
 
-  <<__Pure>>
   public static function toArray(
     shape(...) $shape
-  ): darray<arraykey, mixed>;
+  )[]: darray<arraykey, mixed>;
 
-  <<__Pure>>
   public static function toDict(
     shape(...) $shape
-  ): dict<arraykey, mixed>;
+  )[]: dict<arraykey, mixed>;
 
   /**
    * Returns the value of the field $index of $shape,
    * throws if the field is missing.
    * Use this to access optional fields on shapes.
    */
-  <<__Pure>>
   public static function at(
     shape(...) $shape,
     arraykey $index,
-  );
+  )[];
 
 }
 

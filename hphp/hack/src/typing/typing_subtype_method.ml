@@ -20,24 +20,15 @@ module MakeType = Typing_make_type
 (* Helper method for subtype_method_decl. See below *)
 let subtype_method
     ~(check_return : bool)
-    ~(extra_info : reactivity_extra_info)
     (env : env)
     (r_sub : Reason.t)
     (ft_sub : locl_fun_type)
     (r_super : Reason.t)
     (ft_super : locl_fun_type)
-    (on_error : Errors.typing_error_callback) : env =
+    (on_error : Errors.error_from_reasons_callback) : env =
   (* This is (1) and (2) below *)
   let env =
-    subtype_funs
-      ~on_error
-      ~check_return
-      ~extra_info
-      r_sub
-      ft_sub
-      r_super
-      ft_super
-      env
+    subtype_funs ~on_error ~check_return r_sub ft_sub r_super ft_super env
   in
   (* This is (3) below *)
   let check_tparams_constraints env tparams =
@@ -47,7 +38,7 @@ let subtype_method
           (* TODO(T70068435) Revisit this when implementing bounds on HK generic vars.
              For now it's safe to produce a Tgeneric with empty args here, because
              if [name] were higher-kinded, then the constraints must be empty. *)
-          let tgeneric = MakeType.generic (Reason.Rwitness p) name in
+          let tgeneric = MakeType.generic (Reason.Rwitness_from_decl p) name in
           Typing_generic_constraint.check_constraint
             env
             ck
@@ -134,16 +125,15 @@ let subtype_method
  *)
 let subtype_method_decl
     ~(check_return : bool)
-    ~(extra_info : reactivity_extra_info)
     (env : env)
     (r_sub : Reason.t)
     (ft_sub : decl_fun_type)
     (r_super : Reason.t)
     (ft_super : decl_fun_type)
-    (on_error : Errors.typing_error_callback) : env =
+    (on_error : Errors.error_from_reasons_callback) : env =
   let p_sub = Reason.to_pos r_sub in
   let p_super = Reason.to_pos r_super in
-  let ety_env = Phase.env_with_self env ~quiet:true in
+  let ety_env = empty_expand_env in
   (* We check constraint entailment and contravariant parameter/covariant result
    * subtyping in the context of the ft_super constraints. But we'd better
    * restore tpenv afterwards *)
@@ -153,7 +143,7 @@ let subtype_method_decl
    * with their bounds
    *)
   let env =
-    Phase.localize_and_add_generic_parameters p_super env ft_super.ft_tparams
+    Phase.localize_and_add_generic_parameters ~ety_env env ft_super.ft_tparams
   in
   (* Localize the function type itself *)
   let (env, locl_ft_sub) =
@@ -164,7 +154,7 @@ let subtype_method_decl
   in
   let add_where_constraints env (cstrl : locl_where_constraint list) =
     List.fold_left cstrl ~init:env ~f:(fun env (ty1, ck, ty2) ->
-        Typing_subtype.add_constraint (Reason.to_pos r_sub) env ck ty1 ty2)
+        Typing_subtype.add_constraint env ck ty1 ty2 on_error)
   in
   (* Now extend the environment with `where` constraints from the supertype *)
   let env = add_where_constraints env locl_ft_super.ft_where_constraints in
@@ -172,7 +162,6 @@ let subtype_method_decl
    * the constraints on the supertype entail the constraints on the subtype *)
   let env =
     subtype_method
-      ~extra_info
       ~check_return
       env
       r_sub

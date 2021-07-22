@@ -95,8 +95,6 @@ Variant SSATmp::variantVal() const {
       return dblVal();
     case KindOfPersistentString:
       return Variant{strVal(), Variant::PersistentStrInit{}};
-    case KindOfPersistentDArray:
-    case KindOfPersistentVArray:
     case KindOfPersistentVec:
     case KindOfPersistentDict:
     case KindOfPersistentKeyset:
@@ -108,15 +106,12 @@ Variant SSATmp::variantVal() const {
     case KindOfFunc:
       return Variant{funcVal()};
     case KindOfClsMeth:
-      if (use_lowptr) return Variant{clsmethVal()};
-      // fallthrough
+      return Variant{clsmethVal()};
     case KindOfRClsMeth:
     case KindOfString:
     case KindOfVec:
     case KindOfDict:
     case KindOfKeyset:
-    case KindOfDArray:
-    case KindOfVArray:
     case KindOfObject:
     case KindOfResource:
     case KindOfRFunc:

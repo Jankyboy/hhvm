@@ -92,7 +92,7 @@ void NamedEntity::setCachedTypeAlias(const TypeAlias& td) {
 const TypeAlias* NamedEntity::getCachedTypeAlias() const {
   return m_cachedTypeAlias.bound() &&
          m_cachedTypeAlias.isInit() &&
-         m_cachedTypeAlias->name
+         m_cachedTypeAlias->name()
     ? m_cachedTypeAlias.get()
     : nullptr;
 }
@@ -159,13 +159,6 @@ void NamedEntity::pushClass(Class* cls) {
 
 void NamedEntity::removeClass(Class* goner) {
   removeImpl(goner, m_clsList);
-}
-
-void NamedEntity::setUniqueFunc(Func* func) {
-  assertx(func && func->isUnique());
-  auto const DEBUG_ONLY old = m_uniqueFunc;
-  assertx(!old || func == old);
-  m_uniqueFunc = func;
 }
 
 namespace {

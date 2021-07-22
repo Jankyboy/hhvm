@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_ASM_INFO_H_
-#define incl_HPHP_JIT_ASM_INFO_H_
+#pragma once
 
 #include "hphp/runtime/vm/jit/block.h"
 #include "hphp/runtime/vm/jit/ir-unit.h"
@@ -103,6 +102,8 @@ struct AsmInfo {
                             AreaIndex area,
                             TCA start,
                             TCA end) {
+    if (inst == nullptr) return;
+
     if (start != end) {
       auto newRange = updateRange(instRangesForArea(area),
                                   inst->id(),
@@ -326,5 +327,3 @@ struct AsmInfo {
 };
 
 }}
-
-#endif

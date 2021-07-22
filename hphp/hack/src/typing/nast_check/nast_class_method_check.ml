@@ -33,19 +33,15 @@ let error_if_clone_has_arguments method_ =
   | _ -> ()
 
 let error_if_abstract_method_is_memoized method_ =
-  match method_.m_name with
-  | (pos, _) when method_.m_abstract && is_memoizable method_.m_user_attributes
-    ->
-    Errors.abstract_method_memoize pos
-  | _ -> ()
+  if method_.m_abstract && is_memoizable method_.m_user_attributes then
+    Errors.abstract_method_memoize (fst method_.m_name)
 
 let handler =
   object
     inherit Nast_visitor.handler_base
 
     method! at_class_ _ class_ =
-      error_if_duplicate_method_names class_.c_methods;
-      ()
+      error_if_duplicate_method_names class_.c_methods
 
     method! at_method_ _ method_ =
       error_if_clone_has_arguments method_;

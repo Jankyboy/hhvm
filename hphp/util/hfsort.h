@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_UTIL_HFSORT_H
-#define incl_HPHP_UTIL_HFSORT_H
+#pragma once
 
 #include <string>
 #include <unordered_set>
@@ -84,6 +83,7 @@ struct TargetGraph {
 
 struct Cluster {
   Cluster(TargetId id, const Target& f);
+  Cluster(const std::vector<TargetId>& ids, const TargetGraph& cg);
 
   std::string toString() const;
   double density() const;
@@ -149,5 +149,3 @@ void TargetGraph::printDot(char* fileName, L getLabel) const {
 }
 
 }}
-
-#endif

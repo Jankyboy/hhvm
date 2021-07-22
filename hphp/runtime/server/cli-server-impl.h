@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_CLI_SERVER_IMPL_H_
-#define incl_HPHP_CLI_SERVER_IMPL_H_
+#pragma once
 
 #include "hphp/util/afdt-util.h"
 #include "hphp/util/exception.h"
@@ -33,8 +32,7 @@ void cli_write(int afdt_fd, Args&&... args) {
   try {
     afdt::sendx(afdt_fd, std::forward<Args>(args)...);
   } catch (const std::runtime_error& ex) {
-    throw Exception("Failed in afdt::sendRaw: %s [%s]",
-                    ex.what(), folly::errnoStr(errno).c_str());
+    throw Exception("Failed in afdt::sendRaw: %s", ex.what());
   }
 }
 
@@ -45,8 +43,7 @@ void cli_read(int afdt_fd, Args&&... args) {
   try {
     afdt::recvx(afdt_fd, std::forward<Args>(args)...);
   } catch (const std::runtime_error& ex) {
-    throw Exception("Failed in afdt::recvRaw: %s [%s]",
-                    ex.what(), folly::errnoStr(errno).c_str());
+    throw Exception("Failed in afdt::recvRaw: %s", ex.what());
   }
 }
 
@@ -54,4 +51,3 @@ int cli_read_fd(int afdt_fd);
 void cli_write_fd(int afdt_fd, int fd);
 
 }
-#endif

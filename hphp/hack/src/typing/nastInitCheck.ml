@@ -79,7 +79,7 @@ let type_does_not_require_init env ty_opt =
   match ty_opt with
   | None -> true
   | Some ty ->
-    let (env, ty) = Typing_phase.localize_with_self env ty in
+    let (env, ty) = Typing_phase.localize_no_subst env ~ignore_errors:true ty in
     let null = Typing_make_type.null Typing_reason.Rnone in
     Typing_subtype.is_sub_type env null ty
     ||
@@ -136,7 +136,7 @@ module Env = struct
 
   let rec make tenv c =
     let ctx = Typing_env.get_ctx tenv in
-    let (_, _, methods) = split_methods c in
+    let (_, _, methods) = split_methods c.c_methods in
     let methods = List.fold_left ~f:method_ ~init:SMap.empty methods in
     let sc = Shallow_decl.class_ ctx c in
 
@@ -144,7 +144,7 @@ module Env = struct
     (let open Shallow_decl_defs in
     let has_own_cstr =
       match sc.sc_constructor with
-      | Some s -> not s.sm_abstract
+      | Some s -> not (sm_abstract s)
       | None -> false
     in
     let (private_props, _) =
@@ -166,7 +166,7 @@ module Env = struct
       if not @@ SMap.is_empty uninit then
         SMap.bindings uninit
         |> List.map ~f:fst
-        |> Errors.constructor_required sc.sc_name);
+        |> Errors.constructor_required c.c_name);
 
     let ( add_init_not_required_props,
           add_trait_props,
@@ -226,116 +226,121 @@ let is_whitelisted = function
 let is_lateinit cv =
   Naming_attributes.mem SN.UserAttributes.uaLateInit cv.cv_user_attributes
 
-let class_prop_pos class_name prop_name ctx : Pos.t =
+let class_prop_pos class_name prop_name ctx : Pos_or_decl.t =
   match Decl_provider.get_class ctx class_name with
-  | None -> Pos.none
+  | None -> Pos_or_decl.none
   | Some decl ->
     (match Decl_provider.Class.get_prop decl prop_name with
-    | None -> Pos.none
+    | None -> Pos_or_decl.none
     | Some elt ->
       let member_origin = elt.Typing_defs.ce_origin in
-      let get_class_by_name ctx x =
-        let open Option.Monad_infix in
-        Naming_provider.get_type_path ctx x >>= fun fn ->
-        Ast_provider.find_class_in_file ctx fn x
-      in
-      (match get_class_by_name ctx member_origin with
-      | None -> Pos.none
-      | Some cls ->
-        let cv =
-          List.find_exn cls.c_vars ~f:(fun cv ->
-              String.equal (snd cv.cv_id) prop_name)
+      if shallow_decl_enabled ctx then
+        match Shallow_classes_provider.get ctx member_origin with
+        | None -> Pos_or_decl.none
+        | Some sc ->
+          let prop =
+            List.find_exn sc.Shallow_decl_defs.sc_props ~f:(fun prop ->
+                String.equal (snd prop.Shallow_decl_defs.sp_name) prop_name)
+          in
+          fst prop.Shallow_decl_defs.sp_name
+      else
+        let get_class_by_name ctx x =
+          let open Option.Monad_infix in
+          Naming_provider.get_type_path ctx x >>= fun fn ->
+          Ast_provider.find_class_in_file ctx fn x
         in
-        fst cv.cv_id))
+        (match get_class_by_name ctx member_origin with
+        | None -> Pos_or_decl.none
+        | Some cls ->
+          let cv =
+            List.find_exn cls.Aast.c_vars ~f:(fun cv ->
+                String.equal (snd cv.Aast.cv_id) prop_name)
+          in
+          Pos_or_decl.of_raw_pos @@ fst cv.Aast.cv_id))
 
 let rec class_ tenv c =
-  if FileInfo.(equal_mode c.c_mode Mdecl) then
-    ()
-  else
-    let () =
-      List.iter c.c_vars ~f:(fun cv ->
-          if cv.cv_is_static then
-            match cv.cv_expr with
-            | Some _ ->
-              if is_lateinit cv then Errors.lateinit_with_default (fst cv.cv_id)
-            | None ->
-              let ty_opt =
-                Option.map
-                  ~f:(Decl_hint.hint tenv.Typing_env_types.decl_env)
-                  (hint_of_type_hint cv.cv_type)
-              in
-              if
-                is_lateinit cv
-                || cv.cv_abstract
-                || type_does_not_require_init tenv ty_opt
-              then
-                ()
-              else
-                Errors.missing_assign (fst cv.cv_id))
-    in
-    let (c_constructor, _, _) = split_methods c in
-    match c_constructor with
-    | _ when Ast_defs.(equal_class_kind c.c_kind Cinterface) -> ()
-    | Some { m_body = { fb_annotation = Nast.NamedWithUnsafeBlocks; _ }; _ } ->
-      ()
-    | _ ->
-      let p =
-        match c_constructor with
-        | Some m -> fst m.m_name
-        | None -> fst c.c_name
-      in
-      let env = Env.make tenv c in
-      let inits = constructor env c_constructor in
-      let check_inits inits =
-        let uninit_props =
-          SMap.filter (fun k _ -> not (SSet.mem k inits)) env.props
-        in
-        if not (SMap.is_empty uninit_props) then
-          if SMap.mem DeferredMembers.parent_init_prop uninit_props then
-            Errors.no_construct_parent p
+  if not FileInfo.(equal_mode c.c_mode Mhhi) then
+    List.iter c.c_vars ~f:(fun cv ->
+        match cv.cv_expr with
+        | Some _ when is_lateinit cv ->
+          Errors.lateinit_with_default (fst cv.cv_id)
+        | None when cv.cv_is_static ->
+          let ty_opt =
+            Option.map
+              ~f:(Decl_hint.hint tenv.Typing_env_types.decl_env)
+              (hint_of_type_hint cv.cv_type)
+          in
+          if
+            is_lateinit cv
+            || cv.cv_abstract
+            || type_does_not_require_init tenv ty_opt
+          then
+            ()
           else
-            let class_uninit_props =
-              SMap.filter
-                (fun prop _ -> not (SSet.mem prop env.init_not_required_props))
-                uninit_props
-            in
-            if not (SMap.is_empty class_uninit_props) then
-              Errors.not_initialized
-                (p, snd c.c_name)
-                ( SMap.bindings class_uninit_props
-                |> List.map ~f:(fun (name, _) ->
-                       let pos =
-                         class_prop_pos
-                           (snd c.c_name)
-                           name
-                           (Typing_env.get_ctx tenv)
-                       in
-                       (pos, name)) )
+            Errors.missing_assign (fst cv.cv_id)
+        | _ -> ());
+  let (c_constructor, _, _) = split_methods c.c_methods in
+  match c_constructor with
+  | _ when Ast_defs.(equal_class_kind c.c_kind Cinterface) -> ()
+  | Some { m_body = { fb_annotation = Nast.NamedWithUnsafeBlocks; _ }; _ } -> ()
+  | _ ->
+    let p =
+      match c_constructor with
+      | Some m -> fst m.m_name
+      | None -> fst c.c_name
+    in
+    let env = Env.make tenv c in
+    let inits = constructor env c_constructor in
+    let check_inits inits =
+      let uninit_props =
+        SMap.filter (fun k _ -> not (SSet.mem k inits)) env.props
       in
-      let check_throws_or_init_all inits =
-        match inits with
-        | S.Top ->
-          (* Constructor always throw, so checking that all properties are
-           * initialized is irrelevant. *)
-          ()
-        | S.Set inits -> check_inits inits
-      in
-      if
-        Ast_defs.(equal_class_kind c.c_kind Ctrait)
-        || Ast_defs.(equal_class_kind c.c_kind Cabstract)
-      then
-        let has_constructor =
-          match c_constructor with
-          | None -> false
-          | Some m when m.m_abstract -> false
-          | Some _ -> true
-        in
-        if has_constructor then
-          check_throws_or_init_all inits
+      if not (SMap.is_empty uninit_props) then
+        if SMap.mem DeferredMembers.parent_init_prop uninit_props then
+          Errors.no_construct_parent p
         else
-          ()
-      else
+          let class_uninit_props =
+            SMap.filter
+              (fun prop _ -> not (SSet.mem prop env.init_not_required_props))
+              uninit_props
+          in
+          if not (SMap.is_empty class_uninit_props) then
+            Errors.not_initialized
+              (p, snd c.c_name)
+              (SMap.bindings class_uninit_props
+              |> List.map ~f:(fun (name, _) ->
+                     let pos =
+                       class_prop_pos
+                         (snd c.c_name)
+                         name
+                         (Typing_env.get_ctx tenv)
+                     in
+                     (pos, name)))
+    in
+    let check_throws_or_init_all inits =
+      match inits with
+      | S.Top ->
+        (* Constructor always throw, so checking that all properties are
+         * initialized is irrelevant. *)
+        ()
+      | S.Set inits -> check_inits inits
+    in
+    if
+      Ast_defs.(equal_class_kind c.c_kind Ctrait)
+      || Ast_defs.(equal_class_kind c.c_kind Cabstract)
+    then
+      let has_constructor =
+        match c_constructor with
+        | None -> false
+        | Some m when m.m_abstract -> false
+        | Some _ -> true
+      in
+      if has_constructor then
         check_throws_or_init_all inits
+      else
+        ()
+    else
+      check_throws_or_init_all inits
 
 (**
  * Returns the set of properties initialized by the constructor.
@@ -373,8 +378,8 @@ and constructor env cstr =
   | None -> S.empty
   | Some cstr ->
     let check_param_initializer e = ignore (expr env S.empty e) in
-    List.iter cstr.m_params (fun p ->
-        Option.iter p.param_expr check_param_initializer);
+    List.iter cstr.m_params ~f:(fun p ->
+        Option.iter p.param_expr ~f:check_param_initializer);
     let b = Nast.assert_named_body cstr.m_body in
     toplevel env S.empty b.fb_ast
 
@@ -382,8 +387,9 @@ and assign _env acc x = S.add x acc
 
 and assign_expr env acc e1 =
   match e1 with
-  | (_, Obj_get ((_, This), (_, Id (_, y)), _)) -> assign env acc y
-  | (_, List el) -> List.fold_left ~f:(assign_expr env) ~init:acc el
+  | (_, _, Obj_get ((_, _, This), (_, _, Id (_, y)), _, false)) ->
+    assign env acc y
+  | (_, _, List el) -> List.fold_left ~f:(assign_expr env) ~init:acc el
   | _ -> acc
 
 and stmt env acc st =
@@ -392,7 +398,8 @@ and stmt env acc st =
   let catch = catch env in
   let case = case env in
   match snd st with
-  | Expr (_, Call ((_, Class_const ((_, CIparent), (_, m))), _, el, _uel))
+  | Expr
+      (_, _, Call ((_, _, Class_const ((_, _, CIparent), (_, m))), _, el, _uel))
     when String.equal m SN.Members.__construct ->
     let acc = List.fold_left ~f:expr ~init:acc el in
     assign env acc DeferredMembers.parent_init_prop
@@ -401,10 +408,7 @@ and stmt env acc st =
       S.Top
     else
       expr acc e
-  | GotoLabel _
-  | Goto _
-  | Break ->
-    acc
+  | Break -> acc
   | Continue -> acc
   | Throw _ -> S.Top
   | Return None ->
@@ -412,6 +416,7 @@ and stmt env acc st =
       acc
     else
       raise (InitReturn acc)
+  | Yield_break -> S.Top
   | Return (Some x) ->
     let acc = expr acc x in
     if are_all_init env acc then
@@ -432,14 +437,14 @@ and stmt env acc st =
     expr acc e
   | While (e, _) -> expr acc e
   | Using us ->
-    let acc = expr acc us.us_expr in
+    let acc = List.fold_left (snd us.us_exprs) ~f:expr ~init:acc in
     block acc us.us_block
-  | For (e1, _, _, _) -> expr acc e1
+  | For (e1, _, _, _) -> exprl env acc e1
   | Switch (e, cl) ->
     let acc = expr acc e in
     (* Filter out cases that fallthrough *)
-    let cl_body = List.filter cl case_has_body in
-    let cl = List.map cl_body (case acc) in
+    let cl_body = List.filter cl ~f:case_has_body in
+    let cl = List.map cl_body ~f:(case acc) in
     let c = S.inter_list cl in
     S.union acc c
   | Foreach (e, _, _) ->
@@ -448,7 +453,7 @@ and stmt env acc st =
   | Try (b, cl, fb) ->
     let c = block acc b in
     let f = block acc fb in
-    let cl = List.map cl (catch acc) in
+    let cl = List.map cl ~f:(catch acc) in
     let c = S.inter_list (c :: cl) in
     (* the finally block executes even if *none* of try and catch do *)
     let acc = S.union acc f in
@@ -460,12 +465,13 @@ and stmt env acc st =
   | AssertEnv _ -> acc
 
 and toplevel env acc l =
-  (try List.fold_left ~f:(stmt env) ~init:acc l with InitReturn acc -> acc)
+  try List.fold_left ~f:(stmt env) ~init:acc l with
+  | InitReturn acc -> acc
 
 and block env acc l =
   let acc_before_block = acc in
-  try List.fold_left ~f:(stmt env) ~init:acc l
-  with InitReturn _ ->
+  try List.fold_left ~f:(stmt env) ~init:acc l with
+  | InitReturn _ ->
     (* The block has a return statement, forget what was initialized in it *)
     raise (InitReturn acc_before_block)
 
@@ -482,7 +488,7 @@ and check_all_init p env acc =
 
 and exprl env acc l = List.fold_left ~f:(expr env) ~init:acc l
 
-and expr env acc (p, e) = expr_ env acc p e
+and expr env acc (_, p, e) = expr_ env acc p e
 
 and expr_ env acc p e =
   let expr = expr env in
@@ -491,7 +497,6 @@ and expr_ env acc p e =
   let afield = afield env in
   let fun_paraml = fun_paraml env in
   match e with
-  | Any -> acc
   | Darray (_, fdl) -> List.fold_left ~f:field ~init:acc fdl
   | Varray (_, fdl) -> List.fold_left ~f:expr ~init:acc fdl
   | ValCollection (_, _, el) -> exprl acc el
@@ -503,23 +508,24 @@ and expr_ env acc p e =
   | Method_id _
   | Smethod_id _
   | Method_caller _
-  | PU_atom _
+  | EnumClassLabel _
   | Id _ ->
     acc
   | Lvar _
   | Lplaceholder _
   | Dollardollar _ ->
     acc
-  | Obj_get ((_, This), (_, Id ((_, vx) as v)), _) ->
+  | Obj_get ((_, _, This), (_, _, Id ((_, vx) as v)), _, false) ->
     if SMap.mem vx env.props && not (S.mem vx acc) then (
       Errors.read_before_write v;
       acc
     ) else
       acc
   | Clone e -> expr acc e
-  | Obj_get (e1, e2, _) ->
+  | Obj_get (e1, e2, _, false) ->
     let acc = expr acc e1 in
     expr acc e2
+  | Obj_get _ -> acc
   | Array_get (e, eo) ->
     let acc = expr acc e in
     (match eo with
@@ -528,7 +534,11 @@ and expr_ env acc p e =
   | Class_const _
   | Class_get _ ->
     acc
-  | Call ((p, Obj_get ((_, This), (_, Id (_, f)), _)), _, _, _) ->
+  | Call
+      ( (_, p, Obj_get ((_, _, This), (_, _, Id (_, f)), _, false)),
+        _,
+        el,
+        unpacked_element ) ->
     let method_ = Env.get_method env f in
     (match method_ with
     | None ->
@@ -538,15 +548,22 @@ and expr_ env acc p e =
       (match !method_ with
       | Done -> acc
       | Todo b ->
+        (* First time we encounter this private method. Let's check its
+         * arguments first, and then recurse into the method body.
+         *)
+        let acc = List.fold_left ~f:expr ~init:acc el in
+        let acc =
+          Option.value_map ~f:(expr acc) ~default:acc unpacked_element
+        in
         method_ := Done;
         let fb = Nast.assert_named_body b in
         toplevel env acc fb.fb_ast))
   | Call (e, _, el, unpacked_element) ->
     let el =
       match e with
-      | (_, Id (_, fun_name)) when is_whitelisted fun_name ->
-        List.filter el (function
-            | (_, This) -> false
+      | (_, _, Id (_, fun_name)) when is_whitelisted fun_name ->
+        List.filter el ~f:(function
+            | (_, _, This) -> false
             | _ -> true)
       | _ -> el
     in
@@ -562,15 +579,12 @@ and expr_ env acc p e =
   | String2 _
   | PrefixedString _ ->
     acc
-  | Assert (AE_assert e) -> expr acc e
   | Yield e -> afield acc e
-  | Yield_break -> acc
   | Await e -> expr acc e
-  | Suspend e -> expr acc e
+  | Tuple el -> List.fold_left ~f:expr ~init:acc el
   | List _ ->
     (* List is always an lvalue *)
     acc
-  | Expr_list el -> exprl acc el
   | New (_, _, el, unpacked_element, _) ->
     let acc = exprl acc el in
     let acc = Option.value_map ~default:acc ~f:(expr acc) unpacked_element in
@@ -609,7 +623,7 @@ and expr_ env acc p e =
     (* We don't need to analyze the body of closures *)
     acc
   | Xml (_, l, el) ->
-    let l = List.map l get_xhp_attr_expr in
+    let l = List.map l ~f:get_xhp_attr_expr in
     let acc = exprl acc l in
     exprl acc el
   | Callconv (_, e) -> expr acc e
@@ -626,11 +640,10 @@ and expr_ env acc p e =
   | Omitted -> acc
   | Import _ -> acc
   | Collection _ -> acc
-  | BracedExpr _ -> acc
-  | ParenthesizedExpr _ -> acc
-  | PU_identifier _ -> acc
   | FunctionPointer _ -> acc
   | ET_Splice e -> expr acc e
+  | ReadonlyExpr e -> expr acc e
+  | Hole (e, _, _, _) -> expr acc e
 
 and case env acc = function
   | Default (_, b)

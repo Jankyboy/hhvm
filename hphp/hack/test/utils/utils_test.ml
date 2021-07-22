@@ -15,33 +15,6 @@ let test_namespace_splitter () =
     "Hellothisisafunction";
   true
 
-let assert_cm_split str expected : unit =
-  Printf.printf "Testing [%s]\n" str;
-  let r = Utils.split_class_from_method str in
-  let success =
-    match (r, expected) with
-    | (None, None) -> true
-    | (Some (a, b), Some (c, d)) -> a = c && b = d
-    | _ -> false
-  in
-  ( if not success then
-    let msg =
-      Printf.sprintf "ASSERTION FAILURE: [%s] did not split correctly" str
-    in
-    failwith msg );
-  ()
-
-let test_class_meth_splitter () =
-  assert_cm_split "A::B" (Some ("A", "B"));
-  assert_cm_split
-    "AReallyLongName::AnotherLongName"
-    (Some ("AReallyLongName", "AnotherLongName"));
-  assert_cm_split "::B" None;
-  assert_cm_split "A::" None;
-  assert_cm_split "::" None;
-  assert_cm_split "Justsomerandomtext" None;
-  true
-
 let assert_expand_ns str map expected : unit =
   let r = Utils.expand_namespace map str in
   String_asserter.assert_equals
@@ -102,7 +75,8 @@ let assert_throws : 'a 'b. ('b -> 'a) -> 'b -> string -> string -> unit =
     try
       let _ = f arg in
       "[no exception]"
-    with e -> Printexc.to_string e
+    with
+    | e -> Printexc.to_string e
   in
   if not (String_utils.is_substring exp e) then begin
     Printf.eprintf "%s.\nExpected it to throw '%s' but got '%s'\n" message exp e;
@@ -226,18 +200,18 @@ let test_telemetry_diff () =
     |> Telemetry.object_
          ~key:"o"
          ~value:
-           ( Telemetry.create ()
+           (Telemetry.create ()
            |> Telemetry.int_ ~key:"a" ~value:1
-           |> Telemetry.int_ ~key:"b" ~value:1 )
+           |> Telemetry.int_ ~key:"b" ~value:1)
   in
   let prev3 =
     Telemetry.create ()
     |> Telemetry.object_
          ~key:"o"
          ~value:
-           ( Telemetry.create ()
+           (Telemetry.create ()
            |> Telemetry.int_ ~key:"a" ~value:2
-           |> Telemetry.int_ ~key:"b" ~value:1 )
+           |> Telemetry.int_ ~key:"b" ~value:1)
   in
   begin
     let diff3 = Telemetry.diff ~all:true current3 ~prev:prev3 in
@@ -327,7 +301,6 @@ let () =
   Unit_test.run_all
     [
       ("test ability to split namespaces", test_namespace_splitter);
-      ("test ability to split class::meth", test_class_meth_splitter);
       ("test ability to expand namespaces", test_expand_namespace);
       ("test strip namespace functions", test_strip_namespace);
       ("test telemetry_test functions", test_telemetry_test);

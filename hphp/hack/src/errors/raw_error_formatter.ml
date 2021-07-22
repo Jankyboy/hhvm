@@ -40,7 +40,7 @@ let format_error_code code =
     (Tty.Normal Tty.Default, ")");
   ]
 
-let to_string (error : Pos.absolute Errors.error_) : string =
+let to_string (error : Errors.finalized_error) : string =
   let (error_code, msgl) = (Errors.get_code error, Errors.to_list error) in
   match msgl with
   | [] ->
@@ -56,12 +56,12 @@ let to_string (error : Pos.absolute Errors.error_) : string =
       let indent = (Tty.Normal Tty.Default, "  ") in
       List.concat_map
         ~f:(fun msg ->
-          (indent :: format_msg (Tty.Normal Tty.Red) (Tty.Normal Tty.Green) msg)
+          indent :: format_msg (Tty.Normal Tty.Red) (Tty.Normal Tty.Green) msg
           @ [newline])
         msgl
     in
     let to_print = claim @ reasons in
     if Unix.isatty Unix.stdout then
-      List.map to_print (fun (c, s) -> Tty.apply_color c s) |> String.concat
+      List.map to_print ~f:(fun (c, s) -> Tty.apply_color c s) |> String.concat
     else
-      List.map to_print (fun (_, x) -> x) |> String.concat
+      List.map to_print ~f:(fun (_, x) -> x) |> String.concat

@@ -13,13 +13,10 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_REPO_AUTH_TYPE_H_
-#define incl_HPHP_REPO_AUTH_TYPE_H_
+#pragma once
 
 #include <limits>
 #include <string>
-
-#include <folly/Optional.h>
 
 #include "hphp/util/assertions.h"
 #include "hphp/util/compact-tagged-ptrs.h"
@@ -61,18 +58,23 @@ struct RepoAuthType {
     TAG(Null)                                     \
     TAG(Int)                                      \
     TAG(OptInt)                                   \
+    TAG(UninitInt)                                \
     TAG(Dbl)                                      \
     TAG(OptDbl)                                   \
     TAG(Res)                                      \
     TAG(OptRes)                                   \
     TAG(Bool)                                     \
     TAG(OptBool)                                  \
+    TAG(UninitBool)                               \
     TAG(SStr)                                     \
     TAG(OptSStr)                                  \
+    TAG(UninitSStr)                               \
     TAG(Str)                                      \
     TAG(OptStr)                                   \
+    TAG(UninitStr)                                \
     TAG(Obj)                                      \
     TAG(OptObj)                                   \
+    TAG(UninitObj)                                \
     TAG(Func)                                     \
     TAG(OptFunc)                                  \
     TAG(Cls)                                      \
@@ -83,6 +85,9 @@ struct RepoAuthType {
     TAG(OptRecord)                                \
     TAG(LazyCls)                                  \
     TAG(OptLazyCls)                               \
+    TAG(Num)                                      \
+    TAG(OptNum)                                   \
+    TAG(InitPrim)                                 \
     TAG(InitUnc)                                  \
     TAG(Unc)                                      \
     TAG(UncArrKey)                                \
@@ -97,27 +102,12 @@ struct RepoAuthType {
     TAG(ArrKeyCompat)                             \
     TAG(OptUncArrKeyCompat)                       \
     TAG(OptArrKeyCompat)                          \
+    TAG(NonNull)                                  \
     TAG(InitCell)                                 \
     TAG(Cell)                                     \
     /* Types where array() may be non-null. */    \
-    TAG(ArrCompat)                                \
-    TAG(OptArrCompat)                             \
-    TAG(VArrCompat)                               \
     TAG(VecCompat)                                \
-    TAG(OptVArrCompat)                            \
     TAG(OptVecCompat)                             \
-    TAG(SArr)                                     \
-    TAG(OptSArr)                                  \
-    TAG(Arr)                                      \
-    TAG(OptArr)                                   \
-    TAG(SVArr)                                    \
-    TAG(OptSVArr)                                 \
-    TAG(VArr)                                     \
-    TAG(OptVArr)                                  \
-    TAG(SDArr)                                    \
-    TAG(OptSDArr)                                 \
-    TAG(DArr)                                     \
-    TAG(OptDArr)                                  \
     TAG(SVec)                                     \
     TAG(OptSVec)                                  \
     TAG(Vec)                                      \
@@ -130,11 +120,19 @@ struct RepoAuthType {
     TAG(OptSKeyset)                               \
     TAG(Keyset)                                   \
     TAG(OptKeyset)                                \
+    TAG(SArrLike)                                 \
+    TAG(OptSArrLike)                              \
+    TAG(ArrLike)                                  \
+    TAG(OptArrLike)                               \
+    TAG(ArrLikeCompat)                            \
+    TAG(OptArrLikeCompat)                         \
     /* Types where clsName() will be non-null. */ \
     TAG(ExactObj)                                 \
     TAG(SubObj)                                   \
     TAG(OptExactObj)                              \
     TAG(OptSubObj)                                \
+    TAG(UninitExactObj)                           \
+    TAG(UninitSubObj)                             \
     TAG(ExactCls)                                 \
     TAG(SubCls)                                   \
     TAG(OptExactCls)                              \
@@ -156,6 +154,7 @@ struct RepoAuthType {
     m_data.set(static_cast<uint16_t>(tag), sd);
     switch (tag) {
     case Tag::OptSubObj: case Tag::OptExactObj:
+    case Tag::UninitSubObj: case Tag::UninitExactObj:
     case Tag::SubObj:    case Tag::ExactObj:
     case Tag::OptSubCls: case Tag::OptExactCls:
     case Tag::SubCls:    case Tag::ExactCls:
@@ -212,6 +211,7 @@ struct RepoAuthType {
     switch (tag()) {
     case Tag::SubObj:    case Tag::ExactObj:
     case Tag::OptSubObj: case Tag::OptExactObj:
+    case Tag::UninitSubObj: case Tag::UninitExactObj:
     case Tag::SubCls:    case Tag::ExactCls:
     case Tag::OptSubCls: case Tag::OptExactCls:
       return true;
@@ -242,15 +242,14 @@ struct RepoAuthType {
 
   bool mayHaveArrData() const {
     switch (tag()) {
-    case Tag::OptArr:  case Tag::OptSArr:  case Tag::Arr:  case Tag::SArr:
-    case Tag::OptVArr: case Tag::OptSVArr: case Tag::VArr: case Tag::SVArr:
-    case Tag::OptDArr: case Tag::OptSDArr: case Tag::DArr: case Tag::SDArr:
     case Tag::OptVec:  case Tag::OptSVec:  case Tag::Vec:  case Tag::SVec:
     case Tag::OptDict: case Tag::OptSDict: case Tag::Dict: case Tag::SDict:
     case Tag::OptKeyset: case Tag::OptSKeyset:
     case Tag::Keyset:    case Tag::SKeyset:
-    case Tag::ArrCompat:  case Tag::OptArrCompat:
-    case Tag::VecCompat:   case Tag::OptVecCompat:
+    case Tag::VecCompat: case Tag::OptVecCompat:
+    case Tag::OptArrLike: case Tag::OptSArrLike:
+    case Tag::ArrLike:    case Tag::SArrLike:
+    case Tag::ArrLikeCompat: case Tag::OptArrLikeCompat:
       return true;
     default:
       return false;
@@ -394,5 +393,3 @@ std::string show(RepoAuthType);
 //////////////////////////////////////////////////////////////////////
 
 }
-
-#endif

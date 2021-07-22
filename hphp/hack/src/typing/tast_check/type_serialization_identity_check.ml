@@ -34,6 +34,7 @@ let rec strip_ty ty =
     | Tvarray ty -> Tvarray (strip_ty ty)
     | Tvarray_or_darray (ty1, ty2) ->
       Tvarray_or_darray (strip_ty ty1, strip_ty ty2)
+    | Tvec_or_dict (ty1, ty2) -> Tvec_or_dict (strip_ty ty1, strip_ty ty2)
     | Ttuple tyl -> Ttuple (strip_tyl tyl)
     | Toption ty -> Toption (strip_ty ty)
     | Tnewtype (name, tparams, ty) ->
@@ -51,16 +52,25 @@ let rec strip_ty ty =
             Typing_defs.make_fp_flags
               ~mode:(get_fp_mode fp)
               ~accept_disposable:false
-              ~mutability:None
-              ~has_default:false;
+              ~has_default:false
+              ~ifc_external:false
+              ~ifc_can_call:false
+              ~via_label:false
+              ~readonly:false;
           (* Dummy values: these aren't currently serialized. *)
-          fp_pos = Pos.none;
+          fp_pos = Pos_or_decl.none;
           fp_name = None;
-          fp_rx_annotation = None;
         }
       in
       let ft_params = List.map ft_params ~f:strip_param in
-      let ft_implicit_params = { capability = strip_ty capability } in
+      let ft_implicit_params =
+        {
+          capability =
+            (match capability with
+            | CapTy cap -> CapTy (strip_ty cap)
+            | CapDefaults p -> CapDefaults p);
+        }
+      in
       let ft_ret = strip_possibly_enforced_ty ft_ret in
       Tfun
         {
@@ -72,19 +82,19 @@ let rec strip_ty ty =
           ft_tparams = [];
           ft_where_constraints = [];
           ft_flags = 0;
-          ft_reactive = Nonreactive;
+          ft_ifc_decl = default_ifc_fun_decl;
         }
     | Tshape (shape_kind, shape_fields) ->
       let strip_field { sft_optional; sft_ty } =
         let sft_ty = strip_ty sft_ty in
         { sft_optional; sft_ty }
       in
-      let shape_fields = Nast.ShapeMap.map strip_field shape_fields in
+      let shape_fields = TShapeMap.map strip_field shape_fields in
       Tshape (shape_kind, shape_fields)
-    | Tpu (base, enum) -> Tpu (strip_ty base, enum)
-    | Tpu_type_access (_, _) -> ty
+    | Taccess _ -> ty
     | Tunapplied_alias _ ->
       Typing_defs.error_Tunapplied_alias_in_illegal_context ()
+    | Tneg _ -> ty
   in
   mk (reason, ty)
 
@@ -101,7 +111,7 @@ let handler =
   object
     inherit Tast_visitor.handler_base
 
-    method! at_expr env ((p, ty), _) =
+    method! at_expr env (ty, p, _) =
       try
         let ty = Tast_expand.expand_ty env ~pos:p ty in
         let serialized_ty = Tast_env.ty_to_json env ty in
@@ -120,8 +130,8 @@ let handler =
                  (Tast_env.print_ty env ty)
                  (Tast_env.print_ty env deserialized_ty)
                  (Tast_env.ty_to_json env ty |> Hh_json.json_to_string)
-                 ( Tast_env.ty_to_json env deserialized_ty
-                 |> Hh_json.json_to_string ))
+                 (Tast_env.ty_to_json env deserialized_ty
+                 |> Hh_json.json_to_string))
         | Error (Not_supported _) -> ()
         | Error (Wrong_phase message) ->
           Errors.unserializable_type
@@ -139,7 +149,8 @@ let handler =
                message
                (Tast_env.print_ty env ty)
                (Tast_env.ty_to_json env ty |> Hh_json.json_to_string))
-      with e ->
+      with
+      | e ->
         Errors.unserializable_type
           p
           (Printf.sprintf "exception: %s" (Exn.to_string e))

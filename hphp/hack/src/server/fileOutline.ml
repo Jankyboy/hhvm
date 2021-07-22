@@ -21,6 +21,7 @@ let modifiers_to_list ~is_final ~visibility ~is_abstract ~is_static =
     | Public -> [SymbolDefinition.Public]
     | Private -> [SymbolDefinition.Private]
     | Protected -> [SymbolDefinition.Protected]
+    | Internal -> []
   in
   let modifiers =
     if is_final then
@@ -70,7 +71,6 @@ let summarize_property class_name var =
     children = None;
     params = None;
     docblock = None;
-    reactivity_attributes = [];
   }
 
 let maybe_summarize_property class_name ~skip var =
@@ -83,9 +83,10 @@ let maybe_summarize_property class_name ~skip var =
 let summarize_const class_name cc =
   let (pos, name) = cc.cc_id in
   let (span, modifiers) =
-    match cc.cc_expr with
-    | Some (p, _) -> (Pos.btw pos p, [])
-    | None -> (pos, [Abstract])
+    match cc.cc_kind with
+    | CCConcrete (_, p, _) -> (Pos.btw pos p, [])
+    | CCAbstract (Some (_, p_default, _)) -> (Pos.btw pos p_default, [Abstract])
+    | CCAbstract None -> (pos, [Abstract])
   in
   let kind = Const in
   let id = get_symbol_id kind (Some class_name) name in
@@ -101,7 +102,6 @@ let summarize_const class_name cc =
     children = None;
     params = None;
     docblock = None;
-    reactivity_attributes = [];
   }
 
 let modifier_of_fun_kind acc = function
@@ -119,7 +119,7 @@ let summarize_typeconst class_name t =
   let kind = Typeconst in
   let id = get_symbol_id kind (Some class_name) name in
   let modifiers =
-    match t.c_tconst_abstract with
+    match t.c_tconst_kind with
     | TCAbstract _ -> [Abstract]
     | _ -> []
   in
@@ -135,7 +135,6 @@ let summarize_typeconst class_name t =
     children = None;
     params = None;
     docblock = None;
-    reactivity_attributes = [];
   }
 
 let summarize_param param =
@@ -147,7 +146,9 @@ let summarize_param param =
       ~f:fst
       ~default:pos
   in
-  let param_end = Option.value_map param.param_expr ~f:fst ~default:pos in
+  let param_end =
+    Option.value_map param.param_expr ~f:(fun (_, p, _) -> p) ~default:pos
+  in
   let modifiers = modifier_of_param_kind [] param.param_callconv in
   let modifiers =
     match param.param_visibility with
@@ -170,40 +171,19 @@ let summarize_param param =
     modifiers;
     params = None;
     docblock = None;
-    reactivity_attributes = [];
   }
-
-let get_reactivity_attributes attrs =
-  let rec go attrs acc =
-    match attrs with
-    | [] -> acc
-    | { ua_name = (_, n); _ } :: tl ->
-      let module SNUA = Naming_special_names.UserAttributes in
-      let acc =
-        if String.equal n SNUA.uaReactive then
-          Rx :: acc
-        else if String.equal n SNUA.uaShallowReactive then
-          Shallow :: acc
-        else if String.equal n SNUA.uaLocalReactive then
-          Local :: acc
-        else if String.equal n SNUA.uaOnlyRxIfImpl then
-          OnlyRxIfImpl :: acc
-        else if String.equal n SNUA.uaAtMostRxAsArgs then
-          AtMostRxAsArgs :: acc
-        else
-          acc
-      in
-      go tl acc
-  in
-  go attrs []
 
 let summarize_method class_name m =
   let modifiers = modifier_of_fun_kind [] m.m_fun_kind in
   let modifiers =
-    modifiers_to_list m.m_final m.m_visibility m.m_abstract m.m_static
+    modifiers_to_list
+      ~is_final:m.m_final
+      ~visibility:m.m_visibility
+      ~is_abstract:m.m_abstract
+      ~is_static:m.m_static
     @ modifiers
   in
-  let params = Some (List.map m.m_params summarize_param) in
+  let params = Some (List.map m.m_params ~f:summarize_param) in
   let name = snd m.m_name in
   let kind = Method in
   let id = get_symbol_id kind (Some class_name) name in
@@ -219,7 +199,6 @@ let summarize_method class_name m =
     children = None;
     params;
     docblock = None;
-    reactivity_attributes = get_reactivity_attributes m.m_user_attributes;
   }
 
 (* Parser synthesizes AST nodes for implicit properties (defined in constructor
@@ -330,7 +309,6 @@ let summarize_class class_ ~no_children =
     children;
     params = None;
     docblock = None;
-    reactivity_attributes = [];
   }
 
 let summarize_record_decl rd =
@@ -351,7 +329,6 @@ let summarize_record_decl rd =
     children = None;
     params = None;
     docblock = None;
-    reactivity_attributes = [];
   }
 
 let summarize_typedef tdef =
@@ -373,12 +350,12 @@ let summarize_typedef tdef =
     children = None;
     params = None;
     docblock = None;
-    reactivity_attributes = [];
   }
 
-let summarize_fun f =
+let summarize_fun fd =
+  let f = fd.fd_fun in
   let modifiers = modifier_of_fun_kind [] f.f_fun_kind in
-  let params = Some (List.map f.f_params summarize_param) in
+  let params = Some (List.map f.f_params ~f:summarize_param) in
   let kind = SymbolDefinition.Function in
   let name = Utils.strip_ns (snd f.f_name) in
   let id = get_symbol_id kind None name in
@@ -394,13 +371,12 @@ let summarize_fun f =
     children = None;
     params;
     docblock = None;
-    reactivity_attributes = get_reactivity_attributes f.f_user_attributes;
   }
 
 let summarize_gconst cst =
   let pos = fst cst.cst_name in
   let gconst_start = Option.value_map cst.cst_type ~f:fst ~default:pos in
-  let gconst_end = fst cst.cst_value in
+  let (_, gconst_end, _) = cst.cst_value in
   let kind = Const in
   let name = Utils.strip_ns (snd cst.cst_name) in
   let id = get_symbol_id kind None name in
@@ -416,7 +392,6 @@ let summarize_gconst cst =
     children = None;
     params = None;
     docblock = None;
-    reactivity_attributes = [];
   }
 
 let summarize_local name span =
@@ -434,7 +409,6 @@ let summarize_local name span =
     children = None;
     params = None;
     docblock = None;
-    reactivity_attributes = [];
   }
 
 let outline_ast ast =
@@ -444,7 +418,7 @@ let outline_ast ast =
         | Class c -> Some (summarize_class c ~no_children:false)
         | _ -> None)
   in
-  List.map outline SymbolDefinition.to_absolute
+  List.map outline ~f:SymbolDefinition.to_absolute
 
 let should_add_docblock = function
   | Function
@@ -539,7 +513,6 @@ let rec print_def ~short_pos indent def =
     params;
     docblock;
     full_name = _;
-    reactivity_attributes = _;
   } =
     def
   in
@@ -551,20 +524,20 @@ let rec print_def ~short_pos indent def =
   in
   Printf.printf "%s%s\n" indent name;
   Printf.printf "%s  kind: %s\n" indent (string_of_kind kind);
-  Option.iter id (fun id -> Printf.printf "%s  id: %s\n" indent id);
+  Option.iter id ~f:(fun id -> Printf.printf "%s  id: %s\n" indent id);
   Printf.printf "%s  position: %s\n" indent (print_pos pos);
   Printf.printf "%s  span: %s\n" indent (print_span span);
   Printf.printf "%s  modifiers: " indent;
-  List.iter modifiers (fun x -> Printf.printf "%s " (string_of_modifier x));
+  List.iter modifiers ~f:(fun x -> Printf.printf "%s " (string_of_modifier x));
   Printf.printf "\n";
-  Option.iter params (fun x ->
+  Option.iter params ~f:(fun x ->
       Printf.printf "%s  params:\n" indent;
       print ~short_pos (indent ^ "    ") x);
-  Option.iter docblock (fun x ->
+  Option.iter docblock ~f:(fun x ->
       Printf.printf "%s  docblock:\n" indent;
       Printf.printf "%s\n" x);
   Printf.printf "\n";
-  Option.iter children (fun x -> print ~short_pos (indent ^ "  ") x)
+  Option.iter children ~f:(fun x -> print ~short_pos (indent ^ "  ") x)
 
 and print ~short_pos indent defs =
   List.iter defs ~f:(print_def ~short_pos indent)

@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_IRGEN_H_
-#define incl_HPHP_JIT_IRGEN_H_
+#pragma once
 
 #include "hphp/runtime/base/repo-auth-type.h"
 #include "hphp/runtime/base/types.h"
@@ -111,15 +110,11 @@ SSATmp* cns(IRGS& env, Args&&... args) {
 /*
  * Type checks and assertions.
  */
-void checkType(IRGS&, const Location&, Type, Offset dest);
+void checkType(IRGS&, const Location&, Type, SrcKey dest);
 void assertTypeStack(IRGS&, BCSPRelOffset, Type);
 void assertTypeLocal(IRGS&, uint32_t id, Type);
 void assertTypeLocation(IRGS&, const Location&, Type);
-
-/*
- * Type predictions.
- */
-void predictType(IRGS&, const Location&, Type);
+SSATmp* loadLocation(IRGS&, const Location&);
 
 /*
  * After all initial guards instructions have been emitted, the client of this
@@ -174,7 +169,7 @@ void finishHHBC(IRGS&);
  */
 void endRegion(IRGS&);
 void endRegion(IRGS&, SrcKey);
-void endBlock(IRGS&, Offset next);
+void endBlock(IRGS&, SrcKey nextSk);
 
 /*
  * When we're done creating the IRUnit, this function must be called to ensure
@@ -351,5 +346,3 @@ Type predictedType(const IRGS&, const Location&);
 ///////////////////////////////////////////////////////////////////////////////
 
 }}}
-
-#endif

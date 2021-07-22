@@ -3,15 +3,18 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the "hack" directory of this source tree.
 //
-// @generated SignedSource<<bffa439303ac434d96b1ee7357209b2d>>
+// @generated SignedSource<<6a91f949eb43f106b45c4df18ff26edb>>
 //
 // To regenerate this file, run:
-//   hphp/hack/src/oxidized_by_ref/regen.sh
+//   hphp/hack/src/oxidized_regen.sh
 
 use arena_trait::TrivialDrop;
+use eq_modulo_pos::EqModuloPos;
+use no_pos_hash::NoPosHash;
 use ocamlrep_derive::FromOcamlRep;
 use ocamlrep_derive::FromOcamlRepIn;
 use ocamlrep_derive::ToOcamlRep;
+use serde::Deserialize;
 use serde::Serialize;
 
 #[allow(unused_imports)]
@@ -52,9 +55,12 @@ pub use typing_defs::*;
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -62,20 +68,26 @@ pub use typing_defs::*;
     ToOcamlRep
 )]
 pub struct SubstContext<'a> {
-    pub subst: s_map::SMap<'a, Ty<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub subst: s_map::SMap<'a, &'a Ty<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub class_context: &'a str,
     pub from_req_extends: bool,
 }
 impl<'a> TrivialDrop for SubstContext<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(SubstContext<'arena>);
 
 #[derive(
     Clone,
     Copy,
     Debug,
+    Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRep,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -88,100 +100,24 @@ pub enum SourceType {
     Trait,
     XHPAttr,
     Interface,
+    IncludedEnum,
     ReqImpl,
     ReqExtends,
 }
 impl TrivialDrop for SourceType {}
-
-#[derive(
-    Clone,
-    Debug,
-    Eq,
-    FromOcamlRepIn,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToOcamlRep
-)]
-pub struct MroElement<'a> {
-    /// The class's name
-    pub name: &'a str,
-    /// The position at which this element was directly included in the hierarchy.
-    /// If C extends B extends A, the use_pos of A in C's linearization will be the
-    /// position of the class name A in the line "class B extends A".
-    pub use_pos: &'a pos::Pos<'a>,
-    /// Like mro_use_pos, but includes type arguments (if any).
-    pub ty_pos: &'a pos::Pos<'a>,
-    /// The type arguments with which this ancestor class was instantiated. The
-    /// first class in the linearization (the one which was linearized) will have
-    /// an empty list here, even when it takes type parameters.
-    pub type_args: &'a [Ty<'a>],
-    /// True if this element referred to a class whose definition could not be
-    /// found. This is always indicative of an "Unbound name" error (emitted by
-    /// Naming), so one could imagine omitting elements with this flag set from the
-    /// linearization (since correct programs will not have them), but keeping
-    /// track of them helps reduce cascading errors in the event of a typo.
-    /// Additionally, it's helpful to do this (for now) to keep the behavior of
-    /// shallow_class_decl equivalent to legacy decl.
-    pub class_not_found: bool,
-    /// When this is [Some], this mro_element represents an attempt to include a
-    /// linearization within itself. We include these in the linearization for the
-    /// sake of error reporting (they will not occur in correct programs). The
-    /// SSet.t is the set of class names known to have been involved in the
-    /// inclusion of this class in the linearization.
-    pub cyclic: Option<s_set::SSet<'a>>,
-    /// When this is [Some], this mro_element represents the use of a trait which
-    /// was already used earlier in the linearization. Normally, we do not emit
-    /// duplicate mro_elements at all--we include these in the linearization only
-    /// for error detection. The string is the name of the class through which this
-    /// trait was most recently included (as a duplicate).
-    pub trait_reuse: Option<&'a str>,
-    /// If this element is included in the linearization because it was directly
-    /// required by some ancestor, this will be [Some], and the position will be
-    /// the location where this requirement was most recently included into the
-    /// hierarchy.
-    pub required_at: Option<&'a pos::Pos<'a>>,
-    /// True if this element is included in the linearization (directly or
-    /// indirectly) because of a require extends relationship.
-    pub via_req_extends: bool,
-    /// True if this element is included in the linearization (directly or
-    /// indirectly) because of a require implements relationship.
-    pub via_req_impl: bool,
-    /// True if this element is included in the linearization because of any
-    /// XHP-attribute-inclusion relationship, and thus, the linearized class
-    /// inherits only the XHP attributes from this element.
-    pub xhp_attrs_only: bool,
-    /// True if this element is included in the linearization because of a
-    /// interface-implementation relationship, and thus, the linearized class
-    /// inherits only the class constants and type constants from this element.
-    pub consts_only: bool,
-    /// True if this element is included in the linearization via an unbroken chain
-    /// of trait-use relationships, and thus, the linearized class inherits the
-    /// private members of this element (on account of the runtime behavior where
-    /// they are effectively copied into the linearized class).
-    pub copy_private_members: bool,
-    /// True if this element is included in the linearization via an unbroken chain
-    /// of abstract classes, and thus, abstract type constants with default values
-    /// are inherited unchanged. When this flag is not set, a concrete class was
-    /// present in the chain. Since we convert abstract type constants with
-    /// defaults to concrete ones when they are included in a concrete class, any
-    /// type constant which 1) is abstract, 2) has a default, and 3) was inherited
-    /// from an ancestor with this flag not set, should be inherited as a concrete
-    /// type constant instead.
-    pub passthrough_abstract_typeconst: bool,
-}
-impl<'a> TrivialDrop for MroElement<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(SourceType);
 
 #[derive(
     Clone,
     Copy,
     Debug,
+    Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRep,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -193,37 +129,17 @@ pub enum LinearizationKind {
     AncestorTypes,
 }
 impl TrivialDrop for LinearizationKind {}
-
-/// name of condition type for conditional reactivity of methods.
-/// If None - method is unconditionally reactive
-pub type ConditionTypeName<'a> = Option<&'a str>;
+arena_deserializer::impl_deserialize_in_arena!(LinearizationKind);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRepIn,
     Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToOcamlRep
-)]
-pub enum MethodReactivity<'a> {
-    MethodPure(ConditionTypeName<'a>),
-    MethodReactive(ConditionTypeName<'a>),
-    MethodShallow(ConditionTypeName<'a>),
-    MethodLocal(ConditionTypeName<'a>),
-}
-impl<'a> TrivialDrop for MethodReactivity<'a> {}
-
-#[derive(
-    Clone,
-    Debug,
-    Eq,
-    FromOcamlRepIn,
-    Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -237,44 +153,75 @@ pub struct DeclClassType<'a> {
     pub final_: bool,
     pub is_disposable: bool,
     pub const_: bool,
+    pub internal: bool,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub deferred_init_members: s_set::SSet<'a>,
     pub kind: oxidized::ast_defs::ClassKind,
     pub is_xhp: bool,
     pub has_xhp_keyword: bool,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub module: Option<&'a str>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub name: &'a str,
-    pub pos: &'a pos::Pos<'a>,
-    pub tparams: &'a [Tparam<'a>],
-    pub where_constraints: &'a [WhereConstraint<'a>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub pos: &'a pos_or_decl::PosOrDecl<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub tparams: &'a [&'a Tparam<'a>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub where_constraints: &'a [&'a WhereConstraint<'a>],
     /// class name to the subst_context that must be applied to that class
-    pub substs: s_map::SMap<'a, SubstContext<'a>>,
-    pub consts: s_map::SMap<'a, ClassConst<'a>>,
-    pub typeconsts: s_map::SMap<'a, TypeconstType<'a>>,
-    pub pu_enums: s_map::SMap<'a, PuEnumType<'a>>,
-    pub props: s_map::SMap<'a, Element<'a>>,
-    pub sprops: s_map::SMap<'a, Element<'a>>,
-    pub methods: s_map::SMap<'a, Element<'a>>,
-    pub smethods: s_map::SMap<'a, Element<'a>>,
-    pub construct: (Option<Element<'a>>, ConsistentKind),
-    pub ancestors: s_map::SMap<'a, Ty<'a>>,
-    pub req_ancestors: &'a [Requirement<'a>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub substs: s_map::SMap<'a, &'a SubstContext<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub consts: s_map::SMap<'a, &'a ClassConst<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub typeconsts: s_map::SMap<'a, &'a TypeconstType<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub props: s_map::SMap<'a, &'a Element<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub sprops: s_map::SMap<'a, &'a Element<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub methods: s_map::SMap<'a, &'a Element<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub smethods: s_map::SMap<'a, &'a Element<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub construct: (Option<&'a Element<'a>>, ConsistentKind),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub ancestors: s_map::SMap<'a, &'a Ty<'a>>,
+    pub support_dynamic_type: bool,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub req_ancestors: &'a [&'a Requirement<'a>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub req_ancestors_extends: s_set::SSet<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub extends: s_set::SSet<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub sealed_whitelist: Option<s_set::SSet<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub xhp_attr_deps: s_set::SSet<'a>,
-    pub enum_type: Option<EnumType<'a>>,
-    pub decl_errors: Option<errors::Errors<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub xhp_enum_values: s_map::SMap<'a, &'a [ast_defs::XhpEnumValue<'a>]>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub enum_type: Option<&'a EnumType<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub decl_errors: Option<&'a errors::Errors<'a>>,
     /// this field is used to prevent condition types being filtered
     /// in Decl_redecl_service.is_dependent_class_of_any
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub condition_types: s_set::SSet<'a>,
 }
 impl<'a> TrivialDrop for DeclClassType<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(DeclClassType<'arena>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -283,9 +230,12 @@ impl<'a> TrivialDrop for DeclClassType<'a> {}
 )]
 pub struct Element<'a> {
     pub flags: isize,
-    pub reactivity: Option<MethodReactivity<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub origin: &'a str,
-    pub visibility: Visibility<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub visibility: CeVisibility<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub deprecated: Option<&'a str>,
 }
 impl<'a> TrivialDrop for Element<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(Element<'arena>);

@@ -15,8 +15,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EXT_HH_H_
-#define incl_HPHP_EXT_HH_H_
+#pragma once
 
 #include "hphp/runtime/ext/extension.h"
 
@@ -31,6 +30,7 @@ TypedValue serialize_memoize_param_arr(ArrayData*);
 TypedValue serialize_memoize_param_obj(ObjectData*);
 TypedValue serialize_memoize_param_col(ObjectData*);
 TypedValue serialize_memoize_param_str(StringData*);
+TypedValue serialize_memoize_param_lazycls(LazyClassData);
 TypedValue serialize_memoize_param_dbl(double);
 
 extern const StaticString
@@ -43,4 +43,3 @@ extern const StaticString
 ///////////////////////////////////////////////////////////////////////////////
 }
 
-#endif // incl_HPHP_EXT_HH_H_

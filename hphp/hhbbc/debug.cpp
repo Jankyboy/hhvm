@@ -94,17 +94,24 @@ void dump_class_state(std::ostream& out,
           << show(kv.second.ty) << '\n';
     }
 
-    auto const sprops = sorted_prop_state(
+    auto const private_sprops = sorted_prop_state(
       index.lookup_private_statics(c)
     );
-    for (auto const& kv : sprops) {
+    for (auto const& kv : private_sprops) {
       out << clsName << "::$" << kv.first->data() << " :: "
-          << show(kv.second.ty) << '\n';
+          << show(kv.second.ty);
+      if (!kv.second.everModified) out << " (persistent)";
+      out << '\n';
     }
 
-    for (auto const& prop : c->properties) {
-      out << clsName << "::$" << prop.name->data() << " :: "
-          << show(index.lookup_public_static(Context{}, c, prop.name)) << '\n';
+    auto const public_sprops = sorted_prop_state(
+      index.lookup_public_statics(c)
+    );
+    for (auto const& kv : public_sprops) {
+      out << clsName << "::$" << kv.first->data() << " :: "
+          << show(kv.second.ty);
+      if (!kv.second.everModified) out << " (persistent)";
+      out << '\n';
     }
   }
 
@@ -127,8 +134,9 @@ void dump_func_state(std::ostream& out,
       )
     : folly::sformat("{}()", f->name->toCppString());
 
-  auto const retTy = index.lookup_return_type_raw(f);
-  out << name << " :: " << show(retTy) << '\n';
+  auto const retTy = index.lookup_return_type_raw(f).first;
+  out << name << " :: " << show(retTy) <<
+    (index.is_effect_free(f) ? " (effect-free)\n" : "\n");
 }
 
 }

@@ -6,7 +6,7 @@
  * significant or not.
  **)
 
-open Hh_core
+open Hh_prelude
 
 let error_list_to_string_buffer buf x =
   List.iter x ~f:(fun error ->
@@ -45,34 +45,34 @@ let test_do () =
 let expected_unsorted =
   {|File "/FileWithErrors.php", line 1, characters 4-7:
 This value is not a valid key type for this container (Typing[4298])
-File "/C2", line 0, characters 0-0:
-This container is C2_Type
-File "/K2", line 0, characters 0-0:
-K2_Type cannot be used as a key for C2_Type
+  File "/C2", line 0, characters 0-0:
+  This container is C2_Type
+  File "/K2", line 0, characters 0-0:
+  K2_Type cannot be used as a key for C2_Type
 
 File "/FileWithErrors.php", line 1, characters 4-7:
 This value is not a valid key type for this container (Typing[4298])
-File "/C1", line 0, characters 0-0:
-This container is C1_Type
-File "/K1", line 0, characters 0-0:
-K1_Type cannot be used as a key for C1_Type
+  File "/C1", line 0, characters 0-0:
+  This container is C1_Type
+  File "/K1", line 0, characters 0-0:
+  K1_Type cannot be used as a key for C1_Type
 
 File "/FileWithErrors.php", line 0, characters 0-0:
  (Parsing[1002])
 
 File "/FileWithErrors.php", line 1, characters 4-7:
 This value is not a valid key type for this container (Typing[4298])
-File "/C2", line 0, characters 0-0:
-This container is C2_Type
-File "/K2", line 0, characters 0-0:
-K2_Type cannot be used as a key for C2_Type
+  File "/C2", line 0, characters 0-0:
+  This container is C2_Type
+  File "/K2", line 0, characters 0-0:
+  K2_Type cannot be used as a key for C2_Type
 
 File "/FileWithErrors.php", line 1, characters 4-7:
 This value is not a valid key type for this container (Typing[4298])
-File "/C1", line 0, characters 0-0:
-This container is C1_Type
-File "/K1", line 0, characters 0-0:
-K1_Type cannot be used as a key for C1_Type
+  File "/C1", line 0, characters 0-0:
+  This container is C1_Type
+  File "/K1", line 0, characters 0-0:
+  K1_Type cannot be used as a key for C1_Type
 
 |}
 
@@ -82,17 +82,17 @@ let expected_sorted =
 
 File "/FileWithErrors.php", line 1, characters 4-7:
 This value is not a valid key type for this container (Typing[4298])
-File "/C1", line 0, characters 0-0:
-This container is C1_Type
-File "/K1", line 0, characters 0-0:
-K1_Type cannot be used as a key for C1_Type
+  File "/C1", line 0, characters 0-0:
+  This container is C1_Type
+  File "/K1", line 0, characters 0-0:
+  K1_Type cannot be used as a key for C1_Type
 
 File "/FileWithErrors.php", line 1, characters 4-7:
 This value is not a valid key type for this container (Typing[4298])
-File "/C2", line 0, characters 0-0:
-This container is C2_Type
-File "/K2", line 0, characters 0-0:
-K2_Type cannot be used as a key for C2_Type
+  File "/C2", line 0, characters 0-0:
+  This container is C2_Type
+  File "/K2", line 0, characters 0-0:
+  K2_Type cannot be used as a key for C2_Type
 
 |}
 
@@ -123,10 +123,14 @@ let test_get_sorted_error_list () =
       ~pos_end:(2, 10, 12)
   in
   Printf.printf "%s" (Pos.print_verbose_relative err_pos);
-  let container_pos1 = Pos.make_from (create_path "C1") in
-  let container_pos2 = Pos.make_from (create_path "C2") in
-  let key_pos1 = Pos.make_from (create_path "K1") in
-  let key_pos2 = Pos.make_from (create_path "K2") in
+  let container_pos1 =
+    Pos.make_from (create_path "C1") |> Pos_or_decl.of_raw_pos
+  in
+  let container_pos2 =
+    Pos.make_from (create_path "C2") |> Pos_or_decl.of_raw_pos
+  in
+  let key_pos1 = Pos.make_from (create_path "K1") |> Pos_or_decl.of_raw_pos in
+  let key_pos2 = Pos.make_from (create_path "K2") |> Pos_or_decl.of_raw_pos in
   let (errors, ()) =
     Errors.do_with_context file_with_errors Errors.Typing (fun () ->
         Errors.invalid_arraykey_read
@@ -284,7 +288,7 @@ let test_incremental_update () =
         ())
   in
   let errors =
-    Errors.incremental_update_set
+    Errors.incremental_update
       ~old:foo_error_a
       ~new_:bar_error_a
       ~rechecked:(Relative_path.Set.singleton a_path)
@@ -300,7 +304,7 @@ let test_incremental_update () =
     "Incremental update should overwrite foo error with bar.";
 
   let errors =
-    Errors.incremental_update_set
+    Errors.incremental_update
       ~old:foo_error_a
       ~new_:baz_error_b
       ~rechecked:(Relative_path.Set.singleton b_path)
@@ -318,7 +322,7 @@ let test_incremental_update () =
     "Incremental update should add baz error and leave foo error unchanged";
 
   let errors =
-    Errors.incremental_update_set
+    Errors.incremental_update
       ~old:foo_error_a
       ~new_:Errors.empty
       ~rechecked:(Relative_path.Set.singleton a_path)
@@ -410,7 +414,7 @@ let test_performance () =
       aux (Errors.merge errors acc) (n - 1)
   in
   let errors = aux Errors.empty n in
-  List.length (Errors.get_error_list errors) == n
+  List.length (Errors.get_error_list errors) = n
 
 let tests =
   [
@@ -421,7 +425,7 @@ let tests =
     ("test_from_error_list", test_from_error_list);
     ("test_phases", test_phases);
     (* TODO T44055462 please amend test to maintain new invariants of error API
-  "test_incremental_update", test_incremental_update; *)
+       "test_incremental_update", test_incremental_update; *)
     ("test_merge_into_current", test_merge_into_current);
     ("test_performance", test_performance);
   ]

@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_UTIL_ABI_CXX_H_
-#define incl_HPHP_UTIL_ABI_CXX_H_
+#pragma once
 
 #include <inttypes.h>
 #include <string>
@@ -34,6 +33,8 @@ template<typename Ret, typename... Args>
 inline std::string getNativeFunctionName(Ret (*ptr)(Args...)) {
   return getNativeFunctionName(reinterpret_cast<void*>(ptr));
 }
+
+void registerNativeFunctionName(void* codeAddr, const std::string& name);
 
 /**
  * Get the vtable offset corresponding to a method pointer. NB: only works
@@ -64,6 +65,3 @@ constexpr void* getMethodPtr(MethodPtr meth) {
 //////////////////////////////////////////////////////////////////////
 
 }
-
-
-#endif

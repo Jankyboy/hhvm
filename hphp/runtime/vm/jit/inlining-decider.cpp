@@ -40,7 +40,6 @@
 #include "hphp/util/struct-log.h"
 #include "hphp/util/trace.h"
 
-#include <folly/RWSpinLock.h>
 #include <folly/Synchronized.h>
 #include <cmath>
 #include <vector>
@@ -312,14 +311,11 @@ Vcost computeTranslationCostSlow(SrcKey at,
                                  AnnotationData* annotationData) {
   TransContext ctx {
     TransIDSet{},
+    0,  // optIndex
     TransKind::Optimize,
-    TransFlags{},
     at,
-    // We can pretend the stack is empty, but we at least need to account for
-    // the locals, iters, and slots, etc.
-    FPInvOffset{at.func()->numSlotsInFrame()},
-    0,
-    &region
+    &region,
+    PrologueID(),
   };
 
   tracing::Block _{"compute-inline-cost", [&] { return traceProps(ctx); }};
@@ -337,7 +333,7 @@ Vcost computeTranslationCostSlow(SrcKey at,
   return irlower::computeIRUnitCost(*unit);
 }
 
-folly::Synchronized<InlineCostCache, folly::RWSpinLock> s_inlCostCache;
+folly::Synchronized<InlineCostCache> s_inlCostCache;
 
 int computeTranslationCost(SrcKey at,
                            const RegionDesc& region,
@@ -607,7 +603,7 @@ RegionDescPtr selectCalleeTracelet(const Func* callee,
   auto const entryOff = callee->getEntryForNumArgs(argTypes.size());
   RegionContext ctx{
     SrcKey { callee, entryOff, ResumeMode::None },
-    FPInvOffset{safe_cast<int32_t>(callee->numSlotsInFrame())},
+    SBInvOffset{0},
   };
 
   for (uint32_t i = 0; i < argTypes.size(); ++i) {
@@ -624,8 +620,7 @@ RegionDescPtr selectCalleeTracelet(const Func* callee,
   if (argTypes.size() <= numParams && callee->hasVariadicCaptureParam()) {
     // There's no DV init funclet for the case where all non-variadic params
     // have already been passed, so the caller must handle it instead.
-    ARRPROV_USE_RUNTIME_LOCATION();
-    auto const vargs = Type::cns(ArrayData::CreateVArray());
+    auto const vargs = Type::cns(ArrayData::CreateVec());
     ctx.liveTypes.push_back({Location::Local{numParams}, vargs});
   }
 
@@ -642,16 +637,17 @@ RegionDescPtr selectCalleeTracelet(const Func* callee,
   return r;
 }
 
-TransID findTransIDForCallee(const ProfData* profData, const Func* callee,
-                             Type ctxType, std::vector<Type>& argTypes) {
+TransIDSet findTransIDsForCallee(const ProfData* profData, const Func* callee,
+                                 Type ctxType, std::vector<Type>& argTypes) {
   auto const idvec = profData->funcProfTransIDs(callee->getFuncId());
 
   auto const offset = callee->getEntryForNumArgs(argTypes.size());
-  TransID ret = kInvalidTransID;
+  auto const sk = SrcKey { callee, offset, ResumeMode::None };
+  TransIDSet ret;
   FTRACE(2, "findTransIDForCallee: offset={}\n", offset);
   for (auto const id : idvec) {
     auto const rec = profData->transRec(id);
-    if (rec->startBcOff() != offset) continue;
+    if (rec->srcKey() != sk) continue;
     auto const region = rec->region();
 
     auto const isvalid = [&] () {
@@ -669,11 +665,7 @@ TransID findTransIDForCallee(const ProfData* profData, const Func* callee,
       return true;
     }();
 
-    if (!isvalid) continue;
-    // Found multiple entries that may match the arguments, so don't return
-    // any.
-    if (ret != kInvalidTransID) return kInvalidTransID;
-    ret = id;
+    if (isvalid) ret.insert(id);
   }
   return ret;
 }
@@ -696,9 +688,9 @@ RegionDescPtr selectCalleeCFG(SrcKey callerSk, const Func* callee,
     return nullptr;
   }
 
-  auto const dvID = findTransIDForCallee(profData, callee, ctxType, argTypes);
+  auto const dvIDs = findTransIDsForCallee(profData, callee, ctxType, argTypes);
 
-  if (dvID == kInvalidTransID) {
+  if (dvIDs.empty()) {
     traceRefusal(callerSk, callee, "didn't find entry TransID for callee",
                  annotations);
     return nullptr;
@@ -707,7 +699,7 @@ RegionDescPtr selectCalleeCFG(SrcKey callerSk, const Func* callee,
   TransCFG cfg(callee->getFuncId(), profData, true /* inlining */);
 
   HotTransContext ctx;
-  ctx.tid = dvID;
+  ctx.entries = dvIDs;
   ctx.cfg = &cfg;
   ctx.profData = profData;
   ctx.maxBCInstrs = maxBCInstrs;
@@ -801,7 +793,7 @@ RegionDescPtr selectCalleeRegion(const irgen::IRGS& irgs,
   if (fca.hasUnpack()) {
     const int32_t ix = fca.numArgs;
     auto const ty = irgen::publicTopType(irgs, BCSPRelOffset{firstArgPos - ix});
-    if (!(ty <= (RuntimeOption::EvalHackArrDVArrs ? TVec : TVArr))) {
+    if (!(ty <= TVec)) {
       traceRefusal(
         sk,
         callee,
@@ -840,6 +832,10 @@ RegionDescPtr selectCalleeRegion(const irgen::IRGS& irgs,
 void setBaseInliningProfCount(uint64_t value) {
   s_baseProfCount.store(value);
   FTRACE(1, "setBaseInliningProfCount: {}\n", value);
+}
+
+void clearCachedInliningCost() {
+  s_inlCostCache->clear();
 }
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_MCGEN_H_
-#define incl_HPHP_JIT_MCGEN_H_
+#pragma once
 
 #include "hphp/runtime/vm/jit/code-cache.h"
 #include "hphp/runtime/vm/jit/ir-unit.h"
@@ -50,7 +49,6 @@ struct TransArgs {
 
   SrcKey sk;
   Annotations annotations;
-  TransFlags flags{0};
   TransID transId{kInvalidTransID};
   // A sequential per function index to identify optimized
   // translations in TRACE and StructuredLog output (in particular to
@@ -66,40 +64,6 @@ inline tracing::Props traceProps(const TransArgs& a) {
     .add("trans_kind", show(a.kind));
 }
 
-/*
- * The state of a partially-complete translation.
- *
- * It is used to transfer context between translate() and emitTranslation()
- * when the initial phase of translation can be done without the write lease.
- */
-struct TransEnv {
-  explicit TransEnv(const TransArgs& args) : args(args) {}
-  ~TransEnv();
-
-  TransEnv(TransEnv&&) = default;
-  TransEnv& operator=(TransEnv&&) = default;
-
-  /*
-   * Context for the translation process.
-   */
-  TransArgs args;
-  FPInvOffset initSpOffset;
-  TransID transID{kInvalidTransID};
-
-  /*
-   * hhir and vasm units. Both will be set iff bytecode -> hhir lowering was
-   * successful (hhir -> vasm lowering never fails).
-   */
-  std::unique_ptr<IRUnit> unit;
-  std::unique_ptr<Vunit> vunit;
-
-  /*
-   * Metadata collected during bytecode -> hhir lowering.
-   */
-  PostConditions pconds;
-  Annotations annotations;
-};
-
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace mcgen {
@@ -107,7 +71,7 @@ namespace mcgen {
 /*
  * Look up or translate a func prologue or func body.
  */
-TCA getFuncPrologue(Func* func, int nPassed);
+TranslationResult getFuncPrologue(Func* func, int nPassed);
 
 /*
  * Create a live or profile retranslation based on args.
@@ -115,7 +79,7 @@ TCA getFuncPrologue(Func* func, int nPassed);
  * Will return null if the write-lease could not be obtained or a translation
  * could not be generated.
  */
-TCA retranslate(TransArgs args, const RegionContext& ctx);
+TranslationResult retranslate(TransArgs args, const RegionContext& ctx);
 
 /*
  * Regionize and optimize the given function using profile data.
@@ -131,7 +95,7 @@ bool retranslateOpt(FuncId funcId);
  * In CLI mode, or when force is true, wait for retranslateAll to
  * finish; otherwise let it run in parallel.
  */
-void checkRetranslateAll(bool force = false);
+void checkRetranslateAll(bool force = false, bool skipSerialize = false);
 
 /*
  * If JIT optimized code profile-data serialization is enabled and scheduled to
@@ -178,5 +142,3 @@ bool dumpTCAnnotation(TransKind transKind);
 int getActiveWorker();
 
 }}}
-
-#endif

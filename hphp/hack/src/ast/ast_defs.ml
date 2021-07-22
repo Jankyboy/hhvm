@@ -15,7 +15,9 @@ include Ast_defs_visitors_ancestors
 
 type pos = (Pos.t[@visitors.opaque])
 
-and id = pos * string
+and id_ = string
+
+and id = pos * id_
 
 and pstring = pos * string
 
@@ -49,6 +51,8 @@ and class_kind =
 
 and param_kind = Pinout
 
+and readonly_kind = Readonly
+
 and og_null_flavor =
   | OG_nullthrows
   | OG_nullsafe
@@ -58,7 +62,6 @@ and fun_kind =
   | FAsync
   | FGenerator
   | FAsyncGenerator
-  | FCoroutine
 
 and bop =
   | Plus
@@ -72,7 +75,6 @@ and bop =
   | Diff2
   | Ampamp
   | Barbar
-  | LogXor
   | Lt
   | Lte
   | Gt
@@ -98,6 +100,12 @@ and uop =
   | Upincr
   | Updecr
   | Usilence
+
+and visibility =
+  | Private [@visitors.name "visibility_Private"]
+  | Public [@visitors.name "visibility_Public"]
+  | Protected [@visitors.name "visibility_Protected"]
+  | Internal [@visitors.name "visibility_Internal"]
 [@@deriving
   show { with_path = false },
     eq,
@@ -138,6 +146,18 @@ and uop =
 (*****************************************************************************)
 (* Helpers *)
 (*****************************************************************************)
+
+let get_pos : type a. Pos.t * a -> Pos.t = (fun (p, _) -> p)
+
+let get_id : id -> id_ = (fun (_p, id) -> id)
+
+let is_c_normal = function
+  | Cnormal -> true
+  | Cenum
+  | Cabstract
+  | Ctrait
+  | Cinterface ->
+    false
 
 let is_c_enum = function
   | Cenum -> true
@@ -181,15 +201,25 @@ let is_f_async_or_generator = function
     true
   | _ -> false
 
-let string_of_class_kind = function
+let string_of_class_kind kind ~is_enum_class =
+  match kind with
   | Cabstract -> "an abstract class"
   | Cnormal -> "a class"
   | Cinterface -> "an interface"
   | Ctrait -> "a trait"
-  | Cenum -> "an enum"
+  | Cenum ->
+    if is_enum_class then
+      "an enum class"
+    else
+      "an enum"
 
 let string_of_param_kind = function
   | Pinout -> "inout"
+
+let swap_variance = function
+  | Covariant -> Contravariant
+  | Contravariant -> Covariant
+  | Invariant -> Invariant
 
 module ShapeField = struct
   type t = shape_field_name
@@ -229,3 +259,14 @@ module ShapeMap = struct
 end
 
 module ShapeSet = Set.Make (ShapeField)
+
+(** Literal values that can occur in XHP enum properties.
+ *
+ * class :my-xhp-class {
+ *   attribute enum {'big', 'small'} my-prop;
+ * }
+ *)
+type xhp_enum_value =
+  | XEV_Int of int
+  | XEV_String of string
+[@@deriving eq, show]

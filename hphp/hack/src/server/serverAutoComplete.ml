@@ -27,6 +27,10 @@ let context_after_double_right_angle_bracket_regex =
 (* For identifying shape keys *)
 let context_after_quote = Str.regexp ".*['\"]$"
 
+(* For identifying instances of { that are not part of an XHP attribute value. *)
+let context_after_open_curly_brace_without_equals_regex =
+  Str.regexp ".*[^=][ ]*{$"
+
 let get_autocomplete_context
     ~(file_content : string)
     ~(pos : File_content.position)
@@ -45,6 +49,7 @@ let get_autocomplete_context
       is_after_open_square_bracket = false;
       is_after_quote = false;
       is_before_apostrophe = false;
+      is_open_curly_without_equals = false;
       char_at_pos = ' ';
     }
   else
@@ -53,7 +58,7 @@ let get_autocomplete_context
       File_content.get_offsets file_content (pos_start, pos)
     in
     let leading_text =
-      String.sub file_content offset_start (offset - offset_start)
+      String.sub file_content ~pos:offset_start ~len:(offset - offset_start)
     in
     (* text is the text from the start of the line up to the caret position *)
     let is_xhp_classname =
@@ -78,10 +83,18 @@ let get_autocomplete_context
     let is_after_quote = Str.string_match context_after_quote leading_text 0 in
     (* Detect what comes next *)
     let char_at_pos =
-      try file_content.[offset + AutocompleteTypes.autocomplete_token_length]
-      with _ -> ' '
+      try
+        file_content.[offset + AutocompleteTypes.autocomplete_token_length]
+      with
+      | _ -> ' '
     in
     let is_before_apostrophe = Char.equal char_at_pos '\'' in
+    let is_open_curly_without_equals =
+      Str.string_match
+        context_after_open_curly_brace_without_equals_regex
+        leading_text
+        0
+    in
     {
       AutocompleteTypes.is_manually_invoked;
       is_xhp_classname;
@@ -91,6 +104,7 @@ let get_autocomplete_context
       is_after_open_square_bracket;
       is_after_quote;
       is_before_apostrophe;
+      is_open_curly_without_equals;
       char_at_pos;
     }
 
@@ -114,7 +128,7 @@ let go_ctx
     ~(column : int) : AutocompleteTypes.ide_result =
   let open File_content in
   (* We have to edit the file content to add the text AUTO332.
-    TODO: Switch to FFP Autocomplete to avoid doing this file edit *)
+     TODO: Switch to FFP Autocomplete to avoid doing this file edit *)
   let file_content = Provider_context.read_file_contents_exn entry in
   let pos = { line; column } in
   let edits =

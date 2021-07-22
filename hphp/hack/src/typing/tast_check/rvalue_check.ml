@@ -53,21 +53,34 @@ let visitor =
       f ();
       non_returning_allowed := is_non_returning_allowed
 
-    method! on_expr env (((p, ty), e) as te) =
+    method! on_expr env ((ty, p, e) as te) =
       match e with
       | Binop (Ast_defs.Eq None, e1, e2) ->
         this#allow_non_returning (fun () -> this#on_expr env e1);
         this#disallow_non_returning (fun () -> this#on_expr env e2)
       | Eif (e1, e2, e3) ->
         this#disallow_non_returning (fun () -> this#on_expr env e1);
-        Option.iter e2 (this#on_expr env);
+        Option.iter e2 ~f:(this#on_expr env);
         this#on_expr env e3
       | Pipe (_, e1, e2) ->
         this#disallow_non_returning (fun () -> this#on_expr env e1);
         this#on_expr env e2
-      | List el -> List.iter el (this#on_expr env)
-      | Expr_list el -> List.iter el (this#on_expr env)
-      | Suspend e -> this#allow_non_returning (fun () -> this#on_expr env e)
+      | List el -> List.iter el ~f:(this#on_expr env)
+      | ExpressionTree
+          { et_hint; et_splices; et_virtualized_expr; et_runtime_expr } ->
+        this#on_hint env et_hint;
+        this#on_block env et_splices;
+        (* Allow calls to void functions at the top level:
+
+             Code`void_func()`
+
+           but not in subexpressions:
+
+             Code`() ==> { $x = void_func(); }`
+        *)
+        super#on_expr env et_virtualized_expr;
+
+        this#on_expr env et_runtime_expr
       | _ ->
         if not !non_returning_allowed then check_valid_rvalue p env ty;
         this#disallow_non_returning (fun () -> super#on_expr env te)
@@ -75,12 +88,14 @@ let visitor =
     method! on_stmt env stmt =
       match snd stmt with
       | Expr e -> this#allow_non_returning (fun () -> this#on_expr env e)
+      | Return (Some (_, _, Hole (e, _, _, _)))
       | Return (Some e) ->
         this#allow_non_returning (fun () -> this#on_expr env e)
       | For (e1, e2, e3, b) ->
-        this#allow_non_returning (fun () -> this#on_expr env e1);
-        this#disallow_non_returning (fun () -> this#on_expr env e2);
-        this#allow_non_returning (fun () -> this#on_expr env e3);
+        this#allow_non_returning (fun () -> List.iter ~f:(this#on_expr env) e1);
+        this#disallow_non_returning (fun () ->
+            Option.iter ~f:(this#on_expr env) e2);
+        this#allow_non_returning (fun () -> List.iter ~f:(this#on_expr env) e3);
         this#on_block env b
       | Foreach (e1, e2, b) ->
         this#disallow_non_returning (fun () -> this#on_expr env e1);

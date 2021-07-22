@@ -30,7 +30,6 @@
 #include "hphp/runtime/base/string-buffer.h"
 #include "hphp/runtime/base/string-util.h"
 #include "hphp/runtime/base/req-ptr.h"
-#include "hphp/runtime/base/libevent-http-client.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/stack-logger.h"
 #include "hphp/runtime/ext/extension-registry.h"
@@ -40,7 +39,6 @@
 #include "hphp/util/lock.h"
 #include <boost/algorithm/string.hpp>
 #include <boost/variant.hpp>
-#include <folly/Optional.h>
 #include <folly/portability/OpenSSL.h>
 #include <curl/curl.h>
 #include <curl/easy.h>
@@ -129,17 +127,17 @@ const StaticString
 Array HHVM_FUNCTION(curl_list_pools) {
   ReadLock lock(CurlHandlePool::namedPoolsMutex);
   auto size = CurlHandlePool::namedPools.size();
-  if (!size) return empty_darray();
+  if (!size) return empty_dict_array();
 
-  DArrayInit ret(size);
+  DictInit ret(size);
   for (auto it: CurlHandlePool::namedPools) {
     auto pool = it.second;
-    auto stats = make_darray(
+    auto stats = make_dict_array(
       s_fetches, pool->statsFetches(),
       s_empty, pool->statsEmpty(),
       s_fetchMs, pool->statsFetchUs() / 1000
     );
-    ret.set(String(it.first), make_darray(s_size, pool->size(),
+    ret.set(String(it.first), make_dict_array(s_size, pool->size(),
                                           s_connGetTimeout,
                                           pool->connGetTimeout(),
                                           s_reuseLimit,
@@ -171,7 +169,7 @@ Variant HHVM_FUNCTION(curl_version, int uversion /* = CURLVERSION_NOW */) {
     return false;
   }
 
-  ArrayInit ret(9, ArrayInit::Map{});
+  DictInit ret(9);
   ret.set(s_version_number,     (int)d->version_num);
   ret.set(s_age,                d->age);
   ret.set(s_features,           d->features);
@@ -218,12 +216,12 @@ Variant HHVM_FUNCTION(curl_exec, const Resource& ch) {
 
 #if LIBCURL_VERSION_NUM >= 0x071301 /* Available since 7.19.1 */
 Array create_certinfo(struct curl_certinfo *ci) {
-  Array ret = Array::CreateVArray();
+  Array ret = Array::CreateVec();
   if (ci) {
     for (int i = 0; i < ci->num_of_certs; i++) {
       struct curl_slist *slist = ci->certinfo[i];
 
-      Array certData = Array::CreateDArray();
+      Array certData = Array::CreateDict();
       while (slist) {
         Array parts = StringUtil::Explode(
           String(slist->data, CopyString),
@@ -432,7 +430,7 @@ Variant HHVM_FUNCTION(curl_getinfo, const Resource& ch, int opt /* = 0 */) {
 #if LIBCURL_VERSION_NUM >= 0x070c03 /* Available since 7.12.3 */
     case CURLINFO_SLIST: {
       struct curl_slist *slist;
-      Array ret = Array::CreateVArray();
+      Array ret = Array::CreateVec();
       if (curl_easy_getinfo(cp, (CURLINFO)opt, &slist) == CURLE_OK) {
         while (slist) {
           ret.append(slist->data);
@@ -440,6 +438,15 @@ Variant HHVM_FUNCTION(curl_getinfo, const Resource& ch, int opt /* = 0 */) {
         }
         curl_slist_free_all(slist);
         return ret;
+      }
+      return false;
+    }
+#endif
+#if LIBCURL_VERSION_NUM >= 0x073700 /* Available since 7.55.0 */
+    case CURLINFO_OFF_T: {
+      curl_off_t code = 0;
+      if (curl_easy_getinfo(cp, (CURLINFO)opt, &code) == CURLE_OK) {
+        return code;
       }
       return false;
     }
@@ -633,7 +640,7 @@ Variant HHVM_FUNCTION(curl_multi_getcontent, const Resource& ch) {
 }
 
 Array curl_convert_fd_to_stream(fd_set *fd, int max_fd) {
-  Array ret = Array::CreateVArray();
+  Array ret = Array::CreateVec();
   for (int i=0; i<=max_fd; i++) {
     if (FD_ISSET(i, fd)) {
       ret.append(Variant(req::make<BuiltinFile>(i)));
@@ -1478,6 +1485,10 @@ struct CurlExtension final : Extension {
 #endif
 
 #if LIBCURL_VERSION_NUM >= 0x073700 /* Available since 7.55.0 */
+    HHVM_RC_INT_SAME(CURLINFO_SIZE_DOWNLOAD_T)
+    HHVM_RC_INT_SAME(CURLINFO_SIZE_UPLOAD_T)
+    HHVM_RC_INT_SAME(CURLINFO_SPEED_DOWNLOAD_T)
+    HHVM_RC_INT_SAME(CURLINFO_SPEED_UPLOAD_T)
     HHVM_RC_INT_SAME(CURLOPT_REQUEST_TARGET)
     HHVM_RC_INT_SAME(CURLOPT_SOCKS5_AUTH)
 #endif
@@ -1485,6 +1496,8 @@ struct CurlExtension final : Extension {
 #if LIBCURL_VERSION_NUM >= 0x073800 /* Available since 7.56.0 */
     HHVM_RC_INT_SAME(CURLOPT_SSH_COMPRESSION)
     HHVM_RC_INT_SAME(CURL_VERSION_MULTI_SSL)
+    HHVM_RC_INT_SAME(CURLINFO_CONTENT_LENGTH_DOWNLOAD_T)
+    HHVM_RC_INT_SAME(CURLINFO_CONTENT_LENGTH_UPLOAD_T)
 #endif
 
 #if LIBCURL_VERSION_NUM >= 0x073900 /* Available since 7.57.0 */
@@ -1496,6 +1509,7 @@ struct CurlExtension final : Extension {
 #endif
 
 #if LIBCURL_VERSION_NUM >= 0x073b00 /* Available since 7.59.0 */
+    HHVM_RC_INT_SAME(CURLINFO_FILETIME_T)
     HHVM_RC_INT_SAME(CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS)
     HHVM_RC_INT_SAME(CURLOPT_TIMEVALUE_LARGE)
 #endif
@@ -1507,6 +1521,13 @@ struct CurlExtension final : Extension {
 
 #if LIBCURL_VERSION_NUM >= 0x073d00 /* Available since 7.61.0 */
     HHVM_RC_INT_SAME(CURLAUTH_BEARER)
+    HHVM_RC_INT_SAME(CURLINFO_APPCONNECT_TIME_T)
+    HHVM_RC_INT_SAME(CURLINFO_CONNECT_TIME_T)
+    HHVM_RC_INT_SAME(CURLINFO_NAMELOOKUP_TIME_T)
+    HHVM_RC_INT_SAME(CURLINFO_PRETRANSFER_TIME_T)
+    HHVM_RC_INT_SAME(CURLINFO_REDIRECT_TIME_T)
+    HHVM_RC_INT_SAME(CURLINFO_STARTTRANSFER_TIME_T)
+    HHVM_RC_INT_SAME(CURLINFO_TOTAL_TIME_T)
     HHVM_RC_INT_SAME(CURLOPT_DISALLOW_USERNAME_IN_URL)
     HHVM_RC_INT_SAME(CURLOPT_PROXY_TLS13_CIPHERS)
     HHVM_RC_INT_SAME(CURLOPT_TLS13_CIPHERS)
@@ -1516,6 +1537,16 @@ struct CurlExtension final : Extension {
     HHVM_RC_INT_SAME(CURLOPT_DOH_URL);
     HHVM_RC_INT_SAME(CURLOPT_UPKEEP_INTERVAL_MS);
     HHVM_RC_INT_SAME(CURLOPT_UPLOAD_BUFFERSIZE);
+#endif
+
+#if LIBCURL_VERSION_NUM >= 0x074700 /* Available since 7.71.0 */
+    HHVM_RC_INT_SAME(CURLOPT_SSLCERT_BLOB);
+    HHVM_RC_INT_SAME(CURLOPT_SSLKEY_BLOB);
+    HHVM_RC_INT_SAME(CURLOPT_PROXY_SSLCERT_BLOB);
+    HHVM_RC_INT_SAME(CURLOPT_PROXY_SSLKEY_BLOB);
+    HHVM_RC_INT_SAME(CURLOPT_ISSUERCERT_BLOB);
+    HHVM_RC_INT_SAME(CURLOPT_PROXY_ISSUERCERT);
+    HHVM_RC_INT_SAME(CURLOPT_PROXY_ISSUERCERT_BLOB);
 #endif
 
 #if CURLOPT_FTPASCII != 0

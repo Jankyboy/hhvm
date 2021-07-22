@@ -35,12 +35,9 @@
 #include "hphp/util/dataflow-worklist.h"
 #include "hphp/util/trace.h"
 
-#include "hphp/ppc64-asm/asm-ppc64.h"
-
 #include <boost/dynamic_bitset.hpp>
 #include <boost/range/adaptor/reversed.hpp>
 #include <folly/Format.h>
-#include <folly/Optional.h>
 
 #include <algorithm>
 #include <random>
@@ -300,6 +297,8 @@ public:
   Vinstr def_inst;
 };
 
+using LiveSet = boost::dynamic_bitset<>; // Bitset of Vreg numbers.
+
 template<class Fn> void forEach(const LiveSet& bits, Fn fn) {
   for (auto i = bits.find_first(); i != bits.npos; i = bits.find_next(i)) {
     fn(Vreg(i));
@@ -321,9 +320,6 @@ struct VxlsContext {
       case Arch::ARM:
         tmp = vixl::d31;
         break;
-      case Arch::PPC64:
-        tmp = ppc64_asm::reg::v29;
-        break;
     }
     this->abi.simdUnreserved -= tmp;
     this->abi.simdReserved |= tmp;
@@ -344,9 +340,9 @@ public:
   jit::vector<Vlabel> blocks;
   // [start,end) position of each block.
   jit::vector<LiveRange> block_ranges;
-  // Per-block sp[offset] to spill-slots.  folly::none in cases where we
+  // Per-block sp[offset] to spill-slots.  std::nullopt in cases where we
   // have still not reached the recordbasenativesp instruction.
-  jit::vector<folly::Optional<int>> spill_offsets;
+  jit::vector<Optional<int>> spill_offsets;
   // Per-block live-in sets.
   jit::vector<LiveSet> livein;
 };
@@ -678,14 +674,14 @@ int spEffect(const Vunit& unit, const Vinstr& inst, PhysReg sp,
 /*
  * Compute the offset from `sp' to the spill area at each block start.
  */
-jit::vector<folly::Optional<int>> analyzeSP(const Vunit& unit,
+jit::vector<Optional<int>> analyzeSP(const Vunit& unit,
                                             const jit::vector<Vlabel>& blocks,
                                             PhysReg sp) {
   auto visited = boost::dynamic_bitset<>(unit.blocks.size());
-  auto spill_offsets = jit::vector<folly::Optional<int>>(unit.blocks.size());
+  auto spill_offsets = jit::vector<Optional<int>>(unit.blocks.size());
 
   for (auto const b : blocks) {
-    auto offset = visited.test(b) ? spill_offsets[b] : folly::none;
+    auto offset = visited.test(b) ? spill_offsets[b] : std::nullopt;
 
     for (unsigned j = 0; j < unit.blocks[b].code.size(); j++) {
       auto const& inst = unit.blocks[b].code[j];
@@ -693,6 +689,12 @@ jit::vector<folly::Optional<int>> analyzeSP(const Vunit& unit,
         assert_flog(!offset, "Block B{} Instr {} initiailizes native SP, but "
                     "already initialized.", size_t(b), j);
         offset = 0;
+      } else if (inst.op == Vinstr::unrecordbasenativesp) {
+        assert_flog(offset, "Block B{} Instr {} uninitiailizes native SP, but "
+                    "already uninitialized.", size_t(b), j);
+        assert_flog(*offset == 0, "Block B{} Instr {} uninitiailizes native SP, "
+                    "but SPOffset is nonzero.", size_t(b), j);
+        offset = std::nullopt;
       } else if (offset) {
         *offset -= spEffect(unit, inst, sp);
       }
@@ -713,6 +715,66 @@ jit::vector<folly::Optional<int>> analyzeSP(const Vunit& unit,
     }
   }
   return spill_offsets;
+}
+
+jit::vector<LiveSet> computeLiveness(const Vunit& unit,
+                                     const Abi& abi,
+                                     const jit::vector<Vlabel>& blocks) {
+  auto livein = jit::vector<LiveSet>{unit.blocks.size()};
+  auto const preds = computePreds(unit);
+
+  auto blockPO = jit::vector<uint32_t>(unit.blocks.size());
+  auto revBlocks = blocks;
+  std::reverse(begin(revBlocks), end(revBlocks));
+
+  auto wl = dataflow_worklist<uint32_t>(revBlocks.size());
+
+  for (unsigned po = 0; po < revBlocks.size(); po++) {
+    wl.push(po);
+    blockPO[revBlocks[po]] = po;
+  }
+
+  while (!wl.empty()) {
+    auto b = revBlocks[wl.pop()];
+    auto& block = unit.blocks[b];
+
+    // start with the union of the successor blocks
+    LiveSet live(unit.next_vr);
+    for (auto s : succs(block)) {
+      if (!livein[s].empty()) live |= livein[s];
+    }
+
+    // and now go through the instructions in the block in reverse order
+    for (auto const& inst : boost::adaptors::reverse(block.code)) {
+      RegSet implicit_uses, implicit_across, implicit_defs;
+      getEffects(abi, inst, implicit_uses, implicit_across, implicit_defs);
+
+      auto const vsf = Vreg{RegSF{0}};
+
+      auto const dvisit = [&] (Vreg r, Width w) {
+        live.reset(w == Width::Flags ? vsf : r);
+      };
+      auto const uvisit = [&] (Vreg r, Width w) {
+        live.set(w == Width::Flags ? vsf : r);
+      };
+
+      visitDefs(unit, inst, dvisit);
+      visit(unit, implicit_defs, dvisit);
+
+      visitUses(unit, inst, uvisit);
+      visit(unit, implicit_uses, uvisit);
+      visit(unit, implicit_across, uvisit);
+    }
+
+    if (live != livein[b]) {
+      livein[b] = live;
+      for (auto p : preds[b]) {
+        wl.push(blockPO[p]);
+      }
+    }
+  }
+
+  return livein;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -947,11 +1009,19 @@ jit::vector<Variable*> buildIntervals(const Vunit& unit,
       if (inst.op == Vinstr::recordbasenativesp) {
         forEach(live, [&](Vreg r) {
           if (!unit.regToConst.count(r)) {
-            // We mark the recordbasenativesp as a use so no spills get
-            // inserted prior to the recordbasenativesp unless they have to be.
+            // We mark the instruction as a use so no spills span the
+            // instruction  unless they have to.
             uv.use(r);
             if (!variables[r]) variables[r] = Variable::create(r);
             variables[r]->recordbasenativesps.push_back(pos);
+          }
+        });
+      } else if (inst.op == Vinstr::unrecordbasenativesp) {
+        forEach(live, [&](Vreg r) {
+          if (!unit.regToConst.count(r)) {
+            // We mark the instruction as a use so no spills span the
+            // instruction  unless they have to.
+            uv.use(r);
           }
         });
       }
@@ -1244,7 +1314,7 @@ PhysReg tryCoalesce(const jit::vector<Variable*>& variables,
  * targets (if F is a phijmp).  The second hint accounts for F's entire
  * equivalence class---see analyzePhiHints() for more details.
  */
-folly::Optional<std::pair<PhysReg,PhysReg>>
+Optional<std::pair<PhysReg,PhysReg>>
 tryPhiHint(const jit::vector<Variable*>& variables,
            const Interval* ivl, const HintInfo& hint_info,
            const PosVec& free_until) {
@@ -1279,7 +1349,7 @@ tryPhiHint(const jit::vector<Variable*>& variables,
     }
     return std::make_pair(preferred, group_hint);
   }
-  return folly::none;
+  return std::nullopt;
 }
 
 /*
@@ -2018,7 +2088,8 @@ void insertSpill(const VxlsContext& ctx,
     spill(ivl->var->def_pos + 1);
   } else {
     for (auto const pos : ivl->var->recordbasenativesps) {
-      always_assert_flog(ivl->covers(pos), "Spilling required before native sp set");
+      always_assert_flog(ivl->covers(pos),
+                         "Spilling required before native sp set");
       spill(pos + 1);
     }
   }
@@ -2293,7 +2364,7 @@ void renameOperands(Vunit& unit, const VxlsContext& ctx,
  * Updates `j' to refer to the same instruction after the code insertions.
  */
 void insertSpillsAt(jit::vector<Vinstr>& code, unsigned& j,
-                    const CopyPlan& spills, folly::Optional<MemoryRef> slots,
+                    const CopyPlan& spills, Optional<MemoryRef> slots,
                     unsigned pos) {
   jit::vector<Vinstr> stores;
 
@@ -2353,7 +2424,7 @@ void insertCopiesAt(const VxlsContext& ctx,
  * Updates `j' to refer to the same instruction after the code insertions.
  */
 void insertLoadsAt(jit::vector<Vinstr>& code, unsigned& j,
-                   const CopyPlan& plan, folly::Optional<MemoryRef> slots,
+                   const CopyPlan& plan, Optional<MemoryRef> slots,
                    unsigned pos) {
   jit::vector<Vinstr> loads;
 
@@ -2396,8 +2467,8 @@ void insertLoadsAt(jit::vector<Vinstr>& code, unsigned& j,
 void insertCopies(Vunit& unit, const VxlsContext& ctx,
                   const jit::vector<Variable*>& /*variables*/,
                   const ResolutionPlan& resolution) {
-  auto const getSlots = [&] (folly::Optional<int> offset) {
-      folly::Optional<MemoryRef> slots;
+  auto const getSlots = [&] (Optional<int> offset) {
+      Optional<MemoryRef> slots;
       if (offset) slots = ctx.sp[*offset];
       return slots;
   };
@@ -2435,6 +2506,12 @@ void insertCopies(Vunit& unit, const VxlsContext& ctx,
         assert_flog(!offset, "Block B{} Instr {} initiailizes native SP, but "
                     "already initialized.", size_t(b), j);
         offset = 0;
+      } else if (code[j].op == Vinstr::unrecordbasenativesp) {
+        assert_flog(offset, "Block B{} Instr {} uninitiailizes native SP, but "
+                    "already uninitialized.", size_t(b), j);
+        assert_flog(*offset == 0, "Block B{} Instr {} uninitiailizes native "
+                    "SP, but SP offset is non zero.", size_t(b), j);
+        offset = std::nullopt;
       } else if (offset) {
         *offset -= spEffect(unit, code[j], ctx.sp);
       }
@@ -2553,6 +2630,8 @@ enum SpillState : uint8_t {
 struct SpillStates {
   SpillState in;
   SpillState out;
+  bool changes;
+  bool hasIndirectFixup;
 };
 
 /*
@@ -2586,116 +2665,16 @@ SpillState instrInState(const Vunit& unit, const Vinstr& inst,
       return NoSpillPossible;
 
     case NoSpill:
+      if (inst.op == Vinstr::unrecordbasenativesp) return NoSpillPossible;
       if (instrNeedsSpill(unit, inst, sp)) return NeedSpill;
       return NoSpill;
 
     case NeedSpill:
+      if (inst.op == Vinstr::unrecordbasenativesp) return NoSpillPossible;
       return NeedSpill;
   }
 
   always_assert(false);
-}
-
-/*
- * processSpillExits() can insert jcc{} instructions in the middle of a
- * block. fixupBlockJumps() breaks the given block after any jccs, making the
- * unit valid again. This is done as a separate pass from the work in
- * processSpillExits() to reduce complexity.
- */
-void fixupBlockJumps(Vunit& unit, Vlabel label) {
-  jit::vector<Vinstr> origCode;
-  origCode.swap(unit.blocks[label].code);
-  auto insertBlock = [&]() -> Vblock& { return unit.blocks[label]; };
-
-  for (auto const& inst : origCode) {
-    insertBlock().code.emplace_back(inst);
-
-    if (inst.op == Vinstr::jcc && !inst.jcc_.targets[0].isValid()) {
-      auto newLabel = unit.makeBlock(insertBlock().area_idx,
-                                     insertBlock().weight);
-      insertBlock().code.back().jcc_.targets[0] = newLabel;
-      label = newLabel;
-    }
-  }
-}
-
-/*
- * Walk through the given block, undoing any fallbackcc/bindjcc optimizations
- * that happen in an area where spill space is live. The latter transformation
- * is necessary to make the hidden edge out of the fallbackcc{} explicit, so we
- * can insert an lea on it to free spill space. It takes something like this:
- *
- * B0:
- *   cmpbim 0, %rbp[0x10] => %flags
- *   fallbackcc CC_E, %flags, <SrcKey>
- *   ...
- *
- * and turns it into something like this:
- *
- * B0:
- *   cmpbim 0, %rbp[0x10] => %flags
- *   jcc CC_E, %flags -> B3, else B2
- * B2:
- *   ...
- * B3:
- *   lea %rsp[0x20] => %rsp
- *   fallback <SrcKey>
- */
-void processSpillExits(Vunit& unit, Vlabel label, SpillState state,
-                       Vinstr free, PhysReg sp) {
-  auto code = &unit.blocks[label].code;
-  auto needFixup = false;
-
-  for (unsigned i = 0, n = code->size(); i < n; ++i) {
-    auto& inst = (*code)[i];
-    state = instrInState(unit, inst, state, sp);
-
-    if (state < NeedSpill ||
-        (inst.op != Vinstr::fallbackcc &&
-         inst.op != Vinstr::bindjcc &&
-         inst.op != Vinstr::jcci)) {
-      continue;
-    }
-
-    FTRACE(3, "Breaking out {}: {}\n", label, show(unit, inst));
-    auto target = unit.makeBlock(AreaIndex::Cold, 0);
-    // makeBlock might reallocate unit.blocks
-    code = &unit.blocks[label].code;
-
-    auto& targetCode = unit.blocks[target].code;
-    free.set_irctx(inst.irctx());
-    ConditionCode cc;
-    Vreg sf;
-    if (inst.op == Vinstr::fallbackcc) {
-      auto const& fb_i = inst.fallbackcc_;
-      targetCode.emplace_back(free);
-      targetCode.emplace_back(fallback{fb_i.target, fb_i.spOff,
-                                       fb_i.trflags, fb_i.args});
-      cc = fb_i.cc;
-      sf = fb_i.sf;
-    } else if (inst.op == Vinstr::bindjcc) {
-      auto const& bj_i = inst.bindjcc_;
-      targetCode.emplace_back(free);
-      targetCode.emplace_back(bindjmp{bj_i.target, bj_i.spOff, bj_i.trflags,
-                                      bj_i.args});
-      cc = bj_i.cc;
-      sf = bj_i.sf;
-    } else /* inst.op == Vinstr::jcci */ {
-      auto const& jcc_i = inst.jcci_;
-      targetCode.emplace_back(free);
-      targetCode.emplace_back(jmpi{jcc_i.taken});
-      cc = jcc_i.cc;
-      sf = jcc_i.sf;
-    }
-    targetCode.back().set_irctx(inst.irctx());
-
-    // Next is set to an invalid block that will be fixed up once we're done
-    // iterating through the original block.
-    inst = jcc{cc, sf, {Vlabel{}, target}};
-    needFixup = true;
-  }
-
-  if (needFixup) fixupBlockJumps(unit, label);
 }
 
 /*
@@ -2705,8 +2684,10 @@ bool mergeSpillStates(SpillState& dst, SpillState src) {
   assertx(src != Uninit);
   if (dst == src) return false;
 
-  // The only allowed state transitions are to states with higher values, so we
-  // merge with std::max().
+  // The only permitted merges result in a state with higher values.  This
+  // holds because we can't merge a NoSpillPossible with a non NoSpillPossible
+  // since that would mean a program point both can and can't have spills.
+  assertx(IMPLIES(src != NoSpillPossible, dst != NoSpillPossible));
   auto const oldDst = dst;
   dst = std::max(dst, src);
   return dst != oldDst;
@@ -2716,21 +2697,16 @@ std::default_random_engine s_stressRand(0xfaceb00c);
 std::uniform_int_distribution<int> s_stressDist(1,7);
 
 /*
- * If the current unit used any spill slots, allocate and free spill space
- * where appropriate. Spill space is allocated right before it's needed and
- * freed before any instruction that exits the unit, which is any block-ending
- * instruction with no successors in the unit. fallbackcc{} and bindjcc{}
- * instructions have hidden edges that exit the unit, and if we encounter one
- * while spill space is live, we have to make that exit edge explicit to insert
- * code on it (see processSpillExits()). This makes the exit path more
- * expensive, so we try to allocate spill space as late as possible to avoid
- * pessimising fallbackcc/bindjcc instructions unless it's really
- * necessary. The algorithm uses two passes:
+ * If the current unit used any spill slots, allocate and free spill
+ * space where appropriate. Spill space is allocated right before it's
+ * needed and freed before any instruction that exits the unit, which
+ * is any block-ending instruction with no successors in the unit. The
+ * algorithm uses two passes:
  *
  * Analysis:
  *   - For each block in RPO:
  *     - Load in-state, which has been populated by at least one predecessor
- *       (or manually set to NoSpill for the entry block).
+ *       (or manually set to NoSpillPossible for the entry block).
  *     - Analyze each instruction in the block, determining what state the
  *       spill space must be in before executing it.
  *     - Record out-state for the block and propagate to successors. If this
@@ -2740,25 +2716,18 @@ std::uniform_int_distribution<int> s_stressDist(1,7);
  *   - For each block (we use RPO to only visit reachable blocks but order
  *     doesn't matter):
  *     - Inspect the block's in-state and out-state:
- *       - NoSpill in, == NeedSpill out: Walk the block to see if we need to
- *         allocate spill space before any instructions.
+ *       - NoSpill in: Walk the block to see if we need to allocate spill space
+ *         before any instructions.
  *       - NoSpill out: Allocate spill space on any edges to successors with
- *         NeedSpill in-states.
+ *         NeedSpill in-states.  Also walk block and check for deallocation of
+ *         spill space.
  *       - NeedSpill out: If the block has no in-unit successors, free spill
  *         space before the block-end instruction.
- *       - != NoSpill out: Look for any fallbackcc/bindjcc instructions,
- *         deoptimizing as appropriate (see processSpillExits()).
  */
 void allocateSpillSpace(Vunit& unit, const VxlsContext& ctx,
                         SpillInfo& spi) {
-  if (RuntimeOption::EvalHHIRStressSpill && ctx.abi.canSpill) {
-    auto extra = s_stressDist(s_stressRand);
-    FTRACE(1, "StressSpill on; adding {} extra slots\n", extra);
-    spi.used_spill_slots += extra;
-  }
   if (spi.used_spill_slots == 0) return;
   Timer t(Timer::vasm_reg_alloc_spill, unit.log_entry);
-  always_assert(ctx.abi.canSpill);
 
   // Make sure we always allocate spill space in multiples of 16 bytes, to keep
   // alignment straightforward.
@@ -2774,7 +2743,8 @@ void allocateSpillSpace(Vunit& unit, const VxlsContext& ctx,
   jit::vector<uint32_t> rpoIds(unit.blocks.size());
   for (uint32_t i = 0; i < ctx.blocks.size(); ++i) rpoIds[ctx.blocks[i]] = i;
 
-  jit::vector<SpillStates> states(unit.blocks.size(), {Uninit, Uninit});
+  jit::vector<SpillStates> states(unit.blocks.size(),
+                                  {Uninit, Uninit, false, false});
   states[unit.entry].in = NoSpillPossible;
   dataflow_worklist<uint32_t> worklist(unit.blocks.size());
   worklist.push(0);
@@ -2785,13 +2755,13 @@ void allocateSpillSpace(Vunit& unit, const VxlsContext& ctx,
   while (!worklist.empty()) {
     auto const label  = ctx.blocks[worklist.pop()];
     auto const& block = unit.blocks[label];
-    auto state = states[label].in;
+    auto const stateIn = states[label].in;
+    auto state = stateIn;
 
-    if (state < NeedSpill) {
-      for (auto& inst : block.code) {
-        state = instrInState(unit, inst, state, ctx.sp);
-        if (state == NeedSpill) break;
-      }
+    for (auto& inst : block.code) {
+      state = instrInState(unit, inst, state, ctx.sp);
+      if (state != stateIn) states[label].changes = true;
+      if (instrHasIndirectFixup(inst)) states[label].hasIndirectFixup = true;
     }
     states[label].out = state;
 
@@ -2807,18 +2777,26 @@ void allocateSpillSpace(Vunit& unit, const VxlsContext& ctx,
     auto state = states[label];
     auto& block = unit.blocks[label];
 
-    // Any block with a non NeedSpill in-state and == NeedSpill out-state might
-    // have an instruction in it that needs spill space, which we allocate
-    // right before the instruction in question.
-    if (state.in != NeedSpill && state.out == NeedSpill) {
-      auto blockState = state.in;
+    // Any block with a state change should be walked to check for allocation
+    // or free of spill space.
+    if (state.changes) {
+      auto curState = state.in;
       for (auto it = block.code.begin(); it != block.code.end(); ++it) {
-        blockState = instrInState(unit, *it, blockState, ctx.sp);
-        if (blockState == NeedSpill) {
+        auto const prevState = curState;
+        curState = instrInState(unit, *it, curState, ctx.sp);
+        if (curState == prevState) continue;
+        if (prevState != NeedSpill && curState == NeedSpill) {
+          assertx(prevState != NoSpillPossible);
           FTRACE(3, "alloc spill before {}: {}\n", label, show(unit, *it));
           alloc.set_irctx(it->irctx());
-          block.code.insert(it, alloc);
-          break;
+          it = block.code.insert(it, alloc);
+          ++it;
+        } else if (prevState == NeedSpill &&
+                   curState == NoSpillPossible) {
+          FTRACE(3, "free spill before {}: {}\n", label, show(unit, *it));
+          free.set_irctx(it->irctx());
+          it = block.code.insert(it, free);
+          ++it;
         }
       }
     }
@@ -2826,15 +2804,16 @@ void allocateSpillSpace(Vunit& unit, const VxlsContext& ctx,
     // Allocate spill space on edges from a NoSpill out-state to a NeedSpill
     // in-state.
     auto const successors = succs(block);
-    if (state.out == NoSpill || state.out == NoSpillPossible) {
-      for (auto s : successors) {
-        if (states[s].in == NeedSpill) {
-          assertx(state.out != NoSpillPossible);
-          FTRACE(3, "alloc spill on edge from {} -> {}\n", label, s);
-          auto it = std::prev(block.code.end());
-          alloc.set_irctx(it->irctx());
-          block.code.insert(it, alloc);
-        }
+    for (auto s : successors) {
+      if (state.out != states[s].in) {
+        assertx(state.out != NoSpillPossible && states[s].in != NoSpillPossible);
+        auto const shouldAlloc = state.out == NoSpill;
+        auto& op =  shouldAlloc ? alloc : free;
+        FTRACE(3, "{} spill on edge from {} -> {}\n",
+               shouldAlloc ? "alloc" : "free", label, s);
+        auto it = std::prev(block.code.end());
+        op.set_irctx(it->irctx());
+        block.code.insert(it, op);
       }
     }
 
@@ -2849,10 +2828,20 @@ void allocateSpillSpace(Vunit& unit, const VxlsContext& ctx,
       block.code.insert(it, free);
     }
 
-    // Any block that ends with NeedSpill needs to be walked to look for places
-    // to free spill space.
-    if (state.out == NeedSpill) {
-      processSpillExits(unit, label, state.in, free, ctx.sp);
+    if (isPrologue(unit.context->kind)) {
+      if (state.hasIndirectFixup) {
+        auto blockState = state.in;
+        for (auto it = block.code.begin(); it != block.code.end(); ++it) {
+          // Note that if the instruction at the start or end of the spill
+          // regions has fixup, this loop does not account for it.
+          // This is not ideal but currently there are no instructions that
+          // have fixups that can start/end spill regions, so it is fine.
+          if (instrInState(unit, *it, blockState, ctx.sp) == NeedSpill &&
+              instrHasIndirectFixup(*it)) {
+            updateIndirectFixupBySpill(*it, spillSize);
+          }
+        }
+      }
     }
   }
 }
@@ -3074,8 +3063,9 @@ void allocateRegistersWithXLS(Vunit& unit, const Abi& abi) {
   Timer timer(Timer::vasm_reg_alloc, unit.log_entry);
   auto const counter = s_counter.fetch_add(1, std::memory_order_relaxed);
 
-  splitCriticalEdges(unit);
   assertx(check(unit));
+  assertx(checkNoCriticalEdges(unit));
+  assertx(checkNoSideExits(unit));
 
   // Analysis passes.
   VxlsContext ctx{abi};

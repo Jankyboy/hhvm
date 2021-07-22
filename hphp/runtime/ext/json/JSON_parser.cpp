@@ -34,7 +34,6 @@ SOFTWARE.
 
 #include <folly/FBVector.h>
 
-#include "hphp/runtime/base/array-provenance.h"
 #include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/base/collections.h"
 #include "hphp/runtime/base/string-buffer.h"
@@ -310,10 +309,24 @@ int dehexchar(char c) {
 }
 
 NEVER_INLINE
-static void tvDecRefRange(TypedValue* begin, TypedValue* end) {
+void tvDecRefRange(TypedValue* begin, TypedValue* end) {
   assertx(begin <= end);
   for (auto tv = begin; tv != end; ++tv) {
     tvDecRefGen(tv);
+  }
+}
+
+void appendToContainer(JSONContainerType container_type,
+                       Variant& base, Variant& value) {
+  if (container_type == JSONContainerType::COLLECTIONS) {
+    collections::append(base.getObjectData(), value.asTypedValue());
+  } else {
+    auto& arr = base.asArrRef();
+    if (arr.isDict()) {
+      arr.set(safe_cast<int64_t>(arr.size()), value);
+    } else {
+      arr.append(value);
+    }
   }
 }
 
@@ -544,13 +557,13 @@ struct SimpleParser {
       }
       if (container_type == JSONContainerType::DARRAYS_AND_VARRAYS) {
         return top == fp
-          ? ArrayData::CreateVArray()
-          : PackedArray::MakeVArrayNatural(top - fp, fp);
+          ? ArrayData::CreateVec()
+          : PackedArray::MakeVecNatural(top - fp, fp);
       }
       assertx(container_type == JSONContainerType::DARRAYS);
       return top == fp
-        ? ArrayData::CreateDArray()
-        : MixedArray::MakeDArrayNatural(top - fp, fp);
+        ? ArrayData::CreateDict()
+        : MixedArray::MakeDictNatural(top - fp, fp);
     }();
     top = fp;
     pushArrayData(arr);
@@ -581,8 +594,8 @@ struct SimpleParser {
       assertx(container_type == JSONContainerType::DARRAYS ||
               container_type == JSONContainerType::DARRAYS_AND_VARRAYS);
       return top == fp
-        ? ArrayData::CreateDArray()
-        : MixedArray::MakeDArray((top - fp) >> 1, fp)->asArrayData();
+        ? ArrayData::CreateDict()
+        : MixedArray::MakeDict((top - fp) >> 1, fp)->asArrayData();
     }();
     // MixedArray::MakeMixed can return nullptr if there are duplicate keys
     if (!arr) return false;
@@ -671,7 +684,6 @@ struct SimpleParser {
     auto const tv = top++;
     tv->m_type = data->toDataType();
     tv->m_data.parr = data;
-    assertx(IMPLIES(arrprov::arrayWantsTag(data), arrprov::getTag(data)));
   }
 
   const char* p;
@@ -729,9 +741,7 @@ struct json_parser {
     String key;
     Variant val;
   };
-  folly::fbvector<json_state> stack;
-  // check_non_safepoint_surprise() above will not trigger gc
-  TYPE_SCAN_IGNORE_FIELD(stack);
+  req::vector<json_state> stack;
   int top;
   int mark; // the watermark
   int depth;
@@ -800,7 +810,19 @@ struct json_parser {
   }
 };
 
+namespace {
+
 RDS_LOCAL(json_parser, s_json_parser);
+
+InitFiniNode r_shutdown(
+  [] {
+    // Ensure request memory is released
+    s_json_parser->stack = decltype(s_json_parser->stack){};
+  },
+  InitFiniNode::When::RequestFini
+);
+
+}
 
 // In Zend, the json_parser struct is publicly
 // accessible. Thus the fields could be accessed
@@ -947,10 +969,6 @@ static void json_create_zval(Variant &z, UncheckedBuffer &buf, DataType type,
     case KindOfUninit:
     case KindOfNull:
     case KindOfPersistentString:
-    case KindOfPersistentDArray:
-    case KindOfDArray:
-    case KindOfPersistentVArray:
-    case KindOfVArray:
     case KindOfPersistentVec:
     case KindOfVec:
     case KindOfPersistentDict:
@@ -1034,14 +1052,10 @@ static void object_set(const json_parser* json,
     } else {
       int64_t i;
       if (key.get()->isStrictlyInteger(i)) {
-        forceToDArray(var).set(i, value);
+        forceToDict(var).set(i, value);
       } else {
-        forceToDArray(var).set(key, value);
+        forceToDict(var).set(key, value);
       }
-    }
-    if (var.isArray()) {
-      DEBUG_ONLY auto const data = var.getArrayData();
-      assertx(IMPLIES(arrprov::arrayWantsTag(data), arrprov::getTag(data)));
     }
   }
 }
@@ -1059,11 +1073,7 @@ static void attach_zval(json_parser *json,
   auto up_mode = json->stack[json->top - 1].mode;
 
   if (up_mode == Mode::ARRAY) {
-    if (container_type == JSONContainerType::COLLECTIONS) {
-      collections::append(root.getObjectData(), child.asTypedValue());
-    } else {
-      root.asArrRef().append(child);
-    }
+    appendToContainer(container_type, root, child);
   } else if (up_mode == Mode::OBJECT) {
     object_set(json, root, key, child, assoc, container_type);
   }
@@ -1190,6 +1200,10 @@ bool JSON_parser(Variant &z, const char *p, int length, bool const assoc,
   // reasons, it only makes sense to expand if necessary and cycles are wasted
   // contracting. Calls with a depth other than default should be rare.
   if (depth > json->stack.size()) {
+    auto const newSize = sizeof(json_parser::json_state) * depth;
+    if (newSize > kMaxSmallSize && tl_heap->preAllocOOM(newSize)) {
+      check_non_safepoint_surprise();
+    }
     json->stack.resize(depth);
   }
   SCOPE_EXIT {
@@ -1296,10 +1310,10 @@ bool JSON_parser(Variant &z, const char *p, int length, bool const assoc,
             } else if (container_type == JSONContainerType::DARRAYS ||
                        container_type == JSONContainerType::DARRAYS_AND_VARRAYS)
             {
-              top = Array::CreateDArray();
+              top = Array::CreateDict();
             /* </fb> */
             } else {
-              top = Array::CreateDArray();
+              top = Array::CreateDict();
             }
           /*<fb>*/
           }
@@ -1370,11 +1384,11 @@ bool JSON_parser(Variant &z, const char *p, int length, bool const assoc,
           } else if (container_type == JSONContainerType::HACK_ARRAYS) {
             top = Array::CreateVec();
           } else if (container_type == JSONContainerType::DARRAYS_AND_VARRAYS) {
-            top = Array::CreateVArray();
+            top = Array::CreateVec();
           } else if (container_type == JSONContainerType::DARRAYS) {
-            top = Array::CreateDArray();
+            top = Array::CreateDict();
           } else {
-            top = Array::CreateDArray();
+            top = Array::CreateDict();
           }
           /*</fb>*/
           json->stack[json->top].key = copy_and_clear(*key);
@@ -1391,11 +1405,7 @@ bool JSON_parser(Variant &z, const char *p, int length, bool const assoc,
             Variant mval;
             json_create_zval(mval, *buf, type, options);
             auto& top = json->stack[json->top].val;
-            if (container_type == JSONContainerType::COLLECTIONS) {
-              collections::append(top.getObjectData(), mval.asTypedValue());
-            } else {
-              top.asArrRef().append(mval);
-            }
+            appendToContainer(container_type, top, mval);
             buf->clear();
             reset_type();
           }
@@ -1475,11 +1485,7 @@ bool JSON_parser(Variant &z, const char *p, int length, bool const assoc,
           case Mode::ARRAY:
             if (type != kInvalidDataType) {
               auto& top = json->stack[json->top].val;
-              if (container_type == JSONContainerType::COLLECTIONS) {
-                collections::append(top.getObjectData(), mval.asTypedValue());
-              } else {
-                top.asArrRef().append(mval);
-              }
+              appendToContainer(container_type, top, mval);
             }
             state = 28;
             break;

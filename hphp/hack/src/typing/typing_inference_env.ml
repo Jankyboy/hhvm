@@ -31,22 +31,13 @@ type tyvar_constraints = {
   lower_bounds: ITySet.t;
   upper_bounds: ITySet.t;
   type_constants:
-    ( Aast.sid (* id of the type constant "T", containing its position. *)
-    * locl_ty )
+    (pos_id (* id of the type constant "T", containing its position. *)
+    * locl_ty)
     SMap.t;
       (** Map associating a type to each type constant id of this variable.
           Whenever we localize "T1::T" in a constraint, we add a fresh type variable
           indexed by "T" in the type_constants of the type variable representing T1.
           This allows to properly check constraints on "T1::T". *)
-  pu_accesses:
-    ( Aast.sid (* id of the pu projection "T", containing its position. *)
-    * locl_ty )
-    SMap.t;
-      (** Map associating PU information to each instance of
-          #v:@T
-          when the type variable #v is not resolved yet. We introduce a new type
-          variable to 'postpone' the checking of this expression until the end,
-          when #v will be known. *)
 }
 
 type solving_info =
@@ -94,7 +85,6 @@ module Log = struct
       type_constants;
       lower_bounds;
       upper_bounds;
-      pu_accesses;
     } =
       tvcstr
     in
@@ -106,8 +96,6 @@ module Log = struct
         ("upper_bounds", internal_type_set_as_value upper_bounds);
         ( "type_constants",
           smap_as_value (fun (_, ty) -> locl_type_as_value ty) type_constants );
-        ( "pu_acceses",
-          smap_as_value (fun (_, ty) -> locl_type_as_value ty) pu_accesses );
       ]
 
   let solving_info_as_value sinfo =
@@ -140,8 +128,8 @@ module Log = struct
 
   let tyvars_stack_as_value tyvars_stack =
     List
-      (List.map tyvars_stack (fun (_p, l) ->
-           List (List.map l (fun i -> Atom (var_as_string i)))))
+      (List.map tyvars_stack ~f:(fun (_p, l) ->
+           List (List.map l ~f:(fun i -> Atom (var_as_string i)))))
 
   let inference_env_as_value env =
     let {
@@ -182,7 +170,7 @@ module Log = struct
 
   let reason_to_json r =
     let open Hh_json in
-    let p = Reason.to_pos r in
+    let p = Reason.to_pos r |> Pos_or_decl.unsafe_to_raw_pos in
     let to_n x = JSON_Number (string_of_int x) in
     JSON_Object
       [
@@ -205,7 +193,6 @@ module Log = struct
           appears_contravariantly;
           lower_bounds;
           upper_bounds;
-          pu_accesses = _;
           type_constants = _;
         } =
       let bounds_to_json bs =
@@ -284,7 +271,6 @@ let empty_tyvar_constraints =
     appears_covariantly = false;
     appears_contravariantly = false;
     type_constants = SMap.empty;
-    pu_accesses = SMap.empty;
   }
 
 let empty_tyvar_info pos =
@@ -463,15 +449,15 @@ let add_current_tyvar ?variance env p v =
     { env with tyvars_stack = (expr_pos, v :: tyvars) :: rest }
   | _ -> env
 
-let fresh_type_reason ?variance env r =
+let fresh_type_reason ?variance env p r =
   let v = Ident.tmp () in
-  let env = add_current_tyvar ?variance env (Reason.to_pos r) v in
+  let env = add_current_tyvar ?variance env p v in
   (env, mk (r, Tvar v))
 
 let fresh_type ?variance env p =
-  fresh_type_reason env (Reason.Rtype_variable p) ?variance
+  fresh_type_reason env p (Reason.Rtype_variable p) ?variance
 
-let fresh_invariant_type_var = fresh_type ~variance:Ast_defs.Invariant
+let fresh_type_invariant = fresh_type ~variance:Ast_defs.Invariant
 
 let new_global_tyvar env ?i r =
   let v =
@@ -483,11 +469,12 @@ let new_global_tyvar env ?i r =
     Ident.from_string_hash
       (Printf.sprintf
          "%s%s"
-         (Pos.print_verbose_relative (Reason.to_pos r))
+         (Pos.print_verbose_relative
+            (Reason.to_pos r |> Pos_or_decl.unsafe_to_raw_pos))
          extension)
   in
   let env =
-    let p = Reason.to_pos r in
+    let p = Reason.to_pos r |> Pos_or_decl.unsafe_to_raw_pos in
     match get_tyvar_info_opt env v with
     | Some tvinfo ->
       assert (Option.is_some tvinfo.global_reason);
@@ -501,7 +488,7 @@ let wrap_ty_in_var env r ty =
   let v = Ident.tmp () in
   let tvinfo =
     {
-      tyvar_pos = Reason.to_pos r;
+      tyvar_pos = Reason.to_pos r |> Pos_or_decl.unsafe_to_raw_pos;
       global_reason = None;
       eager_solve_failed = false;
       solving_info = TVIType ty;
@@ -594,10 +581,10 @@ let get_tyvar_pos env var =
   | Some tvinfo -> tvinfo.tyvar_pos
 
 let get_tyvar_lower_bounds_opt env v =
-  Option.map (get_tyvar_constraints_opt env v) (fun x -> x.lower_bounds)
+  Option.map (get_tyvar_constraints_opt env v) ~f:(fun x -> x.lower_bounds)
 
 let get_tyvar_upper_bounds_opt env v =
-  Option.map (get_tyvar_constraints_opt env v) (fun x -> x.upper_bounds)
+  Option.map (get_tyvar_constraints_opt env v) ~f:(fun x -> x.upper_bounds)
 
 let get_tyvar_lower_bounds env var : ITySet.t =
   match get_solving_info_opt env var with
@@ -669,16 +656,8 @@ let get_tyvar_type_consts env var =
   | Some cstr -> cstr.type_constants
   | None -> SMap.empty
 
-let get_tyvar_pu_accesses env var =
-  match get_tyvar_constraints_opt env var with
-  | Some cstr -> cstr.pu_accesses
-  | None -> SMap.empty
-
 let get_tyvar_type_const env var (_, tyconstid) =
   SMap.find_opt tyconstid (get_tyvar_type_consts env var)
-
-let get_tyvar_pu_access env var (_, typ_name) =
-  SMap.find_opt typ_name (get_tyvar_pu_accesses env var)
 
 let set_tyvar_type_const env var ((_, tyconstid_) as tyconstid) ty =
   let tvinfo = get_tyvar_constraints_exn env var in
@@ -686,11 +665,6 @@ let set_tyvar_type_const env var ((_, tyconstid_) as tyconstid) ty =
     SMap.add tyconstid_ (tyconstid, ty) tvinfo.type_constants
   in
   set_tyvar_constraints env var { tvinfo with type_constants }
-
-let set_tyvar_pu_access env var name new_var =
-  let tvinfo = get_tyvar_constraints_exn env var in
-  let pu_accesses = SMap.add (snd name) (name, new_var) tvinfo.pu_accesses in
-  set_tyvar_constraints env var { tvinfo with pu_accesses }
 
 (** Conjoin a subtype proposition onto the subtype_prop in the environment *)
 let add_subtype_prop env prop =
@@ -749,7 +723,7 @@ let remove_tyvar_upper_bound env var upper_var =
       ITySet.filter
         (fun ty ->
           let (_env, ty) = expand_internal_type env ty in
-          not @@ InternalType.is_var_v ty upper_var)
+          not @@ InternalType.is_var_v ty ~v:upper_var)
         tvconstraints.upper_bounds
     in
     set_tyvar_constraints env var { tvconstraints with upper_bounds }
@@ -764,7 +738,7 @@ let remove_tyvar_lower_bound env var lower_var =
       ITySet.filter
         (fun ty ->
           let (_env, ty) = expand_internal_type env ty in
-          not @@ InternalType.is_var_v ty lower_var)
+          not @@ InternalType.is_var_v ty ~v:lower_var)
         tvconstraints.lower_bounds
     in
     set_tyvar_constraints env var { tvconstraints with lower_bounds }
@@ -818,7 +792,7 @@ let global_tyvar_info_to_dummy_tyvar_info gtvinfo =
     global_reason = Some tyvar_reason;
     eager_solve_failed = false;
     solving_info = solving_info_g;
-    tyvar_pos = Reason.to_pos tyvar_reason;
+    tyvar_pos = Reason.to_pos tyvar_reason |> Pos_or_decl.unsafe_to_raw_pos;
   }
 
 let get_vars (env : t) = IMap.keys env.tvenv
@@ -925,9 +899,6 @@ module Size = struct
     SMap.map (fun (_id, ty) -> ty_size env ty) tconsts |> fun m ->
     SMap.fold (fun _ x y -> x + y) m 0
 
-  let pu_accesses_size env pu_accesses =
-    SMap.fold (fun _ (_id, ty) acc -> acc + ty_size env ty) pu_accesses 0
-
   let solving_info_size env solving_info =
     match solving_info with
     | TVIType ty -> ty_size env ty
@@ -938,15 +909,13 @@ module Size = struct
         upper_bounds;
         lower_bounds;
         type_constants;
-        pu_accesses;
       } =
         tvcstr
       in
       let ubound_size = internal_type_set_size env upper_bounds in
       let lbound_size = internal_type_set_size env lower_bounds in
       let tconst_size = type_constants_size env type_constants in
-      let pu_accesses_size = pu_accesses_size env pu_accesses in
-      ubound_size + lbound_size + tconst_size + pu_accesses_size
+      ubound_size + lbound_size + tconst_size
 
   let tyvar_info_size env tvinfo =
     let {
@@ -990,7 +959,6 @@ let merge_constraints cstr1 cstr2 =
     lower_bounds = lb1;
     upper_bounds = ub1;
     type_constants = tc1;
-    pu_accesses = pu_accesses1;
     appears_covariantly = cov1;
     appears_contravariantly = contra1;
   } =
@@ -1000,7 +968,6 @@ let merge_constraints cstr1 cstr2 =
     lower_bounds = lb2;
     upper_bounds = ub2;
     type_constants = tc2;
-    pu_accesses = pu_accesses2;
     appears_covariantly = cov2;
     appears_contravariantly = contra2;
   } =
@@ -1015,7 +982,6 @@ let merge_constraints cstr1 cstr2 =
       (* Type constants must already have been made equivalent, so picking any should be fine *)
       (* TODO: that might actually not be true during initial merging, but let's fix that later. *)
       SMap.union tc1 tc2;
-    pu_accesses = SMap.union pu_accesses1 pu_accesses2;
   }
 
 let solving_info_as_constraints sinfo =
@@ -1028,7 +994,6 @@ let solving_info_as_constraints sinfo =
       appears_covariantly = false;
       appears_contravariantly = false;
       type_constants = SMap.empty;
-      pu_accesses = SMap.empty;
     }
 
 let merge_solving_infos sinfo1 sinfo2 =
@@ -1057,7 +1022,7 @@ let merge_tyvar_infos tvinfo1 tvinfo2 =
   let global_reason =
     match (gl1, gl2) with
     | (Some r1, Some r2) ->
-      if Reason.(equal r1 none) then
+      if Reason.is_none r1 then
         Some r2
       else
         Some r1
@@ -1068,10 +1033,10 @@ let merge_tyvar_infos tvinfo1 tvinfo2 =
   in
   {
     tyvar_pos =
-      ( if Pos.equal pos1 Pos.none then
+      (if Pos.equal pos1 Pos.none then
         pos2
       else
-        pos1 );
+        pos1);
     global_reason;
     eager_solve_failed = esf1 || esf2;
     solving_info = merge_solving_infos sinfo1 sinfo2;
@@ -1153,15 +1118,15 @@ let simple_merge env1 env2 =
           let tvinfo =
             {
               tyvar_pos =
-                ( if Pos.equal tyvar_pos1 Pos.none then
+                (if Pos.equal tyvar_pos1 Pos.none then
                   tyvar_pos2
                 else
-                  tyvar_pos1 );
+                  tyvar_pos1);
               global_reason =
-                ( if Option.is_some global_reason1 then
+                (if Option.is_some global_reason1 then
                   global_reason1
                 else
-                  global_reason2 );
+                  global_reason2);
               eager_solve_failed = eager_solve_failed1 || eager_solve_failed2;
               solving_info =
                 (match (sinfo1, sinfo2) with
@@ -1212,7 +1177,6 @@ let solving_info_carries_information = function
       upper_bounds;
       lower_bounds;
       type_constants;
-      pu_accesses;
     } =
       tvcstr
     in
@@ -1221,7 +1185,6 @@ let solving_info_carries_information = function
     || (not @@ ITySet.is_empty upper_bounds)
     || (not @@ ITySet.is_empty lower_bounds)
     || (not @@ SMap.is_empty type_constants)
-    || (not @@ SMap.is_empty pu_accesses)
 
 let tyvar_info_carries_information tvinfo =
   let { tyvar_pos = _; solving_info; global_reason = _; eager_solve_failed = _ }
@@ -1376,8 +1339,7 @@ let split_undirected_tyvar_graph (graph : ISet.t IMap.t) : ISet.t list =
     assert (
       Int.equal
         (IMap.cardinal graph)
-        (List.fold components ~init:0 ~f:(fun acc c -> acc + ISet.cardinal c))
-    )
+        (List.fold components ~init:0 ~f:(fun acc c -> acc + ISet.cardinal c)))
   in
   (* sanity check: check whether components are really disconnected *)
   let (_ : ISet.t) =
@@ -1463,19 +1425,19 @@ let replace_var_by_ty_in_prop prop v ty =
     match prop with
     | TL.IsSubtype (ty1, ty2) ->
       let ty1 =
-        if InternalType.is_var_v ty1 v then
+        if InternalType.is_var_v ty1 ~v then
           LoclType ty
         else
           ty1
       in
       let ty2 =
-        if InternalType.is_var_v ty2 v then
+        if InternalType.is_var_v ty2 ~v then
           LoclType ty
         else
           ty2
       in
       TL.IsSubtype (ty1, ty2)
-    | TL.Coerce (ty1, ty2) ->
+    | TL.Coerce (cd, ty1, ty2) ->
       let ty1 =
         if is_var_v ty1 v then
           ty
@@ -1488,7 +1450,7 @@ let replace_var_by_ty_in_prop prop v ty =
         else
           ty2
       in
-      TL.Coerce (ty1, ty2)
+      TL.Coerce (cd, ty1, ty2)
     | TL.Disj (f, props) ->
       let props = List.map props ~f:replace in
       TL.Disj (f, props)
@@ -1650,7 +1612,6 @@ let unsolve env v =
             upper_bounds = ITySet.singleton (LoclType ty);
             lower_bounds = ITySet.singleton (LoclType ty);
             type_constants = SMap.empty;
-            pu_accesses = SMap.empty;
           }
       in
       let tvinfo =

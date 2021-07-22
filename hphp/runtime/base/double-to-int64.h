@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_DOUBLE_TO_INT64_H_
-#define incl_HPHP_DOUBLE_TO_INT64_H_
+#pragma once
 
 #include <limits>
 
@@ -28,7 +27,7 @@ namespace HPHP {
 inline int64_t double_to_int64(double v)
   FOLLY_DISABLE_UNDEFINED_BEHAVIOR_SANITIZER("float-cast-overflow") {
   if (v >= 0) {
-    return v < std::numeric_limits<uint64_t>::max() ? (uint64_t)v : 0u;
+    return v < (double)std::numeric_limits<uint64_t>::max() ? (uint64_t)v : 0u;
   } else if (v < 0) {
     return (int64_t)v;
   } else {
@@ -43,4 +42,3 @@ inline int64_t double_to_int64(double v)
 
 }
 
-#endif

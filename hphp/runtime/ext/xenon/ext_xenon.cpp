@@ -16,6 +16,7 @@
 */
 #include "hphp/runtime/ext/xenon/ext_xenon.h"
 
+#include "hphp/system/systemlib.h"
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/array-iterator.h"
 #include "hphp/runtime/base/backtrace.h"
@@ -51,7 +52,14 @@ TRACE_SET_MOD(xenon);
 struct XenonRequestLocalData final {
   XenonRequestLocalData();
   ~XenonRequestLocalData();
-  void log(Xenon::SampleType t, c_WaitableWaitHandle* wh = nullptr);
+  void log(
+    Xenon::SampleType t,
+    EventHook::Source sourceType,
+    c_WaitableWaitHandle* wh = nullptr,
+    int64_t triggerTime = 0
+  );
+  static StaticString show(EventHook::Source sourceType);
+
   Array createResponse();
 
   void requestInit();
@@ -70,27 +78,36 @@ static RDS_LOCAL(XenonRequestLocalData, s_xenonData);
 // statics used by the Xenon classes
 
 const StaticString
+  s_asio("Asio"),
   s_class("class"),
   s_function("function"),
   s_file("file"),
+  s_interpreter("Interpreter"),
+  s_isWait("ioWaitSample"),
+  s_jit("Jit"),
   s_line("line"),
   s_metadata("metadata"),
-  s_time("time"),
-  s_isWait("ioWaitSample"),
+  s_native("Native"),
+  s_phpStack("phpStack"),
+  s_sourceType("sourceType"),
   s_stack("stack"),
-  s_phpStack("phpStack");
+  s_time("time"),
+  s_time_ns("timeNano"),
+  s_lastTriggerTime("lastTriggerTimeNano"),
+  s_unwinder("Unwinder");
+
 
 namespace {
 
 Array parsePhpStack(const Array& bt) {
-  VArrayInit stack(bt->size());
+  VecInit stack(bt->size());
   for (ArrayIter it(bt); it; ++it) {
     const auto& frame = it.second().toArray();
     if (frame.exists(s_function)) {
       bool fileline = frame.exists(s_file) && frame.exists(s_line);
       bool metadata = frame.exists(s_metadata);
 
-      DArrayInit element(1 + (fileline ? 2 : 0) + (metadata ? 1 : 0));
+      DictInit element(1 + (fileline ? 2 : 0) + (metadata ? 1 : 0));
 
       if (frame.exists(s_class)) {
         auto func = folly::to<std::string>(
@@ -132,7 +149,7 @@ Xenon& Xenon::getInstance() noexcept {
   return instance;
 }
 
-Xenon::Xenon() noexcept : m_stopping(false), m_missedSampleCount(0) {
+Xenon::Xenon() noexcept : m_lastSurpriseTime(0), m_stopping(false), m_missedSampleCount(0) {
 #if !defined(__APPLE__) && !defined(_MSC_VER)
   m_timerid = 0;
 #endif
@@ -206,13 +223,15 @@ void Xenon::stop() {
 // the Surprise flag.  The data is gathered in thread local storage.
 // If the sample is Enter, then do not record this function name because it
 // hasn't done anything.  The sample belongs to the previous function.
-void Xenon::log(SampleType t, c_WaitableWaitHandle* wh) const {
+void Xenon::log(SampleType t,
+                EventHook::Source sourceType,
+                c_WaitableWaitHandle* wh) const {
   if (getSurpriseFlag(XenonSignalFlag)) {
     if (!RuntimeOption::XenonForceAlwaysOn) {
       clearSurpriseFlag(XenonSignalFlag);
     }
     TRACE(1, "Xenon::log %s\n", show(t));
-    s_xenonData->log(t, wh);
+    s_xenonData->log(t, sourceType, wh, m_lastSurpriseTime);
   }
 }
 
@@ -227,6 +246,7 @@ void Xenon::onTimer() {
 // passed to ExecutePerThread.
 void Xenon::surpriseAll() {
   TRACE(1, "Xenon::surpriseAll\n");
+  m_lastSurpriseTime = gettime_ns(CLOCK_REALTIME);
   RequestInfo::ExecutePerRequest(
     [] (RequestInfo* t) { t->m_reqInjectionData.setFlag(XenonSignalFlag); }
   );
@@ -251,34 +271,55 @@ XenonRequestLocalData::~XenonRequestLocalData() {
 // Creates an array to respond to the Xenon PHP extension;
 // builds the data into the format neeeded.
 Array XenonRequestLocalData::createResponse() {
-  VArrayInit stacks(m_stackSnapshots.size());
+  VecInit stacks(m_stackSnapshots.size());
   for (ArrayIter it(m_stackSnapshots); it; ++it) {
     const auto& frame = it.second().toArray();
-    stacks.append(make_darray(
+    stacks.append(make_dict_array(
       s_time, frame[s_time],
+      s_time_ns, frame[s_time_ns],
+      s_lastTriggerTime, frame[s_lastTriggerTime],
       s_stack, frame[s_stack].toArray(),
       s_phpStack, parsePhpStack(frame[s_stack].toArray()),
-      s_isWait, frame[s_isWait]
+      s_isWait, frame[s_isWait],
+      s_sourceType, frame[s_sourceType]
     ));
   }
   return stacks.toArray();
 }
 
+StaticString XenonRequestLocalData::show(EventHook::Source sourceType) {
+  switch (sourceType) {
+    case EventHook::Source::Asio: return s_asio;
+    case EventHook::Source::Interpreter: return s_interpreter;
+    case EventHook::Source::Jit: return s_jit;;
+    case EventHook::Source::Native: return s_native;
+    case EventHook::Source::Unwinder: return s_unwinder;
+  }
+  always_assert(false);
+}
+
 void XenonRequestLocalData::log(Xenon::SampleType t,
-                                c_WaitableWaitHandle* wh) {
+                                EventHook::Source sourceType,
+                                c_WaitableWaitHandle* wh,
+                                int64_t triggerTime
+) {
   if (!m_isProfiledRequest) return;
 
   TRACE(1, "XenonRequestLocalData::log\n");
   time_t now = time(nullptr);
+  auto now_ns = gettime_ns(CLOCK_REALTIME);
   auto bt = createBacktrace(BacktraceArgs()
                              .skipTop(t == Xenon::EnterSample)
                              .skipInlined(t == Xenon::EnterSample)
                              .fromWaitHandle(wh)
                              .withMetadata()
                              .ignoreArgs());
-  m_stackSnapshots.append(make_darray(
+  m_stackSnapshots.append(make_dict_array(
     s_time, now,
+    s_time_ns, now_ns,
+    s_lastTriggerTime, triggerTime,
     s_stack, bt,
+    s_sourceType, show(sourceType),
     s_isWait, !Xenon::isCPUTime(t)
   ));
 }
@@ -323,7 +364,7 @@ Array HHVM_FUNCTION(xenon_get_data, void) {
     TRACE(1, "xenon_get_data\n");
     return s_xenonData->createResponse();
   }
-  return Array::CreateVArray();
+  return Array::CreateVec();
 }
 
 Array HHVM_FUNCTION(xenon_get_and_clear_samples, void) {
@@ -334,7 +375,7 @@ Array HHVM_FUNCTION(xenon_get_and_clear_samples, void) {
     s_xenonData->m_stackSnapshots.reset();
     return ret;
   }
-  return Array::CreateVArray();
+  return Array::CreateVec();
 }
 
 int64_t HHVM_FUNCTION(xenon_get_and_clear_missed_sample_count, void) {

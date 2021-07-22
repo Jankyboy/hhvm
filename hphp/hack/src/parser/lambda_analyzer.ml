@@ -12,7 +12,6 @@ module SourceText = Full_fidelity_source_text
 module Syntax = Full_fidelity_editable_positioned_syntax
 module Token = Syntax.Token
 module TokenKind = Full_fidelity_token_kind
-module SyntaxKind = Full_fidelity_syntax_kind
 open Syntax
 
 (*
@@ -159,9 +158,9 @@ let local_variables acc node =
 
 let filter_parents parents =
   (* We want all the parents that are relevant to computing outer variables.
-  Since outer variables are indicated in a "use" clause of an anonymous
-  function, we can stop looking when we encounter one.  Otherwise, we just
-  filter out anything that is not a lambda, function or method.
+     Since outer variables are indicated in a "use" clause of an anonymous
+     function, we can stop looking when we encounter one.  Otherwise, we just
+     filter out anything that is not a lambda, function or method.
   *)
   let rec aux acc parents =
     match parents with

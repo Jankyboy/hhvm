@@ -1,8 +1,10 @@
 int(1)
 classMeth{
-    class(A)
-    function(f1)
+  class(A)
+  function(f1)
 }
 int(3)
 
-Fatal error: Call to undefined function f1() in %s/test/slow/func-ptr-no-interop/bad-func.php on line 15
+Warning: Cannot use a scalar value as an array in %s/bad-func.php on line 15
+
+Fatal error: Function name must be a string in %s/bad-func.php on line 15

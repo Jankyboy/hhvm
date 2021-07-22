@@ -9,8 +9,8 @@ function entrypoint_dimmable_object_call(): void {
 
   error_reporting(-1);
 
-  $foo = new stdclass();
-  $foo->someprop = darray['baz' => 'myfunc'];
+  $foo = new stdClass();
+  $foo->someprop = darray['baz' => myfunc<>];
 
   $bar = 'someprop';
 

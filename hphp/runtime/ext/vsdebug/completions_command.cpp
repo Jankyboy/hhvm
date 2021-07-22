@@ -482,7 +482,7 @@ void CompletionsCommand::addClassConstantCompletions(
   folly::dynamic& targets
 ) {
   HPHP::String classStr(context.matchContext.c_str());
-  Class* cls = Unit::loadClass(classStr.get());
+  Class* cls = Class::load(classStr.get());
   if (cls == nullptr) {
     return;
   }
@@ -493,7 +493,8 @@ void CompletionsCommand::addClassConstantCompletions(
     auto const &clsConst = cls->constants()[i];
     // constants() includes type constants and abstract constants, neither of
     // which are particularly useful for debugger completion
-    if (!(clsConst.isType() || clsConst.isAbstract())) {
+    if (clsConst.kind() == ConstModifiers::Kind::Value
+        && !clsConst.isAbstractAndUninit()) {
       const std::string& name = clsConst.name->toCppString();
       addIfMatch(name, context.matchPrefix, CompletionTypeValue, targets);
     }
@@ -515,7 +516,7 @@ void CompletionsCommand::addClassStaticCompletions(
   folly::dynamic& targets
 ) {
   HPHP::String classStr(context.matchContext.c_str());
-  Class* cls = Unit::loadClass(classStr.get());
+  Class* cls = Class::load(classStr.get());
 
   while (cls != nullptr) {
     // Add static propreties of this class.
@@ -569,7 +570,7 @@ void CompletionsCommand::addFuncConstantCompletions(
   });
 
   auto const consts = lookupDefinedConstants();
-  IterateKVNoInc(consts.get(), [&] (TypedValue k, TypedValue) {
+  IterateKV(consts.get(), [&] (TypedValue k, TypedValue) {
     auto const& name = String::attach(tvCastToStringData(k));
     addIfMatch(
       name.toCppString(),

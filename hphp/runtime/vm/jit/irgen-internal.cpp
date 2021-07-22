@@ -37,19 +37,80 @@ SSATmp* convertClsMethToVec(IRGS& env, SSATmp* clsMeth) {
   assertx(clsMeth->isA(TClsMeth));
   auto const cls = gen(env, LdClsName, gen(env, LdClsFromClsMeth, clsMeth));
   auto const func = gen(env, LdFuncName, gen(env, LdFuncFromClsMeth, clsMeth));
-  auto vec = gen(env, AllocVArray, PackedArrayData { 2 });
+  auto vec = gen(env, AllocVec, PackedArrayData { 2 });
   gen(env, InitVecElem, IndexData { 0 }, vec, cls);
   gen(env, InitVecElem, IndexData { 1 }, vec, func);
   return vec;
 }
 
 SSATmp* convertClassKey(IRGS& env, SSATmp* key) {
+  assertx (key->type().isKnownDataType());
   if (key->isA(TCls)) {
     if (RuntimeOption::EvalRaiseClassConversionWarning) {
       gen(env, RaiseWarning, cns(env, s_clsToStringWarning.get()));
     }
     return gen(env, LdClsName, key);
   }
+  if (key->isA(TLazyCls)) {
+    if (RuntimeOption::EvalRaiseClassConversionWarning) {
+      gen(env, RaiseWarning, cns(env, s_clsToStringWarning.get()));
+    }
+    return gen(env, LdLazyClsName, key);
+  }
+  assertx(!key->type().maybe(TCls | TLazyCls));
   return key;
 }
+
+void defineFrameAndStack(IRGS& env, SBInvOffset bcSPOff) {
+  // Define FP and SP.
+  if (resumeMode(env) != ResumeMode::None) {
+    // - resumable frames live on the heap, so they do not have a stack position
+    // - fp(env) and sp(env) are backed by rvmfp() and rvmsp() registers
+    // - sp(env) points to the top of the stack at translation entry
+    // - stack base is `irSPOff` away from sp(env)
+    gen(env, DefFP, DefFPData { std::nullopt });
+    updateMarker(env);
+
+    auto const irSPOff = bcSPOff;
+    gen(env, DefRegSP, DefStackData { irSPOff, bcSPOff });
+  } else {
+    // - frames of regular functions live on the stack
+    // - fp(env) and sp(env) are backed by the same rvmfp() register
+    // - stack base is numSlotsInFrame() away from sp(env)
+    gen(env, DefFP, DefFPData { IRSPRelOffset { 0 } });
+    updateMarker(env);
+
+    auto const irSPOff = SBInvOffset { -curFunc(env)->numSlotsInFrame() };
+    gen(env, DefFrameRelSP, DefStackData { irSPOff, bcSPOff }, fp(env));
+  }
+
+  // Now that the stack is initialized, update the BC marker and perform
+  // initial sync of the exception stack boundary.
+  updateMarker(env);
+  env.irb->exceptionStackBoundary();
+
+  if (RuntimeOption::EvalHHIRGenerateAsserts) {
+    // Assert that we're in the correct function.
+    gen(env, DbgAssertFunc, fp(env));
+  }
+}
+
+void handleConvNoticeLevel(
+    IRGS& env,
+    const ConvNoticeData& notice_data,
+    const char* const from,
+  const char* const to) {
+  if (LIKELY(notice_data.level == ConvNoticeLevel::None)) return;
+
+  assertx(notice_data.reason != nullptr);
+  const auto str = makeStaticString(folly::sformat(
+    "Implicit {} to {} conversion for {}", from, to, notice_data.reason));
+  if (notice_data.level == ConvNoticeLevel::Throw) {
+    gen(env, ThrowInvalidOperation, cns(env, str));
+  }
+  if (notice_data.level == ConvNoticeLevel::Log) {
+    gen(env, RaiseNotice, cns(env, str));
+  }
+}
+
 }}}

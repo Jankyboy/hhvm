@@ -36,7 +36,6 @@
 
 #include "hphp/util/build-info.h"
 
-#include "hphp/runtime/vm/repo.h"
 #include "hphp/runtime/base/preg.h"
 #include "hphp/runtime/base/program-functions.h"
 
@@ -59,8 +58,8 @@ using namespace HPHP::jit;
 #define MAX_SYM_LEN       10240
 
 std::string     dumpDir("/tmp");
-std::string     configFile;
 std::string     profFileName;
+std::string     repoFileName;
 uint32_t        nTopTrans       = 0;
 uint32_t        nTopFuncs       = 0;
 bool            useJSON         = false;
@@ -70,7 +69,7 @@ bool            collectBCStats  = false;
 bool            inclusiveStats  = false;
 bool            verboseStats    = false;
 bool            hostOpcodes     = false;
-folly::Optional<SHA1> sha1Filter;
+Optional<SHA1> sha1Filter;
 PerfEventType   sortBy          = EVENT_CYCLES;
 bool            sortByDensity   = false;
 bool            sortBySize      = false;
@@ -78,6 +77,7 @@ double          helpersMinPercentage = 0;
 ExtOpcode       filterByOpcode  = 0;
 std::string     kindFilter      = "all";
 uint32_t        selectedFuncId  = INVALID_ID;
+std::string     selectedFuncName;
 TCA             minAddr         = 0;
 TCA             maxAddr         = (TCA)-1;
 uint32_t        annotationsVerbosity = 2;
@@ -124,7 +124,6 @@ std::string toString(T value) {
 void usage() {
   printf("Usage: tc-print [OPTIONS]\n"
     "  Options:\n"
-    "    -c <FILE>       : uses the given config file\n"
     "    -D              : used along with -t, this option sorts the top "
     "translations by density (count / size) of the selected perf event\n"
     "    -d <DIRECTORY>  : looks for dump file in <DIRECTORY> "
@@ -134,9 +133,10 @@ void usage() {
     "    -g <FUNC_ID>    : prints the CFG among the translations for the "
     "given <FUNC_ID>\n"
     "    -p <FILE>       : uses raw profile data from <FILE>\n"
+    "    -r <REPO_FILE>  : specifies the bytecode repo file to use\n"
     "    -s              : prints all translations sorted by creation "
     "order\n"
-    "    -u <SHA1>        : prints all translations from the specified "
+    "    -u <SHA1>       : prints all translations from the specified "
     "unit\n"
     "    -t <NUMBER>     : prints top <NUMBER> translations according to "
     "profiling info\n"
@@ -202,8 +202,8 @@ void parseOptions(int argc, char *argv[]) {
   int c;
   opterr = 0;
   char* sortByArg = nullptr;
-  while ((c = getopt(argc, argv, "hc:Dd:f:g:ip:st:u:S:T:o:e:E:bB:v:k:a:A:n:jH:"
-                                 "x"))
+  while ((c = getopt(argc, argv,
+                     "hDd:F:f:G:g:ip:st:u:S:T:o:r:e:E:bB:v:k:a:A:n:jH:x"))
          != -1) {
     switch (c) {
       case 'A':
@@ -221,11 +221,12 @@ void parseOptions(int argc, char *argv[]) {
       case 'h':
         usage();
         exit(0);
-      case 'c':
-        configFile = optarg;
-        break;
       case 'd':
         dumpDir = optarg;
+        break;
+      case 'F':
+        creationOrder = true;
+        selectedFuncName = optarg;
         break;
       case 'f':
         creationOrder = true;
@@ -233,6 +234,10 @@ void parseOptions(int argc, char *argv[]) {
           usage();
           exit(1);
         }
+        break;
+      case 'G':
+        transCFG = true;
+        selectedFuncName = optarg;
         break;
       case 'g':
         transCFG = true;
@@ -243,6 +248,9 @@ void parseOptions(int argc, char *argv[]) {
         break;
       case 'p':
         profFileName = optarg;
+        break;
+      case 'r':
+        repoFileName = optarg;
         break;
       case 's':
         creationOrder = true;
@@ -367,7 +375,7 @@ void sortTrans() {
     const auto trec = TREC(tid);
     if (trec->isValid() &&
         (selectedFuncId == INVALID_ID ||
-         selectedFuncId == trec->src.funcID()) &&
+         selectedFuncId == trec->src.funcID().toInt()) &&
         (kindFilter == "all" || kindFilter == show(trec->kind).c_str())) {
       transPrintOrder.push_back(tid);
     }
@@ -587,8 +595,9 @@ dynamic getTransRec(const TransRec* tRec,
                     const PerfEventsMap<TransID>& transPerfEvents) {
   auto const guards = dynamic(tRec->guards.begin(), tRec->guards.end());
 
+  auto const sk = tRec->src;
   auto const resumeMode = [&] {
-    switch (tRec->src.resumeMode()) {
+    switch (sk.resumeMode()) {
       case ResumeMode::None: return "None";
       case ResumeMode::Async: return "Async";
       case ResumeMode::GenIter: return "GenIter";
@@ -597,12 +606,12 @@ dynamic getTransRec(const TransRec* tRec,
   }();
 
   const dynamic src = dynamic::object("sha1", tRec->sha1.toString())
-                                     ("funcId", tRec->src.funcID())
+                                     ("funcId", sk.funcID().toInt())
                                      ("funcName", tRec->funcName)
                                      ("resumeMode", resumeMode)
-                                     ("hasThis", tRec->src.hasThis())
-                                     ("prologue", tRec->src.prologue())
-                                     ("bcStartOffset", tRec->src.offset())
+                                     ("hasThis", sk.hasThis())
+                                     ("prologue", sk.prologue())
+                                     ("bcStartOffset", sk.printableOffset())
                                      ("guards", guards);
 
   const dynamic result = dynamic::object("id", tRec->id)
@@ -654,33 +663,36 @@ dynamic getTrans(TransID transId) {
   for (auto const& block : tRec->blocks) {
     std::stringstream byteInfo; // TODO(T52857125) - translate to actual data
 
-    auto const unit = g_repo->getUnit(block.sha1);
-    if (unit) {
-      auto const newFunc = unit->getFunc(block.bcStart);
-      always_assert(newFunc);
-      newFunc->prettyPrint(byteInfo,
-                           HPHP::Func::PrintOpts().noName().noMetadata()
-                                                  .range(block.bcStart, block.bcPast));
+    auto const sk = block.sk;
+    if (sk.valid()) {
+      assertx(!sk.prologue());
+      sk.func()->prettyPrint(
+        byteInfo,
+        HPHP::Func::PrintOpts()
+          .noName()
+          .noMetadata()
+          .range(sk.offset(), block.bcPast)
+      );
     }
 
     blocks.push_back(dynamic::object("sha1", block.sha1.toString())
-                                    ("start", block.bcStart)
+                                    ("start", sk.printableOffset())
                                     ("end", block.bcPast)
-                                    ("unit", unit ?
+                                    ("unit", sk.valid() ?
                                              byteInfo.str() :
                                              dynamic()));
   }
 
   auto const annotationDynamic = getAnnotation(tRec->annotations);
 
-  auto const maybeUnit = [&]() -> folly::Optional<printir::Unit> {
-    if (!annotationDynamic.isObject()) return folly::none;
+  auto const maybeUnit = [&]() -> Optional<printir::Unit> {
+    if (!annotationDynamic.isObject()) return std::nullopt;
     try {
       return folly::convertTo<printir::Unit>(annotationDynamic);
     }
     catch (const printir::ParseError& pe) {
       std::cerr << pe.what() << std::endl;
-      return folly::none;
+      return std::nullopt;
     }
   }();
 
@@ -732,8 +744,7 @@ dynamic getTC() {
     translations.push_back(getTrans(t));
   }
 
-  return dynamic::object("configFile", configFile)
-                        ("repoSchema", repoSchemaId().begin())
+  return dynamic::object("repoSchema", repoSchemaId().begin())
                         ("translations", translations);
 }
 }
@@ -753,25 +764,31 @@ void printTrans(TransID transId) {
     const Func* curFunc = nullptr;
     for (auto& block : tRec->blocks) {
       std::stringstream byteInfo;
-      auto unit = g_repo->getUnit(block.sha1);
-      if (!unit) {
+      auto const sk = block.sk;
+      if (!sk.valid()) {
         byteInfo << folly::format(
-          "<<< couldn't find unit {} to print bytecode range [{},{}) >>>\n",
-          block.sha1, block.bcStart, block.bcPast);
+          "<<< couldn't find func in {} to print bytecode range [{},{}) >>>\n",
+          block.sha1, block.sk.printableOffset(), block.bcPast);
         continue;
       }
 
-      auto newFunc = unit->getFunc(block.bcStart);
-      always_assert(newFunc);
-      if (newFunc != curFunc) {
+      if (sk.func() != curFunc) {
+        curFunc = sk.func();
         byteInfo << '\n';
-        newFunc->prettyPrint(byteInfo, Func::PrintOpts().noMetadata().noBytecode());
+        curFunc->prettyPrint(
+          byteInfo,
+          Func::PrintOpts().noMetadata().noBytecode()
+        );
       }
-      curFunc = newFunc;
 
-      newFunc->prettyPrint(
+      assertx(!sk.prologue());
+      curFunc->prettyPrint(
         byteInfo,
-        Func::PrintOpts().noName().noMetadata().range(block.bcStart, block.bcPast));
+        Func::PrintOpts()
+          .noName()
+          .noMetadata()
+          .range(sk.offset(), block.bcPast)
+      );
       g_logger->printBytecode(byteInfo.str());
     }
   }
@@ -826,8 +843,7 @@ void printCFGOutArcs(TransID transId) {
         TREC(targetId)->src.funcID() == srcFuncId &&
         TREC(targetId)->kind != TransKind::Anchor) {
 
-      bool retrans = (TREC(transId)->src.offset() ==
-                      TREC(targetId)->src.offset());
+      bool retrans = TREC(transId)->src == TREC(targetId)->src;
       const char* color;
       if (retrans) {
         color = "darkorange";
@@ -851,25 +867,30 @@ void printCFG() {
   g_transData->findFuncTrans(selectedFuncId, &inodes);
 
   // Print nodes
-  for (uint32_t i = 0; i < inodes.size(); i++) {
-    auto tid = inodes[i];
-    uint32_t bcStart   = TREC(tid)->src.offset();
-    uint32_t bcStop    = TREC(tid)->bcPast();
-    const auto kind = TREC(tid)->kind;
-    bool isPrologue = kind == TransKind::LivePrologue ||
-                      kind == TransKind::OptPrologue;
-    const char* shape = "box";
-    switch (TREC(tid)->kind) {
-      case TransKind::Optimize:     shape = "oval";         break;
-      case TransKind::Profile:      shape = "hexagon";      break;
-      case TransKind::LivePrologue:
-      case TransKind::ProfPrologue:
-      case TransKind::OptPrologue : shape = "invtrapezium"; break;
-      default:                      shape = "box";
+  for (auto& tid : inodes) {
+    auto const sk = TREC(tid)->src;
+    if (sk.prologue()) {
+      g_logger->printGeneric(
+        "t%u [shape=invtrapezium,label=\"T: %u\\nprologue\","
+        "style=filled,color=blue];\n",
+        tid, tid
+      );
+      continue;
     }
-    g_logger->printGeneric("t%u [shape=%s,label=\"T: %u\\nbc: [0x%x-0x%x)\","
-                           "style=filled%s];\n", tid, shape, tid, bcStart,
-                           bcStop, (isPrologue ? ",color=blue" : ""));
+
+    auto const bcStart = TREC(tid)->src.printableOffset();
+    uint32_t bcStop = TREC(tid)->bcPast();
+    auto const shape = [&] {
+      switch (TREC(tid)->kind) {
+        case TransKind::Optimize: return "oval";
+        case TransKind::Profile:  return "hexagon";
+        default:                  return "box";
+      }
+    }();
+    g_logger->printGeneric(
+      "t%u [shape=%s,label=\"T: %u\\nbc: [%s-%d)\",style=filled];\n",
+      tid, shape, tid, bcStart.c_str(), bcStop
+    );
   }
 
   // Print arcs
@@ -904,30 +925,23 @@ void printTopFuncs() {
 }
 
 void printTopFuncsBySize() {
-  std::unordered_map<FuncId,size_t> funcSize;
-  FuncId maxFuncId = 0;
+  std::unordered_map<FuncId, size_t> funcSize;
   for (TransID t = 0; t < NTRANS; t++) {
     const auto trec = TREC(t);
     if (trec->isValid()) {
       const auto funcId = trec->src.funcID();
       funcSize[funcId] += trec->aLen;
-      if (funcId > maxFuncId) {
-        maxFuncId = funcId;
-      }
     }
   }
-  std::vector<FuncId> funcIds(maxFuncId+1);
-  for (FuncId fid = 0; fid <= maxFuncId; fid++) {
-    funcIds[fid] = fid;
-  }
-  std::sort(funcIds.begin(), funcIds.end(),
-            [&](FuncId fid1, FuncId fid2) {
-    return funcSize[fid1] > funcSize[fid2];
+  std::vector<std::pair<FuncId, size_t>> topN(nTopFuncs);
+  std::partial_sort_copy(funcSize.begin(), funcSize.end(),
+                         topN.begin(), topN.end(),
+    [&](auto const& a, auto const& b) {
+      return a.second > b.second;
   });
   g_logger->printGeneric("FuncID:   \tSize (total aLen in bytes):\n");
-  for (size_t i = 0; i < nTopFuncs; i++) {
-    const auto fid = funcIds[i];
-    g_logger->printGeneric("%10u\t%10lu\n", fid, funcSize[funcIds[i]]);
+  for (auto const& [fid, size] : topN) {
+    g_logger->printGeneric("%10u\t%10lu\n", fid.toInt(), size);
   }
 }
 
@@ -1082,6 +1096,17 @@ void printTopBytecodes(const OfflineTransData* tdata,
   }
 }
 
+static uint32_t findSelectedFuncId() {
+  if (selectedFuncName.empty()) return INVALID_ID;
+  for (uint32_t t = 0; t < NTRANS; t++) {
+    auto tRec = TREC(t);
+    if (tRec->isValid() && tRec->funcName == selectedFuncName) {
+      return tRec->src.funcID().toInt();
+    }
+  }
+  return INVALID_ID;
+}
+
 int main(int argc, char *argv[]) {
   StaticString::CreateAll();
   folly::SingletonVault::singleton()->registrationComplete();
@@ -1096,7 +1121,7 @@ int main(int argc, char *argv[]) {
   parseOptions(argc, argv);
 
   #ifdef FACEBOOK
-  folly::Optional<DBLogger> dblogger = folly::none;
+  Optional<DBLogger> dblogger = std::nullopt;
   if (printToDB) {
     dblogger = DBLogger{};
     g_logger = &dblogger.value();
@@ -1111,12 +1136,17 @@ int main(int argc, char *argv[]) {
                               g_transData->getProfBase(),
                               g_transData->getColdBase(),
                               g_transData->getFrozenBase());
-  g_repo = new RepoWrapper(g_transData->getRepoSchema(), configFile, !useJSON);
+  g_repo = new RepoWrapper(g_transData->getRepoSchema(), repoFileName, !useJSON);
+  g_transData->loadTCData(g_repo);
   g_annotations = std::make_unique<AnnotationCache>(dumpDir);
 
   loadProfData();
 
   g_transData->setAnnotationsVerbosity(annotationsVerbosity);
+
+  if (selectedFuncId == INVALID_ID) {
+    selectedFuncId = findSelectedFuncId();
+  }
 
   if (nTopFuncs) {
     if (nTopFuncs > NFUNCS) {

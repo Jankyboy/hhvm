@@ -21,19 +21,11 @@ namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
 inline const Func* ActRec::func() const {
-#ifdef USE_LOWPTR
-  return m_func;
-#else
   return Func::fromFuncId(m_funcId);
-#endif
 }
 
 inline void ActRec::setFunc(const Func* f) {
-#ifdef USE_LOWPTR
-  m_func = f;
-#else
   m_funcId = f->getFuncId();
-#endif
 }
 
 inline const Unit* ActRec::unit() const {
@@ -54,6 +46,10 @@ inline bool ActRec::localsDecRefd() const {
   return m_callOffAndFlags & (1 << LocalsDecRefd);
 }
 
+inline bool ActRec::isInlined() const {
+  return m_callOffAndFlags & (1 << IsInlined);
+}
+
 inline bool ActRec::isAsyncEagerReturn() const {
   return m_callOffAndFlags & (1 << AsyncEagerRet);
 }
@@ -68,20 +64,12 @@ inline void ActRec::initCallOffset(Offset offset) {
 
 inline uint32_t ActRec::encodeCallOffsetAndFlags(Offset offset,
                                                  uint32_t flags) {
-  assertx(!(flags & ~((1 << AsyncEagerRet)|(1 << LocalsDecRefd))));
+  assertx(!(flags & ~((1 << CallOffsetStart) - 1)));
   return (offset << CallOffsetStart) | flags;
 }
 
 inline void ActRec::setLocalsDecRefd() {
   m_callOffAndFlags |= 1 << LocalsDecRefd;
-}
-
-inline int32_t ActRec::numArgs() const {
-  return m_numArgs;
-}
-
-inline void ActRec::setNumArgs(uint32_t numArgs) {
-  m_numArgs = numArgs;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -166,9 +154,28 @@ inline void ActRec::trashThis() {
 
 /////////////////////////////////////////////////////////////////////////////
 
-inline RxLevel ActRec::rxMinLevel() const {
-  if (func()->isRxConditional()) return RxLevel::None;
-  return func()->rxLevel();
+inline RuntimeCoeffects ActRec::requiredCoeffects() const {
+  if (!func()->hasCoeffectsLocal()) {
+    assertx(!func()->hasCoeffectRules());
+    return func()->requiredCoeffects();
+  }
+  // Access 0Coeffects variable
+  assertx(!localsDecRefd());
+  auto const id = func()->coeffectsLocalId();
+  auto const tv = reinterpret_cast<const TypedValue*>(this) - (id + 1);
+  assertx(tvIsInt(tv));
+  return RuntimeCoeffects::fromValue(tv->m_data.num);
+}
+
+inline RuntimeCoeffects ActRec::coeffects() const {
+  auto const escapes = func()->coeffectEscapes();
+  return RuntimeCoeffects::fromValue(requiredCoeffects().value() | escapes.value());
+}
+
+inline RuntimeCoeffects ActRec::providedCoeffectsForCall(bool isCtor) const {
+  if (!isCtor) return coeffects();
+  auto const mask = RuntimeCoeffects::write_this_props().value();
+  return RuntimeCoeffects::fromValue(coeffects().value() | mask);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

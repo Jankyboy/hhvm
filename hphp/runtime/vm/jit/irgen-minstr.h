@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_IRGEN_MINSTR_H_
-#define incl_HPHP_JIT_IRGEN_MINSTR_H_
+#pragma once
 
 #include "hphp/runtime/base/static-string-table.h"
 
@@ -50,7 +49,11 @@ bool propertyMayBeCountable(const Class::Prop& prop);
 void logArrayAccessProfile(IRGS& env, SSATmp* arr, SSATmp* key,
                            MOpMode mode, const ArrayAccessProfile& profile);
 
-
+void annotArrayAccessProfile(IRGS& env,
+                             SSATmp* arr,
+                             SSATmp* key,
+                             const ArrayAccessProfile& profile,
+                             const ArrayAccessProfile::Result& result);
 
 /*
  * If the op and operand types are a supported combination, return the modified
@@ -58,6 +61,29 @@ void logArrayAccessProfile(IRGS& env, SSATmp* arr, SSATmp* key,
  * type.
  */
 SSATmp* inlineSetOp(IRGS& env, SetOpOp op, SSATmp* lhs, SSATmp* rhs);
+
+SSATmp* ptrToInitNull(IRGS& env);
+
+/*
+ * Pop nDiscard elements from the stack, push the result (if non-null),
+ * and mark the member operation as complete.
+ */
+void mFinalImpl(IRGS& env, int32_t nDiscard, SSATmp* result);
+
+/*
+ * Looks up the canonical location of the MBase pointer and determines whether
+ * we are able to update it directly. We are only unable to do so if the MBase
+ * did not originate from LdLocAddr or LdStkAddr, and the type is possible
+ * TMemToFrameCell or TMemToStkCell.
+ */
+bool canUpdateCanonicalBase(SSATmp* baseLoc);
+
+/*
+ * Looks up the canonical location of the MBase pointer and updates it to a new
+ * value. This is used for final member operations to update the source of the
+ * MBase directly.
+ */
+void updateCanonicalBase(IRGS& env, SSATmp* baseLoc, SSATmp* newArr);
 
 /*
  * Use profiling data from an ArrayAccessProfile to conditionally optimize
@@ -90,9 +116,9 @@ SSATmp* profiledArrayAccess(IRGS& env, SSATmp* arr, SSATmp* key, MOpMode mode,
   // These locals should be const, but we need to work around a bug in older
   // versions of GCC that cause the hhvm-cmake build to fail. See the issue:
   // https://gcc.gnu.org/bugzilla/show_bug.cgi?id=80543
-  bool is_dict = arr->type().subtypeOfAny(TDict, TDArr);
-  bool is_define = mode == MOpMode::Define;
-  bool cow_check = mode == MOpMode::Define || mode == MOpMode::Unset;
+  auto const is_dict = arr->isA(TDict);
+  auto const is_define = mode == MOpMode::Define;
+  auto const cow_check = mode == MOpMode::Define || mode == MOpMode::Unset;
   assertx(is_dict || arr->isA(TKeyset));
 
   // If the base and key are static, the access will likely get simplified away.
@@ -119,6 +145,7 @@ SSATmp* profiledArrayAccess(IRGS& env, SSATmp* arr, SSATmp* key, MOpMode mode,
   auto const data = profile.data();
   auto const result = data.choose();
   logArrayAccessProfile(env, arr, key, mode, data);
+  annotArrayAccessProfile(env, arr, key, data, result);
 
   FTRACE_MOD(Trace::idx, 1, "{}\nArrayAccessProfile: {}\n",
              env.irb->curMarker().show(), data.toString());
@@ -150,11 +177,9 @@ SSATmp* profiledArrayAccess(IRGS& env, SSATmp* arr, SSATmp* key, MOpMode mode,
     return missingCond(result.missing, [&] (Block* taken) {
       // According to the profiling, the key is mostly a TStaticStr.
       // If if the JIT doesn't know that statically, lets check for it.
-      auto const skey = key->isA(TStaticStr) ? key :
-        gen(env, CheckType, TStaticStr, taken, key);
+      auto const skey = gen(env, CheckType, TStaticStr, taken, key);
       gen(env, CheckMissingKeyInArrLike, taken, arr, skey);
-      auto const t = arr->isA(TDict) ? TStaticDict : TStaticDArr;
-      gen(env, AssertType, t, arr);
+      gen(env, AssertType, TStaticDict, arr);
     });
   }
   auto const offset_action = result.offset.first;
@@ -219,7 +244,8 @@ SSATmp* profiledType(IRGS& env, SSATmp* tmp, Finish finish) {
 
   Type typeToCheck = relaxToGuardable(reducedType);
 
-  if (typeToCheck == TCell) return tmp;
+  // Avoid the guard if it is going to always succeed or fail.
+  if (tmp->type() <= typeToCheck || !tmp->type().maybe(typeToCheck)) return tmp;
 
   SSATmp* ptmp{nullptr};
 
@@ -234,7 +260,7 @@ SSATmp* profiledType(IRGS& env, SSATmp* tmp, Finish finish) {
              gen(env, AssertType, takenType, tmp);
            }
            finish();
-           gen(env, Jmp, makeExit(env, nextBcOff(env)));
+           gen(env, Jmp, makeExit(env, nextSrcKey(env)));
          });
 
   return ptmp;
@@ -243,5 +269,3 @@ SSATmp* profiledType(IRGS& env, SSATmp* tmp, Finish finish) {
 ///////////////////////////////////////////////////////////////////////////////
 
 }}}
-
-#endif

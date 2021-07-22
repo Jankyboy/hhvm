@@ -9,13 +9,11 @@
  */
 
 interface Reflector {
-  <<__Pure, __MaybeMutable>>
-  public function __toString();
+  public function __toString()[];
 }
 
 class Reflection  {
-  <<__Pure>>
-  public static function getModifierNames($modifiers);
+  public static function getModifierNames($modifiers)[];
   public static function export(Reflector $reflector, $return = false);
 }
 
@@ -30,135 +28,85 @@ class ReflectionClass implements Reflector {
    */
   public string $name;
 
-  <<__Pure>>
-  public function __construct(<<__MaybeMutable>> mixed $argument);
+  public function __construct(mixed $argument)[];
   public static function export(mixed $argument, bool $return = false): ?string;
-  <<__Pure, __MaybeMutable>>
-  public function getConstant(string $name): mixed;
-  <<__Pure, __MaybeMutable>>
-  public function getConstants(): darray<string, mixed>;
-  <<__Pure, __MaybeMutable>>
-  public function getAbstractConstantNames(): darray<string, string>;
-  <<__Pure, __MaybeMutable>>
-  public function getTypeConstant(string $name): ReflectionTypeConstant;
-  <<__Pure, __MaybeMutable>>
-  public function getTypeConstants(): varray<ReflectionTypeConstant>;
-  <<__Pure, __MaybeMutable>>
-  public function getConstructor(): ?ReflectionMethod;
-  <<__Pure, __MaybeMutable>>
-  public function getDefaultProperties(): darray<string, mixed>;
+  public function getConstant(string $name)[]: mixed;
+  public function getConstants()[]: darray<string, mixed>;
+  public function getAbstractConstantNames()[]: darray<string, string>;
+  public function getTypeConstant(string $name)[]: ReflectionTypeConstant;
+  public function getTypeConstants()[]: varray<ReflectionTypeConstant>;
+  public function getConstructor()[]: ?ReflectionMethod;
+  public function getDefaultProperties()[]: darray<string, mixed>;
   /**
    * Returns string or false
    */
-  <<__Pure, __MaybeMutable>>
-  public function getDocComment(): mixed;
-  <<__Pure, __MaybeMutable>>
-  public function getEndLine(): int;
-  <<__Pure, __MaybeMutable>>
-  public function getExtension(): ?ReflectionExtension;
-  <<__Pure, __MaybeMutable>>
-  public function getExtensionName(): string;
+  public function getDocComment()[]: mixed;
+  public function getEndLine()[]: int;
+  public function getExtension()[]: ?ReflectionExtension;
+  public function getExtensionName()[]: string;
   /**
    * Returns string or false
    */
-  <<__Pure, __MaybeMutable>>
-  public function getFileName(): mixed;
-  <<__Pure, __MaybeMutable>>
-  public function getFile(): ReflectionFile;
-  <<__Pure, __MaybeMutable>>
-  public function getInterfaceNames(): varray<string>;
-  <<__Pure, __MaybeMutable>>
-  public function getInterfaces(): darray<string, ReflectionClass>;
-  <<__Pure, __MaybeMutable>>
-  final public function getAttributes(): darray<string, varray<mixed>>;
-  <<__Pure, __MaybeMutable>>
-  final public function hasAttribute(string $name): bool;
-  <<__Pure, __MaybeMutable>>
-  final public function getAttribute(string $name): ?varray<mixed>;
-  <<__Pure, __MaybeMutable>>
-  final public function getAttributeClass<T as HH\ClassLikeAttribute>(classname<T> $c): ?T;
-  <<__Pure, __MaybeMutable>>
-  public function getMethod(string $name): ReflectionMethod;
-  <<__Pure, __MaybeMutable>>
-  public function getMethods(?int $filter = null): varray<ReflectionMethod>;
-  <<__Pure, __MaybeMutable>>
-  public function getModifiers(): int;
-  <<__Pure, __MaybeMutable>>
-  public function getName(): string;
-  <<__Pure, __MaybeMutable>>
-  public function getNamespaceName(): string;
+  public function getFileName()[]: mixed;
+  public function getFile()[]: ReflectionFile;
+  public function getInterfaceNames()[]: varray<string>;
+  public function getInterfaces()[]: darray<string, ReflectionClass>;
+  final public function getAttributes()[]: darray<string, varray<mixed>>;
+  final public function hasAttribute(string $name)[]: bool;
+  final public function getAttribute(string $name)[]: ?varray<mixed>;
+  final public function getAttributeClass<T as HH\ClassLikeAttribute>(classname<T> $c)[]: ?T;
+  public function getMethod(string $name)[]: ReflectionMethod;
+  public function getMethods(?int $filter = null)[]: varray<ReflectionMethod>;
+  public function getModifiers()[]: int;
+  public function getName()[]: string;
+  public function getNamespaceName()[]: string;
   /**
    * Returns ReflectionClass or false
    */
-  <<__Pure, __MaybeMutable>>
-  public function getParentClass(): mixed;
-  <<__Pure, __MaybeMutable>>
-  public function getProperties(int $filter = 0xFFFF): varray<ReflectionProperty>;
-  <<__Pure, __MaybeMutable>>
-  public function getProperty(string $name): ReflectionProperty;
-  <<__Pure, __MaybeMutable>>
-  public function getRequirementNames(): varray<string>;
-  <<__Pure, __MaybeMutable>>
-  public function getRequirements(): darray<string, ReflectionClass>;
-  <<__Pure, __MaybeMutable>>
-  public function getShortName(): string;
-  <<__Pure, __MaybeMutable>>
-  public function getStartLine(): int;
+  public function getParentClass()[]: mixed;
+  public function getProperties(int $filter = 0xFFFF)[]: varray<ReflectionProperty>;
+  public function getProperty(string $name)[]: ReflectionProperty;
+  public function getRequirementNames()[]: varray<string>;
+  public function getRequirements()[]: darray<string, ReflectionClass>;
+  public function getShortName()[]: string;
+  public function getStartLine()[]: int;
   public function getStaticProperties(): darray<string, mixed>;
   public function getStaticPropertyValue(string $name, mixed $def_value = null): mixed;
-  <<__Pure, __MaybeMutable>>
-  public function getTraitAliases(): darray<string, string>;
-  <<__Pure, __MaybeMutable>>
-  public function getTraitNames(): varray<string>;
-  <<__Pure, __MaybeMutable>>
-  public function getTraits(): darray<string, ReflectionClass>;
-  <<__Pure, __MaybeMutable>>
-  public function hasConstant(string $name): bool;
-  <<__Pure, __MaybeMutable>>
-  public function hasMethod(string $name): bool;
-  <<__Pure, __MaybeMutable>>
-  public function hasProperty(string $name): bool;
-  <<__Pure, __MaybeMutable>>
-  public function hasTypeConstant(string $name): bool;
-  <<__Pure, __MaybeMutable>>
-  public function implementsInterface(string $interface): bool;
-  <<__Pure, __MaybeMutable>>
-  public function inNamespace(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function isAbstract(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function isCloneable(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function isFinal(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function isInstance(<<__MaybeMutable>> mixed $object): bool;
-  <<__Pure, __MaybeMutable>>
-  public function isInstantiable(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function isInterface(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function isEnum(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function getEnumUnderlyingType(): string;
-  <<__Pure, __MaybeMutable>>
-  public function isInternal(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function isIterateable(): bool;
+  public function getTraitAliases()[]: darray<string, string>;
+  public function getTraitNames()[]: varray<string>;
+  public function getTraits()[]: darray<string, ReflectionClass>;
+  public function hasConstant(string $name)[]: bool;
+  public function hasMethod(string $name)[]: bool;
+  public function hasProperty(string $name)[]: bool;
+  public function hasTypeConstant(string $name)[]: bool;
+  public function implementsInterface(string $interface)[]: bool;
+  public function inNamespace()[]: bool;
+  public function isAbstract()[]: bool;
+  public function isCloneable()[]: bool;
+  public function isFinal()[]: bool;
+  public function isInstance(mixed $object)[]: bool;
+  public function isInstantiable()[]: bool;
+  public function isInterface()[]: bool;
+  public function isEnum()[]: bool;
+  public function getEnumUnderlyingType()[]: string;
+  public function isInternal()[]: bool;
+  public function isIterateable()[]: bool;
   /**
    * $class is string or ReflectionClass
    */
-  <<__Pure, __MaybeMutable>>
-  public function isSubclassOf(mixed $class): bool;
-  <<__Pure, __MaybeMutable>>
-  public function isTrait(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function isUserDefined(): bool;
+  public function isSubclassOf(mixed $class)[]: bool;
+  public function isTrait()[]: bool;
+  public function isUserDefined()[]: bool;
   public function newInstance(...$args);
   public function newInstanceArgs(Traversable<mixed> $args = varray[]);
-  public function newInstanceWithoutConstructor();
+  public function newInstanceWithoutConstructor()[];
   public function setStaticPropertyValue(string $name, mixed $value): void;
-  <<__Pure, __MaybeMutable>>
-  public function __toString(): string;
+  public function __toString()[]: string;
+  public function getReifiedTypeParamInfo()[]: varray<shape(
+    'is_reified' => bool,
+    'is_soft' => bool,
+    'is_warn' => bool,
+  )>;
 }
 
 class ReflectionObject extends ReflectionClass {}
@@ -170,66 +118,38 @@ abstract class ReflectionFunctionAbstract implements Reflector {
   public $name = '';
 
   // Methods
-  <<__Pure, __MaybeMutable>>
-  public function getName(): string;
-  <<__Pure, __MaybeMutable>>
-  public function inNamespace(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function getNamespaceName(): string;
-  <<__Pure, __MaybeMutable>>
-  public function getShortName(): string;
-  <<__Pure, __MaybeMutable>>
-  public function isHack(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function isInternal(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function isClosure(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function isGenerator(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function isAsync(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function isVariadic(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function isUserDefined(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function getFileName(): mixed; // string | false
-  <<__Pure, __MaybeMutable>>
-  public function getFile(): ReflectionFile;
-  <<__Pure, __MaybeMutable>>
-  public function getStartLine(): mixed; // int | false
-  <<__Pure, __MaybeMutable>>
-  public function getEndLine(): mixed; // int | false
-  <<__Pure, __MaybeMutable>>
-  public function getDocComment(): mixed; // string | false
+  public function getName()[]: string;
+  public function inNamespace()[]: bool;
+  public function getNamespaceName()[]: string;
+  public function getShortName()[]: string;
+  public function isHack()[]: bool;
+  public function isInternal()[]: bool;
+  public function isClosure()[]: bool;
+  public function isGenerator()[]: bool;
+  public function isAsync()[]: bool;
+  public function isVariadic()[]: bool;
+  public function isUserDefined()[]: bool;
+  public function getFileName()[]: mixed; // string | false
+  public function getFile()[]: ReflectionFile;
+  public function getStartLine()[]: mixed; // int | false
+  public function getEndLine()[]: mixed; // int | false
+  public function getDocComment()[]: mixed; // string | false
   public function getStaticVariables(): darray<string, mixed>;
-  <<__Pure, __MaybeMutable>>
-  public function getReturnTypeText();
-  <<__Pure, __MaybeMutable>>
-  final public function getAttributes(): darray<string, varray<mixed>>;
-  <<__Pure, __MaybeMutable>>
-  final public function hasAttribute(string $name): bool;
-  <<__Pure, __MaybeMutable>>
-  final public function getAttribute(string $name): ?varray<mixed>;
-  <<__Pure, __MaybeMutable>>
-  public function getNumberOfParameters(): int;
-  <<__Pure, __MaybeMutable>>
-  public function getParameters(): varray<ReflectionParameter>;
-  <<__Pure, __MaybeMutable>>
-  public function getNumberOfRequiredParameters();
-  <<__Pure, __MaybeMutable>>
-  public function isDeprecated(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function getExtension();
-  <<__Pure, __MaybeMutable>>
-  public function getExtensionName();
+  public function getReturnTypeText()[];
+  final public function getAttributes()[]: darray<string, varray<mixed>>;
+  final public function hasAttribute(string $name)[]: bool;
+  final public function getAttribute(string $name)[]: ?varray<mixed>;
+  public function getNumberOfParameters()[]: int;
+  public function getParameters()[]: varray<ReflectionParameter>;
+  public function getNumberOfRequiredParameters()[];
+  public function isDeprecated()[]: bool;
+  public function getExtension()[];
+  public function getExtensionName()[];
   final private function __clone();
-  <<__Pure, __MaybeMutable>>
-  public function hasReturnType(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function getReturnType(): ?ReflectionType;
-  <<__Pure, __MaybeMutable>>
-  public function getReifiedTypeParamInfo(): varray<darray<string, bool>>;
+  public function hasReturnType()[]: bool;
+  public function getReturnType()[]: ?ReflectionType;
+  public function getReifiedTypeParamInfo()[]: varray<darray<string, bool>>;
+  public function getCoeffects()[]: vec<string>;
 }
 
 class ReflectionFunction extends ReflectionFunctionAbstract implements Reflector {
@@ -237,18 +157,14 @@ class ReflectionFunction extends ReflectionFunctionAbstract implements Reflector
 
   public $name = '';
 
-  <<__Pure>>
-  public function __construct($name);
-  <<__Pure, __MaybeMutable>>
-  public function __toString();
+  public function __construct($name)[];
+  public function __toString()[];
   public static function export($name, $return = null);
-  <<__Pure, __MaybeMutable>>
-  public function isDisabled();
+  public function isDisabled()[];
   public function invoke(...$args);
   public function invokeArgs(varray $args);
   public function getClosure();
-  <<__Pure, __MaybeMutable>>
-  final public function getAttributeClass<T as HH\FunctionAttribute>(classname<T> $c): ?T;
+  final public function getAttributeClass<T as HH\FunctionAttribute>(classname<T> $c)[]: ?T;
 }
 
 class ReflectionMethod extends ReflectionFunctionAbstract implements Reflector {
@@ -264,36 +180,23 @@ class ReflectionMethod extends ReflectionFunctionAbstract implements Reflector {
   public $class = '';
 
   public static function export(string $class, string $name, bool $return = false);
-  <<__Pure>>
-  public function __construct($class, $name = null);
-  <<__Pure, __MaybeMutable>>
-  public function __toString();
-  <<__Pure, __MaybeMutable>>
-  public function isPublic();
-  <<__Pure, __MaybeMutable>>
-  public function isPrivate();
-  <<__Pure, __MaybeMutable>>
-  public function isProtected();
-  <<__Pure, __MaybeMutable>>
-  public function isAbstract();
-  <<__Pure, __MaybeMutable>>
-  public function isFinal();
-  <<__Pure, __MaybeMutable>>
-  public function isStatic();
-  <<__Pure, __MaybeMutable>>
-  public function isConstructor();
+  public function __construct($class, $name = null)[];
+  public function __toString()[];
+  public function isPublic()[];
+  public function isPrivate()[];
+  public function isProtected()[];
+  public function isAbstract()[];
+  public function isFinal()[];
+  public function isStatic()[];
+  public function isConstructor()[];
   public function getClosure($object);
-  <<__Pure, __MaybeMutable>>
-  public function getModifiers();
+  public function getModifiers()[];
   public function invoke($object, ...$args);
   public function invokeArgs($object, varray $args);
-  <<__Pure, __MaybeMutable>>
-  public function getDeclaringClass();
-  <<__Pure, __MaybeMutable>>
-  public function getPrototype();
+  public function getDeclaringClass()[];
+  public function getPrototype()[];
   public function setAccessible(bool $accessible);
-  <<__Pure, __MaybeMutable>>
-  final public function getAttributeClass<T as HH\MethodAttribute>(classname<T> $c): ?T;
+  final public function getAttributeClass<T as HH\MethodAttribute>(classname<T> $c)[]: ?T;
 }
 
 class ReflectionParameter implements Reflector {
@@ -301,62 +204,34 @@ class ReflectionParameter implements Reflector {
 
   final private function __clone();
   public static function export($function, $parameter, $return = null);
-  <<__Pure>>
-  public function __construct($function, $parameter);
-  <<__Pure, __MaybeMutable>>
-  public function __toString();
-  <<__Pure, __MaybeMutable>>
-  public function getName();
-  <<__Pure, __MaybeMutable>>
-  public function isPassedByReference();
-  <<__Pure, __MaybeMutable>>
-  public function isInOut(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function canBePassedByValue();
-  <<__Pure, __MaybeMutable>>
-  public function getDeclaringFunction();
-  <<__Pure, __MaybeMutable>>
-  public function getDeclaringClass();
-  <<__Pure, __MaybeMutable>>
-  public function getClass();
-  <<__Pure, __MaybeMutable>>
-  public function isArray();
-  <<__Pure, __MaybeMutable>>
-  public function isCallable();
-  <<__Pure, __MaybeMutable>>
-  public function allowsNull();
-  <<__Pure, __MaybeMutable>>
-  public function getPosition();
-  <<__Pure, __MaybeMutable>>
-  public function isOptional();
-  <<__Pure, __MaybeMutable>>
-  public function isDefaultValueAvailable();
-  <<__Pure, __MaybeMutable>>
-  public function getDefaultValue();
-  <<__Pure, __MaybeMutable>>
-  public function isDefaultValueConstant();
-  <<__Pure, __MaybeMutable>>
-  public function getDefaultValueConstantName();
-  <<__Pure, __MaybeMutable>>
-  public function getTypehintText();
-  <<__Pure, __MaybeMutable>>
-  public function getTypeText(): string;
-  <<__Pure, __MaybeMutable>>
-  public function getDefaultValueText();
-  <<__Pure, __MaybeMutable>>
-  public function isVariadic();
-  <<__Pure, __MaybeMutable>>
-  public function hasType(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function getType(): ?ReflectionType;
-  <<__Pure, __MaybeMutable>>
-  final public function hasAttribute(string $name): bool;
-  <<__Pure, __MaybeMutable>>
-  final public function getAttribute(string $name): ?varray<mixed>;
-  <<__Pure, __MaybeMutable>>
-  final public function getAttributeClass<T as HH\ParameterAttribute>(classname<T> $c): ?T;
-  <<__Pure, __MaybeMutable>>
-  final public function getAttributes(): darray<string, varray<mixed>>;
+  public function __construct($function, $parameter)[];
+  public function __toString()[];
+  public function getName()[];
+  public function isPassedByReference()[];
+  public function isInOut()[]: bool;
+  public function canBePassedByValue()[];
+  public function getDeclaringFunction()[];
+  public function getDeclaringClass()[];
+  public function getClass()[];
+  public function isArray()[];
+  public function isCallable()[];
+  public function allowsNull()[];
+  public function getPosition()[];
+  public function isOptional()[];
+  public function isDefaultValueAvailable()[];
+  public function getDefaultValue()[];
+  public function isDefaultValueConstant()[];
+  public function getDefaultValueConstantName()[];
+  public function getTypehintText()[];
+  public function getTypeText()[]: string;
+  public function getDefaultValueText()[];
+  public function isVariadic()[];
+  public function hasType()[]: bool;
+  public function getType()[]: ?ReflectionType;
+  final public function hasAttribute(string $name)[]: bool;
+  final public function getAttribute(string $name)[]: ?varray<mixed>;
+  final public function getAttributeClass<T as HH\ParameterAttribute>(classname<T> $c)[]: ?T;
+  final public function getAttributes()[]: darray<string, varray<mixed>>;
 }
 
 class ReflectionProperty implements Reflector {
@@ -370,39 +245,24 @@ class ReflectionProperty implements Reflector {
 
   final private function __clone();
   public static function export($class, $name, $return = null);
-  <<__Pure>>
-  public function __construct($class, string $name);
-  <<__Pure, __MaybeMutable>>
-  public function __toString();
-  <<__Pure, __MaybeMutable>>
-  public function getName();
+  public function __construct($class, string $name)[];
+  public function __toString()[];
+  public function getName()[];
   public function getValue($object = null);
   public function setValue($object, $value = null);
-  <<__Pure, __MaybeMutable>>
-  public function isPublic();
-  <<__Pure, __MaybeMutable>>
-  public function isPrivate();
-  <<__Pure, __MaybeMutable>>
-  public function isProtected();
-  <<__Pure, __MaybeMutable>>
-  public function isStatic();
-  <<__Pure, __MaybeMutable>>
-  public function isDefault();
-  <<__Pure, __MaybeMutable>>
-  public function getModifiers();
-  <<__Pure, __MaybeMutable>>
-  public function getDeclaringClass();
-  <<__Pure, __MaybeMutable>>
-  public function getDocComment();
+  public function isPublic()[];
+  public function isPrivate()[];
+  public function isProtected()[];
+  public function isStatic()[];
+  public function isDefault()[];
+  public function getModifiers()[];
+  public function getDeclaringClass()[];
+  public function getDocComment()[];
   public function setAccessible($accessible);
-  <<__Pure, __MaybeMutable>>
-  public function getTypeText();
-  <<__Pure, __MaybeMutable>>
-  final public function getAttributes(): darray<string, varray<mixed>>;
-  <<__Pure, __MaybeMutable>>
-  final public function hasAttribute(string $name): bool;
-  <<__Pure, __MaybeMutable>>
-  final public function getAttribute(string $name): ?varray<mixed>;
+  public function getTypeText()[];
+  final public function getAttributes()[]: darray<string, varray<mixed>>;
+  final public function hasAttribute(string $name)[]: bool;
+  final public function getAttribute(string $name)[]: ?varray<mixed>;
 }
 
 class ReflectionExtension implements Reflector {
@@ -411,103 +271,64 @@ class ReflectionExtension implements Reflector {
 
   final private function __clone();
   public static function export($name, $return = false);
-  <<__Pure>>
-  public function __construct($name);
-  <<__Pure, __MaybeMutable>>
-  public function __toString();
-  <<__Pure, __MaybeMutable>>
-  public function getName();
-  <<__Pure, __MaybeMutable>>
-  public function getVersion();
-  <<__Pure, __MaybeMutable>>
-  public function getFunctions();
-  <<__Pure, __MaybeMutable>>
-  public function getConstants();
-  <<__Pure, __MaybeMutable>>
-  public function getINIEntries();
-  <<__Pure, __MaybeMutable>>
-  public function getClasses();
-  <<__Pure, __MaybeMutable>>
-  public function getClassNames();
-  <<__Pure, __MaybeMutable>>
-  public function info();
+  public function __construct($name)[];
+  public function __toString()[];
+  public function getName()[];
+  public function getVersion()[];
+  public function getFunctions()[];
+  public function getConstants()[];
+  public function getINIEntries()[];
+  public function getClasses()[];
+  public function getClassNames()[];
+  public function info()[];
 }
 
 class ReflectionTypeConstant implements Reflector {
 
   final private function __clone();
   public static function export($class, string $name, $return = null);
-  <<__Pure>>
-  public function __construct($class, string $name);
-  <<__Pure, __MaybeMutable>>
-  public function __toString(): string;
-  <<__Pure, __MaybeMutable>>
-  public function getName(): string;
-  <<__Pure, __MaybeMutable>>
-  public function isAbstract(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function getDeclaringClass(): ReflectionClass;
-  <<__Pure, __MaybeMutable>>
-  public function getClass(): ReflectionClass;
-  <<__Pure, __MaybeMutable>>
-  public function getAssignedTypeText(): ?string;
+  public function __construct($class, string $name)[];
+  public function __toString()[]: string;
+  public function getName()[]: string;
+  public function isAbstract()[]: bool;
+  public function getDeclaringClass()[]: ReflectionClass;
+  public function getClass()[]: ReflectionClass;
+  public function getAssignedTypeText()[]: ?string;
+  public function getTypeStructure()[]: darray;
 }
 
 class ReflectionTypeAlias implements Reflector {
   final private function __clone();
-  <<__Pure>>
-  final public function __construct(string $name);
-  <<__Pure, __MaybeMutable>>
-  public function __toString(): string;
-  <<__Pure, __MaybeMutable>>
-  public function getTypeStructure(): darray;
-  <<__Pure, __MaybeMutable>>
-  public function getResolvedTypeStructure(): darray;
-  <<__Pure, __MaybeMutable>>
-  public function getAssignedTypeText(): string;
-  <<__Pure, __MaybeMutable>>
-  public function getName(): string;
-  <<__Pure, __MaybeMutable>>
-  public function getFileName(): string;
-  <<__Pure, __MaybeMutable>>
-  public function getFile(): ReflectionFile;
-  <<__Pure, __MaybeMutable>>
-  final public function getAttributes(): darray<string, varray<mixed>>;
-  <<__Pure, __MaybeMutable>>
-  final public function hasAttribute(string $name): bool;
-  <<__Pure, __MaybeMutable>>
-  final public function getAttribute(string $name): ?varray<mixed>;
-  <<__Pure, __MaybeMutable>>
-  final public function getAttributeClass<T as HH\TypeAliasAttribute>(classname<T> $c): ?T;
+  final public function __construct(string $name)[];
+  public function __toString()[]: string;
+  public function getTypeStructure()[]: darray;
+  public function getResolvedTypeStructure()[]: darray;
+  public function getAssignedTypeText()[]: string;
+  public function getName()[]: string;
+  public function getFileName()[]: string;
+  public function getFile()[]: ReflectionFile;
+  final public function getAttributes()[]: darray<string, varray<mixed>>;
+  final public function hasAttribute(string $name)[]: bool;
+  final public function getAttribute(string $name)[]: ?varray<mixed>;
+  final public function getAttributeClass<T as HH\TypeAliasAttribute>(classname<T> $c)[]: ?T;
 }
 
 class ReflectionType {
   final private function __clone();
-  <<__Pure>>
   public function __construct(?Reflector $param_or_ret = null,
                               darray $type_hint_info = darray[]);
-  <<__Pure, __MaybeMutable>>
-  public function allowsNull(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function isBuiltin(): bool;
-  <<__Pure, __MaybeMutable>>
-  public function __toString(): string;
+  public function allowsNull()[]: bool;
+  public function isBuiltin()[]: bool;
+  public function __toString()[]: string;
 }
 
 class ReflectionFile implements Reflector {
   final private function __clone();
-  <<__Pure>>
-  final public function __construct(string $name);
-  <<__Pure, __MaybeMutable>>
-  public function __toString(): string;
-  <<__Pure, __MaybeMutable>>
-  public function getName(): string;
-  <<__Pure, __MaybeMutable>>
-  final public function getAttributes(): darray<string, varray<mixed>>;
-  <<__Pure, __MaybeMutable>>
-  final public function hasAttribute(string $name): bool;
-  <<__Pure, __MaybeMutable>>
-  final public function getAttribute(string $name): ?varray<mixed>;
-  <<__Pure, __MaybeMutable>>
-  final public function getAttributeClass<T as HH\FileAttribute>(classname<T> $c): ?T;
+  final public function __construct(string $name)[];
+  public function __toString()[]: string;
+  public function getName()[]: string;
+  final public function getAttributes()[]: darray<string, varray<mixed>>;
+  final public function hasAttribute(string $name)[]: bool;
+  final public function getAttribute(string $name)[]: ?varray<mixed>;
+  final public function getAttributeClass<T as HH\FileAttribute>(classname<T> $c)[]: ?T;
 }

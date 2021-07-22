@@ -16,11 +16,12 @@
 
 #include "hphp/runtime/base/runtime-option.h"
 
+#include "hphp/hack/src/parser/positioned_full_trivia_parser_ffi_types.h"
 #include "hphp/parser/scanner.h"
-#include "hphp/runtime/base/apc-file-storage.h"
 #include "hphp/runtime/base/autoload-handler.h"
 #include "hphp/runtime/base/bespoke-array.h"
 #include "hphp/runtime/base/builtin-functions.h"
+#include "hphp/runtime/base/coeffects-config.h"
 #include "hphp/runtime/base/config.h"
 #include "hphp/runtime/base/crash-reporter.h"
 #include "hphp/runtime/base/execution-context.h"
@@ -31,9 +32,11 @@
 #include "hphp/runtime/base/ini-setting.h"
 #include "hphp/runtime/base/init-fini-node.h"
 #include "hphp/runtime/base/memory-manager.h"
+#include "hphp/runtime/base/plain-file.h"
 #include "hphp/runtime/base/request-info.h"
 #include "hphp/runtime/base/static-string-table.h"
 #include "hphp/runtime/base/tv-refcount.h"
+#include "hphp/runtime/base/zend-string.h"
 #include "hphp/runtime/base/zend-url.h"
 #include "hphp/runtime/ext/extension-registry.h"
 #include "hphp/runtime/server/access-log.h"
@@ -47,12 +50,14 @@
 #include "hphp/util/arch.h"
 #include "hphp/util/atomic-vector.h"
 #include "hphp/util/build-info.h"
+#include "hphp/util/bump-mapper.h"
 #include "hphp/util/cpuid.h"
 #include "hphp/util/current-executable.h" // @donotremove
 #include "hphp/util/file-cache.h"
 #include "hphp/util/gzip.h"
 #include "hphp/util/hardware-counter.h"
 #include "hphp/util/hdf.h"
+#include "hphp/util/light-process.h"
 #include "hphp/util/log-file-flusher.h"
 #include "hphp/util/logger.h"
 #include "hphp/util/network.h"
@@ -74,6 +79,7 @@
 
 #include <boost/algorithm/string/predicate.hpp>
 #include <folly/CPortability.h>
+#include <folly/DynamicConverter.h>
 #include <folly/FileUtil.h>
 #include <folly/String.h>
 #include <folly/portability/SysResource.h>
@@ -114,17 +120,18 @@ std::vector<std::string> s_RelativeConfigs;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-char mangleForKey(bool b) { return b ? '1' : '0'; }
-std::string mangleForKey(const RepoOptions::StringMap& map) {
-  std::string s;
+void mangleForKey(bool b, std::string& s) { s += (b ? '1' : '0'); }
+void mangleForKey(const RepoOptions::StringMap& map, std::string& s) {
   s += folly::to<std::string>(map.size());
   s += '\0';
-  for (auto& par : map) {
-    s += par.first + '\0' + par.second + '\0';
+  for (auto const& par : map) {
+    s += par.first;
+    s += '\0';
+    s += par.second;
+    s += '\0';
   }
-  return s;
 }
-std::string mangleForKey(std::string s) { return s; }
+void mangleForKey(const std::string& s1, std::string& s2) { s2 += s1; }
 void hdfExtract(const Hdf& hdf, const char* name, bool& val, bool dv) {
   val = hdf[name].configGetBool(dv);
 }
@@ -214,10 +221,23 @@ struct CachedRepoOptions {
   mutable std::atomic<RepoOptions*> options{nullptr};
 };
 
+struct RepoOptionCacheKey {
+  bool wrapped;
+  std::string filename;
+};
+struct RepoOptionCacheKeyCompare {
+  bool equal(const RepoOptionCacheKey& k1, const RepoOptionCacheKey& k2) const {
+    return k1.wrapped == k2.wrapped && k1.filename == k2.filename;
+  }
+  size_t hash(const RepoOptionCacheKey& k) const {
+    return std::hash<bool>()(k.wrapped) ^
+           hash_string_cs_unsafe(k.filename.c_str(), k.filename.size());
+  }
+};
 using RepoOptionCache = tbb::concurrent_hash_map<
-  std::string,
+  RepoOptionCacheKey,
   CachedRepoOptions,
-  stringHashCompare
+  RepoOptionCacheKeyCompare
 >;
 RepoOptionCache s_repoOptionCache;
 
@@ -242,11 +262,139 @@ RDS_LOCAL(std::string, s_lastSeenRepoConfig);
 
 }
 
+hackc_parse_positioned_full_trivia_environment
+RepoOptions::getParserEnvironment() const {
+  return hackc_parse_positioned_full_trivia_environment {
+      true // codegen
+    , true  // hhvm_compat_mode
+    , true  // php5_compat_mode
+    , AllowNewAttributeSyntax
+    , EnableXHPClassModifier
+    , DisableXHPElementMangling
+    , false // disable_xhp_children_declarations
+    , false // disable_modes
+    , DisallowHashComments
+    , DisallowFunAndClsMethPseudoFuncs
+    , true  // interpret_soft_types_as_like_types
+    };
+}
+
+// Mapping must match HHBCFlags in compile.rs
+std::uint32_t RepoOptions::getCompilerFlags() const {
+  std::uint32_t hhbc_flags = 0;
+
+  #define HHBC_FLAGS()                                          \
+    SETFLAGS(LTRAssign, 0)                                      \
+    SETFLAGS(UVS, 1)                                            \
+    SETFLAGS(RuntimeOption::RepoAuthoritative, 4)               \
+    SETFLAGS(RuntimeOption::EvalJitEnableRenameFunction, 5)     \
+    SETFLAGS(RuntimeOption::EvalLogExternCompilerPerf, 6)       \
+    SETFLAGS(RuntimeOption::EnableIntrinsicsExtension, 7)       \
+    SETFLAGS(RuntimeOption::DisableNontoplevelDeclarations, 8)  \
+    SETFLAGS(RuntimeOption::EvalEmitClsMethPointers, 10)        \
+    SETFLAGS(RuntimeOption::EvalEmitMethCallerFuncPointers, 11) \
+    SETFLAGS(RuntimeOption::EvalEnableImplicitContext, 12)      \
+    SETFLAGS(RuntimeOption::EvalFoldLazyClassKeys, 15)          \
+    SETFLAGS(EmitInstMethPointers,16)                           \
+
+  #define SETFLAGS(flag, n)                                     \
+    if (flag) {hhbc_flags |= 1 << n;}
+    HHBC_FLAGS()
+  #undef SETFLAGS
+  return hhbc_flags;
+}
+
+std::string RepoOptions::getAliasedNamespacesConfig() const {
+  folly::dynamic m_config = folly::dynamic::object();
+  m_config["hhvm.aliased_namespaces"] =
+    folly::dynamic::object("global_value", folly::toDynamic(AliasedNamespaces));
+  return folly::toJson(m_config);
+}
+
+std::uint32_t RepoOptions::getFactsFlags() const {
+  int32_t flags =
+    1 << 0 |  //php5_compat_mode
+    1 << 1 |  //hhvm_compat_mode
+    AllowNewAttributeSyntax   << 2 |
+    EnableXHPClassModifier    << 3 |
+    DisableXHPElementMangling << 4;
+  return flags;
+}
+
+// Mapping must match ParserFlags in compile.rs
+std::uint32_t RepoOptions::getParserFlags() const {
+  std::uint32_t parser_flags = 0;
+
+  #define PARSER_FLAGS()                                       \
+    SETFLAGS(AbstractStaticProps, 0)                           \
+    SETFLAGS(AllowNewAttributeSyntax, 1)                       \
+    SETFLAGS(AllowUnstableFeatures, 2)                         \
+    SETFLAGS(ConstDefaultFuncArgs, 3)                          \
+    SETFLAGS(ConstStaticProps, 4)                              \
+    SETFLAGS(DisableArray, 5)                                  \
+    SETFLAGS(DisableArrayCast, 6)                              \
+    SETFLAGS(DisableArrayTypehint, 7)                          \
+    SETFLAGS(DisableLvalAsAnExpression, 8)                     \
+    SETFLAGS(DisableUnsetClassConst, 9)                        \
+    SETFLAGS(DisallowInstMeth, 10)                             \
+    SETFLAGS(DisableXHPElementMangling, 11)                    \
+    SETFLAGS(DisallowFunAndClsMethPseudoFuncs, 12)             \
+    SETFLAGS(DisallowFuncPtrsInConstants, 13)                  \
+    SETFLAGS(DisallowHashComments, 14)                         \
+    SETFLAGS(EnableEnumClasses,16)                             \
+    SETFLAGS(EnableXHPClassModifier,17)                        \
+    SETFLAGS(DisallowDynamicMethCallerArgs, 18)                \
+    SETFLAGS(EnableReadonlyEnforcement, 19)                    \
+    SETFLAGS(RuntimeOption::EnableClassLevelWhereClauses, 20)  \
+    SETFLAGS(EscapeBrace, 21)
+
+  #define SETFLAGS(flag, n)                                    \
+    if (flag) {parser_flags |= 1 << n;}
+    PARSER_FLAGS()
+  #undef SETFLAGS
+  return parser_flags;
+}
+
 const RepoOptions& RepoOptions::forFile(const char* path) {
+  tracing::BlockNoTrace _{"repo-options"};
+
   if (!RuntimeOption::EvalEnablePerRepoOptions) return defaults();
 
   std::string fpath{path};
   if (boost::starts_with(fpath, "/:")) return defaults();
+
+  // Wrap filesystem accesses if needed to proxy info from cli server client.
+  Stream::Wrapper* wrapper = nullptr;
+  if (get_cli_ucred()) {
+    wrapper = Stream::getWrapperFromURI(path);
+    if (wrapper && !wrapper->isNormalFileStream()) wrapper = nullptr;
+  }
+  auto const wrapped_stat = [&](const char* path, struct stat* st) {
+    if (wrapper) return wrapper->stat(path, st);
+    return ::stat(path, st);
+  };
+
+  auto const wrapped_open = [&](const char* path) -> Optional<String> {
+    if (wrapper) {
+      if (auto const file = wrapper->open(path, "r", 0, nullptr)) {
+        return file->read();
+      }
+      return std::nullopt;
+    }
+
+    auto const fd = open(path, O_RDONLY);
+    if (fd < 0) return std::nullopt;
+    auto file = req::make<PlainFile>(fd);
+    return file->read();
+
+  };
+
+  auto const isParentOf = [] (const std::string& p1, const std::string& p2) {
+    return boost::starts_with(
+      boost::filesystem::path{p2},
+      boost::filesystem::path{p1}.parent_path()
+    );
+  };
 
   // Fast path: we have an active request and it has cached a RepoOptions
   // which has not been modified. This only works when the runtime option
@@ -259,9 +407,9 @@ const RepoOptions& RepoOptions::forFile(const char* path) {
       // negatively cached the existance of a .hhvmconfig.hdf for this request.
       if (opts->path().empty()) return *opts;
 
-      if (boost::starts_with(fpath, opts->path())) {
+      if (isParentOf(opts->path(), fpath)) {
         struct stat st;
-        if (lstat(opts->path().data(), &st) == 0) {
+        if (wrapped_stat(opts->path().data(), &st) == 0) {
           if (!CachedRepoOptions::isChanged(opts, st)) return *opts;
         }
       }
@@ -277,7 +425,9 @@ const RepoOptions& RepoOptions::forFile(const char* path) {
     if (auto const opts = rpathAcc->second.fetch(st)) {
       return opts;
     }
-    RepoOptions newOpts{path.data()};
+    auto const contents = wrapped_open(path.data());
+    if (!contents) return nullptr;
+    RepoOptions newOpts{ contents->data(), path.data()};
     newOpts.m_stat = st;
     return rpathAcc->second.update(std::move(newOpts));
   };
@@ -285,8 +435,9 @@ const RepoOptions& RepoOptions::forFile(const char* path) {
   auto const test = [&] (const std::string& path) -> const RepoOptions* {
     struct stat st;
     RepoOptionCache::const_accessor rpathAcc;
-    if (!s_repoOptionCache.find(rpathAcc, path)) return nullptr;
-    if (lstat(path.data(), &st) != 0) {
+    const RepoOptionCacheKey key {(bool)wrapper, path};
+    if (!s_repoOptionCache.find(rpathAcc, key)) return nullptr;
+    if (wrapped_stat(path.data(), &st) != 0) {
       s_repoOptionCache.erase(rpathAcc);
       return nullptr;
     }
@@ -304,7 +455,7 @@ const RepoOptions& RepoOptions::forFile(const char* path) {
   //          optimization.
   if (RuntimeOption::EvalCachePerRepoOptionsPath) {
     if (!s_lastSeenRepoConfig->empty() &&
-        boost::starts_with(fpath, *s_lastSeenRepoConfig)) {
+        isParentOf(*s_lastSeenRepoConfig, fpath)) {
       if (auto const r = test(*s_lastSeenRepoConfig)) return *r;
       s_lastSeenRepoConfig->clear();
     }
@@ -320,9 +471,10 @@ const RepoOptions& RepoOptions::forFile(const char* path) {
 
   walkDirTree(fpath, [&] (const std::string& path) {
     struct stat st;
-    if (lstat(path.data(), &st) != 0) return false;
+    if (wrapped_stat(path.data(), &st) != 0) return false;
     RepoOptionCache::const_accessor rpathAcc;
-    s_repoOptionCache.insert(rpathAcc, path);
+    const RepoOptionCacheKey key {(bool)wrapper, path};
+    s_repoOptionCache.insert(rpathAcc, key);
     ret = set(rpathAcc, path, st);
     return true;
   });
@@ -330,30 +482,27 @@ const RepoOptions& RepoOptions::forFile(const char* path) {
   return ret ? *ret : defaults();
 }
 
-std::string RepoOptions::cacheKeyRaw() const {
-  return std::string("")
-#define N(_, n, ...) + mangleForKey(n)
-#define P(_, n, ...) + mangleForKey(n)
-#define H(_, n, ...) + mangleForKey(n)
-#define E(_, n, ...) + mangleForKey(n)
+void RepoOptions::calcCacheKey() {
+  std::string raw;
+#define N(_, n, ...) mangleForKey(n, raw);
+#define P(_, n, ...) mangleForKey(n, raw);
+#define H(_, n, ...) mangleForKey(n, raw);
+#define E(_, n, ...) mangleForKey(n, raw);
 PARSERFLAGS()
-AUTOLOADFLAGS();
+AUTOLOADFLAGS()
 #undef N
 #undef P
 #undef H
 #undef E
-}
-
-std::string RepoOptions::cacheKeySha1() const {
-  return string_sha1(cacheKeyRaw());
+  m_sha1 = SHA1{string_sha1(raw)};
 }
 
 std::string RepoOptions::toJSON() const {
   return folly::toJson(toDynamic());
 }
 
-folly::dynamic RepoOptions::toDynamic() const {
-  folly::dynamic json = folly::dynamic::object();
+void RepoOptions::calcDynamic() {
+  m_cachedDynamic = folly::dynamic::object();
 #define OUT(key, var)                                \
   {                                                  \
     auto const ini_name = Config::IniName(key);      \
@@ -362,7 +511,7 @@ folly::dynamic RepoOptions::toDynamic() const {
     entry["global_value"] = ini_value;               \
     entry["local_value"] = ini_value;                \
     entry["access"] = 4;                             \
-    json[ini_name] = entry;                          \
+    m_cachedDynamic[ini_name] = entry;               \
   }
 
 #define N(_, n, ...) OUT(#n, n)
@@ -377,22 +526,6 @@ AUTOLOADFLAGS();
 #undef E
 
 #undef OUT
-
-  return json;
-}
-
-bool RepoOptions::operator==(const RepoOptions& o) const {
-#define N(_, n, ...) if (n != o.n) return false;
-#define P(_, n, ...) if (n != o.n) return false;
-#define H(_, n, ...) if (n != o.n) return false;
-#define E(_, n, ...) if (n != o.n) return false;
-PARSERFLAGS()
-AUTOLOADFLAGS();
-#undef N
-#undef P
-#undef H
-#undef E
-  return true;
 }
 
 const RepoOptions& RepoOptions::defaults() {
@@ -417,9 +550,10 @@ void RepoOptions::filterNamespaces() {
   }
 }
 
-RepoOptions::RepoOptions(const char* file) : m_path(file) {
+RepoOptions::RepoOptions(const char* str, const char* file) : m_path(file) {
   always_assert(s_init);
-  Hdf config{file};
+  Hdf config{};
+  config.fromString(str);
   Hdf parserConfig = config["Parser"];
 
 #define N(_, n, ...) hdfExtract(parserConfig, #n, n, s_defaults.n);
@@ -445,6 +579,8 @@ AUTOLOADFLAGS();
 #undef E
 
   filterNamespaces();
+  calcCacheKey();
+  calcDynamic();
 }
 
 void RepoOptions::initDefaults(const Hdf& hdf, const IniSettingMap& ini) {
@@ -461,6 +597,7 @@ AUTOLOADFLAGS()
 
   filterNamespaces();
   m_path.clear();
+  calcCacheKey();
 }
 
 void RepoOptions::setDefaults(const Hdf& hdf, const IniSettingMap& ini) {
@@ -523,8 +660,6 @@ std::string RuntimeOption::ServerUser;
 std::vector<std::string> RuntimeOption::TzdataSearchPaths;
 
 int RuntimeOption::MaxSerializedStringSize = 64 * 1024 * 1024; // 64MB
-bool RuntimeOption::NoInfiniteRecursionDetection = false;
-bool RuntimeOption::AssertEmitted = true;
 int64_t RuntimeOption::NoticeFrequency = 1;
 int64_t RuntimeOption::WarningFrequency = 1;
 int RuntimeOption::RaiseDebuggingFrequency = 1;
@@ -684,9 +819,6 @@ bool RuntimeOption::AllowRunAsRoot = false; // Allow running hhvm as root.
 
 int RuntimeOption::XboxServerThreadCount = 10;
 int RuntimeOption::XboxServerMaxQueueLength = INT_MAX;
-int RuntimeOption::XboxServerPort = 0;
-int RuntimeOption::XboxDefaultLocalTimeoutMilliSeconds = 500;
-int RuntimeOption::XboxDefaultRemoteTimeoutSeconds = 5;
 int RuntimeOption::XboxServerInfoMaxRequest = 500;
 int RuntimeOption::XboxServerInfoDuration = 120;
 std::string RuntimeOption::XboxServerInfoReqInitFunc;
@@ -703,6 +835,9 @@ std::map<std::string, std::string> RuntimeOption::IncludeRoots;
 std::map<std::string, std::string> RuntimeOption::AutoloadRoots;
 bool RuntimeOption::AutoloadEnabled;
 std::string RuntimeOption::AutoloadDBPath;
+std::string RuntimeOption::AutoloadDBPerms{"0644"};
+std::string RuntimeOption::AutoloadDBGroup;
+bool RuntimeOption::AutoloadRethrowExceptions = true;
 std::string RuntimeOption::FileCache;
 std::string RuntimeOption::DefaultDocument;
 std::string RuntimeOption::GlobalDocument;
@@ -747,6 +882,7 @@ bool RuntimeOption::AdminServerStatsNeedPassword = true;
 std::string RuntimeOption::AdminPassword;
 std::set<std::string> RuntimeOption::AdminPasswords;
 std::set<std::string> RuntimeOption::HashedAdminPasswords;
+std::string RuntimeOption::AdminDumpPath;
 
 std::string RuntimeOption::ProxyOriginRaw;
 int RuntimeOption::ProxyPercentageRaw = 0;
@@ -778,7 +914,6 @@ std::string RuntimeOption::StackTraceFilename;
 int RuntimeOption::StackTraceTimeout = 0; // seconds; 0 means unlimited
 std::string RuntimeOption::RemoteTraceOutputDir = "/tmp";
 std::set<std::string, stdltistr> RuntimeOption::TraceFunctions;
-uint32_t RuntimeOption::TraceFuncId = InvalidFuncId;
 
 bool RuntimeOption::EnableStats = false;
 bool RuntimeOption::EnableAPCStats = false;
@@ -818,12 +953,9 @@ int64_t RuntimeOption::HeapLowWaterMark = 16;
 int64_t RuntimeOption::HeapHighWaterMark = 1024;
 uint64_t RuntimeOption::DisableCallUserFunc = 0;
 uint64_t RuntimeOption::DisableCallUserFuncArray = 0;
-uint64_t RuntimeOption::DisableAssert = 0;
 uint64_t RuntimeOption::DisableConstant = 0;
 bool RuntimeOption::DisableNontoplevelDeclarations = false;
-bool RuntimeOption::DisableStaticClosures = false;
 bool RuntimeOption::EnableClassLevelWhereClauses = false;
-bool RuntimeOption::EnableFirstClassFunctionPointers = false;
 
 #ifdef HHVM_DYNAMIC_EXTENSION_DIR
 std::string RuntimeOption::ExtensionDir = HHVM_DYNAMIC_EXTENSION_DIR;
@@ -918,7 +1050,7 @@ static inline std::string hackCompilerCommandDefault() {
 }
 
 static inline bool enableGcDefault() {
-  return RuntimeOption::EvalEagerGC || one_bit_refcount;
+  return RuntimeOption::EvalEagerGC;
 }
 
 static inline uint64_t pgoThresholdDefault() {
@@ -932,6 +1064,7 @@ static inline bool alignMacroFusionPairs() {
     case ProcessorFamily::Intel_Haswell:
     case ProcessorFamily::Intel_Broadwell:
     case ProcessorFamily::Intel_Skylake:
+    case ProcessorFamily::Intel_Cooperlake:
       return true;
     case ProcessorFamily::Unknown:
       return false;
@@ -1016,7 +1149,7 @@ uint64_t ahotDefault() {
   return RuntimeOption::RepoAuthoritative ? 4 << 20 : 0;
 }
 
-folly::Optional<folly::fs::path> RuntimeOption::GetHomePath(
+Optional<folly::fs::path> RuntimeOption::GetHomePath(
   const folly::StringPiece user) {
 
   auto homePath = folly::fs::path{RuntimeOption::SandboxHome}
@@ -1094,8 +1227,10 @@ hphp_string_imap<TypedValue> RuntimeOption::ConstantFunctions;
 bool RuntimeOption::RecordCodeCoverage = false;
 std::string RuntimeOption::CodeCoverageOutputFile;
 
-std::string RuntimeOption::RepoLocalMode;
+std::string RuntimeOption::RepoPath;
+RepoMode RuntimeOption::RepoLocalMode = RepoMode::ReadOnly;
 std::string RuntimeOption::RepoLocalPath;
+RepoMode RuntimeOption::RepoCentralMode = RepoMode::ReadWrite;
 std::string RuntimeOption::RepoCentralPath;
 int32_t RuntimeOption::RepoCentralFileMode;
 std::string RuntimeOption::RepoCentralFileUser;
@@ -1140,10 +1275,6 @@ bool RuntimeOption::EnableDebuggerUsageLog = false;
 bool RuntimeOption::DebuggerDisableIPv6 = false;
 std::string RuntimeOption::DebuggerServerIP;
 int RuntimeOption::DebuggerServerPort = 8089;
-int RuntimeOption::DebuggerDefaultRpcPort = 8083;
-std::string RuntimeOption::DebuggerDefaultRpcAuth;
-std::string RuntimeOption::DebuggerRpcHostDomain;
-int RuntimeOption::DebuggerDefaultRpcTimeout = 30;
 std::string RuntimeOption::DebuggerDefaultSandboxPath;
 std::string RuntimeOption::DebuggerStartupDocument;
 int RuntimeOption::DebuggerSignalTimeout = 1;
@@ -1159,8 +1290,6 @@ bool RuntimeOption::EnablePregErrorLog = true;
 
 bool RuntimeOption::SimpleXMLEmptyNamespaceMatchesAll = false;
 
-bool RuntimeOption::AllowDuplicateCookies = true;
-
 bool RuntimeOption::EnableHotProfiler = true;
 int RuntimeOption::ProfilerTraceBuffer = 2000000;
 double RuntimeOption::ProfilerTraceExpansion = 1.2;
@@ -1169,6 +1298,7 @@ int RuntimeOption::ProfilerMaxTraceBuffer = 0;
 #ifdef FACEBOOK
 bool RuntimeOption::EnableFb303Server = false;
 int RuntimeOption::Fb303ServerPort = 0;
+std::string RuntimeOption::Fb303ServerIP;
 int RuntimeOption::Fb303ServerThreadStackSizeMb = 8;
 int RuntimeOption::Fb303ServerWorkerThreads = 1;
 int RuntimeOption::Fb303ServerPoolThreads = 1;
@@ -1227,12 +1357,31 @@ static void normalizePath(std::string &path) {
   }
 }
 
+static String todayDate() {
+  time_t rawtime;
+  struct tm timeinfo;
+  char buf[256];
+  time(&rawtime);
+  localtime_r(&rawtime, &timeinfo);
+  strftime(buf, sizeof(buf), "%Y-%m-%d", &timeinfo);
+  return buf;
+}
+
 static bool matchShard(
+  bool enableShards,
   const std::string& hostname,
   const IniSetting::Map& ini, Hdf hdfPattern,
   std::vector<std::string>& messages
 ) {
   if (!hdfPattern.exists("Shard")) return true;
+
+  if (!enableShards) {
+    hdfPattern["Shard"].setVisited();
+    hdfPattern["ShardCount"].setVisited();
+    hdfPattern["ShardSalt"].setVisited();
+    return false;
+  }
+
   auto const shard = Config::GetInt64(ini, hdfPattern, "Shard", -1, false);
 
   auto const nshards =
@@ -1245,7 +1394,9 @@ static bool matchShard(
 
   auto input = hostname;
   if (hdfPattern.exists("ShardSalt")) {
-    input += Config::GetString(ini, hdfPattern, "ShardSalt", "", false);
+    auto salt = Config::GetString(ini, hdfPattern, "ShardSalt", "", false);
+    salt = string_replace(salt, "%{date}", todayDate()).toCppString();
+    input += salt;
   }
 
   auto const md5 = Md5Digest(input.data(), input.size());
@@ -1318,6 +1469,8 @@ static std::vector<std::string> getTierOverwrites(IniSetting::Map& ini,
   };
 
   std::vector<std::string> messages;
+  auto enableShards = true;
+
   // Tier overwrites
   {
     for (Hdf hdf = config["Tiers"].firstChild(); hdf.exists();
@@ -1334,9 +1487,13 @@ static std::vector<std::string> getTierOverwrites(IniSetting::Map& ini,
       // one fails to match, the later one is reported as unused.
       if (checkPatterns(hdf) &
           (!hdf.exists("exclude") || !checkPatterns(hdf["exclude"])) &
-          matchShard(hostname, ini, hdf, messages)) {
+          matchShard(enableShards, hostname, ini, hdf, messages)) {
         messages.emplace_back(folly::sformat(
                                 "Matched tier: {}", hdf.getName()));
+        if (enableShards && hdf["DisableShards"].configGetBool()) {
+          messages.emplace_back("Sharding is disabled.");
+          enableShards = false;
+        }
         if (hdf.exists("clear")) {
           std::vector<std::string> list;
           hdf["clear"].configGet(list);
@@ -1347,12 +1504,10 @@ static std::vector<std::string> getTierOverwrites(IniSetting::Map& ini,
         config.copy(hdf["overwrite"]);
         // no break here, so we can continue to match more overwrites
       }
-      hdf["overwrite"].setVisited(); // avoid lint complaining
-      if (hdf.exists("clear")) {
-        // when the tier does not match, "clear" is not accessed
-        // mark it visited, so the linter does not complain
-        hdf["clear"].setVisited();
-      }
+      // Avoid lint errors about unvisited nodes when the tier does not match.
+      hdf["DisableShards"].setVisited();
+      hdf["clear"].setVisited();
+      hdf["overwrite"].setVisited();
     }
   }
   return messages;
@@ -1384,7 +1539,6 @@ void RuntimeOption::Load(
   const std::vector<std::string>& hdfClis /* = std::vector<std::string>() */,
   std::vector<std::string>* messages /* = nullptr */,
   std::string cmd /* = "" */) {
-  ARRPROV_USE_RUNTIME_LOCATION_FORCE();
 
   // Intialize the memory manager here because various settings and
   // initializations that we do here need it
@@ -1432,7 +1586,7 @@ void RuntimeOption::Load(
         [&] (const String& f) {
           if (access(f.data(), R_OK) == 0) {
             fullpath = f.toCppString();
-            FTRACE_MOD(Trace::watchman_autoload, 3, "Parsing {}\n", fullpath);
+            FTRACE_MOD(Trace::facts, 3, "Parsing {}\n", fullpath);
             Config::ParseConfigFile(fullpath, ini, config);
             return true;
           }
@@ -1622,8 +1776,6 @@ void RuntimeOption::Load(
                  config, "ErrorHandling.ThrowExceptionOnBadMethodCall", true);
     Config::Bind(LogNativeStackOnOOM, ini,
                  config, "ErrorHandling.LogNativeStackOnOOM", false);
-    Config::Bind(NoInfiniteRecursionDetection, ini,
-                 config, "ErrorHandling.NoInfiniteRecursionDetection");
     Config::Bind(NoticeFrequency, ini, config, "ErrorHandling.NoticeFrequency",
                  1);
     Config::Bind(WarningFrequency, ini, config,
@@ -1681,37 +1833,56 @@ void RuntimeOption::Load(
     Config::Bind(DisableCallUserFuncArray, ini, config,
                  "Hack.Lang.Phpism.DisableCallUserFuncArray",
                  DisableCallUserFuncArray);
-    Config::Bind(DisableAssert, ini, config,
-                 "Hack.Lang.Phpism.DisableAssert",
-                 DisableAssert);
     Config::Bind(DisableNontoplevelDeclarations, ini, config,
                  "Hack.Lang.Phpism.DisableNontoplevelDeclarations",
                  DisableNontoplevelDeclarations);
-    Config::Bind(DisableStaticClosures, ini, config,
-                 "Hack.Lang.Phpism.DisableStaticClosures",
-                 DisableStaticClosures);
     Config::Bind(DisableConstant, ini, config,
                  "Hack.Lang.Phpism.DisableConstant",
                  DisableConstant);
   }
   {
     // Repo
-    // Local Repo
-    Config::Bind(RepoLocalMode, ini, config, "Repo.Local.Mode", RepoLocalMode);
-    if (RepoLocalMode.empty()) {
-      const char* HHVM_REPO_LOCAL_MODE = getenv("HHVM_REPO_LOCAL_MODE");
-      if (HHVM_REPO_LOCAL_MODE != nullptr) {
-        RepoLocalMode = HHVM_REPO_LOCAL_MODE;
+    auto repoModeToStr = [](RepoMode mode) {
+      switch (mode) {
+        case RepoMode::Closed:
+          return "--";
+        case RepoMode::ReadOnly:
+          return "r-";
+        case RepoMode::ReadWrite:
+          return "rw";
       }
-      RepoLocalMode = "r-";
-    }
-    if (RepoLocalMode.compare("rw")
-        && RepoLocalMode.compare("r-")
-        && RepoLocalMode.compare("--")) {
-      Logger::Error("Bad config setting: Repo.Local.Mode=%s",
-                    RepoLocalMode.c_str());
-      RepoLocalMode = "rw";
-    }
+
+      always_assert(false);
+      return "";
+    };
+
+    auto parseRepoMode = [&](const std::string& repoModeStr, const char* type, RepoMode defaultMode) {
+      if (repoModeStr.empty()) {
+        return defaultMode;
+      }
+      if (repoModeStr == "--") {
+        return RepoMode::Closed;
+      }
+      if (repoModeStr == "r-") {
+        return RepoMode::ReadOnly;
+      }
+      if (repoModeStr == "rw") {
+        return RepoMode::ReadWrite;
+      }
+
+      Logger::Error("Bad config setting: Repo.%s.Mode=%s",
+                    type, repoModeStr.c_str());
+      return RepoMode::ReadWrite;
+    };
+
+    // Local Repo
+    static std::string repoLocalMode;
+    Config::Bind(repoLocalMode, ini, config, "Repo.Local.Mode", repoModeToStr(RepoLocalMode));
+    RepoLocalMode = parseRepoMode(repoLocalMode, "Local", RepoMode::ReadOnly);
+
+    // Repo.Path
+    Config::Bind(RepoPath, ini, config, "Repo.Path", RepoPath);
+
     // Repo.Local.Path
     Config::Bind(RepoLocalPath, ini, config, "Repo.Local.Path");
     if (RepoLocalPath.empty()) {
@@ -1722,6 +1893,11 @@ void RuntimeOption::Load(
     }
 
     // Central Repo
+    static std::string repoCentralMode;
+    Config::Bind(repoCentralMode, ini, config, "Repo.Central.Mode", repoModeToStr(RepoCentralMode));
+    RepoCentralMode = parseRepoMode(repoCentralMode, "Central", RepoMode::ReadWrite);
+
+    // Repo.Central.Path
     Config::Bind(RepoCentralPath, ini, config, "Repo.Central.Path");
     Config::Bind(RepoCentralFileMode, ini, config, "Repo.Central.FileMode");
     Config::Bind(RepoCentralFileUser, ini, config, "Repo.Central.FileUser");
@@ -1732,6 +1908,7 @@ void RuntimeOption::Load(
 
     replacePlaceholders(RepoLocalPath);
     replacePlaceholders(RepoCentralPath);
+    replacePlaceholders(RepoPath);
 
     Config::Bind(RepoJournal, ini, config, "Repo.Journal", RepoJournal);
     Config::Bind(RepoCommit, ini, config, "Repo.Commit",
@@ -1747,6 +1924,23 @@ void RuntimeOption::Load(
                  "Repo.LocalReadaheadConcurrent", false);
     Config::Bind(RepoBusyTimeoutMS, ini, config,
                  "Repo.BusyTimeoutMS", RepoBusyTimeoutMS);
+
+    if (RepoPath.empty()) {
+      if (!RepoLocalPath.empty()) {
+        RepoPath = RepoLocalPath;
+      } else if (!RepoCentralPath.empty()) {
+        RepoPath = RepoCentralPath;
+      } else if (auto const env = getenv("HHVM_REPO_CENTRAL_PATH")) {
+        RepoPath = env;
+        replacePlaceholders(RepoPath);
+      } else {
+        always_assert_flog(
+          !RepoAuthoritative,
+          "Either Repo.Path, Repo.LocalPath, or Repo.CentralPath "
+          "must be set in RepoAuthoritative mode"
+        );
+      }
+    }
   }
 
   if (use_jemalloc) {
@@ -1830,6 +2024,11 @@ void RuntimeOption::Load(
       low_2m_pages(EvalMaxLowMemHugePages);
       high_2m_pages(EvalMaxHighArenaHugePages);
     }
+#if USE_JEMALLOC_EXTENT_HOOKS
+    g_useTHPUponHugeTLBFailure =
+      Config::GetBool(ini, config, "Eval.UseTHPUponHugeTLBFailure",
+                      g_useTHPUponHugeTLBFailure);
+#endif
     s_enable_static_arena =
       Config::GetBool(ini, config, "Eval.UseTLStaticArena", true);
 
@@ -1909,14 +2108,6 @@ void RuntimeOption::Load(
                    "Eval.Debugger.StartupDocument");
       Config::Bind(DebuggerSignalTimeout, ini, config,
                    "Eval.Debugger.SignalTimeout", 1);
-      Config::Bind(DebuggerDefaultRpcPort, ini, config,
-                   "Eval.Debugger.RPC.DefaultPort", 8083);
-      DebuggerDefaultRpcAuth =
-        Config::GetString(ini, config, "Eval.Debugger.RPC.DefaultAuth");
-      Config::Bind(DebuggerRpcHostDomain, ini, config,
-                   "Eval.Debugger.RPC.HostDomain");
-      Config::Bind(DebuggerDefaultRpcTimeout, ini, config,
-                   "Eval.Debugger.RPC.DefaultTimeout", 30);
       Config::Bind(DebuggerAuthTokenScriptBin, ini, config,
                    "Eval.Debugger.Auth.TokenScriptBin");
       Config::Bind(DebuggerSessionAuthScriptBin, ini, config,
@@ -1958,8 +2149,6 @@ void RuntimeOption::Load(
                  "Hack.Lang.CheckIntOverflow", 0);
     Config::Bind(StrictArrayFillKeys, ini, config,
                  "Hack.Lang.StrictArrayFillKeys", HackStrictOption::ON);
-    Config::Bind(EnableFirstClassFunctionPointers, ini, config,
-                 "Hack.Lang.EnableFirstClassFunctionPointers", 0);
 
     Config::Bind(LookForTypechecker, ini, config,
                  "Hack.Lang.LookForTypechecker", false);
@@ -2266,7 +2455,11 @@ void RuntimeOption::Load(
     IncludeSearchPaths.insert(IncludeSearchPaths.begin(), ".");
 
     Config::Bind(AutoloadEnabled, ini, config, "Autoload.Enabled", false);
-    Config::Bind(AutoloadDBPath, ini, config, "Autoload.DBPath");
+    Config::Bind(AutoloadDBPath, ini, config, "Autoload.DB.Path");
+    Config::Bind(AutoloadDBPerms, ini, config, "Autoload.DB.Perms", "0644");
+    Config::Bind(AutoloadDBGroup, ini, config, "Autoload.DB.Group");
+    Config::Bind(AutoloadRethrowExceptions, ini, config,
+                 "Autoload.RethrowExceptions", true);
 
     Config::Bind(FileCache, ini, config, "Server.FileCache");
     Config::Bind(DefaultDocument, ini, config, "Server.DefaultDocument",
@@ -2353,10 +2546,10 @@ void RuntimeOption::Load(
                  "Server.LightProcessFilePrefix", "./lightprocess");
     Config::Bind(LightProcessCount, ini, config,
                  "Server.LightProcessCount", 0);
+    Config::Bind(LightProcess::g_strictUser, ini, config,
+                 "Server.LightProcessStrictUser", false);
     Config::Bind(ForceServerNameToHeader, ini, config,
                  "Server.ForceServerNameToHeader");
-    Config::Bind(AllowDuplicateCookies, ini, config,
-                 "Server.AllowDuplicateCookies", false);
     Config::Bind(PathDebug, ini, config, "Server.PathDebug", false);
     Config::Bind(ServerUser, ini, config, "Server.User", "");
     Config::Bind(AllowRunAsRoot, ini, config, "Server.AllowRunAsRoot", false);
@@ -2398,11 +2591,6 @@ void RuntimeOption::Load(
     Config::Bind(XboxServerMaxQueueLength, ini, config,
                  "Xbox.ServerInfo.MaxQueueLength", INT_MAX);
     if (XboxServerMaxQueueLength < 0) XboxServerMaxQueueLength = INT_MAX;
-    Config::Bind(XboxServerPort, ini, config, "Xbox.ServerInfo.Port", 0);
-    Config::Bind(XboxDefaultLocalTimeoutMilliSeconds, ini, config,
-                 "Xbox.DefaultLocalTimeoutMilliSeconds", 500);
-    Config::Bind(XboxDefaultRemoteTimeoutSeconds, ini, config,
-                 "Xbox.DefaultRemoteTimeoutSeconds", 5);
     Config::Bind(XboxServerInfoMaxRequest, ini, config,
                  "Xbox.ServerInfo.MaxRequest", 500);
     Config::Bind(XboxServerInfoDuration, ini, config,
@@ -2473,6 +2661,8 @@ void RuntimeOption::Load(
     AdminPasswords = Config::GetSet(ini, config, "AdminServer.Passwords");
     HashedAdminPasswords =
       Config::GetSet(ini, config, "AdminServer.HashedPasswords");
+    Config::Bind(AdminDumpPath, ini, config,
+                 "AdminServer.DumpPath", "/tmp/hhvm_admin_dump");
   }
   {
     // Proxy
@@ -2521,7 +2711,6 @@ void RuntimeOption::Load(
                  "Debug.RemoteTraceOutputDir", "/tmp");
     Config::Bind(TraceFunctions, ini, config,
                  "Debug.TraceFunctions", TraceFunctions);
-    Config::Bind(TraceFuncId, ini, config, "Debug.TraceFuncId", TraceFuncId);
   }
   {
     // Stats
@@ -2599,6 +2788,7 @@ void RuntimeOption::Load(
     Config::Bind(EnableFb303Server, ini, config, "Fb303Server.Enable",
                  EnableFb303Server);
     Config::Bind(Fb303ServerPort, ini, config, "Fb303Server.Port", 0);
+    Config::Bind(Fb303ServerIP, ini, config, "Fb303Server.IP");
     Config::Bind(Fb303ServerThreadStackSizeMb, ini, config,
                  "Fb303Server.ThreadStackSizeMb", 8);
     Config::Bind(Fb303ServerWorkerThreads, ini, config,
@@ -2623,16 +2813,6 @@ void RuntimeOption::Load(
     Config::Bind(SetProfileNullThisObject, ini, config,
                  "SetProfile.NullThisObject", true);
   }
-  {
-    // We directly read zend.assertions here, so that we can get its INI value
-    // in order to know how we should emit bytecode. We don't actually Bind the
-    // option here though, since its runtime value can be changed and is per
-    // request. (We prevent its value from changing at runtime between values
-    // that would affect byecode emission.)
-    Variant v;
-    bool b = IniSetting::GetSystem("zend.assertions", v);
-    if (b) RuntimeOption::AssertEmitted = v.toInt64() >= 0;
-  }
 
   Config::Bind(TzdataSearchPaths, ini, config, "TzdataSearchPaths");
 
@@ -2641,7 +2821,6 @@ void RuntimeOption::Load(
   // Run initializers depedent on options, e.g., resizing atomic maps/vectors.
   refineStaticStringTableSize();
   InitFiniNode::ProcessPostRuntimeOptions();
-  always_assert(Func::getFuncVec().size() == RuntimeOption::EvalFuncCountHint);
 
   // **************************************************************************
   //                                  DANGER
@@ -2772,43 +2951,21 @@ void RuntimeOption::Load(
   ExtensionRegistry::moduleLoad(ini, config);
   initialize_apc();
 
-  if (TraceFunctions.size() || TraceFuncId != InvalidFuncId) {
-    Trace::ensureInit(getTraceOutputFile());
+  if (TraceFunctions.size()) Trace::ensureInit(getTraceOutputFile());
+
+  if (RO::EvalJitEnableRenameFunction && RO::RepoAuthoritative) {
+      throw std::runtime_error("Can't use Eval.JitEnableRenameFunction if "
+                               " RepoAuthoritative is turned on");
   }
 
   // Bespoke array-likes
 
-  // We don't support provenance for bespoke array-likes, so don't construct
-  // any at runtime if we're logging provenance instrumentation results.
-  if (RO::EvalBespokeArrayLikeMode > 0 &&
-      (RO::EvalArrayProvenance || RO::EvalLogArrayProvenance)) {
-    RO::EvalBespokeArrayLikeMode = 0;
-  }
+  auto const enable_logging = RO::EvalBespokeArrayLikeMode != 0;
+  bespoke::setLoggingEnabled(enable_logging);
+  specializeVanillaDestructors();
 
-  // If we're going to construct bespoke array-likes at runtime, ensure that
-  // we JIT checks for these types as well. We support JIT-ing these checks
-  // even if there are no runtime bespokes as way to test our guard logic.
-  if (RO::EvalBespokeArrayLikeMode == 0) {
-    specializeVanillaDestructors();
-    bespoke::setLoggingEnabled(false);
-  } else {
-    bespoke::setLoggingEnabled(true);
-  }
-
-  // Hack Array Compats
-
-  if (!RuntimeOption::EvalEmitClsMethPointers) {
-    RuntimeOption::EvalIsCompatibleClsMethType = false;
-  }
-
-  if (RuntimeOption::EvalArrayProvenance) {
-    RuntimeOption::EvalJitForceVMRegSync = true;
-  }
-
-  // we need to maintain an invariant that PureEnforceCalls >= RxEnforceCalls...
-  // We can't be stricter on rx than on pure, as that would break rx assumptions
-  RuntimeOption::EvalPureEnforceCalls = std::max(
-    RuntimeOption::EvalPureEnforceCalls, RuntimeOption::EvalRxEnforceCalls);
+  // Coeffects
+  CoeffectsConfig::init(RO::EvalCoeffectEnforcementLevels);
   RuntimeOption::EvalPureVerifyBody = std::max(
     RuntimeOption::EvalPureVerifyBody, RuntimeOption::EvalRxVerifyBody);
 
@@ -2817,4 +2974,17 @@ void RuntimeOption::Load(
 }
 
 ///////////////////////////////////////////////////////////////////////////////
+
+uintptr_t lowArenaMinAddr() {
+  const char* str = getenv("HHVM_LOW_ARENA_START");
+  if (str == nullptr) return 1u << 30;
+  uintptr_t start = 0;
+  if (sscanf(str, "0x%lx", &start) == 1) return start;
+  if (sscanf(str, "%lu", &start) == 1) return start;
+  fprintf(stderr, "Bad environment variable HHVM_LOW_ARENA_START: %s\n", str);
+  abort();
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
 }

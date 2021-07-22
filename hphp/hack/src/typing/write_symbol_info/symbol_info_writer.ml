@@ -20,14 +20,13 @@ let write_file file_dir num_tasts json_chunks =
       "glean_symbol_info_chunk_"
       ".json"
   in
-  let json_string = json_to_string ~pretty:true (JSON_Array json_chunks) in
+  let json_string = json_to_string (JSON_Array json_chunks) in
   let json_length = String.length json_string in
   Out_channel.output_string channel json_string;
   Out_channel.close channel;
   Hh_logger.log
     "Wrote %s of JSON facts on %i files"
-    (Byte_units.to_string_hum
-       (Byte_units.create `Bytes (float_of_int json_length)))
+    (Byte_units.to_string_hum (Byte_units.of_bytes_int json_length))
     num_tasts
 
 let write_json
@@ -37,7 +36,7 @@ let write_json
     (start_time : float) : unit =
   try
     let (small, large) =
-      List.partition_tf files_info (fun (_, tast, _) ->
+      List.partition_tf files_info ~f:(fun (_, tast, _) ->
           List.length tast <= 2000)
     in
     if List.is_empty large then
@@ -46,7 +45,7 @@ let write_json
     else
       let json_chunks = Symbol_json_builder.build_json ctx small in
       write_file file_dir (List.length small) json_chunks;
-      List.iter large (fun (fp, tast, st) ->
+      List.iter large ~f:(fun (fp, tast, st) ->
           let decl_json_chunks =
             Symbol_json_builder.build_decls_json ctx [(fp, tast, st)]
           in
@@ -58,7 +57,11 @@ let write_json
       let elapsed = Unix.gettimeofday () -. start_time in
       let time = Unix.gmtime elapsed in
       Hh_logger.log "Processed batch in %dm%ds" time.tm_min time.tm_sec
-  with e ->
+  with
+  | WorkerCancel.Worker_should_exit as e ->
+    (* Cancellation requests must be re-raised *)
+    raise e
+  | e ->
     Printf.eprintf "WARNING: symbol write failure: \n%s\n" (Exn.to_string e)
 
 let recheck_job

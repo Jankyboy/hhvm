@@ -1,5 +1,4 @@
-#ifndef incl_HPHP_CURL_MULTI_RESOURCE_H
-#define incl_HPHP_CURL_MULTI_RESOURCE_H
+#pragma once
 
 #include "hphp/runtime/ext/extension.h"
 
@@ -40,9 +39,8 @@ struct CurlMultiResource : SweepableResourceData {
   CURLM *m_multi;
   // CURLM is a typedef to void
   TYPE_SCAN_IGNORE_FIELD(m_multi);
-  Array m_easyh;
+  Array m_easyh = Array::CreateVec();
 };
 
 /////////////////////////////////////////////////////////////////////////////
 }
-#endif

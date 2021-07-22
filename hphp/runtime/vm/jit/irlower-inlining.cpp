@@ -45,18 +45,6 @@ TRACE_SET_MOD(irlower);
 
 ///////////////////////////////////////////////////////////////////////////////
 
-namespace {
-
-bool isResumedParent(const IRInstruction* inst) {
-  auto const fp = inst->src(0);
-  assertx(fp->inst()->is(BeginInlining));
-
-  auto const callerFp = fp->inst()->src(1);
-  return callerFp->inst()->marker().resumeMode() != ResumeMode::None;
-}
-
-}
-
 void cgBeginInlining(IRLS& env, const IRInstruction* inst) {
   auto const callerSP = srcLoc(env, inst, 0).reg();
   auto const calleeFP = dstLoc(env, inst, 0).reg();
@@ -76,26 +64,22 @@ void cgInlineCall(IRLS& env, const IRInstruction* inst) {
   auto const callerFP = srcLoc(env, inst, 1).reg();
   auto& v = vmain(env);
 
-  assertx(inst->src(0)->inst()->is(BeginInlining));
   auto const off = [&] () -> int32_t {
-    if (isResumedParent(inst)) return 0;
-    auto const be = inst->src(0)->inst();
-    auto const defsp = be->src(0)->inst();
-    auto const parentToSp = [&] {
-      if (be->src(1)->inst()->is(BeginInlining)) {
-        auto const extra = be->src(1)->inst()->extra<BeginInlining>();
-        return FPInvOffset{extra->spOffset.offset};
-      }
-      return defsp->extra<FPInvOffsetData>()->offset;
-    }();
-    auto const spoff = inst->src(0)->inst()->extra<BeginInlining>()->spOffset;
-    return spoff.to<FPInvOffset>(parentToSp).offset;
+    auto const callerFPOff = offsetOfFrame(inst->src(1));
+    if (!callerFPOff) return 0;
+
+    auto const calleeFPInst = inst->src(0)->inst();
+    assertx(calleeFPInst->is(BeginInlining));
+    auto const calleeFPOff = calleeFPInst->extra<BeginInlining>()->spOffset;
+    return *callerFPOff - calleeFPOff;
   }();
 
   // Do roughly the same work as an HHIR Call.
   v << store{callerFP, calleeFP[AROFF(m_sfp)]};
-  emitImmStoreq(v, uintptr_t(tc::ustubs().retInlHelper),
-                calleeFP[AROFF(m_savedRip)]);
+
+  auto const retAddr = v.makeReg();
+  v << ldbindretaddr{extra->returnSk, extra->returnSPOff, retAddr};
+  v << store{retAddr, calleeFP[AROFF(m_savedRip)]};
 
   if (extra->syncVmpc) {
     // If we are in a catch block, update the vmfp() to point to the inlined
@@ -121,14 +105,19 @@ void cgInlineCall(IRLS& env, const IRInstruction* inst) {
 
 void cgInlineReturn(IRLS& env, const IRInstruction* inst) {
   auto& v = vmain(env);
-  auto const fp = srcLoc(env, inst, 0).reg();
-  auto const callerFp = srcLoc(env, inst, 1).reg();
-  if (isResumedParent(inst)) {
-    v << popvmfp{callerFp};
+  auto const callerFPOff = offsetOfFrame(inst->src(1));
+  if (!callerFPOff) {
+    // Offset to the caller's FP not known, use callerFP SSA.
+    auto const callerFP = srcLoc(env, inst, 1).reg();
+    v << popvmfp{callerFP};
   } else {
+    // Calculate the offset to the caller's FP and use it to update FP.
+    auto const calleeFPInst = inst->src(0)->inst();
+    assertx(calleeFPInst->is(BeginInlining));
+    auto const calleeFPOff = calleeFPInst->extra<BeginInlining>()->spOffset;
+    auto const calleeFP = srcLoc(env, inst, 0).reg();
     auto const tmp = v.makeReg();
-    auto const callerFPOff = inst->extra<InlineReturn>()->offset;
-    v << lea{fp[cellsToBytes(callerFPOff.offset)], tmp};
+    v << lea{calleeFP[cellsToBytes(*callerFPOff - calleeFPOff)], tmp};
     v << popvmfp{tmp};
   }
   v << popframe{};
@@ -147,25 +136,6 @@ void cgEndInlining(IRLS& env, const IRInstruction* inst) {
   }
 
   v << inlineend{};
-}
-
-void cgSyncReturnBC(IRLS& env, const IRInstruction* inst) {
-  auto const extra = inst->extra<SyncReturnBC>();
-  auto const coaf = extra->callBCOffset << ActRec::CallOffsetStart;
-  auto const spOffset = cellsToBytes(extra->spOffset.offset);
-  auto const sp = srcLoc(env, inst, 0).reg();
-  auto const fp = srcLoc(env, inst, 1).reg();
-  auto const mask = (1 << ActRec::CallOffsetStart) - 1;
-
-  auto& v = vmain(env);
-  auto const oldCoaf = v.makeReg();
-  auto const newCoaf = v.makeReg();
-  auto const flags = v.makeReg();
-  v << loadl{sp[spOffset + AROFF(m_callOffAndFlags)], oldCoaf};
-  v << andli{mask, oldCoaf, flags, v.makeReg()};
-  v << orli{coaf, flags, newCoaf, v.makeReg()};
-  v << storel{newCoaf, sp[spOffset + AROFF(m_callOffAndFlags)]};
-  v << store{fp, sp[spOffset + AROFF(m_sfp)]};
 }
 
 ///////////////////////////////////////////////////////////////////////////////

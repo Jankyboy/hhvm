@@ -21,8 +21,9 @@
 #include "hphp/runtime/ext/extension.h"
 #include "hphp/runtime/ext/asio/ext_resumable-wait-handle.h"
 #include "hphp/runtime/vm/bytecode.h"
-#include "hphp/runtime/vm/resumable.h"
 #include "hphp/runtime/vm/jit/types.h"
+#include "hphp/runtime/vm/resumable.h"
+#include "hphp/runtime/vm/srckey.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -135,7 +136,7 @@ struct c_AsyncFunctionWaitHandle final : c_ResumableWaitHandle {
   c_WaitableWaitHandle* getChild();
   void exitContext(context_idx_t ctx_idx);
   bool isRunning() { return getState() == STATE_RUNNING; }
-  String getFileName();
+  String getFilename();
   Offset getNextExecutionOffset();
 
   Resumable* resumable() const {

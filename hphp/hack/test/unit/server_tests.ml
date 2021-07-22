@@ -8,7 +8,7 @@
  *
  *)
 
-open Core_kernel
+open Hh_prelude
 
 let tcopt_with_defer =
   GlobalOptions.{ default with tco_defer_class_declaration_threshold = Some 1 }
@@ -17,7 +17,11 @@ let test_process_data =
   ServerProcess.
     {
       pid = 2758734;
-      finale_file = "2758734.fin";
+      server_specific_files =
+        {
+          ServerCommandTypes.server_finale_file = "2758734.fin";
+          server_progress_file = "progress.2758734.json";
+        };
       start_t = 0.0;
       in_fd = Unix.stdin;
       out_fds = [("default", Unix.stdout)];
@@ -36,36 +40,45 @@ let test_dmesg_parser () =
     input
 
 let ensure_count (count : int) : unit =
-  let deferred = Deferred_decl.get_deferments ~f:(fun d -> d) in
+  let deferred = Deferred_decl.get_deferments () in
   Asserter.Int_asserter.assert_equals
     count
     (List.length deferred)
     "The number of deferred items should match the expected value"
 
 let test_deferred_decl_add () =
-  Deferred_decl.reset ~enable:true ~threshold_opt:None;
+  Deferred_decl.reset
+    ~enable:true
+    ~declaration_threshold_opt:None
+    ~memory_mb_threshold_opt:None;
   ensure_count 0;
 
   Deferred_decl.add_deferment
-    ~d:(Relative_path.create Relative_path.Dummy "foo");
+    ~d:(Relative_path.create Relative_path.Dummy "foo", "\\Foo");
   ensure_count 1;
 
   Deferred_decl.add_deferment
-    ~d:(Relative_path.create Relative_path.Dummy "foo");
+    ~d:(Relative_path.create Relative_path.Dummy "foo", "\\Foo");
   ensure_count 1;
 
   Deferred_decl.add_deferment
-    ~d:(Relative_path.create Relative_path.Dummy "bar");
+    ~d:(Relative_path.create Relative_path.Dummy "bar", "\\Bar");
   ensure_count 2;
 
-  Deferred_decl.reset ~enable:true ~threshold_opt:None;
+  Deferred_decl.reset
+    ~enable:true
+    ~declaration_threshold_opt:None
+    ~memory_mb_threshold_opt:None;
   ensure_count 0;
 
   true
 
 let ensure_threshold ~(threshold : int) ~(limit : int) ~(expected : int) : unit
     =
-  Deferred_decl.reset ~enable:true ~threshold_opt:(Some threshold);
+  Deferred_decl.reset
+    ~enable:true
+    ~declaration_threshold_opt:(Some threshold)
+    ~memory_mb_threshold_opt:None;
   ensure_count 0;
 
   let deferred_count = ref 0 in
@@ -73,9 +86,10 @@ let ensure_threshold ~(threshold : int) ~(limit : int) ~(expected : int) : unit
     let path = Printf.sprintf "foo-%d" i in
     let relative_path = Relative_path.create Relative_path.Dummy path in
     try
-      Deferred_decl.raise_if_should_defer ~d:relative_path;
+      Deferred_decl.raise_if_should_defer ~deferment:(relative_path, "\\Foo");
       Deferred_decl.increment_counter ()
-    with Deferred_decl.Defer d ->
+    with
+    | Deferred_decl.Defer (d, _) ->
       Asserter.Bool_asserter.assert_equals
         (i >= threshold)
         true
@@ -114,60 +128,37 @@ let test_process_file_deferring () =
   let { Common_setup.ctx; foo_path; _ } =
     Common_setup.setup ~sqlite:false tcopt_with_defer
   in
-  let file = Typing_check_service.{ path = foo_path; deferred_count = 0 } in
+  let file = Typing_service_types.{ path = foo_path; deferred_count = 0 } in
   let dynamic_view_files = Relative_path.Set.empty in
   let errors = Errors.empty in
 
   (* Finally, this is what all the setup was for: process this file *)
-  let prev_counter_state = Counters.reset ~enable:true in
-  let { Typing_check_service.computation; _ } =
+  Decl_counters.set_mode Typing_service_types.DeclingTopCounts;
+  let prev_counter_state = Counters.reset () in
+  let { Typing_check_service.deferred_decls; _ } =
     Typing_check_service.process_file dynamic_view_files ctx errors file
   in
   let counters = Counters.get_counters () in
   Counters.restore_state prev_counter_state;
   Asserter.Int_asserter.assert_equals
-    2
-    (List.length computation)
-    "Should be two file computations";
+    1
+    (List.length deferred_decls)
+    "Should be this many deferred_decls";
 
   (* this test doesn't write back to cache, so num of decl_fetches isn't solid *)
   Asserter.Bool_asserter.assert_equals
     true
-    (Telemetry_test_utils.int_exn counters "decl_accessors.count" > 0)
+    (Telemetry_test_utils.int_exn counters "decling.count" > 0)
     "Should be at least one decl fetched";
-
-  (* Validate the deferred type check computation *)
-  let found_check =
-    List.exists computation ~f:(fun file_computation ->
-        match file_computation with
-        | Typing_check_service.(Check { path; deferred_count }) ->
-          Asserter.String_asserter.assert_equals
-            "Foo.php"
-            (Relative_path.suffix path)
-            "Check path must match the expected";
-          Asserter.Int_asserter.assert_equals
-            1
-            deferred_count
-            "Check deferred count must match the expected";
-          true
-        | _ -> false)
-  in
-  Asserter.Bool_asserter.assert_equals
-    true
-    found_check
-    "Should have found the check file computation";
 
   (* Validate the declare file computation *)
   let found_declare =
-    List.exists computation ~f:(fun file_computation ->
-        match file_computation with
-        | Typing_check_service.Declare path ->
-          Asserter.String_asserter.assert_equals
-            "Bar.php"
-            (Relative_path.suffix path)
-            "Declare path must match the expected";
-          true
-        | _ -> false)
+    List.exists deferred_decls ~f:(fun (deferred_file, _) ->
+        Asserter.String_asserter.assert_equals
+          "Bar.php"
+          (Relative_path.suffix deferred_file)
+          "Declare path must match the expected";
+        true)
   in
   Asserter.Bool_asserter.assert_equals
     true
@@ -193,10 +184,11 @@ let test_compute_tast_counting () =
     Tast_provider.compute_tast_and_errors_unquarantined ~ctx ~entry
   in
 
+  let expected_decling_count = 46 in
   Asserter.Int_asserter.assert_equals
-    111
-    (Telemetry_test_utils.int_exn telemetry "decl_accessors.count")
-    "There should be this many decl_accessor_count for shared_mem provider";
+    expected_decling_count
+    (Telemetry_test_utils.int_exn telemetry "decling.count")
+    "There should be this many decling_count for shared_mem provider";
   Asserter.Int_asserter.assert_equals
     0
     (Telemetry_test_utils.int_exn telemetry "disk_cat.count")
@@ -215,6 +207,7 @@ let test_compute_tast_counting () =
           ~popt:ParserOptions.default
           ~tcopt:TypecheckerOptions.default
           ~backend:(Provider_backend.get ())
+          ~deps_mode:Typing_deps_mode.SQLiteMode
       in
       let (ctx, entry) =
         Provider_context.add_entry_if_missing ~ctx ~path:foo_path
@@ -223,9 +216,9 @@ let test_compute_tast_counting () =
         Tast_provider.compute_tast_and_errors_unquarantined ~ctx ~entry
       in
       Asserter.Int_asserter.assert_equals
-        53
-        (Telemetry_test_utils.int_exn telemetry "decl_accessors.count")
-        "There should be this many decl_accessor_count for local_memory provider";
+        expected_decling_count
+        (Telemetry_test_utils.int_exn telemetry "decling.count")
+        "There should be this many decling_count for local_memory provider";
       Asserter.Int_asserter.assert_equals
         1
         (Telemetry_test_utils.int_exn telemetry "disk_cat.count")
@@ -242,7 +235,7 @@ let test_should_enable_deferring () =
     GlobalOptions.{ default with tco_max_times_to_defer_type_checking = Some 2 }
   in
   let file =
-    Typing_check_service.
+    Typing_service_types.
       {
         path =
           Relative_path.create Relative_path.Root
@@ -255,13 +248,13 @@ let test_should_enable_deferring () =
     (Typing_check_service.should_enable_deferring opts file)
     "File should be deferred twice - below max";
 
-  let file = Typing_check_service.{ file with deferred_count = 2 } in
+  let file = Typing_service_types.{ file with deferred_count = 2 } in
   Asserter.Bool_asserter.assert_equals
     false
     (Typing_check_service.should_enable_deferring opts file)
     "File should not be deferred - at max";
 
-  let file = Typing_check_service.{ file with deferred_count = 3 } in
+  let file = Typing_service_types.{ file with deferred_count = 3 } in
   Asserter.Bool_asserter.assert_equals
     false
     (Typing_check_service.should_enable_deferring opts file)
@@ -295,7 +288,8 @@ let test_quarantine () =
     try
       Provider_utils.respect_but_quarantine_unsaved_changes ~ctx ~f:(fun () ->
           "ok")
-    with e -> e |> Exception.wrap |> Exception.to_string
+    with
+    | e -> e |> Exception.wrap |> Exception.to_string
   in
   Asserter.String_asserter.assert_equals
     "ok"
@@ -307,7 +301,8 @@ let test_quarantine () =
     try
       Provider_utils.respect_but_quarantine_unsaved_changes ~ctx ~f:(fun () ->
           "ok")
-    with e -> e |> Exception.wrap |> Exception.to_string
+    with
+    | e -> e |> Exception.wrap |> Exception.to_string
   in
   Asserter.String_asserter.assert_equals
     "ok"
@@ -326,7 +321,8 @@ let test_quarantine () =
       Provider_utils.respect_but_quarantine_unsaved_changes
         ~ctx:ctx2
         ~f:(fun () -> "ok")
-    with e -> e |> Exception.wrap |> Exception.to_string
+    with
+    | e -> e |> Exception.wrap |> Exception.to_string
   in
   Asserter.String_asserter.assert_equals
     "ok"
@@ -338,7 +334,8 @@ let test_quarantine () =
     try
       Provider_utils.respect_but_quarantine_unsaved_changes ~ctx ~f:(fun () ->
           "ok")
-    with e -> e |> Exception.wrap |> Exception.to_string
+    with
+    | e -> e |> Exception.wrap |> Exception.to_string
   in
   Asserter.String_asserter.assert_equals
     "ok"
@@ -372,6 +369,7 @@ let () =
         shm_min_avail = 0;
         log_level = 0;
         sample_rate = 0.0;
+        compression = 0;
       }
   in
   let (_ : SharedMem.handle) = SharedMem.init config ~num_workers:0 in

@@ -15,8 +15,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EXT_SQLITE3_H_
-#define incl_HPHP_EXT_SQLITE3_H_
+#pragma once
 
 #include "hphp/runtime/ext/extension.h"
 #include "hphp/runtime/base/req-vector.h"
@@ -64,7 +63,7 @@ Array HHVM_STATIC_METHOD(SQLite3, version);
 int64_t HHVM_METHOD(SQLite3, lastinsertrowid);
 int64_t HHVM_METHOD(SQLite3, lasterrorcode);
 String HHVM_METHOD(SQLite3, lasterrormsg);
-bool HHVM_METHOD(SQLite3, loadextension,
+bool HHVM_METHOD(SQLite3, loadExtension,
                  const String& extension);
 int64_t HHVM_METHOD(SQLite3, changes);
 String HHVM_STATIC_METHOD(SQLite3, escapestring,
@@ -153,4 +152,3 @@ bool HHVM_METHOD(SQLite3Result, finalize);
 ///////////////////////////////////////////////////////////////////////////////
 }
 
-#endif // incl_HPHP_EXT_SQLITE3_H_

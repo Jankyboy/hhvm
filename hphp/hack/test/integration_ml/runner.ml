@@ -41,6 +41,7 @@ let tests =
     ("ide/unsaved_changes", run Test_unsaved_changes.test);
     ("added_parent", run Test_added_parent.test);
     ("capitalization", run Test_capitalization.test);
+    ("coeffects", run Test_coeffects.test);
     ("coverage_counts", run Test_coverage_counts.test);
     ("coverage_levels_checked", run Test_coverage_levels_checked.test);
     ("coverage_levels_multi", run Test_coverage_levels_multi.test);
@@ -52,25 +53,21 @@ let tests =
     ("duplicate_parent", run Test_duplicate_parent.test);
     ("failed_decl", run Test_failed_decl.test);
     ("failed_naming", run Test_failed_naming.test);
-    ( "function_arg_rx_if_implements1",
-      run Test_function_arg_rx_if_implements1.test );
-    ( "function_arg_rx_if_implements2",
-      run Test_function_arg_rx_if_implements2.test );
+    ("funptr", run Test_funptr.test);
     ("gconst_file", run Test_gconst_file.test);
     ("get_dependent_classes", run Test_get_dependent_classes.test);
     ("getfundeps", run Test_getfundeps.test);
+    ("identify", run Test_identify.test);
     ("ignore_fixme_hhi", run Test_ignore_fixme_hhi.test);
     ("infer_type", run Test_infer_type.test);
     ("interrupt2", run Test_interrupt2.test);
     ("interrupt", run Test_interrupt.test);
-    ("isfunlocallable", run Test_isfunlocallable.test);
     ("lazy_decl_idempotence", run Test_lazy_decl_idempotence.test);
     ("mixed_hack_hackpartial", run Test_mixed_hack_hackpartial.test);
     ("modify_file", run Test_modify_file.test);
     ("new_file", run Test_new_file.test);
     ("property_initializer", run Test_property_initializer.test);
     ("property_initializer2", run Test_property_initializer2.test);
-    ("rx_if_implements", run Test_rx_if_implements.test);
     ("server_config_overrides", run Test_serverConfig_overrides.test);
     ("server_hover", run Test_server_hover.test);
     ("unbound_name", run Test_unbound_name.test);

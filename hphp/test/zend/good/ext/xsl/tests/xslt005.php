@@ -1,4 +1,5 @@
 <?hh
+<<__EntryPoint>> function main(): void {
 echo "Test 5: Checking Indent";
 include("prepare.inc");
 $xsl = XSLTPrepare::getXSL();
@@ -12,7 +13,6 @@ $res->item(0)->value = "yes";
 $proc = XSLTPrepare::getProc();
 $proc->importStylesheet($xsl);
 print "\n";
-print $proc->transformToXml(XSLTPrepare::getDOM());
+print $proc->transformToXML(XSLTPrepare::getDOM());
 print "\n";
-
-
+}

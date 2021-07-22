@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_TYPE_CONSTRAINT_H_
-#define incl_HPHP_TYPE_CONSTRAINT_H_
+#pragma once
 
 #include "hphp/runtime/base/annot-type.h"
 #include "hphp/runtime/vm/named-entity.h"
@@ -152,6 +151,8 @@ struct TypeConstraint {
   TypeConstraint(const TypeConstraint&) = default;
   TypeConstraint& operator=(const TypeConstraint&) = default;
 
+  bool operator==(const TypeConstraint& o) const;
+
   void resolveType(AnnotType t, bool nullable) {
     assertx(m_type == AnnotType::Object);
     auto flags = m_flags | Flags::Resolved;
@@ -192,7 +193,7 @@ struct TypeConstraint {
    * Returns the underlying DataType for this TypeConstraint.
    */
   MaybeDataType underlyingDataType() const {
-    return isPrecise() ? MaybeDataType(getAnnotDataType(m_type)) : folly::none;
+    return isPrecise() ? MaybeDataType(getAnnotDataType(m_type)) : std::nullopt;
   }
 
   /*
@@ -251,42 +252,16 @@ struct TypeConstraint {
   bool isNothing()  const { return m_type == Type::Nothing; }
   bool isNoReturn() const { return m_type == Type::NoReturn; }
   bool isArrayKey() const { return m_type == Type::ArrayKey; }
-  bool isArrayLike() const { return m_type == Type::ArrayLike; }
-
-  bool isArray() const {
-    return isVArray() || isDArray() || isVArrayOrDArray();
-  }
-  bool isDict() const {
-    assertx(IMPLIES(RO::EvalHackArrDVArrs, m_type != Type::DArray));
-    return m_type == Type::Dict;
-  }
-  bool isVec() const {
-    assertx(IMPLIES(RO::EvalHackArrDVArrs, m_type != Type::VArray));
-    return m_type == Type::Vec;
-  }
-  bool isVecOrDict() const {
-    assertx(IMPLIES(RO::EvalHackArrDVArrs, m_type != Type::VArrOrDArr));
-    return m_type == Type::VecOrDict;
-  }
-
+  bool isDict()     const { return m_type == Type::Dict; }
+  bool isVec()      const { return m_type == Type::Vec; }
   bool isKeyset()   const { return m_type == Type::Keyset; }
   bool isObject()   const { return m_type == Type::Object; }
   bool isInt()      const { return m_type == Type::Int; }
   bool isString()   const { return m_type == Type::String; }
   bool isRecord()   const { return m_type == Type::Record; }
-
-  bool isVArray() const {
-    assertx(IMPLIES(RO::EvalHackArrDVArrs, m_type != Type::VArray));
-    return m_type == Type::VArray;
-  }
-  bool isDArray()   const {
-    assertx(IMPLIES(RO::EvalHackArrDVArrs, m_type != Type::DArray));
-    return m_type == Type::DArray;
-  }
-  bool isVArrayOrDArray() const {
-    assertx(IMPLIES(RO::EvalHackArrDVArrs, m_type != Type::VArrOrDArr));
-    return m_type == Type::VArrOrDArr;
-  }
+  bool isArrayLike() const { return m_type == Type::ArrayLike; }
+  bool isVecOrDict() const { return m_type == Type::VecOrDict; }
+  bool isClassname() const { return m_type == Type::Classname; }
 
   // Returns true if we should convert a ClsMeth to a varray for this typehint.
   bool convertClsMethToArrLike() const;
@@ -551,5 +526,3 @@ inline bool setOpNeedsTypeCheck(const TypeConstraint& tc,
 // Add all flags in tc (except TypeVar) to ub
 void applyFlagsToUB(TypeConstraint& ub, const TypeConstraint& tc);
 }
-
-#endif

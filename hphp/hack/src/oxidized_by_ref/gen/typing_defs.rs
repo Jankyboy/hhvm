@@ -3,15 +3,18 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the "hack" directory of this source tree.
 //
-// @generated SignedSource<<3b80f8fc5ce3bcc24ea41ef4c979844c>>
+// @generated SignedSource<<753a9229d45b107b24044aa6f3ee8a9c>>
 //
 // To regenerate this file, run:
-//   hphp/hack/src/oxidized_by_ref/regen.sh
+//   hphp/hack/src/oxidized_regen.sh
 
 use arena_trait::TrivialDrop;
+use eq_modulo_pos::EqModuloPos;
+use no_pos_hash::NoPosHash;
 use ocamlrep_derive::FromOcamlRep;
 use ocamlrep_derive::FromOcamlRepIn;
 use ocamlrep_derive::ToOcamlRep;
+use serde::Deserialize;
 use serde::Serialize;
 
 #[allow(unused_imports)]
@@ -21,30 +24,112 @@ pub use typing_defs_flags::*;
 
 pub use typing_defs_core::*;
 
+/// Origin of Class Constant References:
+/// In order to be able to detect cycle definitions like
+/// class C {
+/// const int A = D::A;
+/// }
+/// class D {
+/// const int A = C::A;
+/// }
+/// we need to remember which constants were used during initialization.
+///
+/// Currently the syntax of constants allows direct references to another class
+/// like D::A, or self references using self::A.
+///
+/// class_const_from encodes the origin (class vs self).
 #[derive(
     Clone,
+    Copy,
     Debug,
+    Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct PuOrigin<'a> {
-    pub class: &'a str,
-    pub enum_: &'a str,
+pub enum ClassConstFrom<'a> {
+    Self_,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    From(&'a str),
 }
-impl<'a> TrivialDrop for PuOrigin<'a> {}
+impl<'a> TrivialDrop for ClassConstFrom<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(ClassConstFrom<'arena>);
+
+/// Class Constant References:
+/// In order to be able to detect cycle definitions like
+/// class C {
+/// const int A = D::A;
+/// }
+/// class D {
+/// const int A = C::A;
+/// }
+/// we need to remember which constants were used during initialization.
+///
+/// Currently the syntax of constants allows direct references to another class
+/// like D::A, or self references using self::A.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    EqModuloPos,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub struct ClassConstRef<'a>(
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub ClassConstFrom<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub &'a str,
+);
+impl<'a> TrivialDrop for ClassConstRef<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(ClassConstRef<'arena>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub struct ConstDecl<'a> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub pos: &'a pos_or_decl::PosOrDecl<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub type_: &'a Ty<'a>,
+}
+impl<'a> TrivialDrop for ConstDecl<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(ConstDecl<'arena>);
+
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    EqModuloPos,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -52,22 +137,32 @@ impl<'a> TrivialDrop for PuOrigin<'a> {}
     ToOcamlRep
 )]
 pub struct ClassElt<'a> {
-    pub visibility: Visibility<'a>,
-    pub type_: lazy::Lazy<Ty<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub visibility: CeVisibility<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub type_: &'a lazy::Lazy<&'a Ty<'a>>,
     /// identifies the class from which this elt originates
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub origin: &'a str,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub deprecated: Option<&'a str>,
-    pub pos: lazy::Lazy<&'a pos::Pos<'a>>,
+    /// pos of the type of the elt
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub pos: &'a lazy::Lazy<&'a pos_or_decl::PosOrDecl<'a>>,
     pub flags: isize,
 }
 impl<'a> TrivialDrop for ClassElt<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(ClassElt<'arena>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -75,18 +170,54 @@ impl<'a> TrivialDrop for ClassElt<'a> {}
     ToOcamlRep
 )]
 pub struct FunElt<'a> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub deprecated: Option<&'a str>,
-    pub type_: Ty<'a>,
-    pub pos: &'a pos::Pos<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub module: Option<&'a str>,
+    /// Top-level functions have limited visibilities
+    pub internal: bool,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub type_: &'a Ty<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub pos: &'a pos_or_decl::PosOrDecl<'a>,
+    pub php_std_lib: bool,
+    pub support_dynamic_type: bool,
 }
 impl<'a> TrivialDrop for FunElt<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(FunElt<'arena>);
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    EqModuloPos,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub enum ClassConstKind {
+    CCAbstract(bool),
+    CCConcrete,
+}
+impl TrivialDrop for ClassConstKind {}
+arena_deserializer::impl_deserialize_in_arena!(ClassConstKind);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -95,13 +226,75 @@ impl<'a> TrivialDrop for FunElt<'a> {}
 )]
 pub struct ClassConst<'a> {
     pub synthesized: bool,
-    pub abstract_: bool,
-    pub pos: &'a pos::Pos<'a>,
-    pub type_: Ty<'a>,
+    pub abstract_: ClassConstKind,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub pos: &'a pos_or_decl::PosOrDecl<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub type_: &'a Ty<'a>,
     /// identifies the class from which this const originates
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub origin: &'a str,
+    /// references to the constants used in the initializer
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub refs: &'a [ClassConstRef<'a>],
 }
 impl<'a> TrivialDrop for ClassConst<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(ClassConst<'arena>);
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    EqModuloPos,
+    FromOcamlRep,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub enum RecordFieldReq {
+    ValueRequired,
+    HasDefaultValue,
+}
+impl TrivialDrop for RecordFieldReq {}
+arena_deserializer::impl_deserialize_in_arena!(RecordFieldReq);
+
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    EqModuloPos,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub struct RecordDefType<'a> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub module: Option<&'a str>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub name: PosId<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub extends: Option<PosId<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub fields: &'a [(PosId<'a>, RecordFieldReq)],
+    pub abstract_: bool,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub pos: &'a pos_or_decl::PosOrDecl<'a>,
+}
+impl<'a> TrivialDrop for RecordDefType<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(RecordDefType<'arena>);
 
 /// The position is that of the hint in the `use` / `implements` AST node
 /// that causes a class to have this requirement applied to it. E.g.
@@ -119,96 +312,134 @@ impl<'a> TrivialDrop for ClassConst<'a> {}
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Requirement<'a>(pub &'a pos::Pos<'a>, pub Ty<'a>);
+pub struct Requirement<'a>(
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub  &'a pos_or_decl::PosOrDecl<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub &'a Ty<'a>,
+);
 impl<'a> TrivialDrop for Requirement<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(Requirement<'arena>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct ClassType<'a> {
-    pub need_init: bool,
-    /// Whether the typechecker knows of all (non-interface) ancestors
-    /// and thus known all accessible members of this class
-    pub members_fully_known: bool,
-    pub abstract_: bool,
-    pub final_: bool,
-    pub const_: bool,
-    /// When a class is abstract (or in a trait) the initialization of
-    /// a protected member can be delayed
-    pub deferred_init_members: s_set::SSet<'a>,
-    pub kind: oxidized::ast_defs::ClassKind,
-    pub is_xhp: bool,
-    pub has_xhp_keyword: bool,
-    pub is_disposable: bool,
-    pub name: &'a str,
-    pub pos: &'a pos::Pos<'a>,
-    pub tparams: &'a [Tparam<'a>],
-    pub where_constraints: &'a [WhereConstraint<'a>],
-    pub consts: s_map::SMap<'a, ClassConst<'a>>,
-    pub typeconsts: s_map::SMap<'a, TypeconstType<'a>>,
-    pub pu_enums: s_map::SMap<'a, PuEnumType<'a>>,
-    pub props: s_map::SMap<'a, ClassElt<'a>>,
-    pub sprops: s_map::SMap<'a, ClassElt<'a>>,
-    pub methods: s_map::SMap<'a, ClassElt<'a>>,
-    pub smethods: s_map::SMap<'a, ClassElt<'a>>,
-    /// the consistent_kind represents final constructor or __ConsistentConstruct
-    pub construct: (Option<ClassElt<'a>>, ConsistentKind),
-    /// This includes all the classes, interfaces and traits this class is
-    /// using.
-    pub ancestors: s_map::SMap<'a, Ty<'a>>,
-    pub req_ancestors: &'a [Requirement<'a>],
-    /// the extends of req_ancestors
-    pub req_ancestors_extends: s_set::SSet<'a>,
-    pub extends: s_set::SSet<'a>,
-    pub enum_type: Option<EnumType<'a>>,
-    pub sealed_whitelist: Option<s_set::SSet<'a>>,
-    pub decl_errors: Option<errors::Errors<'a>>,
+pub struct AbstractTypeconst<'a> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub as_constraint: Option<&'a Ty<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub super_constraint: Option<&'a Ty<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub default: Option<&'a Ty<'a>>,
 }
-impl<'a> TrivialDrop for ClassType<'a> {}
+impl<'a> TrivialDrop for AbstractTypeconst<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(AbstractTypeconst<'arena>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum TypeconstAbstractKind<'a> {
-    TCAbstract(Option<Ty<'a>>),
-    TCPartiallyAbstract,
-    TCConcrete,
+pub struct ConcreteTypeconst<'a> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub tc_type: &'a Ty<'a>,
 }
-impl<'a> TrivialDrop for TypeconstAbstractKind<'a> {}
+impl<'a> TrivialDrop for ConcreteTypeconst<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(ConcreteTypeconst<'arena>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub struct PartiallyAbstractTypeconst<'a> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub constraint: &'a Ty<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub type_: &'a Ty<'a>,
+}
+impl<'a> TrivialDrop for PartiallyAbstractTypeconst<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(PartiallyAbstractTypeconst<'arena>);
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    EqModuloPos,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub enum Typeconst<'a> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    TCAbstract(&'a AbstractTypeconst<'a>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    TCConcrete(&'a ConcreteTypeconst<'a>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    TCPartiallyAbstract(&'a PartiallyAbstractTypeconst<'a>),
+}
+impl<'a> TrivialDrop for Typeconst<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(Typeconst<'arena>);
+
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    EqModuloPos,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -216,63 +447,50 @@ impl<'a> TrivialDrop for TypeconstAbstractKind<'a> {}
     ToOcamlRep
 )]
 pub struct TypeconstType<'a> {
-    pub abstract_: TypeconstAbstractKind<'a>,
-    pub name: nast::Sid<'a>,
-    pub constraint: Option<Ty<'a>>,
-    pub type_: Option<Ty<'a>>,
+    pub synthesized: bool,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub name: PosId<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub kind: Typeconst<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub origin: &'a str,
-    pub enforceable: (&'a pos::Pos<'a>, bool),
-    pub reifiable: Option<&'a pos::Pos<'a>>,
+    /// If the typeconst had the <<__Enforceable>> attribute on its
+    /// declaration, this will be [(position_of_declaration, true)].
+    ///
+    /// In legacy decl, the second element of the tuple will also be true if
+    /// the typeconst overrides some parent typeconst which had the
+    /// <<__Enforceable>> attribute. In that case, the position will point to
+    /// the declaration of the parent typeconst.
+    ///
+    /// In shallow decl, this is not the case--there is no overriding behavior
+    /// modeled here, and the second element will only be true when the
+    /// declaration of this typeconst had the attribute.
+    ///
+    /// When the second element of the tuple is false, the position will be
+    /// [Pos_or_decl.none].
+    ///
+    /// To manage the difference between legacy and shallow decl, use
+    /// [Typing_classes_heap.Api.get_typeconst_enforceability] rather than
+    /// accessing this field directly.
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub enforceable: (&'a pos_or_decl::PosOrDecl<'a>, bool),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub reifiable: Option<&'a pos_or_decl::PosOrDecl<'a>>,
+    pub concretized: bool,
+    pub is_ctx: bool,
 }
 impl<'a> TrivialDrop for TypeconstType<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(TypeconstType<'arena>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRepIn,
     Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToOcamlRep
-)]
-pub struct PuEnumType<'a> {
-    pub name: nast::Sid<'a>,
-    pub is_final: bool,
-    pub case_types: s_map::SMap<'a, (PuOrigin<'a>, Tparam<'a>)>,
-    pub case_values: s_map::SMap<'a, (PuOrigin<'a>, nast::Sid<'a>, Ty<'a>)>,
-    pub members: s_map::SMap<'a, PuMemberType<'a>>,
-}
-impl<'a> TrivialDrop for PuEnumType<'a> {}
-
-#[derive(
-    Clone,
-    Debug,
-    Eq,
-    FromOcamlRepIn,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToOcamlRep
-)]
-pub struct PuMemberType<'a> {
-    pub atom: nast::Sid<'a>,
-    pub origin: PuOrigin<'a>,
-    pub types: s_map::SMap<'a, (PuOrigin<'a>, nast::Sid<'a>, Ty<'a>)>,
-    pub exprs: s_map::SMap<'a, (PuOrigin<'a>, nast::Sid<'a>)>,
-}
-impl<'a> TrivialDrop for PuMemberType<'a> {}
-
-#[derive(
-    Clone,
-    Debug,
-    Eq,
-    FromOcamlRepIn,
-    Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -280,60 +498,26 @@ impl<'a> TrivialDrop for PuMemberType<'a> {}
     ToOcamlRep
 )]
 pub struct EnumType<'a> {
-    pub base: Ty<'a>,
-    pub constraint: Option<Ty<'a>>,
-    pub includes: &'a [Ty<'a>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub base: &'a Ty<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub constraint: Option<&'a Ty<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub includes: &'a [&'a Ty<'a>],
+    pub enum_class: bool,
 }
 impl<'a> TrivialDrop for EnumType<'a> {}
-
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    FromOcamlRep,
-    FromOcamlRepIn,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToOcamlRep
-)]
-pub enum RecordFieldReq {
-    ValueRequired,
-    HasDefaultValue,
-}
-impl TrivialDrop for RecordFieldReq {}
+arena_deserializer::impl_deserialize_in_arena!(EnumType<'arena>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRepIn,
     Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToOcamlRep
-)]
-pub struct RecordDefType<'a> {
-    pub name: nast::Sid<'a>,
-    pub extends: Option<nast::Sid<'a>>,
-    pub fields: &'a [(nast::Sid<'a>, RecordFieldReq)],
-    pub abstract_: bool,
-    pub pos: &'a pos::Pos<'a>,
-    pub errors: Option<errors::Errors<'a>>,
-}
-impl<'a> TrivialDrop for RecordDefType<'a> {}
-
-#[derive(
-    Clone,
-    Debug,
-    Eq,
-    FromOcamlRepIn,
-    Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -341,20 +525,32 @@ impl<'a> TrivialDrop for RecordDefType<'a> {}
     ToOcamlRep
 )]
 pub struct TypedefType<'a> {
-    pub pos: &'a pos::Pos<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub module: Option<&'a str>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub pos: &'a pos_or_decl::PosOrDecl<'a>,
     pub vis: oxidized::aast::TypedefVisibility,
-    pub tparams: &'a [Tparam<'a>],
-    pub constraint: Option<Ty<'a>>,
-    pub type_: Ty<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub tparams: &'a [&'a Tparam<'a>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub constraint: Option<&'a Ty<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub type_: &'a Ty<'a>,
+    pub is_ctx: bool,
 }
 impl<'a> TrivialDrop for TypedefType<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(TypedefType<'arena>);
 
 #[derive(
     Clone,
+    Copy,
     Debug,
+    Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -364,12 +560,16 @@ impl<'a> TrivialDrop for TypedefType<'a> {}
 pub enum DeserializationError<'a> {
     /// The type was valid, but some component thereof was a decl_ty when we
     /// expected a locl_phase ty, or vice versa.
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     WrongPhase(&'a str),
     /// The specific type or some component thereof is not one that we support
     /// deserializing, usually because not enough information was serialized to be
     /// able to deserialize it again.
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     NotSupported(&'a str),
     /// The input JSON was invalid for some reason.
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     DeserializationError(&'a str),
 }
 impl<'a> TrivialDrop for DeserializationError<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(DeserializationError<'arena>);

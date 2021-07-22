@@ -157,10 +157,6 @@ static bool variantToGMPData(const char* const fnCaller,
   case KindOfDict:
   case KindOfPersistentKeyset:
   case KindOfKeyset:
-  case KindOfPersistentDArray:
-  case KindOfDArray:
-  case KindOfPersistentVArray:
-  case KindOfVArray:
   case KindOfResource:
   case KindOfRFunc:
   case KindOfFunc:
@@ -420,7 +416,7 @@ static Variant HHVM_FUNCTION(gmp_div_qr,
     return false;
   }
 
-  VArrayInit returnArray(2);
+  VecInit returnArray(2);
   returnArray.append(mpzToGMPObject(gmpReturnQ));
   returnArray.append(mpzToGMPObject(gmpReturnR));
 
@@ -604,7 +600,7 @@ static Variant HHVM_FUNCTION(gmp_gcdext,
 
   mpz_gcdext(gmpReturnG, gmpReturnS, gmpReturnT, gmpDataA, gmpDataB);
 
-  ArrayInit returnArray(3, ArrayInit::Map{});
+  DictInit returnArray(3);
   returnArray.set(s_GMP_g, mpzToGMPObject(gmpReturnG));
   returnArray.set(s_GMP_s, mpzToGMPObject(gmpReturnS));
   returnArray.set(s_GMP_t, mpzToGMPObject(gmpReturnT));
@@ -1066,7 +1062,7 @@ static Variant HHVM_FUNCTION(gmp_rootrem,
 
   mpz_rootrem(gmpReturn0, gmpReturn1, gmpData, (uint32_t)root);
 
-  VArrayInit returnArray(2);
+  VecInit returnArray(2);
   returnArray.append(mpzToGMPObject(gmpReturn0));
   returnArray.append(mpzToGMPObject(gmpReturn1));
 
@@ -1208,7 +1204,7 @@ static Variant HHVM_FUNCTION(gmp_sqrtrem,
 
   mpz_sqrtrem(gmpSquareRoot, gmpRemainder, gmpData);
 
-  VArrayInit returnArray(2);
+  VecInit returnArray(2);
   returnArray.append(mpzToGMPObject(gmpSquareRoot));
   returnArray.append(mpzToGMPObject(gmpRemainder));
 

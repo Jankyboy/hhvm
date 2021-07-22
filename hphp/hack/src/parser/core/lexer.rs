@@ -4,12 +4,17 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the "hack" directory of this source tree.
 
-use parser_core_types::lexable_token::LexableToken;
-use parser_core_types::lexable_trivia::{LexableTrivia, LexableTrivium};
-use parser_core_types::source_text::{SourceText, INVALID};
-use parser_core_types::syntax_error::{self as Errors, Error, SyntaxError};
-use parser_core_types::token_kind::TokenKind;
-use parser_core_types::trivia_kind::TriviaKind;
+use parser_core_types::{
+    lexable_token::LexableToken,
+    lexable_trivia::{LexableTrivia, LexableTrivium},
+    source_text::{SourceText, INVALID},
+    syntax_error::{self as Errors, Error, SyntaxError},
+    token_factory::{TokenFactory, Trivia, Trivium},
+    token_kind::TokenKind,
+    trivia_factory::TriviaFactory,
+    trivia_kind::TriviaKind,
+};
+use static_assertions::*;
 
 use std::cell::RefCell;
 use std::ops::DerefMut;
@@ -30,8 +35,11 @@ struct LexerPostSnapshot {
     errors: Vec<SyntaxError>,
 }
 
-impl<'a, Token: LexableToken<'a>> PartialEq<Lexer<'a, Token>> for LexerPreSnapshot {
-    fn eq(&self, other: &Lexer<'a, Token>) -> bool {
+impl<'a, TF> PartialEq<Lexer<'a, TF>> for LexerPreSnapshot
+where
+    TF: TokenFactory,
+{
+    fn eq(&self, other: &Lexer<'a, TF>) -> bool {
         self.start == other.start && self.offset == other.offset && self.in_type == other.in_type
     }
 }
@@ -62,14 +70,18 @@ prove no new error added. Actually it is observed that new errors are added betw
 struct LexerCache<Token>(LexerPreSnapshot, Token, LexerPostSnapshot);
 
 #[derive(Debug, Clone)]
-pub struct Lexer<'a, Token: LexableToken<'a>> {
+pub struct Lexer<'a, TF>
+where
+    TF: TokenFactory,
+{
     source: SourceText<'a>,
     start: usize,
     offset: usize,
     errors: Vec<SyntaxError>,
     in_type: bool,
-
-    cache: Rc<RefCell<Option<LexerCache<Token>>>>,
+    token_factory: TF,
+    cache: Rc<RefCell<Option<LexerCache<TF::Token>>>>,
+    disallow_hash_comments: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -85,7 +97,47 @@ pub enum KwSet {
     NoKeywords,
 }
 
-impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
+macro_rules! as_case_insensitive_keyword {
+    ($size:tt, $size_type:ty $(, $keyword:tt)+) => {
+        fn as_case_insensitive_keyword(&self, text: &str) -> Option<(&'static str, bool)> {
+            use heapless::consts::*;
+
+            // - The $size should be greater than or equal to the each length of keyword
+            // - The $size should be equal to at least one of the length of a keyword
+            // Therefore, $size is equal to the length of the longest keyword.
+            $(
+                const_assert!($size >= $keyword.len());
+            )*
+            const_assert!(
+                $(
+                    $size == $keyword.len() ||
+                )*
+                false
+            );
+
+            if text.len() > $size {
+                None
+            } else {
+                let mut t: heapless::String<$size_type> = text.into();
+                let t: &mut str = t.as_mut_str();
+                t.make_ascii_lowercase();
+                let has_upper = t != text;
+                let t: &str = t as &str;
+                match t {
+                    $(
+                        $keyword => Some(($keyword, has_upper)),
+                    )*
+                    _ => None,
+                }
+            }
+        }
+    }
+}
+
+impl<'a, TF> Lexer<'a, TF>
+where
+    TF: TokenFactory,
+{
     fn to_lexer_pre_snapshot(&self) -> LexerPreSnapshot {
         LexerPreSnapshot {
             start: self.start,
@@ -103,7 +155,12 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
         }
     }
 
-    pub fn make_at(source: &SourceText<'a>, offset: usize) -> Self {
+    pub fn make_at(
+        source: &SourceText<'a>,
+        offset: usize,
+        token_factory: TF,
+        disallow_hash_comments: bool,
+    ) -> Self {
         Self {
             source: source.clone(),
             start: offset,
@@ -111,14 +168,16 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
             errors: vec![],
             in_type: false,
             cache: Rc::new(RefCell::new(None)),
+            token_factory,
+            disallow_hash_comments,
         }
     }
 
-    pub fn make(source: &SourceText<'a>) -> Self {
-        Self::make_at(source, 0)
+    pub fn make(source: &SourceText<'a>, token_factory: TF, disallow_hash_comments: bool) -> Self {
+        Self::make_at(source, 0, token_factory, disallow_hash_comments)
     }
 
-    fn continue_from(&mut self, l: Lexer<'a, Token>) {
+    fn continue_from(&mut self, l: Lexer<'a, TF>) {
         self.start = l.start;
         self.offset = l.offset;
         self.errors = l.errors
@@ -1594,9 +1653,6 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
                 if ch1 == ':' {
                     self.advance(2);
                     TokenKind::ColonColon
-                } else if ch1 == '@' {
-                    self.advance(2);
-                    TokenKind::ColonAt
                 } else {
                     self.advance(1);
                     TokenKind::Colon
@@ -1635,6 +1691,17 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
             '\\' => {
                 self.advance(1);
                 TokenKind::Backslash
+            }
+            '#' if self.disallow_hash_comments => {
+                self.advance(1);
+                let c = self.peek_char(0);
+                // Do we have a "alpha" function somewhere ?
+                if ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') {
+                    TokenKind::Hash
+                } else {
+                    self.with_error(Errors::error0006);
+                    TokenKind::ErrorToken
+                }
             }
             'b' if {
                 let c1 = self.peek_char(1);
@@ -1699,27 +1766,27 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
         }
     }
 
-    fn scan_end_of_line(&mut self) -> <Token::Trivia as LexableTrivia>::Trivium {
+    fn scan_end_of_line(&mut self) -> Trivium<TF> {
         match self.peek_char(0) {
             '\r' => {
                 let w = if self.peek_char(1) == '\n' { 2 } else { 1 };
                 self.advance(w);
-                Token::Trivia::make_eol(self.source(), self.start, w)
+                Trivia::<TF>::make_eol(self.start, w)
             }
             '\n' => {
                 self.advance(1);
-                Token::Trivia::make_eol(self.source(), self.start, 1)
+                Trivia::<TF>::make_eol(self.start, 1)
             }
             _ => panic!("scan_end_of_line called while not on end of line!"),
         }
     }
 
-    fn scan_hash_comment(&mut self) -> <Token::Trivia as LexableTrivia>::Trivium {
+    fn scan_hash_comment(&mut self) -> Trivium<TF> {
         self.skip_to_end_of_line();
-        Token::Trivia::make_single_line_comment(self.source(), self.start, self.width())
+        Trivia::<TF>::make_single_line_comment(self.start, self.width())
     }
 
-    fn scan_single_line_comment(&mut self) -> <Token::Trivia as LexableTrivia>::Trivium {
+    fn scan_single_line_comment(&mut self) -> Trivium<TF> {
         // A fallthrough comment is two slashes, any amount of whitespace,
         // FALLTHROUGH, and any characters may follow.
         // TODO: Consider allowing lowercase fallthrough.
@@ -1731,9 +1798,9 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
         let w = self.width();
         let remainder = self.offset - lexer_ws.offset;
         if remainder >= 11 && lexer_ws.peek_string(11) == b"FALLTHROUGH" {
-            Token::Trivia::make_fallthrough(self.source(), self.start, w)
+            Trivia::<TF>::make_fallthrough(self.start, w)
         } else {
-            Token::Trivia::make_single_line_comment(self.source(), self.start, w)
+            Trivia::<TF>::make_single_line_comment(self.start, w)
         }
     }
 
@@ -1758,7 +1825,7 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
         }
     }
 
-    fn scan_delimited_comment(&mut self) -> <Token::Trivia as LexableTrivia>::Trivium {
+    fn scan_delimited_comment(&mut self) -> Trivium<TF> {
         // The original lexer lexes a fixme / ignore error as:
         //
         // slash star [whitespace]* HH_FIXME [whitespace or newline]* leftbracket
@@ -1778,19 +1845,25 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
         self.skip_to_end_of_delimited_comment();
         let w = self.width();
         if lexer_ws.match_string(b"HH_FIXME") {
-            Token::Trivia::make_fix_me(self.source(), self.start, w)
+            Trivia::<TF>::make_fix_me(self.start, w)
         } else if lexer_ws.match_string(b"HH_IGNORE_ERROR") {
-            Token::Trivia::make_ignore_error(self.source(), self.start, w)
+            Trivia::<TF>::make_ignore_error(self.start, w)
         } else {
-            Token::Trivia::make_delimited_comment(self.source(), self.start, w)
+            Trivia::<TF>::make_delimited_comment(self.start, w)
         }
     }
 
-    fn scan_php_trivium(&mut self) -> Option<<Token::Trivia as LexableTrivia>::Trivium> {
+    fn scan_php_trivium(&mut self) -> Option<Trivium<TF>> {
         match self.peek_char(0) {
             '#' => {
-                self.start_new_lexeme();
-                Some(self.scan_hash_comment())
+                if self.disallow_hash_comments {
+                    self.start_new_lexeme();
+                    // Not trivia
+                    None
+                } else {
+                    self.start_new_lexeme();
+                    Some(self.scan_hash_comment())
+                }
             }
             '/' => {
                 self.start_new_lexeme();
@@ -1803,8 +1876,7 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
             ' ' | '\t' => {
                 let new_end = Self::str_skip_whitespace(self.source_text_string(), self.offset);
                 let new_start = self.offset;
-                let new_trivia =
-                    Token::Trivia::make_whitespace(self.source(), new_start, new_end - new_start);
+                let new_trivia = Trivia::<TF>::make_whitespace(new_start, new_end - new_start);
                 self.with_start_offset(new_start, new_end);
                 Some(new_trivia)
             }
@@ -1820,7 +1892,7 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
         }
     }
 
-    fn scan_xhp_trivium(&mut self) -> Option<<Token::Trivia as LexableTrivia>::Trivium> {
+    fn scan_xhp_trivium(&mut self) -> Option<Trivium<TF>> {
         // TODO: Should XHP comments <!-- --> be their own thing, or a kind of
         // trivia associated with a token? Right now they are the former.
         let i = self.offset;
@@ -1829,12 +1901,12 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
             ' ' | '\t' => {
                 let j = Self::str_skip_whitespace(self.source_text_string(), i);
                 self.with_start_offset(i, j);
-                Some(Token::Trivia::make_whitespace(self.source(), i, j - i))
+                Some(Trivia::<TF>::make_whitespace(i, j - i))
             }
             '\r' | '\n' => {
                 let j = Self::str_scan_end_of_line(self.source_text_string(), i);
                 self.with_start_offset(i, j);
-                Some(Token::Trivia::make_eol(self.source(), i, j - i))
+                Some(Trivia::<TF>::make_eol(i, j - i))
             }
             _ =>
             // Not trivia
@@ -1857,28 +1929,79 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
     //   always a leading trivia.
     fn scan_leading_trivia(
         &mut self,
-        scanner: impl Fn(&mut Self) -> Option<<Token::Trivia as LexableTrivia>::Trivium>,
-    ) -> Token::Trivia {
-        let mut acc = Token::Trivia::new();
+        scanner: impl Fn(&mut Self) -> Option<Trivium<TF>>,
+    ) -> Trivia<TF> {
+        let mut acc = self.token_factory.trivia_factory_mut().make();
         while let Some(t) = scanner(self) {
             acc.push(t)
         }
         acc
     }
 
-    pub fn scan_leading_php_trivia(&mut self) -> Token::Trivia {
+    fn scan_leading_trivia_with_width(
+        &mut self,
+        scanner: impl Fn(&mut Self) -> Option<Trivium<TF>>,
+        mut width: usize,
+    ) -> Trivia<TF> {
+        let mut acc = self.token_factory.trivia_factory_mut().make();
+        let mut extra_token_error_width = 0;
+        let mut extra_token_error_offset = self.offset();
+        loop {
+            if width == 0 {
+                if extra_token_error_width > 0 {
+                    acc.push(Trivia::<TF>::make_extra_token_error(
+                        extra_token_error_offset,
+                        extra_token_error_width,
+                    ));
+                }
+                break acc;
+            }
+            if let Some(t) = scanner(self) {
+                if extra_token_error_width > 0 {
+                    acc.push(Trivia::<TF>::make_extra_token_error(
+                        extra_token_error_offset,
+                        extra_token_error_width,
+                    ));
+                    extra_token_error_width = 0;
+                    extra_token_error_offset = self.start();
+                }
+                width -= t.width();
+                acc.push(t);
+            } else {
+                self.advance(1);
+                width -= 1;
+                extra_token_error_width += 1;
+            }
+        }
+    }
+
+    pub fn scan_leading_php_trivia_with_width(
+        &mut self,
+        width: usize,
+    ) -> <TF::Token as LexableToken>::Trivia {
+        self.scan_leading_trivia_with_width(&Self::scan_php_trivium, width)
+    }
+
+    pub fn scan_leading_xhp_trivia_with_width(
+        &mut self,
+        width: usize,
+    ) -> <TF::Token as LexableToken>::Trivia {
+        self.scan_leading_trivia_with_width(&Self::scan_xhp_trivium, width)
+    }
+
+    pub(crate) fn scan_leading_php_trivia(&mut self) -> <TF::Token as LexableToken>::Trivia {
         self.scan_leading_trivia(&Self::scan_php_trivium)
     }
 
-    pub fn scan_leading_xhp_trivia(&mut self) -> Token::Trivia {
+    pub(crate) fn scan_leading_xhp_trivia(&mut self) -> <TF::Token as LexableToken>::Trivia {
         self.scan_leading_trivia(&Self::scan_xhp_trivium)
     }
 
     fn scan_trailing_trivia(
         &mut self,
-        scanner: impl Fn(&mut Self) -> Option<<Token::Trivia as LexableTrivia>::Trivium>,
-    ) -> Token::Trivia {
-        let mut acc = Token::Trivia::new();
+        scanner: impl Fn(&mut Self) -> Option<Trivium<TF>>,
+    ) -> <TF::Token as LexableToken>::Trivia {
+        let mut acc = self.token_factory.trivia_factory_mut().make();
         loop {
             let mut lexer1 = self.clone();
             match scanner(&mut lexer1) {
@@ -1904,11 +2027,11 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
         }
     }
 
-    pub fn scan_trailing_php_trivia(&mut self) -> Token::Trivia {
+    pub fn scan_trailing_php_trivia(&mut self) -> <TF::Token as LexableToken>::Trivia {
         self.scan_trailing_trivia(&Self::scan_php_trivium)
     }
 
-    pub fn scan_trailing_xhp_trivia(&mut self) -> Token::Trivia {
+    pub fn scan_trailing_xhp_trivia(&mut self) -> <TF::Token as LexableToken>::Trivia {
         self.scan_trailing_trivia(&Self::scan_xhp_trivium)
     }
 
@@ -1924,42 +2047,95 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
         lexer.is_xhp_class_name()
     }
 
-    fn as_case_insensitive_keyword(&self, text: &str) -> Option<String> {
-        let lower = text.to_ascii_lowercase();
-        match lower.as_ref() {
-            "abstract" | "and" | "array" | "as" | "bool" | "boolean" | "break" | "callable"
-            | "case" | "catch" | "class" | "clone" | "const" | "continue" | "default" | "die"
-            | "do" | "echo" | "else" | "elseif" | "empty" | "endfor" | "endforeach" | "endif"
-            | "endswitch" | "endwhile" | "eval" | "exit" | "extends" | "false" | "final"
-            | "finally" | "for" | "foreach" | "function" | "global" | "goto" | "if"
-            | "implements" | "include" | "include_once" | "inout" | "instanceof" | "insteadof"
-            | "int" | "integer" | "interface" | "isset" | "list" | "namespace" | "new" | "null"
-            | "or" | "parent" | "print" | "private" | "protected" | "public" | "require"
-            | "require_once" | "return" | "self" | "static" | "string" | "switch" | "throw"
-            | "trait" | "try" | "true" | "unset" | "use" | "using" | "var" | "void" | "while"
-            | "xor" | "yield" => Some(lower),
-            _ => None,
-        }
-    }
-
-    fn lowercase_error(&self, original_text: &str, lowered_text: &str) -> bool {
-        match lowered_text {
-            "true" | "false" | "null" => false,
-            _ => original_text != lowered_text,
-        }
-    }
+    as_case_insensitive_keyword!(
+        12,
+        U12,
+        "abstract",
+        "and",
+        "as",
+        "bool",
+        "boolean",
+        "break",
+        "callable",
+        "case",
+        "catch",
+        "class",
+        "clone",
+        "const",
+        "continue",
+        "default",
+        "die",
+        "do",
+        "echo",
+        "else",
+        "elseif",
+        "empty",
+        "endfor",
+        "endforeach",
+        "endif",
+        "endswitch",
+        "endwhile",
+        "eval",
+        "exit",
+        "extends",
+        "false",
+        "final",
+        "finally",
+        "for",
+        "foreach",
+        "function",
+        "global",
+        "if",
+        "implements",
+        "include",
+        "include_once",
+        "inout",
+        "instanceof",
+        "insteadof",
+        "int",
+        "integer",
+        "interface",
+        "isset",
+        "list",
+        "namespace",
+        "new",
+        "null",
+        "or",
+        "parent",
+        "print",
+        "private",
+        "protected",
+        "public",
+        "require",
+        "require_once",
+        "return",
+        "self",
+        "static",
+        "string",
+        "switch",
+        "throw",
+        "trait",
+        "try",
+        "true",
+        "unset",
+        "use",
+        "using",
+        "var",
+        "void",
+        "while",
+        "xor",
+        "yield"
+    );
 
     fn as_keyword(&mut self, only_reserved: bool, kind: TokenKind) -> TokenKind {
         if kind == TokenKind::Name {
             let original_text = self.current_text_as_str();
-            let text_as_lowercase_keyword = self.as_case_insensitive_keyword(original_text);
-            let text = match text_as_lowercase_keyword.as_ref() {
-                Some(x) => x,
-                None => original_text,
-            };
-            match TokenKind::from_string(&text.as_bytes(), only_reserved) {
+            let (text, has_upper) = self
+                .as_case_insensitive_keyword(original_text)
+                .unwrap_or((original_text, false));
+            match TokenKind::from_string(text.as_bytes(), only_reserved) {
                 Some(keyword) => {
-                    if self.lowercase_error(original_text, &text) {
+                    if has_upper && text != "true" && text != "false" && text != "null" {
                         let err = Errors::uppercase_kw(original_text);
                         self.with_error(err);
                     }
@@ -1976,7 +2152,7 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
         &mut self,
         scanner: impl Fn(&mut Self) -> TokenKind,
         as_name: KwSet,
-    ) -> (TokenKind, usize, Token::Trivia) {
+    ) -> (TokenKind, usize, <TF::Token as LexableToken>::Trivia) {
         // Get past the leading trivia
         let leading = self.scan_leading_php_trivia();
         // Remember where we were when we started this token
@@ -1995,18 +2171,21 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
         &mut self,
         scanner: &impl Fn(&mut Self) -> TokenKind,
         as_name: KwSet,
-    ) -> Token {
+    ) -> TF::Token {
         let token_start = self.offset;
 
         let (kind, w, leading) = self.scan_token_and_leading_trivia(scanner, as_name);
         let trailing = match kind {
-            TokenKind::DoubleQuotedStringLiteralHead => Token::Trivia::new(),
+            TokenKind::DoubleQuotedStringLiteralHead => {
+                self.token_factory.trivia_factory_mut().make()
+            }
             _ => self.scan_trailing_php_trivia(),
         };
-        Token::make(kind, self.source(), token_start, w, leading, trailing)
+        self.token_factory
+            .make(kind, token_start, w, leading, trailing)
     }
 
-    fn scan_assert_progress(&mut self, tokenizer: impl Fn(&mut Self) -> Token) -> Token {
+    fn scan_assert_progress(&mut self, tokenizer: impl Fn(&mut Self) -> TF::Token) -> TF::Token {
         let original_remaining = self.remaining();
         let token = tokenizer(self);
         let new_remaining = self.remaining();
@@ -2031,27 +2210,30 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
         &mut self,
         scanner: impl Fn(&mut Self) -> TokenKind,
         as_name: KwSet,
-    ) -> Token {
+    ) -> TF::Token {
         let tokenizer = |x: &mut Self| x.scan_token_and_trivia(&scanner, as_name);
         self.scan_assert_progress(&tokenizer)
     }
 
-    fn scan_next_token_as_name(&mut self, scanner: impl Fn(&mut Self) -> TokenKind) -> Token {
+    fn scan_next_token_as_name(&mut self, scanner: impl Fn(&mut Self) -> TokenKind) -> TF::Token {
         self.scan_next_token(scanner, KwSet::AllKeywords)
     }
 
-    fn scan_next_token_as_keyword(&mut self, scanner: impl Fn(&mut Self) -> TokenKind) -> Token {
+    fn scan_next_token_as_keyword(
+        &mut self,
+        scanner: impl Fn(&mut Self) -> TokenKind,
+    ) -> TF::Token {
         self.scan_next_token(scanner, KwSet::NoKeywords)
     }
 
     fn scan_next_token_nonreserved_as_name(
         &mut self,
         scanner: impl Fn(&mut Self) -> TokenKind,
-    ) -> Token {
+    ) -> TF::Token {
         self.scan_next_token(scanner, KwSet::NonReservedKeywords)
     }
 
-    fn next_token_impl(&mut self) -> Token {
+    fn next_token_impl(&mut self) -> TF::Token {
         if self.in_type {
             self.scan_next_token_as_keyword(&Self::scan_token_inside_type)
         } else {
@@ -2060,7 +2242,7 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
     }
 
     // Entrypoints
-    pub fn peek_next_token(&self) -> Token {
+    pub fn peek_next_token(&self) -> TF::Token {
         {
             let cache = self.cache.borrow();
             if let Some(cache) = cache.as_ref() {
@@ -2080,7 +2262,7 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
         token
     }
 
-    pub fn next_token(&mut self) -> Token {
+    pub fn next_token(&mut self) -> TF::Token {
         {
             let mut cache = self.cache.borrow_mut();
             if let Some(ref mut cache) = cache.deref_mut() {
@@ -2098,24 +2280,19 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
         self.next_token_impl()
     }
 
-    pub fn next_token_no_trailing(&mut self) -> Token {
+    pub fn next_token_no_trailing(&mut self) -> TF::Token {
         let tokenizer = |x: &mut Self| {
             let token_start = x.offset;
             let (kind, w, leading) =
                 x.scan_token_and_leading_trivia(&Self::scan_token_outside_type, KwSet::NoKeywords);
-            Token::make(
-                kind,
-                x.source(),
-                token_start,
-                w,
-                leading,
-                Token::Trivia::new(),
-            )
+            let trailing = x.token_factory.trivia_factory_mut().make();
+            x.token_factory
+                .make(kind, token_start, w, leading, trailing)
         };
         self.scan_assert_progress(&tokenizer)
     }
 
-    pub fn next_token_in_string(&mut self, literal_kind: &StringLiteralKind) -> Token {
+    pub fn next_token_in_string(&mut self, literal_kind: &StringLiteralKind) -> TF::Token {
         let token_start = self.offset;
         self.start_new_lexeme();
         // We're inside a string. Do not scan leading trivia.
@@ -2126,19 +2303,14 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
             TokenKind::DoubleQuotedStringLiteralTail | TokenKind::HeredocStringLiteralTail => {
                 self.scan_trailing_php_trivia()
             }
-            _ => Token::Trivia::new(),
+            _ => self.token_factory.trivia_factory_mut().make(),
         };
-        Token::make(
-            kind,
-            self.source(),
-            token_start,
-            w,
-            Token::Trivia::new(),
-            trailing,
-        )
+        let leading = self.token_factory.trivia_factory_mut().make();
+        self.token_factory
+            .make(kind, token_start, w, leading, trailing)
     }
 
-    pub fn next_docstring_header(&mut self) -> (Token, &'a [u8]) {
+    pub fn next_docstring_header(&mut self) -> (TF::Token, &'a [u8]) {
         // We're at the beginning of a heredoc string literal. Scan leading
         // trivia but not trailing trivia.
         let token_start = self.offset;
@@ -2146,26 +2318,26 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
         self.start_new_lexeme();
         let (name, _) = self.scan_docstring_header();
         let w = self.width();
-        let token = Token::make(
+        let trailing = self.token_factory.trivia_factory_mut().make();
+        let token = self.token_factory.make(
             TokenKind::HeredocStringLiteralHead,
-            self.source(),
             token_start,
             w,
             leading,
-            Token::Trivia::new(),
+            trailing,
         );
         (token, name)
     }
 
-    pub fn next_token_as_name(&mut self) -> Token {
+    pub fn next_token_as_name(&mut self) -> TF::Token {
         self.scan_next_token_as_name(&Self::scan_token_outside_type)
     }
 
-    pub fn next_token_non_reserved_as_name(&mut self) -> Token {
+    pub fn next_token_non_reserved_as_name(&mut self) -> TF::Token {
         self.scan_next_token_nonreserved_as_name(&Self::scan_token_outside_type)
     }
 
-    pub fn next_xhp_element_token(&mut self, no_trailing: bool) -> (Token, &[u8]) {
+    pub fn next_xhp_element_token(&mut self, no_trailing: bool) -> (TF::Token, &[u8]) {
         // XHP elements have whitespace, newlines and Hack comments.
         let tokenizer = |lexer: &mut Self| {
             let token_start = lexer.offset;
@@ -2175,17 +2347,17 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
             // an XHP body then we want any whitespace or newlines to be leading trivia
             // of the body token.
             match kind {
-                TokenKind::GreaterThan | TokenKind::SlashGreaterThan if no_trailing => Token::make(
-                    kind,
-                    lexer.source(),
-                    token_start,
-                    w,
-                    leading,
-                    Token::Trivia::new(),
-                ),
+                TokenKind::GreaterThan | TokenKind::SlashGreaterThan if no_trailing => {
+                    let trailing = lexer.token_factory.trivia_factory_mut().make();
+                    lexer
+                        .token_factory
+                        .make(kind, token_start, w, leading, trailing)
+                }
                 _ => {
                     let trailing = lexer.scan_trailing_php_trivia();
-                    Token::make(kind, lexer.source(), token_start, w, leading, trailing)
+                    lexer
+                        .token_factory
+                        .make(kind, token_start, w, leading, trailing)
                 }
             }
         };
@@ -2197,7 +2369,7 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
         (token, token_text)
     }
 
-    pub fn next_xhp_body_token(&mut self) -> Token {
+    pub fn next_xhp_body_token(&mut self) -> TF::Token {
         let scanner = |lexer: &mut Self| {
             let token_start = lexer.offset;
             let leading = lexer.scan_leading_xhp_trivia();
@@ -2205,17 +2377,19 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
             let kind = lexer.scan_xhp_body();
             let w = lexer.width();
             let trailing =
-            // Trivia (leading and trailing) is semantically
-            // significant for XHPBody tokens. When we find elements or
-            // braced expressions inside the body, the trivia should be
-            // seen as leading the next token, but we should certainly
-            // keep it trailing if this is an XHPBody token.
-            if kind == TokenKind::XHPBody {
-                lexer.scan_trailing_xhp_trivia()
-            } else {
-                Token::Trivia::new()
-            };
-            Token::make(kind, lexer.source(), token_start, w, leading, trailing)
+                // Trivia (leading and trailing) is semantically
+                // significant for XHPBody tokens. When we find elements or
+                // braced expressions inside the body, the trivia should be
+                // seen as leading the next token, but we should certainly
+                // keep it trailing if this is an XHPBody token.
+                if kind == TokenKind::XHPBody {
+                    lexer.scan_trailing_xhp_trivia()
+                } else {
+                    lexer.token_factory.trivia_factory_mut().make()
+                };
+            lexer
+                .token_factory
+                .make(kind, token_start, w, leading, trailing)
         };
         self.scan_assert_progress(&scanner)
     }
@@ -2226,27 +2400,28 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
     //
     // This ensures that the syntax is closer to regular classes.
     //
-    pub fn next_xhp_modifier_class_name(&mut self) -> Token {
+    pub fn next_xhp_modifier_class_name(&mut self) -> TF::Token {
         self.scan_token_and_trivia(&Self::scan_xhp_modifier_class_name, KwSet::NoKeywords)
     }
 
-    pub fn next_xhp_class_name(&mut self) -> Token {
+    pub fn next_xhp_class_name(&mut self) -> TF::Token {
         self.scan_token_and_trivia(&Self::scan_xhp_class_name, KwSet::NoKeywords)
     }
 
-    pub fn next_xhp_name(&mut self) -> Token {
+    pub fn next_xhp_name(&mut self) -> TF::Token {
         let scanner = |x: &mut Self| x.scan_xhp_element_name(false);
         self.scan_token_and_trivia(&scanner, KwSet::NoKeywords)
     }
 
-    fn make_markup_token(&self) -> Token {
-        Token::make(
-            TokenKind::Markup,
-            self.source(),
+    fn make_hashbang_token(&mut self) -> TF::Token {
+        let leading = self.token_factory.trivia_factory_mut().make();
+        let trailing = self.token_factory.trivia_factory_mut().make();
+        self.token_factory.make(
+            TokenKind::Hashbang,
             self.start,
             self.width(),
-            Token::Trivia::new(),
-            Token::Trivia::new(),
+            leading,
+            trailing,
         )
     }
 
@@ -2254,35 +2429,32 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
         &mut self,
         name_token_offset: usize,
         size: usize,
-        markup_text: Token,
-        less_than_question_token: Token,
-    ) -> (Token, Option<(Token, Option<Token>)>) {
+        markup_text: TF::Token,
+        less_than_question_token: TF::Token,
+    ) -> (TF::Token, Option<(TF::Token, Option<TF::Token>)>) {
         // skip name
         self.advance(size);
         // single line comments that follow the language in leading markup_text
         // determine the file check mode, read the trailing trivia and attach it
         // to the language token
         let trailing = self.scan_trailing_php_trivia();
-        let name = Token::make(
-            TokenKind::Name,
-            self.source(),
-            name_token_offset,
-            size,
-            Token::Trivia::new(),
-            trailing,
-        );
+        let leading = self.token_factory.trivia_factory_mut().make();
+        let name =
+            self.token_factory
+                .make(TokenKind::Name, name_token_offset, size, leading, trailing);
         (markup_text, Some((less_than_question_token, Some(name))))
     }
 
-    fn make_markup_and_suffix(&mut self) -> (Token, Option<(Token, Option<Token>)>) {
-        let markup_text = self.make_markup_token();
-        let less_than_question_token = Token::make(
+    fn make_hashbang_and_suffix(&mut self) -> (TF::Token, Option<(TF::Token, Option<TF::Token>)>) {
+        let hashbang = self.make_hashbang_token();
+        let leading = self.token_factory.trivia_factory_mut().make();
+        let trailing = self.token_factory.trivia_factory_mut().make();
+        let less_than_question_token = self.token_factory.make(
             TokenKind::LessThanQuestion,
-            self.source(),
             self.offset,
             2,
-            Token::Trivia::new(),
-            Token::Trivia::new(),
+            leading,
+            trailing,
         );
         // skip <?
         self.advance(2);
@@ -2291,13 +2463,14 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
         let ch1 = self.peek_char(1).to_ascii_lowercase();
         match (ch0, ch1) {
             ('h', 'h') => {
-                self.make_long_tag(name_token_offset, 2, markup_text, less_than_question_token)
+                self.make_long_tag(name_token_offset, 2, hashbang, less_than_question_token)
             }
-            _ => (markup_text, Some((less_than_question_token, (None)))),
+            _ => (hashbang, Some((less_than_question_token, (None)))),
         }
     }
 
-    fn skip_to_end_of_markup(&mut self) -> (Token, Option<(Token, Option<Token>)>) {
+    fn skip_to_end_of_header(&mut self) -> (TF::Token, Option<(TF::Token, Option<TF::Token>)>) {
+        let mut is_hashbang = false;
         let start_offset = {
             // if leading section starts with #! - it should span the entire line
             let index = self.offset;
@@ -2305,6 +2478,7 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
                 panic!("Should only try to lex header at start of document")
             };
             if self.peek_def(index, INVALID) == '#' && self.peek_def(index + 1, INVALID) == '!' {
+                is_hashbang = true;
                 self.skip_while_to_offset(&Self::not_newline) + 1
             } else {
                 // this should really just be `index` - but, skip whitespace as the FFP
@@ -2318,15 +2492,20 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
         };
         if self.peek(start_offset) == '<' && self.peek_def(start_offset + 1, INVALID) == '?' {
             self.with_offset(start_offset);
-            self.make_markup_and_suffix()
+            self.make_hashbang_and_suffix()
+        } else if is_hashbang {
+            self.with_offset(start_offset);
+            (self.make_hashbang_token(), None)
         } else {
-            (self.make_markup_token(), None)
+            // Makes a 0-length hashbang token with no markup
+            // TODO: remove the legacy behavior and turn this into missing syntax
+            (self.make_hashbang_token(), None)
         }
     }
 
-    pub fn scan_header(&mut self) -> (Token, Option<(Token, Option<Token>)>) {
+    pub fn scan_header(&mut self) -> (TF::Token, Option<(TF::Token, Option<TF::Token>)>) {
         self.start_new_lexeme();
-        self.skip_to_end_of_markup()
+        self.skip_to_end_of_header()
     }
 
     pub fn is_next_xhp_category_name(&self) -> bool {
@@ -2348,7 +2527,7 @@ impl<'a, Token: LexableToken<'a>> Lexer<'a, Token> {
         }
     }
 
-    pub fn next_xhp_category_name(&mut self) -> Token {
+    pub fn next_xhp_category_name(&mut self) -> TF::Token {
         self.scan_token_and_trivia(&Self::scan_xhp_category_name, KwSet::NoKeywords)
     }
 }

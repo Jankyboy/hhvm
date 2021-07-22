@@ -21,9 +21,9 @@ module type RemoteServerApi = sig
     (naming_table, string) result
 
   (* Called by the worker to type check a list of files.
-    The state filename is where the type checker should save its state that
-    changed as a result of type checking the files
-    (i.e., the dependency graph) *)
+     The state filename is where the type checker should save its state that
+     changed as a result of type checking the files
+     (i.e., the dependency graph) *)
   val type_check :
     Provider_context.t ->
     init_id:string ->
@@ -42,6 +42,7 @@ type 'naming_table work_env = {
   init_id: string;
   init_start_t: float;
   key: string;
+  nonce: Int64.t;
   transport_channel: string option;
   root: Path.t;
   naming_table_base: 'naming_table;
@@ -57,6 +58,7 @@ let make_env
     ~(init_id : string)
     ~(init_start_t : float)
     ~(key : string)
+    ~(nonce : Int64.t)
     ~(transport_channel : string option)
     ~(root : Path.t)
     ?(timeout = (600 : int))
@@ -72,6 +74,7 @@ let make_env
     init_id;
     init_start_t;
     key;
+    nonce;
     transport_channel;
     naming_table_base = None;
     root;

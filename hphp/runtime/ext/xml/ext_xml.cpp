@@ -411,7 +411,7 @@ static void _xml_add_to_info(const req::ptr<XmlParser>& parser,
   }
   forceToArray(parser->info);
   if (!parser->info.asCArrRef().exists(nameStr)) {
-    parser->info.asArrRef().set(nameStr, Array::CreateVArray());
+    parser->info.asArrRef().set(nameStr, Array::CreateVec());
   }
   auto const inner = parser->info.asArrRef().lval(nameStr);
   forceToArray(inner).append(parser->curtag);
@@ -450,7 +450,7 @@ void _xml_endElementHandler(void *userData, const XML_Char *name) {
         asArrRef(parser->data.asArrRef().lval(parser->ctag))
           .set(s_type, s_complete);
       } else {
-        DArrayInit tag(3);
+        DictInit tag(3);
         _xml_add_to_info(parser, tag_name.substr(parser->toffset));
         tag.set(s_tag, tag_name.substr(parser->toffset));
         tag.set(s_type, s_close);
@@ -543,7 +543,7 @@ void _xml_characterDataHandler(void *userData, const XML_Char *s, int len) {
           if (parser->level <= XML_MAXLEVEL && parser->level > 0) {
             _xml_add_to_info(parser, parser->ltags[parser->level-1] +
                              parser->toffset);
-            Array tag = make_darray(
+            Array tag = make_dict_array(
               s_tag, String(parser->ltags[parser->level-1] +
                                   parser->toffset, CopyString),
               s_value, decoded_value,
@@ -583,10 +583,10 @@ void _xml_startElementHandler(void *userData, const XML_Char *name, const XML_Ch
     String tag_name = _xml_decode_tag(parser, (const char*)name);
 
     if (parser->startElementHandler.toBoolean()) {
-      Array args = make_varray(
+      Array args = make_vec_array(
         Variant(parser),
         tag_name,
-        Array::CreateDArray()
+        Array::CreateDict()
       );
 
       while (attributes && *attributes) {
@@ -605,8 +605,8 @@ void _xml_startElementHandler(void *userData, const XML_Char *name, const XML_Ch
     if (!parser->data.isNull()) {
       if (parser->level <= XML_MAXLEVEL) {
         int atcnt = 0;
-        auto tag = Array::CreateDArray();
-        auto atr = Array::CreateDArray();
+        auto tag = Array::CreateDict();
+        auto atr = Array::CreateDict();
 
         _xml_add_to_info(parser, tag_name.substr(parser->toffset));
 
@@ -811,8 +811,8 @@ int64_t HHVM_FUNCTION(xml_parse_into_struct,
   SYNC_VM_REGS_SCOPED();
   int ret;
   auto p = cast<XmlParser>(parser);
-  p->data = Array::CreateVArray();
-  p->info = Array::CreateDArray();
+  p->data = Array::CreateVec();
+  p->info = Array::CreateDict();
   SCOPE_EXIT {
     values = p->data;
     index = p->info;
@@ -1014,26 +1014,17 @@ String HHVM_FUNCTION(utf8_decode,
 
 String HHVM_FUNCTION(utf8_encode,
                      const String& data) {
-  auto const maxSize = safe_cast<size_t>(data.size()) * 4;
+  auto const maxSize = safe_cast<size_t>(data.size()) * 2;
   String str = String(maxSize, ReserveString);
   char *newbuf = str.mutableData();
   int newlen = 0;
   const char *s = data.data();
   for (int pos = data.size(); pos > 0; pos--, s++) {
-    unsigned int c = (unsigned char)(*s);
+    auto c = (unsigned char)(*s);
     if (c < 0x80) {
       newbuf[newlen++] = (char) c;
-    } else if (c < 0x800) {
+    } else {
       newbuf[newlen++] = (0xc0 | (c >> 6));
-      newbuf[newlen++] = (0x80 | (c & 0x3f));
-    } else if (c < 0x10000) {
-      newbuf[newlen++] = (0xe0 | (c >> 12));
-      newbuf[newlen++] = (0xc0 | ((c >> 6) & 0x3f));
-      newbuf[newlen++] = (0x80 | (c & 0x3f));
-    } else if (c < 0x200000) {
-      newbuf[newlen++] = (0xf0 | (c >> 18));
-      newbuf[newlen++] = (0xe0 | ((c >> 12) & 0x3f));
-      newbuf[newlen++] = (0xc0 | ((c >> 6) & 0x3f));
       newbuf[newlen++] = (0x80 | (c & 0x3f));
     }
   }

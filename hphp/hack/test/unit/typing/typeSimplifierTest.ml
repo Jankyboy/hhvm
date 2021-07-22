@@ -6,7 +6,7 @@
  *
  *)
 
-open Core_kernel
+open Hh_prelude
 open OUnit2
 open Typing_defs
 open Typing_env_types
@@ -41,6 +41,7 @@ end = struct
       Provider_context.empty_for_test
         ~popt:ParserOptions.default
         ~tcopt:TypecheckerOptions.default
+        ~deps_mode:Typing_deps_mode.SQLiteMode
     in
     let env = Env.empty ctx Relative_path.default ~droot:None in
     let env = Env.set_log_level env "show" 2 in
@@ -49,7 +50,7 @@ end = struct
   let tint = MakeType.int Reason.none
 
   let fresh_tyvar env =
-    let (env, tv) = Env.fresh_type_reason env Reason.none in
+    let (env, tv) = Env.fresh_type_reason env Pos.none Reason.none in
     match get_node tv with
     | Tvar v -> (env, tv, v)
     | _ -> assert_failure "fresh_type_reason should return a type var"
@@ -65,15 +66,18 @@ end = struct
       Printf.sprintf
         "Type var %d should %scontain type var %d"
         tv2
-        ( if negate then
+        (if negate then
           "not "
         else
-          "" )
+          "")
         tv1
     in
     assert_bool
       error_message
-      (negate <> Inf.tyvar_occurs_in_tyvar env.inference_env tv1 ~in_:tv2)
+      (not
+         (Bool.equal
+            negate
+            (Inf.tyvar_occurs_in_tyvar env.inference_env tv1 ~in_:tv2)))
 
   let assert_tyvar_doesnt_occur_in_tyvar =
     assert_tyvar_occurs_in_tyvar ~negate:true

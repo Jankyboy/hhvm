@@ -14,12 +14,9 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VM_HHBC_H_
-#define incl_HPHP_VM_HHBC_H_
+#pragma once
 
 #include <type_traits>
-
-#include <folly/Optional.h>
 
 #include "hphp/runtime/base/repo-auth-type.h"
 #include "hphp/runtime/base/typed-value.h"
@@ -316,12 +313,10 @@ inline bool isIncDecO(IncDecOp op) {
   ISTYPE_OP(Obj)                               \
   ISTYPE_OP(Scalar)                            \
   ISTYPE_OP(ArrLike)                           \
+  ISTYPE_OP(LegacyArrLike)                     \
   ISTYPE_OP(Res)                               \
-  ISTYPE_OP(VArray)                            \
-  ISTYPE_OP(DArray)                            \
   ISTYPE_OP(ClsMeth)                           \
   ISTYPE_OP(Func)                              \
-  ISTYPE_OP(PHPArr)                            \
   ISTYPE_OP(Class)
 
 enum class IsTypeOp : uint8_t {
@@ -527,7 +522,6 @@ constexpr uint32_t kMaxConcatN = 4;
   O(PopC,            NA,               ONE(CV),         NOV,        NF) \
   O(PopU,            NA,               ONE(UV),         NOV,        NF) \
   O(PopU2,           NA,               TWO(CV,UV),      ONE(CV),    NF) \
-  O(PopFrame,        ONE(IVA),         CMANY_U3,        CMANY,      NF) \
   O(PopL,            ONE(LA),          ONE(CV),         NOV,        NF) \
   O(Dup,             NA,               ONE(CV),         TWO(CV,CV), NF) \
   O(CGetCUNop,       NA,               ONE(CUV),        ONE(CV),    NF) \
@@ -540,17 +534,13 @@ constexpr uint32_t kMaxConcatN = 4;
   O(Int,             ONE(I64A),        NOV,             ONE(CV),    NF) \
   O(Double,          ONE(DA),          NOV,             ONE(CV),    NF) \
   O(String,          ONE(SA),          NOV,             ONE(CV),    NF) \
-  O(Array,           ONE(AA),          NOV,             ONE(CV),    NF) \
   O(Dict,            ONE(AA),          NOV,             ONE(CV),    NF) \
   O(Keyset,          ONE(AA),          NOV,             ONE(CV),    NF) \
   O(Vec,             ONE(AA),          NOV,             ONE(CV),    NF) \
   O(NewDictArray,    ONE(IVA),         NOV,             ONE(CV),    NF) \
-  O(NewStructDArray, ONE(VSA),         SMANY,           ONE(CV),    NF) \
   O(NewStructDict,   ONE(VSA),         SMANY,           ONE(CV),    NF) \
   O(NewVec,          ONE(IVA),         CMANY,           ONE(CV),    NF) \
   O(NewKeysetArray,  ONE(IVA),         CMANY,           ONE(CV),    NF) \
-  O(NewVArray,       ONE(IVA),         CMANY,           ONE(CV),    NF) \
-  O(NewDArray,       ONE(IVA),         NOV,             ONE(CV),    NF) \
   O(NewRecord,       TWO(SA,VSA),      SMANY,           ONE(CV),    NF) \
   O(AddElemC,        NA,               THREE(CV,CV,CV), ONE(CV),    NF) \
   O(AddNewElemC,     NA,               TWO(CV,CV),      ONE(CV),    NF) \
@@ -562,7 +552,9 @@ constexpr uint32_t kMaxConcatN = 4;
   O(CnsE,            ONE(SA),          NOV,             ONE(CV),    NF) \
   O(ClsCns,          ONE(SA),          ONE(CV),         ONE(CV),    NF) \
   O(ClsCnsD,         TWO(SA,SA),       NOV,             ONE(CV),    NF) \
+  O(ClsCnsL,         ONE(LA),          ONE(CV),         ONE(CV),    NF) \
   O(ClassName,       NA,               ONE(CV),         ONE(CV),    NF) \
+  O(LazyClassFromClass, NA,            ONE(CV),         ONE(CV),    NF) \
   O(File,            NA,               NOV,             ONE(CV),    NF) \
   O(Dir,             NA,               NOV,             ONE(CV),    NF) \
   O(Method,          NA,               NOV,             ONE(CV),    NF) \
@@ -577,7 +569,6 @@ constexpr uint32_t kMaxConcatN = 4;
   O(Div,             NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(Mod,             NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(Pow,             NA,               TWO(CV,CV),      ONE(CV),    NF) \
-  O(Xor,             NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(Not,             NA,               ONE(CV),         ONE(CV),    NF) \
   O(Same,            NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(NSame,           NA,               TWO(CV,CV),      ONE(CV),    NF) \
@@ -601,8 +592,6 @@ constexpr uint32_t kMaxConcatN = 4;
   O(CastDict,        NA,               ONE(CV),         ONE(CV),    NF) \
   O(CastKeyset,      NA,               ONE(CV),         ONE(CV),    NF) \
   O(CastVec,         NA,               ONE(CV),         ONE(CV),    NF) \
-  O(CastVArray,      NA,               ONE(CV),         ONE(CV),    NF) \
-  O(CastDArray,      NA,               ONE(CV),         ONE(CV),    NF) \
   O(DblAsBits,       NA,               ONE(CV),         ONE(CV),    NF) \
   O(InstanceOf,      NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(InstanceOfD,     ONE(SA),          ONE(CV),         ONE(CV),    NF) \
@@ -635,7 +624,8 @@ constexpr uint32_t kMaxConcatN = 4;
   O(CGetL2,          ONE(NLA),         ONE(CV),         TWO(CV,CV), NF) \
   O(PushL,           ONE(LA),          NOV,             ONE(CV),    NF) \
   O(CGetG,           NA,               ONE(CV),         ONE(CV),    NF) \
-  O(CGetS,           NA,               TWO(CV,CV),      ONE(CV),    NF) \
+  O(CGetS,           ONE(OA(ReadOnlyOp)),                               \
+                     TWO(CV,CV),      ONE(CV),    NF) \
   O(ClassGetC,       NA,               ONE(CV),         ONE(CV),    NF) \
   O(ClassGetTS,      NA,               ONE(CV),         TWO(CV,CV), NF) \
   O(GetMemoKeyL,     ONE(NLA),         NOV,             ONE(CV),    NF) \
@@ -651,13 +641,14 @@ constexpr uint32_t kMaxConcatN = 4;
   O(AssertRATStk,    TWO(IVA,RATA),    NOV,             NOV,        NF) \
   O(SetL,            ONE(LA),          ONE(CV),         ONE(CV),    NF) \
   O(SetG,            NA,               TWO(CV,CV),      ONE(CV),    NF) \
-  O(SetS,            NA,               THREE(CV,CV,CV), ONE(CV),    NF) \
+  O(SetS,            ONE(OA(ReadOnlyOp)),                               \
+                                       THREE(CV,CV,CV), ONE(CV),    NF) \
   O(SetOpL,          TWO(LA,                                            \
                        OA(SetOpOp)),   ONE(CV),         ONE(CV),    NF) \
   O(SetOpG,          ONE(OA(SetOpOp)), TWO(CV,CV),      ONE(CV),    NF) \
   O(SetOpS,          ONE(OA(SetOpOp)), THREE(CV,CV,CV), ONE(CV),    NF) \
-  O(IncDecL,         TWO(NLA,                                           \
-                       OA(IncDecOp)),  NOV,             ONE(CV),    NF) \
+  O(IncDecL,         TWO(NLA, OA(IncDecOp)),                            \
+                                       NOV,             ONE(CV),    NF) \
   O(IncDecG,         ONE(OA(IncDecOp)),ONE(CV),         ONE(CV),    NF) \
   O(IncDecS,         ONE(OA(IncDecOp)),TWO(CV,CV),      ONE(CV),    NF) \
   O(UnsetL,          ONE(LA),          NOV,             NOV,        NF) \
@@ -704,24 +695,22 @@ constexpr uint32_t kMaxConcatN = 4;
                                        FCALL(1, 1),     FCALL,      CF) \
   O(FCallObjMethodD, FOUR(FCA,SA,OA(ObjMethodOp),SA),                   \
                                        FCALL(0, 1),     FCALL,      CF) \
-  O(FCallBuiltin,    FOUR(IVA,IVA,IVA,SA),CALLNATIVE,   CALLNATIVE, NF) \
   O(IterInit,        TWO(ITA,BA),      ONE(CV),         NOV,        CF) \
   O(LIterInit,       THREE(ITA,LA,BA), NOV,             NOV,        CF) \
   O(IterNext,        TWO(ITA,BA),      NOV,             NOV,        CF) \
   O(LIterNext,       THREE(ITA,LA,BA), NOV,             NOV,        CF) \
   O(IterFree,        ONE(IA),          NOV,             NOV,        NF) \
   O(LIterFree,       TWO(IA,LA),       NOV,             NOV,        NF) \
-  O(Incl,            NA,               ONE(CV),         ONE(CV),    CF) \
-  O(InclOnce,        NA,               ONE(CV),         ONE(CV),    CF) \
-  O(Req,             NA,               ONE(CV),         ONE(CV),    CF) \
-  O(ReqOnce,         NA,               ONE(CV),         ONE(CV),    CF) \
-  O(ReqDoc,          NA,               ONE(CV),         ONE(CV),    CF) \
-  O(Eval,            NA,               ONE(CV),         ONE(CV),    CF) \
+  O(Incl,            NA,               ONE(CV),         ONE(CV),    NF) \
+  O(InclOnce,        NA,               ONE(CV),         ONE(CV),    NF) \
+  O(Req,             NA,               ONE(CV),         ONE(CV),    NF) \
+  O(ReqOnce,         NA,               ONE(CV),         ONE(CV),    NF) \
+  O(ReqDoc,          NA,               ONE(CV),         ONE(CV),    NF) \
+  O(Eval,            NA,               ONE(CV),         ONE(CV),    NF) \
   O(This,            NA,               NOV,             ONE(CV),    NF) \
   O(BareThis,        ONE(OA(BareThisOp)),                               \
                                        NOV,             ONE(CV),    NF) \
   O(CheckThis,       NA,               NOV,             NOV,        NF) \
-  O(InitThisLoc,     ONE(LA),          NOV,             NOV,        NF) \
   O(ChainFaults,     NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(OODeclExists,    ONE(OA(OODeclExistsOp)),                           \
                                        TWO(CV,CV),      ONE(CV),    NF) \
@@ -753,9 +742,11 @@ constexpr uint32_t kMaxConcatN = 4;
   O(AwaitAll,        ONE(LAR),         NOV,             ONE(CV),    CF) \
   O(Idx,             NA,               THREE(CV,CV,CV), ONE(CV),    NF) \
   O(ArrayIdx,        NA,               THREE(CV,CV,CV), ONE(CV),    NF) \
+  O(ArrayMarkLegacy,    NA,            TWO(CV,CV),      ONE(CV),    NF) \
+  O(ArrayUnmarkLegacy,  NA,            TWO(CV,CV),      ONE(CV),    NF) \
   O(CheckProp,       ONE(SA),          NOV,             ONE(CV),    NF) \
-  O(InitProp,        TWO(SA,                                            \
-                       OA(InitPropOp)),ONE(CV),         NOV,        NF) \
+  O(InitProp,        TWO(SA, OA(InitPropOp)),                           \
+                                       ONE(CV),         NOV,        NF) \
   O(Silence,         TWO(LA,OA(SilenceOp)),                             \
                                        NOV,             NOV,        NF) \
   O(ThrowNonExhaustiveSwitch, NA,      NOV,             NOV,        NF) \
@@ -765,7 +756,7 @@ constexpr uint32_t kMaxConcatN = 4;
                                        NOV,             NOV,        NF) \
   O(BaseGL,          TWO(LA, OA(MOpMode)),                              \
                                        NOV,             NOV,        NF) \
-  O(BaseSC,          THREE(IVA, IVA, OA(MOpMode)),                      \
+  O(BaseSC,          FOUR(IVA, IVA, OA(MOpMode), OA(ReadOnlyOp)),       \
                                        NOV,             NOV,        NF) \
   O(BaseL,           TWO(NLA, OA(MOpMode)),                             \
                                        NOV,             NOV,        NF) \
@@ -777,7 +768,7 @@ constexpr uint32_t kMaxConcatN = 4;
   O(QueryM,          THREE(IVA, OA(QueryMOp), KA),                      \
                                        MFINAL,          ONE(CV),    NF) \
   O(SetM,            TWO(IVA, KA),     C_MFINAL(1),     ONE(CV),    NF) \
-  O(SetRangeM,       THREE(IVA, OA(SetRangeOp), IVA),                   \
+  O(SetRangeM,       THREE(IVA, IVA, OA(SetRangeOp)),                   \
                                        C_MFINAL(3),     NOV,        NF) \
   O(IncDecM,         THREE(IVA, OA(IncDecOp), KA),                      \
                                        MFINAL,          ONE(CV),    NF) \
@@ -943,6 +934,7 @@ const char* subopToName(ContCheckOp);
 const char* subopToName(CudOp);
 const char* subopToName(SpecialClsRef);
 const char* subopToName(IsLogAsDynamicCallOp);
+const char* subopToName(ReadOnlyOp);
 
 /*
  * Returns true iff the given SubOp is in the valid range for its type.
@@ -953,11 +945,11 @@ bool subopValid(Subop);
 /*
  * Try to parse a string into a subop name of a given type.
  *
- * Returns folly::none if the string is not recognized as that type of
+ * Returns std::nullopt if the string is not recognized as that type of
  * subop.
  */
 template<class SubOpType>
-folly::Optional<SubOpType> nameToSubop(const char*);
+Optional<SubOpType> nameToSubop(const char*);
 
 using OffsetList = std::vector<Offset>;
 
@@ -1024,19 +1016,31 @@ constexpr bool isJmp(Op opcode) {
     opcode == Op::JmpNZ;
 }
 
+constexpr bool isObjectConstructorOp(Op opcode) {
+  return
+    opcode == Op::NewObj ||
+    opcode == Op::NewObjD ||
+    opcode == Op::NewObjR ||
+    opcode == Op::NewObjRD ||
+    opcode == Op::NewObjS;
+}
+
 constexpr bool isArrLikeConstructorOp(Op opcode) {
   return
-    opcode == Op::Array ||
     opcode == Op::Dict ||
     opcode == Op::Keyset ||
     opcode == Op::Vec ||
     opcode == Op::NewDictArray ||
-    opcode == Op::NewStructDArray ||
     opcode == Op::NewStructDict ||
     opcode == Op::NewVec ||
-    opcode == Op::NewKeysetArray ||
-    opcode == Op::NewVArray ||
-    opcode == Op::NewDArray;
+    opcode == Op::NewKeysetArray;
+}
+
+constexpr bool isArrLikeCastOp(Op opcode) {
+  return
+    opcode == Op::CastVec ||
+    opcode == Op::CastDict ||
+    opcode == Op::CastKeyset;
 }
 
 constexpr bool isComparisonOp(Op opcode) {
@@ -1094,6 +1098,11 @@ constexpr bool isSwitch(Op op) {
 
 constexpr bool isTypeAssert(Op op) {
   return op == OpAssertRATL || op == OpAssertRATStk;
+}
+
+constexpr bool isIteratorOp(Op op) {
+  return op == OpIterInit || op == Op::LIterInit ||
+         op == OpIterNext || op == Op::LIterNext;
 }
 
 inline bool isMemberBaseOp(Op op) {
@@ -1178,5 +1187,3 @@ struct hash<HPHP::Op> {
 }
 
 //////////////////////////////////////////////////////////////////////
-
-#endif

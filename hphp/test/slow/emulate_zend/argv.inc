@@ -2,5 +2,5 @@
 
 <<__EntryPoint>>
 function main() {
-  var_dump($GLOBALS['argv']);
+  var_dump(vec(\HH\global_get('argv')));
 }

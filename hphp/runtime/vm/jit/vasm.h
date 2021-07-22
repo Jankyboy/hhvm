@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_VASM_H_
-#define incl_HPHP_JIT_VASM_H_
+#pragma once
 
 #include "hphp/runtime/base/rds.h"
 
@@ -90,7 +89,7 @@ DECLARE_VNUM(VcallArgsId, uint32_t, true, "V");
 ///////////////////////////////////////////////////////////////////////////////
 
 using VinstrId = unsigned int;
-using MaybeVinstrId = folly::Optional<VinstrId>;
+using MaybeVinstrId = Optional<VinstrId>;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -114,6 +113,17 @@ bool checkWidths(Vunit& unit);
 bool checkBlockEnd(const Vunit& v, Vlabel b);
 
 /*
+ * Assert that the unit contains no instructions which can leave the
+ * unit implicitly (IE, jcci, fallbackcc, or bindjcc).
+ */
+bool checkNoSideExits(const Vunit& unit);
+
+/*
+ * Assert that the unit does not contain any critical edges.
+ */
+bool checkNoCriticalEdges(const Vunit& unit);
+
+/*
  * Passes.
  */
 void allocateRegistersWithXLS(Vunit&, const Abi&);
@@ -121,10 +131,10 @@ void allocateRegistersWithGraphColor(Vunit&, const Abi&);
 void annotateSFUses(Vunit&);
 void fuseBranches(Vunit&);
 void optimizeCopies(Vunit&, const Abi&);
-void optimizeExits(Vunit&, MaybeVinstrId = {});
-void optimizeJmps(Vunit&, MaybeVinstrId = {});
+void optimizeExits(Vunit&);
+void optimizeJmps(Vunit&, bool makeSideExits);
 void optimizePhis(Vunit&);
-void removeDeadCode(Vunit&, MaybeVinstrId = {});
+void removeDeadCode(Vunit&);
 void removeTrivialNops(Vunit&);
 void reuseImmq(Vunit&);
 template<typename Folder> void foldImms(Vunit&);
@@ -148,12 +158,6 @@ folly::Range<const Vlabel*> succs(const Vblock& block);
  * Sort blocks in reverse-postorder starting from `unit.entry'.
  */
 jit::vector<Vlabel> sortBlocks(const Vunit& unit);
-
-/*
- * Make block weights more consistent by enforcing that the weight of each block
- * doesn't exceed the sums of the weights of its predecessors or its successors.
- */
-void fixBlockWeights(Vunit& unit);
 
 /*
  * Order blocks for lowering to machine code.  May use different layout
@@ -180,5 +184,3 @@ template<> struct hash<HPHP::jit::Vlabel> {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-
-#endif

@@ -7,8 +7,6 @@
  *
  *)
 
-open Hh_core
-
 (* Our Unix systems only allow reading 64KB chunks at a time.
  * Trying to read more than 64KB results in only 64KB being read. *)
 let chunk_size = 65536
@@ -59,7 +57,8 @@ module Functor (Reader : Buffered_line_reader_sig.READER) :
     try
       let i = String.index s c in
       `First_appearance i
-    with Not_found -> `No_appearance
+    with
+    | Not_found -> `No_appearance
 
   let trim_trailing_cr = function
     | "" -> ""

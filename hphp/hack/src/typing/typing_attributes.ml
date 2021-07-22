@@ -9,15 +9,30 @@
 
 open Hh_prelude
 open Typing_reason
+open Typing_env_types
 module SN = Naming_special_names
 module MakeType = Typing_make_type
 module Cls = Decl_provider.Class
 
+type attribute_interface_name = string
+
 let check_implements
-    check_new_object
-    attr_interface
-    { Aast.ua_name = (attr_pos, attr_name); ua_params = params }
-    env =
+    (check_new_object :
+      expected:_ option ->
+      check_parent:bool ->
+      check_not_abstract:bool ->
+      is_using_clause:bool ->
+      Pos.t ->
+      env ->
+      Nast.class_id_ ->
+      _ list ->
+      Nast.expr list ->
+      _ option ->
+      env * _ * _ * _ * _ * _ * _ * _)
+    (attr_interface : attribute_interface_name)
+    ({ Aast.ua_name = (attr_pos, attr_name); ua_params = params } :
+      Nast.user_attribute)
+    (env : env) : env =
   let expr_kind =
     match SMap.find_opt attr_interface SN.AttributeKinds.plain_english_map with
     | Some ek -> ek
@@ -70,13 +85,13 @@ let check_implements
        * and its args satisfy the attribute class constructor *)
       let attr_locl_ty : Typing_defs.locl_ty =
         MakeType.class_type
-          (Rwitness (Cls.pos attr_class))
+          (Rwitness_from_decl (Cls.pos attr_class))
           (Cls.name attr_class)
           []
       in
       let interface_locl_ty : Typing_defs.locl_ty =
         MakeType.class_type
-          (Rwitness (Cls.pos intf_class))
+          (Rwitness_from_decl (Cls.pos intf_class))
           (Cls.name intf_class)
           []
       in
@@ -91,7 +106,7 @@ let check_implements
           (Cls.name intf_class);
         env
       ) else
-        let (env, _, _, _, _, _, _) =
+        let (env, _, _, _, _, _, _, _) =
           check_new_object
             ~expected:None
             ~check_parent:false
@@ -99,7 +114,7 @@ let check_implements
             ~is_using_clause:false
             attr_pos
             env
-            (Aast.CI attr_cid)
+            (Aast.CI (Positioned.unsafe_to_raw_positioned attr_cid))
             []
             params (* list of attr parameter literals *)
             None
@@ -110,5 +125,9 @@ let check_implements
       Errors.unbound_attribute_name attr_pos attr_name;
       env
 
-let check_def env check_new_object kind f_attrs =
-  List.fold_right ~f:(check_implements check_new_object kind) f_attrs ~init:env
+let check_def env check_new_object (kind : attribute_interface_name) attributes
+    =
+  List.fold_right
+    ~f:(check_implements check_new_object kind)
+    attributes
+    ~init:env

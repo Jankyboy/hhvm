@@ -16,7 +16,9 @@ class ExtractStandaloneDriver(CommonTestDriver):
     error_file_ext = ".err"
     auto_namespace_map = '{"PHP": "HH\\\\Lib\\\\PHP"}'
 
-    def write_load_config(self, use_saved_state: bool = False) -> None:
+    def write_load_config(
+        self, use_serverless_ide: bool = False, use_saved_state: bool = False
+    ) -> None:
         with open(os.path.join(self.repo_dir, ".hhconfig"), "w") as f:
             f.write(
                 """
@@ -170,9 +172,7 @@ class TestExtractStandalone(TestCase[ExtractStandaloneDriver]):
             "\\with_nested_type_const",
             "\\with_indirect_require_extends",
             "\\call_reactive",
-            "\\call_shallow_reactive",
             "\\WithReactiveMethods::call_reactive",
-            "\\WithReactiveMethods::call_shallow_reactive",
             "\\frob_query",
             "\\corge",
             "\\with_implementations",
@@ -199,6 +199,35 @@ class TestExtractStandalone(TestCase[ExtractStandaloneDriver]):
             "\\with_reified_generics",
             "\\SealedInterface::method",
             "\\WithTypeAliasHint::getX",
+            "\\respects_newtype_abstraction",
+            "\\function_in_typedef",
+            "\\contexts_in_typedef",
+            "\\with_argument_dependent_context",
+            "\\Contextual::with_argument_dependent_context",
+            "\\WithContextConstant::has_io",
+            "\\with_optional_argument_dependent_context",
+            "\\with_expr_in_user_attrs",
+            "\\with_arg_with_sealed_whitelist",
+            "\\with_user_attr",
+            "\\with_param_with_user_attr",
+            "\\with_tparam_with_user_attr",
+            "\\WithPropWithUserAttr::foo",
+            "\\WithStaticPropWithUserAttr::foo",
+            "\\WithTypeConstantWithUserAttr::foo",
+            "\\WithMethodWithUserAttr::foo",
+            "\\WithUserAttr::foo",
+            "\\enum_with_user_attr",
+            "\\opaque_with_user_attr",
+            "\\transparent_with_user_attr",
+            "\\with_constr_prop_with_user_attr",
+            "\\with_where_constraint",
+            "\\with_open_shape",
+            "\\TestExtractConstruct::__construct",
+            "\\with_escaped_char_in_attr",
+            "\\with_class_name_in_attr",
+            "\\with_tparam_constraint",
+            "\\with_prop_in_construct",
+            "\\WithTypeConstantParamConstraint::foo",
         ]
 
         for function_name in function_names:

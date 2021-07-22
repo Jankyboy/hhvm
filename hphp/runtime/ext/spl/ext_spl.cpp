@@ -62,22 +62,21 @@ void throw_spl_exception(const char *fmt, ...) {
   SystemLib::throwExceptionObject(Variant(msg));
 }
 
-static bool s_inited = false;
 static uint64_t s_hash_mask_handle = 0;
-static Mutex s_mutex;
+static std::once_flag s_hash_mask_handle_inited;
 
 String HHVM_FUNCTION(spl_object_hash, const Object& obj) {
-  if (!s_inited) {
-    Lock lock(s_mutex);
-    if (!s_inited) {
-      HHVM_FN(mt_srand)();
-      s_hash_mask_handle |= HHVM_FN(mt_rand)(); s_hash_mask_handle <<= 16;
-      s_hash_mask_handle |= HHVM_FN(mt_rand)(); s_hash_mask_handle <<= 16;
-      s_hash_mask_handle |= HHVM_FN(mt_rand)(); s_hash_mask_handle <<= 16;
-      s_hash_mask_handle |= HHVM_FN(mt_rand)();
-      s_inited = true;
-    }
-  }
+  std::call_once(s_hash_mask_handle_inited, [] {
+    HHVM_FN(mt_srand)();
+
+    uint64_t mask = 0;
+    mask ^= HHVM_FN(mt_rand)(); mask <<= 16;
+    mask ^= HHVM_FN(mt_rand)(); mask <<= 16;
+    mask ^= HHVM_FN(mt_rand)(); mask <<= 16;
+    mask ^= HHVM_FN(mt_rand)();
+
+    s_hash_mask_handle = mask;
+  });
 
   char buf[33];
   // Using the object address here would interfere with a moving GC algorithm.
@@ -100,8 +99,10 @@ Variant HHVM_FUNCTION(hphp_get_this) {
 Variant HHVM_FUNCTION(class_implements, const Variant& obj,
                                         bool autoload /* = true */) {
   Class* cls;
-  if (obj.isString()) {
-    cls = Unit::getClass(obj.getStringData(), autoload);
+  if (obj.isString() || obj.isLazyClass()) {
+    auto const name = obj.isString() ? obj.getStringData() :
+                                       obj.toLazyClassVal().name();
+    cls = Class::get(name, autoload);
     if (!cls) {
       String err = "class_implements(): Class %s does not exist";
       if (autoload) {
@@ -112,11 +113,13 @@ Variant HHVM_FUNCTION(class_implements, const Variant& obj,
     }
   } else if (obj.isObject()) {
     cls = obj.getObjectData()->getVMClass();
+  } else if (obj.isClass()) {
+    cls = obj.toClassVal();
   } else {
     raise_warning("class_implements(): object or string expected");
     return false;
   }
-  Array ret(Array::CreateDArray());
+  Array ret(Array::CreateDict());
   const Class::InterfaceMap& ifaces = cls->allInterfaces();
   for (int i = 0, size = ifaces.size(); i < size; i++) {
     ret.set(ifaces[i]->nameStr(),
@@ -128,8 +131,10 @@ Variant HHVM_FUNCTION(class_implements, const Variant& obj,
 Variant HHVM_FUNCTION(class_parents, const Variant& obj,
                                      bool autoload /* = true */) {
   Class* cls;
-  if (obj.isString()) {
-    cls = Unit::getClass(obj.getStringData(), autoload);
+  if (obj.isString() || obj.isLazyClass()) {
+    auto const name = obj.isString() ? obj.getStringData() :
+                                       obj.toLazyClassVal().name();
+    cls = Class::get(name, autoload);
     if (!cls) {
       String err = "class_parents(): Class %s does not exist";
       if (autoload) {
@@ -140,11 +145,13 @@ Variant HHVM_FUNCTION(class_parents, const Variant& obj,
     }
   } else if (obj.isObject()) {
     cls = obj.getObjectData()->getVMClass();
+  } else if (obj.isClass()) {
+    cls = obj.toClassVal();
   } else {
     raise_warning("class_parents(): object or string expected");
     return false;
   }
-  Array ret(Array::CreateDArray());
+  Array ret(Array::CreateDict());
   for (cls = cls->parent(); cls; cls = cls->parent()) {
     ret.set(cls->nameStr(), make_tv<KindOfPersistentString>(cls->name()));
   }
@@ -154,8 +161,10 @@ Variant HHVM_FUNCTION(class_parents, const Variant& obj,
 Variant HHVM_FUNCTION(class_uses, const Variant& obj,
                                   bool autoload /* = true */) {
   Class* cls;
-  if (obj.isString()) {
-    cls = Unit::getClass(obj.getStringData(), autoload);
+  if (obj.isString() || obj.isLazyClass()) {
+    auto const name = obj.isString() ? obj.getStringData() :
+                                       obj.toLazyClassVal().name();
+    cls = Class::get(name, autoload);
     if (!cls) {
       String err = "class_uses(): Class %s does not exist";
       if (autoload) {
@@ -166,12 +175,14 @@ Variant HHVM_FUNCTION(class_uses, const Variant& obj,
     }
   } else if (obj.isObject()) {
     cls = obj.getObjectData()->getVMClass();
+  } else if (obj.isClass()) {
+    cls = obj.toClassVal();
   } else {
     raise_warning("class_uses(): object or string expected");
     return false;
   }
   auto &usedTraits = cls->preClass()->usedTraits();
-  DArrayInit ret(usedTraits.size());
+  DictInit ret(usedTraits.size());
   for (auto const& traitName : usedTraits) {
     ret.set(StrNR(traitName), VarNR(traitName).tv());
   }
@@ -244,7 +255,7 @@ struct SPLExtension final : Extension {
 
     loadSystemlib();
 
-    s_DirectoryIterator_class = Unit::lookupClass(s_DirectoryIterator.get());
+    s_DirectoryIterator_class = Class::lookup(s_DirectoryIterator.get());
     assertx(s_DirectoryIterator_class);
   }
 } s_SPL_extension;

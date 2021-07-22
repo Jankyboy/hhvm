@@ -271,6 +271,23 @@ struct ImmFolder {
       }
     }
   }
+  void fold(xorw& in, Vinstr& out) {
+    int val;
+    // TODO(mcolavita): xor with -1 is a not
+    if (match_xword(in.s0, val)) {
+      if (val == 0 && !uses[in.sf]) { // copy doesn't set any flags.
+        out = copy{in.s1, in.d};
+      } else {
+        out = xorwi{val, in.s1, in.d, in.sf};
+      }
+    } else if (match_xword(in.s1, val)) {
+      if (val == 0 && !uses[in.sf]) { // copy doesn't set any flags.
+        out = copy{in.s0, in.d};
+      } else {
+        out = xorwi{val, in.s0, in.d, in.sf};
+      }
+    }
+  }
   void fold(xorq& in, Vinstr& out) {
     int val;
     if (match_int(in.s0, val)) {
@@ -347,8 +364,12 @@ struct ImmFolder {
   void fold(loadw& in, Vinstr& /*out*/) { foldVptr(in.s); }
   void fold(loadl& in, Vinstr& /*out*/) { foldVptr(in.s); }
   void fold(loadups& in, Vinstr& /*out*/) { foldVptr(in.s); }
+  void fold(loadsbl& in, Vinstr& /*out*/) { foldVptr(in.s); }
+  void fold(loadsbq& in, Vinstr& /*out*/) { foldVptr(in.s); }
   void fold(loadsd& in, Vinstr& /*out*/) { foldVptr(in.s); }
   void fold(loadzbl& in, Vinstr& /*out*/) { foldVptr(in.s); }
+  void fold(loadzbq& in, Vinstr& /*out*/) { foldVptr(in.s); }
+  void fold(loadzwq& in, Vinstr& /*out*/) { foldVptr(in.s); }
   void fold(loadzlq& in, Vinstr& /*out*/) { foldVptr(in.s); }
   void fold(loadtqb& in, Vinstr& /*out*/) { foldVptr(in.s); }
   void fold(loadtql& in, Vinstr& /*out*/) { foldVptr(in.s); }
@@ -535,6 +556,22 @@ struct ImmFolder {
         out = copy{in.s0, in.d};
       } else {
         out = xorbi{val, in.s0, in.d, in.sf};
+      }
+    }
+  }
+  void fold(xorw& in, Vinstr& out) {
+    int val;
+    if (logical_imm(in.s0, val)) {
+      if (val == 0 && !uses[in.sf]) {
+        out = copy{in.s1, in.d};
+      } else {
+        out = xorwi{val, in.s1, in.d, in.sf};
+      }
+    } else if (logical_imm(in.s1, val)) {
+      if (val == 0 && !uses[in.sf]) {
+        out = copy{in.s0, in.d};
+      } else {
+        out = xorwi{val, in.s0, in.d, in.sf};
       }
     }
   }

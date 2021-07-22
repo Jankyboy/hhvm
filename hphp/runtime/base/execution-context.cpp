@@ -53,12 +53,14 @@
 #include "hphp/runtime/base/extended-logger.h"
 #include "hphp/runtime/base/implicit-context.h"
 #include "hphp/runtime/debugger/debugger.h"
+#include "hphp/runtime/debugger/debugger_base.h"
 #include "hphp/runtime/ext/std/ext_std_output.h"
 #include "hphp/runtime/ext/string/ext_string.h"
 #include "hphp/runtime/ext/reflection/ext_reflection.h"
 #include "hphp/runtime/ext/apc/ext_apc.h"
 #include "hphp/runtime/server/cli-server.h"
 #include "hphp/runtime/server/server-stats.h"
+#include "hphp/runtime/server/source-root-info.h"
 #include "hphp/runtime/vm/debug/debug.h"
 #include "hphp/runtime/vm/jit/enter-tc.h"
 #include "hphp/runtime/vm/jit/tc.h"
@@ -78,6 +80,8 @@
 #include "hphp/runtime/base/php-globals.h"
 #include "hphp/runtime/base/exceptions.h"
 #include "hphp/zend/zend-math.h"
+
+#include "hphp/runtime/base/bespoke-runtime.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -109,7 +113,6 @@ ExecutionContext::ExecutionContext()
   , m_executingSetprofileCallback(false)
   , m_logger_hook(*this)
 {
-  ARRPROV_USE_RUNTIME_LOCATION();
   m_deferredErrors = staticEmptyVec();
   resetCoverageCounters();
   // We don't want a new execution context to cause any request-heap
@@ -365,7 +368,6 @@ bool ExecutionContext::obFlush(bool force /*= false*/) {
       try {
         Variant tout;
         {
-          ARRPROV_USE_RUNTIME_LOCATION();
           m_insideOBHandler = true;
           SCOPE_EXIT { m_insideOBHandler = false; };
           tout = vm_call_user_func(
@@ -386,7 +388,6 @@ bool ExecutionContext::obFlush(bool force /*= false*/) {
     try {
       Variant tout;
       {
-        ARRPROV_USE_RUNTIME_LOCATION();
         m_insideOBHandler = true;
         SCOPE_EXIT { m_insideOBHandler = false; };
         tout = vm_call_user_func(
@@ -442,10 +443,10 @@ const StaticString
   s_default_output_handler("default output handler");
 
 Array ExecutionContext::obGetStatus(bool full) {
-  Array ret = empty_varray();
+  Array ret = empty_vec_array();
   int level = 0;
   for (auto& buffer : m_buffers) {
-    Array status = empty_darray();
+    Array status = empty_dict_array();
     if (level < m_protectedLevel || buffer.handler.isNull()) {
       status.set(s_name, s_default_output_handler);
       status.set(s_type, 0);
@@ -501,7 +502,7 @@ void ExecutionContext::obSetImplicitFlush(bool on) {
 }
 
 Array ExecutionContext::obGetHandlers() {
-  Array ret = empty_varray();
+  Array ret = empty_vec_array();
   for (auto& ob : m_buffers) {
     auto& handler = ob.handler;
     ret.append(handler.isNull() ? s_default_output_handler : handler);
@@ -634,7 +635,6 @@ void ExecutionContext::onRequestShutdown() {
 }
 
 void ExecutionContext::executeFunctions(ShutdownType type) {
-  ARRPROV_USE_RUNTIME_LOCATION();
   RID().resetTimers(
       RuntimeOption::PspTimeoutSeconds,
       RuntimeOption::PspCpuTimeoutSeconds
@@ -890,14 +890,13 @@ bool ExecutionContext::callUserErrorHandler(const Exception& e, int errnum,
       backtrace = ee->getBacktrace();
     }
     try {
-      ARRPROV_USE_RUNTIME_LOCATION();
       ErrorStateHelper esh(this, ErrorState::ExecutingUserHandler);
       m_deferredErrors = empty_vec_array();
       SCOPE_EXIT { m_deferredErrors = empty_vec_array(); };
       if (!same(vm_call_user_func
                 (m_userErrorHandlers.back().first,
                  make_vec_array(errnum, String(e.getMessage()),
-                     fileAndLine.first, fileAndLine.second, empty_darray(),
+                     fileAndLine.first, fileAndLine.second, empty_dict_array(),
                      backtrace)),
                 false)) {
         return true;
@@ -988,7 +987,6 @@ bool ExecutionContext::onUnhandledException(Object e) {
   }
 
   if (e.instanceof(SystemLib::s_ThrowableClass)) {
-    ARRPROV_USE_RUNTIME_LOCATION();
     // user thrown exception
     if (!m_userExceptionHandlers.empty()) {
       if (!same(vm_call_user_func
@@ -1013,7 +1011,8 @@ bool ExecutionContext::onUnhandledException(Object e) {
 
 void ExecutionContext::debuggerInfo(
     std::vector<std::pair<const char*,std::string>>& info) {
-  int64_t newInt = convert_bytes_to_long(IniSetting::Get("memory_limit"));
+  static StaticString s_memoryLimit("memory_limit");
+  int64_t newInt = convert_bytes_to_long(IniSetting::Get(s_memoryLimit));
   if (newInt <= 0) {
     newInt = std::numeric_limits<int64_t>::max();
   }
@@ -1058,7 +1057,7 @@ TypedValue ExecutionContext::lookupClsCns(const NamedEntity* ne,
                                       const StringData* cns) {
   Class* class_ = nullptr;
   try {
-    class_ = Unit::loadClass(ne, cls);
+    class_ = Class::load(ne, cls);
   } catch (Object& ex) {
     // For compatibility with php, throwing through a constant lookup has
     // different behavior inside a property initializer (86pinit/86sinit).
@@ -1080,7 +1079,7 @@ TypedValue ExecutionContext::lookupClsCns(const NamedEntity* ne,
 }
 
 static Class* loadClass(StringData* clsName) {
-  Class* class_ = Unit::loadClass(clsName);
+  Class* class_ = Class::load(clsName);
   if (class_ == nullptr) {
     raise_error(Strings::UNKNOWN_CLASS, clsName->data());
   }
@@ -1128,7 +1127,8 @@ ObjectData* ExecutionContext::initObject(const Class* class_,
   if (!isContainerOrNull(params)) {
     throw_param_is_not_container();
   }
-  tvDecRefGen(invokeFunc(ctor, params, o, nullptr, true, false, true));
+  tvDecRefGen(invokeFunc(ctor, params, o, nullptr, RuntimeCoeffects::fixme(),
+                         true, false, true, Array()));
   return o;
 }
 
@@ -1147,14 +1147,46 @@ ObjectData* ExecutionContext::getThis() {
   return nullptr;
 }
 
+namespace {
+const RepoOptions& getRepoOptionsForDebuggerEval() {
+  const auto root = SourceRootInfo::GetCurrentSourceRoot();
+  if (root.size() == 0) {
+    return RepoOptions::defaults();
+  }
+
+  const auto dummyPath = fmt::format("{}/$$eval$$.php", root);
+  return RepoOptions::forFile(dummyPath.data());
+}
+} // namespace
+
 const RepoOptions& ExecutionContext::getRepoOptionsForCurrentFrame() const {
+  return getRepoOptionsForFrame(0);
+}
+
+const RepoOptions& ExecutionContext::getRepoOptionsForFrame(int frame) const {
   VMRegAnchor _;
 
-  if (auto const ar = vmfp()) {
+  const RepoOptions* ret{nullptr};
+
+  walkStack([&] (ActRec* ar, Offset) {
+    if (frame--) {
+      return false;
+    }
+
     auto const path = ar->func()->unit()->filepath();
-    return RepoOptions::forFile(path->data());
-  }
-  return RepoOptions::defaults();
+    if (UNLIKELY(path->empty())) {
+      // - Systemlib paths always start with `/:systemlib`
+      // - we make up a bogus filename for eval()
+      // - but let's assert out of paranoia as we're in a path that's not
+      //   perf-sensitive
+      assertx(!ar->func()->unit()->isSystemLib());
+      ret = &getRepoOptionsForDebuggerEval();
+      return true;
+    }
+    ret = &RepoOptions::forFile(path->data());
+    return true;
+  });
+  return ret ? *ret : RepoOptions::defaults();
 }
 
 void ExecutionContext::onLoadWithOptions(
@@ -1192,15 +1224,15 @@ StringData* ExecutionContext::getContainingFileName() {
 int ExecutionContext::getLine() {
   VMRegAnchor _;
   ActRec* ar = vmfp();
-  Unit* unit = ar ? ar->func()->unit() : nullptr;
-  Offset pc = unit ? pcOff() : 0;
+  auto func = ar ? ar->func() : nullptr;
+  Offset pc = func ? pcOff() : 0;
   if (ar == nullptr) return -1;
   if (ar->skipFrame()) ar = getPrevVMStateSkipFrame(ar, &pc);
-  if (ar == nullptr || (unit = ar->func()->unit()) == nullptr) return -1;
-  return unit->getLineNumber(pc);
+  if (ar == nullptr || (func = ar->func()) == nullptr) return -1;
+  return func->getLineNumber(pc);
 }
 
-ActRec* ExecutionContext::getFrameAtDepthForDebuggerUnsafe(int frameDepth) {
+ActRec* ExecutionContext::getFrameAtDepthForDebuggerUnsafe(int frameDepth) const {
   ActRec* ret = nullptr;
   walkStack([&] (ActRec* fp, Offset) {
     if (frameDepth == 0) {
@@ -1239,16 +1271,17 @@ TypedValue ExecutionContext::invokeUnit(const Unit* unit,
 
   const_cast<Unit*>(unit)->merge();
 
-  auto it = unit->getCachedEntryPoint();
+  auto it = unit->getEntryPoint();
   if (callByHPHPInvoke && it != nullptr) {
     if (it->isAsync()) {
       invokeFunc(
         Func::lookup(s_enter_async_entry_point.get()),
-        make_vec_array_tagged(ARRPROV_HERE(), Variant{it}),
-        nullptr, nullptr, false
+        make_vec_array(Variant{it}),
+        nullptr, nullptr, RuntimeCoeffects::fixme(), false
       );
     } else {
-      invokeFunc(it, init_null_variant, nullptr, nullptr, false);
+      invokeFunc(it, init_null_variant, nullptr, nullptr,
+                 RuntimeCoeffects::fixme(), false);
     }
   }
   return make_tv<KindOfInt64>(1);
@@ -1417,6 +1450,11 @@ void ExecutionContext::requestInit() {
   // extension function in the VM; this is bad if systemlib itself hasn't been
   // merged.
   autoTypecheckRequestInit();
+
+  if (!RO::RepoAuthoritative && RO::EvalSampleRequestTearing) {
+    m_shouldSampleUnitTearing =
+      StructuredLog::coinflip(RO::EvalSampleRequestTearing);
+  }
 }
 
 void ExecutionContext::requestExit() {
@@ -1443,12 +1481,16 @@ void ExecutionContext::requestExit() {
   }
 
   {
-    ARRPROV_USE_RUNTIME_LOCATION();
     m_deferredErrors = empty_vec_array();
   }
 
   if (Logger::UseRequestLog) Logger::SetThreadHook(nullptr);
   if (m_requestTrace) record_trace(std::move(*m_requestTrace));
+
+  if (!RO::RepoAuthoritative && m_shouldSampleUnitTearing) {
+    Unit::logTearing();
+    m_shouldSampleUnitTearing = false;
+  }
 }
 
 /**
@@ -1481,7 +1523,8 @@ ALWAYS_INLINE
 TypedValue ExecutionContext::invokeFuncImpl(const Func* f,
                                             ObjectData* thiz, Class* cls,
                                             uint32_t numArgsInclUnpack,
-                                            Array&& generics, bool dynamic,
+                                            RuntimeCoeffects providedCoeffects,
+                                            bool hasGenerics, bool dynamic,
                                             bool allowDynCallNoPointer) {
   assertx(f);
   // If `f' is a regular function, `thiz' and `cls' must be null.
@@ -1491,19 +1534,27 @@ TypedValue ExecutionContext::invokeFuncImpl(const Func* f,
   // If `f' is a static method, thiz must be null.
   assertx(IMPLIES(f->isStaticInPrologue(), !thiz));
 
-  if (thiz != nullptr) thiz->incRefCount();
+  ActRec* ar = vmStack().indA(numArgsInclUnpack + (hasGenerics ? 1 : 0));
 
-  ActRec* ar = vmStack().indA(numArgsInclUnpack);
+  // Callee checks and input initialization.
+  calleeGenericsChecks(f, hasGenerics);
+  calleeArgumentArityChecks(f, numArgsInclUnpack);
+  calleeDynamicCallChecks(f, dynamic, allowDynCallNoPointer);
+  void* ctx = thiz ? (void*)thiz : (void*)cls;
+  calleeCoeffectChecks(f, providedCoeffects, numArgsInclUnpack, ctx);
+  f->recordCall();
+  initFuncInputs(f, numArgsInclUnpack);
+
   ar->setReturnVMExit();
   ar->setFunc(f);
   if (thiz) {
+    thiz->incRefCount();
     ar->setThis(thiz);
   } else if (cls) {
     ar->setClass(cls);
   } else {
     ar->trashThis();
   }
-  ar->setNumArgs(numArgsInclUnpack);
 
 #ifdef HPHP_TRACE
   if (vmfp() == nullptr) {
@@ -1519,7 +1570,7 @@ TypedValue ExecutionContext::invokeFuncImpl(const Func* f,
 #endif
 
   auto const reentrySP =
-    vmStack().top() + numArgsInclUnpack + kNumActRecCells + f->numInOutParams();
+    reinterpret_cast<TypedValue*>(ar) + kNumActRecCells + f->numInOutParams();
   pushVMState(reentrySP);
   SCOPE_EXIT {
     assert_flog(
@@ -1532,25 +1583,17 @@ TypedValue ExecutionContext::invokeFuncImpl(const Func* f,
 
   enterVM(ar, [&] {
     exception_handler([&] {
-      enterVMAtFunc(ar, std::move(generics), f->takesInOutParams(), dynamic,
-                    allowDynCallNoPointer);
+      enterVMAtFunc(ar, numArgsInclUnpack);
     });
   });
 
   if (UNLIKELY(f->takesInOutParams())) {
-    // This is OK (albeit ugly) since the return value should only be readable
-    // from user code via e.g. call_user_func and we will tagTV the result from
-    // the native wrapper and getting the correct frame pointer here (or from
-    // the normal arrprov::tagFromPC) is awkward.
-    ARRPROV_USE_RUNTIME_LOCATION();
-
-    VArrayInit varr(f->numInOutParams() + 1);
+    VecInit vec(f->numInOutParams() + 1);
     for (uint32_t i = 0; i < f->numInOutParams() + 1; ++i) {
-      varr.append(*vmStack().topTV());
+      vec.append(*vmStack().topTV());
       vmStack().popC();
     }
-    auto arr = varr.toArray();
-    return make_array_like_tv(arr.detach());
+    return make_array_like_tv(vec.create());
   } else {
     auto const retval = *vmStack().topTV();
     vmStack().discard();
@@ -1562,12 +1605,13 @@ TypedValue ExecutionContext::invokeFunc(const Func* f,
                                         const Variant& args_,
                                         ObjectData* thiz /* = NULL */,
                                         Class* cls /* = NULL */,
+                                        RuntimeCoeffects providedCoeffects
+                                              /* = RuntimeCoeffects::fixme() */,
                                         bool dynamic /* = true */,
                                         bool checkRefAnnot /* = false */,
                                         bool allowDynCallNoPointer
                                                               /* = false */,
-                                        Array&& reifiedGenerics
-                                                              /* = Array() */) {
+                                        Array&& generics /* = Array() */) {
   VMRegAnchor _;
 
   // We must do a stack overflow check for leaf functions on re-entry,
@@ -1599,11 +1643,15 @@ TypedValue ExecutionContext::invokeFunc(const Func* f,
     numArgs = prepareUnpackArgs(f, 0, checkRefAnnot);
   }
 
+  // Push generics.
+  auto const hasGenerics = !generics.isNull();
+  GenericsSaver::push(std::move(generics));
+
   // Caller checks.
   if (dynamic) callerDynamicCallChecks(f, allowDynCallNoPointer);
 
-  return invokeFuncImpl(f, thiz, cls, numArgs, std::move(reifiedGenerics),
-                        dynamic, allowDynCallNoPointer);
+  return invokeFuncImpl(f, thiz, cls, numArgs, providedCoeffects,
+                        hasGenerics, dynamic, allowDynCallNoPointer);
 }
 
 TypedValue ExecutionContext::invokeFuncFew(
@@ -1611,6 +1659,7 @@ TypedValue ExecutionContext::invokeFuncFew(
   ExecutionContext::ThisOrClass thisOrCls,
   uint32_t numArgs,
   const TypedValue* argv,
+  RuntimeCoeffects providedCoeffects,
   bool dynamic /* = true */,
   bool allowDynCallNoPointer
   /* = false */
@@ -1640,13 +1689,9 @@ TypedValue ExecutionContext::invokeFuncFew(
 
   // Push variadic arguments.
   if (UNLIKELY(numParams < numArgs)) {
-    VArrayInit ai{numArgs - numParams};
+    VecInit ai{numArgs - numParams};
     for (auto i = numParams; i < numArgs; ++i) ai.append(argv[i]);
-    if (RuntimeOption::EvalHackArrDVArrs) {
-      stack.pushVecNoRc(ai.create());
-    } else {
-      stack.pushArrayNoRc(ai.create());
-    }
+    stack.pushArrayLikeNoRc(ai.create());
     numArgs = numParams + 1;
   }
 
@@ -1654,7 +1699,8 @@ TypedValue ExecutionContext::invokeFuncFew(
   if (dynamic) callerDynamicCallChecks(f, allowDynCallNoPointer);
 
   return invokeFuncImpl(f, thisOrCls.left(), thisOrCls.right(), numArgs,
-                        Array(), dynamic, false);
+                        providedCoeffects,
+                        false /* hasGenerics */, dynamic, false);
 }
 
 static void prepareAsyncFuncEntry(ActRec* enterFnAr,
@@ -1674,7 +1720,7 @@ static void prepareAsyncFuncEntry(ActRec* enterFnAr,
       ? resumable->suspendOffset()
       : resumable->resumeFromAwaitOffset()
   );
-  EventHook::FunctionResumeAwait(enterFnAr);
+  EventHook::FunctionResumeAwait(enterFnAr, EventHook::Source::Asio);
 }
 
 void ExecutionContext::resumeAsyncFunc(Resumable* resumable,
@@ -1780,7 +1826,7 @@ ActRec* ExecutionContext::getPrevVMState(const ActRec* fp,
         *prevSp = (TypedValue*)(fp + 1);
       }
     }
-    if (prevPc) *prevPc = prevFp->func()->base() + fp->callOffset();
+    if (prevPc) *prevPc = fp->callOffset();
     if (fromVMEntry) *fromVMEntry = false;
     return prevFp;
   }
@@ -1831,21 +1877,25 @@ Variant ExecutionContext::getEvaledArg(const StringData* val,
   }
 
   Unit* unit = compileEvalString(code.get());
+  // This exception will be caught by the caller and proper error message
+  // will be emitted
+  if (unit->getFatalInfo()) throw Exception("Parse error");
   assertx(unit != nullptr);
   unit->setInterpretOnly();
 
   // The evaluate_default_argument function should be the last one
+  assertx(unit->funcs().size() >= 1);
   auto func = *(unit->funcs().end() - 1);
   assertx(func->name()->equal(funcName.get()) &&
           "We expecting the evaluate_default_argument func");
 
   // Default arg values are not currently allowed to depend on class context.
   auto v = Variant::attach(
-    g_context->invokeFuncFew(func, nullptr, 0, nullptr, true, true)
+    g_context->invokeFuncFew(func, nullptr, 0, nullptr,
+                             RuntimeCoeffects::fixme(), true, true)
   );
-  auto const lv = m_evaledArgs.lvalForce(key, AccessFlags::Key);
-  tvSet(*v.asTypedValue(), lv);
-  return Variant::wrap(lv.tv());
+  m_evaledArgs.set(key, *v.asTypedValue());
+  return Variant::wrap(m_evaledArgs.lookup(key));
 }
 
 void ExecutionContext::recordLastError(const Exception& e, int errnum) {
@@ -1906,39 +1956,11 @@ void ExecutionContext::manageAPCHandle() {
   }
 }
 
-// Evaled units have a footprint in the TC and translation metadata. The
-// applications we care about tend to have few, short, stereotyped evals,
-// where the same code keeps getting eval'ed over and over again; so we
-// keep around units for each eval'ed string, so that the TC space isn't
-// wasted on each eval.
-typedef RankedCHM<StringData*, HPHP::Unit*,
-        StringDataHashCompare,
-        RankEvaledUnits> EvaledUnitsMap;
-static EvaledUnitsMap s_evaledUnits;
-Unit* ExecutionContext::compileEvalString(
-    StringData* code,
-    const char* evalFilename /* = nullptr */) {
-  EvaledUnitsMap::accessor acc;
-  // Promote this to a static string; otherwise it may get swept
-  // across requests.
-  code = makeStaticString(code);
-  if (s_evaledUnits.insert(acc, code)) {
-    acc->second = compile_string(
-      code->data(),
-      code->size(),
-      evalFilename,
-      Native::s_noNativeFuncs,
-      getRepoOptionsForCurrentFrame()
-    );
-  }
-  return acc->second;
-}
-
 ExecutionContext::EvaluationResult
 ExecutionContext::evalPHPDebugger(StringData* code, int frame) {
   // The code has "<?hh" prepended already
   auto unit = compile_debugger_string(code->data(), code->size(),
-    getRepoOptionsForCurrentFrame());
+    getRepoOptionsForFrame(frame));
   if (unit == nullptr) {
     raise_error("Syntax error");
     return {true, init_null_variant, "Syntax error"};
@@ -1949,6 +1971,7 @@ ExecutionContext::evalPHPDebugger(StringData* code, int frame) {
 
 const StaticString
   s_DebuggerMainAttr("__DebuggerMain"),
+  s_debuggerThis("__debugger$this"),
   s_uninitClsName("__uninitSentinel");
 
 ExecutionContext::EvaluationResult
@@ -2011,7 +2034,7 @@ ExecutionContext::evalPHPDebugger(Unit* unit, int frame) {
 
     enum VarAction { StoreFrame, StoreEnv };
 
-    auto const uninit_cls = Unit::loadClass(s_uninitClsName.get());
+    auto const uninit_cls = Class::load(s_uninitClsName.get());
 
     auto& env = m_debuggerEnv;
 
@@ -2021,7 +2044,6 @@ ExecutionContext::evalPHPDebugger(Unit* unit, int frame) {
         if (orig_f->userAttributes().count(s_DebuggerMainAttr.get())) {
           auto const f = ctx ? orig_f->clone(ctx) : orig_f;
           if (ctx) {
-            f->setNewFuncId();
             f->setBaseCls(ctx);
             if (fp && fp->hasThis()) {
               f->setAttrs(Attr(f->attrs() & ~AttrStatic));
@@ -2037,7 +2059,7 @@ ExecutionContext::evalPHPDebugger(Unit* unit, int frame) {
     }();
     always_assert(f);
 
-    VArrayInit args{f->numParams()};
+    VecInit args{f->numParams()};
     std::vector<VarAction> actions{f->numParams(), StoreEnv};
     std::vector<Id> frameIds;
     frameIds.resize(f->numParams(), 0);
@@ -2047,6 +2069,11 @@ ExecutionContext::evalPHPDebugger(Unit* unit, int frame) {
     for (Id id = 0; id < f->numParams() - 1; id++) {
       assertx(id < f->numNamedLocals());
       assertx(f->params()[id].isInOut());
+      if (f->localVarName(id)->equal(s_debuggerThis.get()) &&
+          ctx && fp->hasThis()) {
+        args.append(make_tv<KindOfObject>(fp->getThis()));
+        continue;
+      }
       if (fp) {
         auto const idx = fp->func()->lookupVarId(f->localVarName(id));
         if (idx != kInvalidId) {
@@ -2066,7 +2093,8 @@ ExecutionContext::evalPHPDebugger(Unit* unit, int frame) {
 
     auto const obj = ctx && fp->hasThis() ? fp->getThis() : nullptr;
     auto const cls = ctx && fp->hasClass() ? fp->getClass() : nullptr;
-    auto const arr_tv = invokeFunc(f, args.toArray(), obj, cls, false);
+    auto const arr_tv = invokeFunc(f, args.toArray(), obj, cls,
+                                   RuntimeCoeffects::fixme(), false);
     assertx(isArrayLikeType(type(arr_tv)));
     assertx(val(arr_tv).parr->size() == f->numParams() + 1);
     Array arr = Array::attach(val(arr_tv).parr);
@@ -2146,7 +2174,7 @@ const StaticString s_include("include");
 
 void ExecutionContext::enterDebuggerDummyEnv() {
   static Unit* s_debuggerDummy = compile_debugger_string(
-    "<?hh", 4, RepoOptions::defaults()
+    "<?hh", 4, getRepoOptionsForDebuggerEval()
   );
   // Ensure that the VM stack is completely empty (vmfp() should be null)
   // and that we're not in a nested VM (reentrancy)
@@ -2157,12 +2185,11 @@ void ExecutionContext::enterDebuggerDummyEnv() {
   ActRec* ar = vmStack().allocA();
   ar->setFunc(s_debuggerDummy->lookupFuncId(0));
   assertx(ar->func() && ar->func()->name()->equal(s_include.get()));
-  ar->setNumArgs(0);
   for (int i = 0; i < ar->func()->numLocals(); ++i) vmStack().pushInt(1);
   ar->trashThis();
   ar->setReturnVMExit();
   vmfp() = ar;
-  vmpc() = s_debuggerDummy->entry();
+  vmpc() = ar->func()->entry();
   vmFirstAR() = ar;
 }
 

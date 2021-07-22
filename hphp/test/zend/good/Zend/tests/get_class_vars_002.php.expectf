@@ -1,8 +1,8 @@
-darray(1) {
+dict(1) {
   ["a"]=>
   int(1)
 }
-darray(3) {
+dict(3) {
   ["a"]=>
   int(1)
   ["aa"]=>
@@ -10,10 +10,6 @@ darray(3) {
   ["cc"]=>
   int(6)
 }
-
-Notice: %s
-
-Notice: %s
 int(1)
-NULL
-NULL
+string(25) "Undefined property: C::$b"
+string(25) "Undefined property: C::$c"

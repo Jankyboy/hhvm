@@ -11,6 +11,8 @@ const FB_SERIALIZE_HACK_ARRAYS = 0;
 const FB_SERIALIZE_HACK_ARRAYS_AND_KEYSETS = 0;
 const FB_SERIALIZE_VARRAY_DARRAY = 0;
 
+const FB_COMPACT_SERIALIZE_FORCE_PHP_ARRAYS = 0;
+
 const XHPROF_FLAGS_NO_BUILTINS = 0;
 const XHPROF_FLAGS_CPU = 0;
 const XHPROF_FLAGS_MEMORY = 0;
@@ -32,26 +34,24 @@ const SETPROFILE_FLAGS_THIS_OBJECT__MAY_BREAK = 32;
 
 const int PREG_FB__PRIVATE__HSL_IMPL = (1 << 29);
 
-<<__PHPStdLib, __Pure>>
-function fb_serialize($thing, int $options = 0);
+<<__PHPStdLib>>
+function fb_serialize($thing, int $options = 0)[];
 <<__PHPStdLib>>
 function fb_unserialize($thing, inout $success, int $options = 0);
-<<__PHPStdLib, __Pure>>
-function fb_compact_serialize($thing);
+<<__PHPStdLib>>
+function fb_compact_serialize($thing, int $options = 0)[];
 <<__PHPStdLib>>
 function fb_compact_unserialize($thing, inout $success, inout $errcode);
-<<__PHPStdLib>>
-function fb_intercept(string $name, $handler, $data = null);
 <<__PHPStdLib>>
 function fb_intercept2(string $name, $handler);
 <<__PHPStdLib>>
 function fb_rename_function(string $orig_func_name, string $new_func_name);
 <<__PHPStdLib>>
 function fb_utf8ize(inout $input);
-<<__PHPStdLib, __Pure>>
-function fb_utf8_strlen(string $input);
-<<__PHPStdLib, __Pure>>
-function fb_utf8_substr(string $str, int $start, int $length = PHP_INT_MAX);
+<<__PHPStdLib>>
+function fb_utf8_strlen(string $input)[];
+<<__PHPStdLib>>
+function fb_utf8_substr(string $str, int $start, int $length = PHP_INT_MAX)[];
 <<__PHPStdLib>>
 function fb_get_code_coverage(bool $flush);
 <<__PHPStdLib>>
@@ -90,9 +90,9 @@ namespace HH {
 <<__PHPStdLib>>
 function disable_code_coverage_with_frequency();
 <<__PHPStdLib>>
-function non_crypto_md5_upper(string $str): int;
+function non_crypto_md5_upper(string $str)[]: int;
 <<__PHPStdLib>>
-function non_crypto_md5_lower(string $str): int;
+function non_crypto_md5_lower(string $str)[]: int;
 
 /** Returns the overflow part of multiplying two ints, as if they were unsigned.
  * In other words, this returns the upper 64 bits of the full product of
@@ -107,4 +107,8 @@ function int_mul_overflow(int $a, int $b): int;
  * manipulate rounding of the result.
  */
 function int_mul_add_overflow(int $a, int $b, int $bias): int;
+
+function enable_function_coverage();
+
+function collect_function_coverage();
 } // HH namespace

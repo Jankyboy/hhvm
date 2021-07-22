@@ -76,9 +76,13 @@ namespace {
       auto const flags = handle_request_surprise(wait_handle);
       if (flags & XenonSignalFlag) {
         if (Strobelight::active()) {
-          Strobelight::getInstance().log(wait_handle);
+          Strobelight::getInstance().log(Xenon::IOWaitSample, wait_handle);
         } else {
-          Xenon::getInstance().log(Xenon::IOWaitSample, wait_handle);
+          Xenon::getInstance().log(
+            Xenon::IOWaitSample,
+            EventHook::Source::Asio,
+            wait_handle
+          );
         }
       }
       if (flags & IntervalTimerFlag) {

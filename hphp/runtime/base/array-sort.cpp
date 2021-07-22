@@ -17,6 +17,7 @@
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/array-iterator.h"
 #include "hphp/runtime/base/execution-context.h"
+#include "hphp/runtime/base/packed-sort.h"
 #include "hphp/runtime/base/sort-helpers.h"
 #include "hphp/runtime/base/tv-mutate.h"
 #include "hphp/runtime/base/tv-variant.h"
@@ -151,46 +152,22 @@ void SetArray::postSort(bool) {   // nothrow guarantee
 }
 
 ArrayData* MixedArray::EscalateForSort(ArrayData* ad, SortFunction sf) {
-  auto a = asMixed(ad);
-  // We can uncomment later if we want this feature.
-  // if (a->m_size <= 1 && !isSortFamily(sf)) {
-  //   return a;
-  // }
-  if (UNLIKELY(hasUserDefinedCmp(sf) || a->cowCheck())) {
-    auto ret = a->copyMixed();
-    assertx(ret->hasExactlyOneRef());
-    return ret;
-  }
-  return a;
+  auto const a = asMixed(ad);
+  return a->cowCheck() ? a->copyMixed() : a;
 }
 
 ArrayData* SetArray::EscalateForSort(ArrayData* ad, SortFunction sf) {
-  auto a = asSet(ad);
-  if (UNLIKELY(hasUserDefinedCmp(sf) || a->cowCheck())) {
-    auto ret = a->copySet();
-    assertx(ret->hasExactlyOneRef());
-    return ret;
-  }
-  return a;
+  auto const a = asSet(ad);
+  return a->cowCheck() ? a->copySet() : a;
 }
 
 ArrayData* PackedArray::EscalateForSort(ArrayData* ad, SortFunction sf) {
   assertx(checkInvariants(ad));
   assertx(sf != SORTFUNC_KSORT);
-  if (isSortFamily(sf)) {               // sort/rsort/usort
-    if (UNLIKELY(ad->cowCheck())) {
-      auto ret = PackedArray::Copy(ad);
-      assertx(ret->hasExactlyOneRef());
-      return ret;
-    }
-    return ad;
+  if (isSortFamily(sf)) { // sort/rsort/usort
+    return ad->cowCheck() ? PackedArray::Copy(ad) : ad;
   }
-  auto ret = ad->isVecKind()
-    // TODO(T39123862)
-    ? PackedArray::ToDict(ad, ad->cowCheck())
-    : ToMixedCopy(ad);
-  assertx(ret->empty() || ret->hasExactlyOneRef());
-  return ret;
+  return ToMixedCopy(ad);
 }
 
 #define SORT_CASE(flag, cmp_type, acc_type) \
@@ -278,9 +255,15 @@ void PackedArray::Sort(ArrayData* ad, int sort_flags, bool ascending) {
   assertx(!ad->hasMultipleRefs());
   auto a = ad;
   SortFlavor flav = preSort(ad);
-  auto data_begin = packedData(ad);
-  auto data_end = data_begin + a->m_size;
-  CALL_SORT(TVAccessor);
+  if constexpr (stores_typed_values) {
+    auto const data_begin = PackedArray::entries(ad);
+    auto const data_end = data_begin + a->m_size;
+    CALL_SORT(TVAccessor);
+  } else {
+    auto data_begin = PackedBlockIterator { ad, 0 };
+    auto data_end = data_begin + a->m_size;
+    CALL_SORT(PackedBlockAccessor);
+  }
 }
 
 #undef SORT_CASE
@@ -332,22 +315,22 @@ bool SetArray::Uksort(ArrayData* ad, const Variant& cmp_function) {
 SortFlavor PackedArray::preSort(ArrayData* ad) {
   assertx(checkInvariants(ad));
   assertx(ad->m_size > 0);
-  TVAccessor acc;
   bool allInts = true;
   bool allStrs = true;
-  auto elm = packedData(ad);
-  auto const end = elm + ad->m_size;
+  uint32_t i = 0;
+  uint32_t size = ad->m_size;
   do {
-    if (acc.isInt(*elm)) {
+    const auto type = PackedArray::LvalUncheckedInt(ad, i).type();
+    if (type == KindOfInt64) {
       if (!allInts) return GenericSort;
       allStrs = false;
-    } else if (acc.isStr(*elm)) {
+    } else if (isStringType(type)) {
       if (!allStrs) return GenericSort;
       allInts = false;
     } else {
       return GenericSort;
     }
-  } while (++elm < end);
+  } while (++i < size);
   if (allInts) return IntegerSort;
   assertx(allStrs);
   return StringSort;
@@ -359,15 +342,22 @@ bool PackedArray::Usort(ArrayData* ad, const Variant& cmp_function) {
     return true;
   }
   assertx(!ad->hasMultipleRefs());
-  ElmUCompare<TVAccessor> comp;
   CallCtx ctx;
   vm_decode_function(cmp_function, ctx);
   if (!ctx.func) {
     return false;
   }
-  comp.ctx = &ctx;
-  auto const data = packedData(ad);
-  Sort::sort(data, data + ad->m_size, comp);
+  if constexpr (stores_typed_values) {
+    ElmUCompare<TVAccessor> comp;
+    comp.ctx = &ctx;
+    auto const data = PackedArray::entries(ad);
+    Sort::sort(data, data + ad->m_size, comp);
+  } else {
+    ElmUCompare<PackedBlockAccessor> comp;
+    comp.ctx = &ctx;
+    auto data = PackedBlockIterator { ad, 0 };
+    Sort::sort(data, data + ad->m_size, comp);
+  }
   return true;
 }
 

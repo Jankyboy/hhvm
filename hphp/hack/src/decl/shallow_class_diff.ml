@@ -24,13 +24,13 @@ let merge_member_lists
         if SMap.mem map name then
           map
         else
-          SMap.add map name (Some x, None))
+          SMap.add map ~key:name ~data:(Some x, None))
   in
   List.fold l2 ~init:map ~f:(fun map y ->
       let name = get_name y in
       match SMap.find_opt map name with
-      | Some (x, None) -> SMap.add map name (x, Some y)
-      | None -> SMap.add map name (None, Some y)
+      | Some (x, None) -> SMap.add map ~key:name ~data:(x, Some y)
+      | None -> SMap.add map ~key:name ~data:(None, Some y)
       | Some (_, Some _) -> map)
 
 let diff_members
@@ -45,19 +45,22 @@ let diff_members
       | (None, Some member)
         when (not Ast_defs.(equal_class_kind class_kind Ctrait))
              && is_private member ->
-        SMap.add diff name Private_change
-      | (Some _, None) -> SMap.add diff name Removed
-      | (None, Some _) -> SMap.add diff name Added
+        SMap.add diff ~key:name ~data:Private_change
+      | (Some _, None) -> SMap.add diff ~key:name ~data:Removed
+      | (None, Some _) -> SMap.add diff ~key:name ~data:Added
       | (Some old_member, Some new_member) ->
         diff_member old_member new_member
-        |> Option.value_map ~default:diff ~f:(fun ch -> SMap.add diff name ch))
+        |> Option.value_map ~default:diff ~f:(fun ch ->
+               SMap.add diff ~key:name ~data:ch))
 
-let diff_const c1 c2 : member_change option =
+let diff_const (c1 : shallow_class_const) c2 : member_change option =
   let c1 = Decl_pos_utils.NormalizeSig.shallow_class_const c1 in
   let c2 = Decl_pos_utils.NormalizeSig.shallow_class_const c2 in
   if equal_shallow_class_const c1 c2 then
     None
-  else if Bool.( <> ) c1.scc_abstract c2.scc_abstract then
+  else if
+    not (Typing_defs.equal_class_const_kind c1.scc_abstract c2.scc_abstract)
+  then
     Some Changed_inheritance
   else
     Some Modified
@@ -67,15 +70,15 @@ let diff_typeconst tc1 tc2 : member_change option =
   let tc2 = Decl_pos_utils.NormalizeSig.shallow_typeconst tc2 in
   if equal_shallow_typeconst tc1 tc2 then
     None
-  else if
-    not
-      (Typing_defs.equal_typeconst_abstract_kind
-         tc1.stc_abstract
-         tc2.stc_abstract)
-  then
-    Some Changed_inheritance
   else
-    Some Modified
+    let open Typing_defs in
+    match (tc1.stc_kind, tc2.stc_kind) with
+    | (TCAbstract _, TCAbstract _)
+    | (TCPartiallyAbstract _, TCPartiallyAbstract _)
+    | (TCConcrete _, TCConcrete _) ->
+      Some Modified
+    | (_, (TCAbstract _ | TCPartiallyAbstract _ | TCConcrete _)) ->
+      Some Changed_inheritance
 
 let diff_prop p1 p2 : member_change option =
   let p1 = Decl_pos_utils.NormalizeSig.shallow_prop p1 in
@@ -84,7 +87,7 @@ let diff_prop p1 p2 : member_change option =
     None
   else if
     (not (Aast.equal_visibility p1.sp_visibility p2.sp_visibility))
-    || Bool.( <> ) p1.sp_abstract p2.sp_abstract
+    || Bool.( <> ) (sp_abstract p1) (sp_abstract p2)
   then
     Some Changed_inheritance
   else
@@ -97,7 +100,7 @@ let diff_method m1 m2 : member_change option =
     None
   else if
     (not (Aast.equal_visibility m1.sm_visibility m2.sm_visibility))
-    || Bool.( <> ) m1.sm_abstract m2.sm_abstract
+    || Bool.( <> ) (sm_abstract m1) (sm_abstract m2)
   then
     Some Changed_inheritance
   else
@@ -183,25 +186,19 @@ let diff_class_members (c1 : shallow_class) (c2 : shallow_class) :
     every bit of information used by Decl_linearize is checked here! *)
 let mro_inputs_equal (c1 : shallow_class) (c2 : shallow_class) : bool =
   let is_to_string m = String.equal (snd m.sm_name) SN.Members.__toString in
-  Aast.equal_sid c1.sc_name c2.sc_name
+  Typing_defs.equal_pos_id c1.sc_name c2.sc_name
   && Ast_defs.equal_class_kind c1.sc_kind c2.sc_kind
   && Option.equal
        equal_shallow_method
-       (List.find c1.sc_methods is_to_string)
-       (List.find c2.sc_methods is_to_string)
-  && List.equal c1.sc_tparams c2.sc_tparams Typing_defs.equal_decl_tparam
-  && List.equal c1.sc_extends c2.sc_extends Typing_defs.equal_decl_ty
-  && List.equal c1.sc_implements c2.sc_implements Typing_defs.equal_decl_ty
-  && List.equal c1.sc_uses c2.sc_uses Typing_defs.equal_decl_ty
-  && List.equal c1.sc_req_extends c2.sc_req_extends Typing_defs.equal_decl_ty
-  && List.equal
-       c1.sc_req_implements
-       c2.sc_req_implements
-       Typing_defs.equal_decl_ty
-  && List.equal
-       c1.sc_xhp_attr_uses
-       c2.sc_xhp_attr_uses
-       Typing_defs.equal_decl_ty
+       (List.find c1.sc_methods ~f:is_to_string)
+       (List.find c2.sc_methods ~f:is_to_string)
+  && List.equal Poly.( = ) c1.sc_tparams c2.sc_tparams
+  && List.equal Poly.( = ) c1.sc_extends c2.sc_extends
+  && List.equal Poly.( = ) c1.sc_implements c2.sc_implements
+  && List.equal Poly.( = ) c1.sc_uses c2.sc_uses
+  && List.equal Poly.( = ) c1.sc_req_extends c2.sc_req_extends
+  && List.equal Poly.( = ) c1.sc_req_implements c2.sc_req_implements
+  && List.equal Poly.( = ) c1.sc_xhp_attr_uses c2.sc_xhp_attr_uses
 
 (* The ConsistentConstruct attribute is propagated down the inheritance
    hierarchy, so we can model it with Changed_inheritance on the constructor. To
@@ -228,7 +225,7 @@ let remove_members_except_to_string sc =
     sc_sprops = [];
     sc_static_methods = [];
     sc_methods =
-      List.filter sc.sc_methods (fun m ->
+      List.filter sc.sc_methods ~f:(fun m ->
           String.equal (snd m.sm_name) SN.Members.__toString);
   }
 

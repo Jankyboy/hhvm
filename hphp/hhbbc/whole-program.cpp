@@ -233,9 +233,10 @@ WorkItem work_item_for(const DependencyContext& d, AnalyzeMode mode) {
               is_used_trait(*cls));
       return WorkItem { WorkType::Func, Context { func->unit, func, cls } };
     }
-    case DependencyContextType::PropName:
-      // We only record dependencies on static property names. We don't schedule
-      // any work on their behalf.
+    case DependencyContextType::Prop:
+    case DependencyContextType::FuncFamily:
+      // We only record dependencies on these. We don't schedule any
+      // work on their behalf.
       break;
   }
   always_assert(false);
@@ -281,6 +282,8 @@ void analyze_iteratively(Index& index, php::Program& program,
     }
   };
 
+  std::vector<DependencyContextSet> deps_vec{parallel::num_threads};
+
   auto work = initial_work(program, mode);
   while (!work.empty()) {
     auto results = [&] {
@@ -290,9 +293,9 @@ void analyze_iteratively(Index& index, php::Program& program,
       );
       return parallel::map(
         work,
-        // We have a folly::Optional just to keep the result type
+        // We have a Optional just to keep the result type
         // DefaultConstructible.
-        [&] (const WorkItem& wi) -> folly::Optional<WorkResult> {
+        [&] (const WorkItem& wi) -> Optional<WorkResult> {
           switch (wi.type) {
           case WorkType::Func: {
             ++total_funcs;
@@ -311,8 +314,6 @@ void analyze_iteratively(Index& index, php::Program& program,
 
     ++round;
     trace_time update_time("updating");
-
-    std::vector<DependencyContextSet> deps_vec{parallel::num_threads};
 
     auto update_func = [&] (FuncAnalysisResult& fa,
                             DependencyContextSet& deps) {
@@ -336,7 +337,7 @@ void analyze_iteratively(Index& index, php::Program& program,
         index.refine_class_constants(fa.ctx, fa.resolvedConstants, deps);
       }
       for (auto& kv : fa.closureUseTypes) {
-        assert(is_closure(*kv.first));
+        assertx(is_closure(*kv.first));
         if (index.refine_closure_use_vars(kv.first, kv.second)) {
           auto const func = find_method(kv.first, s_invoke.get());
           always_assert_flog(
@@ -380,6 +381,7 @@ void analyze_iteratively(Index& index, php::Program& program,
             update_class(result->cls, deps_vec[worker]);
             break;
         }
+        result.reset();
       }
     );
 
@@ -401,6 +403,7 @@ void analyze_iteratively(Index& index, php::Program& program,
     work.clear();
     work.reserve(deps.size());
     for (auto& d : deps) work.push_back(work_item_for(d, mode));
+    deps.clear();
   }
 }
 
@@ -444,6 +447,9 @@ void final_pass(Index& index,
   LitstrTable::fini();
   LitstrTable::init();
   LitstrTable::get().setWriting();
+  LitarrayTable::fini();
+  LitarrayTable::init();
+  LitarrayTable::get().setWriting();
   index.freeze();
   auto const dump_dir = debug_dump_to();
   parallel::for_each(
@@ -462,7 +468,7 @@ void final_pass(Index& index,
         auto const ctx = AnalysisContext { context.unit, func, context.cls };
         optimize_func(index, analyze_func(index, ctx, CollectionOpts{}), func);
       }
-      assert(check(*unit));
+      assertx(check(*unit));
       state_after("optimize", *unit);
       if (!dump_dir.empty()) {
         if (Trace::moduleEnabledRelease(Trace::hhbbc_dump, 2)) {
@@ -484,16 +490,38 @@ void final_pass(Index& index,
 
 void UnitEmitterQueue::push(std::unique_ptr<UnitEmitter> ue) {
   assertx(!m_done.load(std::memory_order_relaxed));
-  Lock lock(this);
-  if (!ue) {
-    m_done.store(true, std::memory_order_relaxed);
-  } else {
-    m_ues.push_back(std::move(ue));
+
+  if (m_repoBuilder) m_repoBuilder->addUnit(*ue);
+  RepoFileBuilder::EncodedUE encoded{*ue};
+
+  {
+    Lock lock(this);
+    m_encoded.emplace_back(std::move(encoded));
+    if (m_storeUnitEmitters) m_ues.emplace_back(std::move(ue));
+    notify();
   }
+}
+
+void UnitEmitterQueue::finish() {
+  assertx(!m_done.load(std::memory_order_relaxed));
+  Lock lock(this);
+  m_done.store(true, std::memory_order_relaxed);
   notify();
 }
 
-std::unique_ptr<UnitEmitter> UnitEmitterQueue::pop() {
+Optional<RepoFileBuilder::EncodedUE> UnitEmitterQueue::pop() {
+  Lock lock(this);
+  while (m_encoded.empty()) {
+    if (m_done.load(std::memory_order_relaxed)) return std::nullopt;
+    wait();
+  }
+  assertx(m_encoded.size() > 0);
+  auto encoded = std::move(m_encoded.front());
+  m_encoded.pop_front();
+  return encoded;
+}
+
+std::unique_ptr<UnitEmitter> UnitEmitterQueue::popUnitEmitter() {
   Lock lock(this);
   while (m_ues.empty()) {
     if (m_done.load(std::memory_order_relaxed)) return nullptr;
@@ -501,20 +529,8 @@ std::unique_ptr<UnitEmitter> UnitEmitterQueue::pop() {
   }
   assertx(m_ues.size() > 0);
   auto ue = std::move(m_ues.front());
-  assertx(ue != nullptr);
   m_ues.pop_front();
   return ue;
-}
-
-void UnitEmitterQueue::fetch(std::vector<std::unique_ptr<UnitEmitter>>& ues) {
-  assertx(m_done.load(std::memory_order_relaxed));
-  std::move(m_ues.begin(), m_ues.end(), std::back_inserter(ues));
-  m_ues.clear();
-}
-
-void UnitEmitterQueue::reset() {
-  m_ues.clear();
-  m_done.store(false, std::memory_order_relaxed);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -536,7 +552,8 @@ void add_unit_to_program(const UnitEmitter* ue, php::Program& program) {
 void whole_program(php::ProgramPtr program,
                    UnitEmitterQueue& ueq,
                    std::unique_ptr<ArrayTypeTable::Builder>& arrTable,
-                   int num_threads) {
+                   int num_threads,
+                   std::promise<void>* arrTableReady) {
   trace_time tracer("whole program");
 
   if (options.TestCompression || RO::EvalHHBBCTestCompression) {
@@ -545,6 +562,8 @@ void whole_program(php::ProgramPtr program,
 
   if (num_threads > 0) {
     parallel::num_threads = num_threads;
+    // Leave 2 threads free for writing UnitEmitters and for cleanup
+    parallel::final_threads = (num_threads > 2) ? (num_threads - 2) : 1;
   }
 
   state_after("parse", *program);
@@ -567,7 +586,7 @@ void whole_program(php::ProgramPtr program,
 
   std::thread cleanup_pre;
   if (!options.NoOptimizations) {
-    assert(check(*program));
+    assertx(check(*program));
     prop_type_hint_pass(index, *program);
     index.rewrite_default_initial_values(*program);
     index.use_class_dependencies(false);
@@ -575,13 +594,12 @@ void whole_program(php::ProgramPtr program,
     // Defer initializing public static property types until after the
     // constant pass, to try to get better initial values.
     index.init_public_static_prop_types();
+    index.preinit_bad_initial_prop_values();
     index.use_class_dependencies(options.HardPrivatePropInference);
     analyze_iteratively(index, *program, AnalyzeMode::NormalPass);
     cleanup_pre = std::thread([&] { index.cleanup_for_final(); });
     index.join_iface_vtable_thread();
-    if (parallel::num_threads > parallel::final_threads) {
-      parallel::num_threads = parallel::final_threads;
-    }
+    parallel::num_threads = parallel::final_threads;
     final_pass(index, *program, stats, emitUnit);
   } else {
     debug_dump_program(index, *program);
@@ -598,18 +616,21 @@ void whole_program(php::ProgramPtr program,
   auto const logging = Trace::moduleEnabledRelease(Trace::hhbbc_time, 1);
   // running cleanup_for_emit can take a while... start it as early as
   // possible, and run in its own thread.
-  auto cleanup_post = std::thread([&] {
+  auto cleanup_post = std::thread([&, program = std::move(program)] () mutable {
       auto const enable =
         logging && !Trace::moduleEnabledRelease(Trace::hhbbc_time, 1);
       Trace::BumpRelease bumper(Trace::hhbbc_time, -1, enable);
-      index.cleanup_post_emit();
+      index.cleanup_post_emit(std::move(program));
     }
   );
 
   print_stats(stats);
 
   arrTable = std::move(index.array_table_builder());
-  ueq.push(nullptr);
+  if (arrTableReady != nullptr) {
+    arrTableReady->set_value();
+  }
+  ueq.finish();
   cleanup_pre.join();
   cleanup_post.join();
 

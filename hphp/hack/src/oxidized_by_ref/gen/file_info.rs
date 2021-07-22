@@ -3,14 +3,16 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the "hack" directory of this source tree.
 //
-// @generated SignedSource<<181b8c4df1699e56f21875dd2b88e303>>
+// @generated SignedSource<<853acc32a63031aa1cc3e355e5b8be32>>
 //
 // To regenerate this file, run:
-//   hphp/hack/src/oxidized_by_ref/regen.sh
+//   hphp/hack/src/oxidized_regen.sh
 
 use arena_trait::TrivialDrop;
+use no_pos_hash::NoPosHash;
 use ocamlrep_derive::FromOcamlRepIn;
 use ocamlrep_derive::ToOcamlRep;
+use serde::Deserialize;
 use serde::Serialize;
 
 #[allow(unused_imports)]
@@ -28,10 +30,13 @@ pub use oxidized::file_info::NameType;
 /// allowing us to lazily retrieve the name's exact location if necessary.
 #[derive(
     Clone,
+    Copy,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -39,41 +44,32 @@ pub use oxidized::file_info::NameType;
     ToOcamlRep
 )]
 pub enum Pos<'a> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     Full(&'a pos::Pos<'a>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     File(
-        oxidized::file_info::NameType,
-        relative_path::RelativePath<'a>,
+        &'a (
+            oxidized::file_info::NameType,
+            &'a relative_path::RelativePath<'a>,
+        ),
     ),
 }
 impl<'a> TrivialDrop for Pos<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(Pos<'arena>);
 
-#[derive(
-    Clone,
-    Debug,
-    Eq,
-    FromOcamlRepIn,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToOcamlRep
-)]
-pub struct Id<'a>(pub &'a Pos<'a>, pub &'a str);
-impl<'a> TrivialDrop for Id<'a> {}
+pub type Id<'a> = (Pos<'a>, &'a str);
 
-/// The hash value of a decl AST.
-/// We use this to see if two versions of a file are "similar", i.e. their
-/// declarations only differ by position information.
-pub type HashType<'a> = Option<opaque_digest::OpaqueDigest<'a>>;
+pub type HashType<'a> = Option<isize>;
 
 /// The record produced by the parsing phase.
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -81,18 +77,91 @@ pub type HashType<'a> = Option<opaque_digest::OpaqueDigest<'a>>;
     ToOcamlRep
 )]
 pub struct FileInfo<'a> {
-    pub hash: HashType<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub hash: &'a HashType<'a>,
     pub file_mode: Option<oxidized::file_info::Mode>,
-    pub funs: &'a [Id<'a>],
-    pub classes: &'a [Id<'a>],
-    pub record_defs: &'a [Id<'a>],
-    pub typedefs: &'a [Id<'a>],
-    pub consts: &'a [Id<'a>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub funs: &'a [&'a Id<'a>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub classes: &'a [&'a Id<'a>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub record_defs: &'a [&'a Id<'a>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub typedefs: &'a [&'a Id<'a>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub consts: &'a [&'a Id<'a>],
     /// None if loaded from saved state
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub comments: Option<&'a [(&'a pos::Pos<'a>, Comment<'a>)]>,
 }
 impl<'a> TrivialDrop for FileInfo<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(FileInfo<'arena>);
 
 pub use oxidized::file_info::Names;
 
+/// The simplified record stored in saved-state.
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub struct SavedNames<'a> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub funs: s_set::SSet<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub classes: s_set::SSet<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub record_defs: s_set::SSet<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub types: s_set::SSet<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub consts: s_set::SSet<'a>,
+}
+impl<'a> TrivialDrop for SavedNames<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(SavedNames<'arena>);
+
 pub use oxidized::file_info::Saved;
+
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub struct Diff<'a> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub removed_funs: s_set::SSet<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub added_funs: s_set::SSet<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub removed_classes: s_set::SSet<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub added_classes: s_set::SSet<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub removed_types: s_set::SSet<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub added_types: s_set::SSet<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub removed_consts: s_set::SSet<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub added_consts: s_set::SSet<'a>,
+}
+impl<'a> TrivialDrop for Diff<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(Diff<'arena>);

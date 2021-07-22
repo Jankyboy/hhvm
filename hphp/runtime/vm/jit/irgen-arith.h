@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_JIT_IRGEN_ARITH_H_
-#define incl_HPHP_JIT_IRGEN_ARITH_H_
+#pragma once
 
 #include "hphp/runtime/vm/jit/ir-opcode.h"
 #include "hphp/runtime/vm/jit/type.h"
@@ -38,7 +37,7 @@ bool areBinaryArithTypesSupported(Op op, Type lhs, Type rhs);
 /*
  * If val->isA(TBool), return it converted to TInt. Otherwise, return val.
  */
-SSATmp* promoteBool(IRGS& env, SSATmp* val);
+SSATmp* promoteBool(IRGS& env, SSATmp* val, bool isBitOp);
 
 /*
  * If either lhs or rhs is TDbl, make sure the other one is as well. Return the
@@ -55,5 +54,3 @@ bool isBitOp(Op);
 Opcode bitOp(Op);
 
 }}}
-
-#endif

@@ -1,10 +1,16 @@
+open Hh_prelude
 open ServerCommandTypes
 
 let debug_describe_t : type a. a t -> string = function
   | STATUS _ -> "STATUS"
   | STATUS_SINGLE _ -> "STATUS_SINGLE"
+  | STATUS_SINGLE_REMOTE_EXECUTION _ -> "STATUS_SINGLE_REMOTE_EXECUTION"
+  | STATUS_REMOTE_EXECUTION _ -> "STATUS_REMOTE_EXECUTION"
+  | STATUS_MULTI_REMOTE_EXECUTION _ -> "STATUS_MULTI_REMOTE_EXECUTION"
   | INFER_TYPE _ -> "INFER_TYPE"
   | INFER_TYPE_BATCH _ -> "INFER_TYPE_BATCH"
+  | INFER_TYPE_ERROR _ -> "INFER_TYPE_ERROR"
+  | TAST_HOLES _ -> "TAST_HOLES"
   | IDE_HOVER _ -> "IDE_HOVER"
   | DOCBLOCK_AT _ -> "DOCBLOCK_AT"
   | DOCBLOCK_FOR_SYMBOL _ -> "DOCBLOCK_FOR_SYMBOL"
@@ -58,7 +64,6 @@ let debug_describe_t : type a. a t -> string = function
   | NO_PRECHECKED_FILES -> "NO_PRECHECKED_FILES"
   | GEN_HOT_CLASSES _ -> "GEN_HOT_CLASSES"
   | FUN_DEPS_BATCH _ -> "FUN_DEPS_BATCH"
-  | FUN_IS_LOCALLABLE_BATCH _ -> "FUN_IS_LOCALLABLE_BATCH"
   | LIST_FILES_WITH_ERRORS -> "LIST_FILES_WITH_ERRORS"
   | FILE_DEPENDENTS _ -> "FILE_DEPENDENTS"
   | IDENTIFY_TYPES _ -> "IDENTIFY_TYPES"
@@ -71,14 +76,36 @@ let debug_describe_t : type a. a t -> string = function
   | VERBOSE _ -> "VERBOSE"
 
 let debug_describe_cmd : type a. a command -> string = function
-  | Rpc rpc -> debug_describe_t rpc
-  | Debug -> "Debug"
+  | Rpc ({ ServerCommandTypes.from; _ }, rpc) ->
+    debug_describe_t rpc
+    ^
+    if String.equal from "" then
+      ""
+    else
+      " --from " ^ from
+  | Debug_DO_NOT_USE -> failwith "Debug_DO_NOT_USE"
+
+(** This returns a string that's shown "hh_server is busy [STATUS]".
+The intent is that users understand what command hh_server is currently busy with.
+For command-line commands, we show the "--" option that the user used, e.g. --type-at-pos.
+For IDE commands like hover, we show a description like "hover". *)
+let status_describe_cmd : type a. a command -> string =
+ fun cmd ->
+  match cmd with
+  | Rpc ({ ServerCommandTypes.from; desc }, _rpc) ->
+    (if String.equal from "" then
+      ""
+    else
+      from ^ ":")
+    ^ desc
+  | Debug_DO_NOT_USE -> failwith "Debug_DO_NOT_USE"
 
 let debug_describe_message_type : type a. a message_type -> string = function
-  | Push _ -> "Push"
-  | Response _ -> "Response"
   | Hello -> "Hello"
+  | Monitor_failed_to_handoff -> "Monitor_failed_to_handoff"
   | Ping -> "Ping"
+  | Response _ -> "Response"
+  | Push _ -> "Push"
 
 let extract_labelled_file (labelled_file : ServerCommandTypes.labelled_file) :
     Relative_path.t * ServerCommandTypes.file_input =
@@ -89,3 +116,67 @@ let extract_labelled_file (labelled_file : ServerCommandTypes.labelled_file) :
   | ServerCommandTypes.LabelledFileContent { filename; content } ->
     let path = Relative_path.create_detect_prefix filename in
     (path, ServerCommandTypes.FileContent content)
+
+(** This writes to the specified progress file. It first acquires
+an exclusive (writer) lock. (Locks on unix are advisory; we trust
+read_progress_file below to also acquire a lock). It overwrites
+whatever was there before. In case of failure, it logs but is
+silent. That's on the principle that defects in
+progress-reporting should never break hh_server. *)
+let write_progress_file
+    ~(server_progress_file : string)
+    ~(server_progress : ServerCommandTypes.server_progress) : unit =
+  let open Hh_json in
+  let content =
+    JSON_Object
+      [
+        ( "warning",
+          Option.value_map
+            server_progress.ServerCommandTypes.server_warning
+            ~default:JSON_Null
+            ~f:string_ );
+        ("progress", string_ server_progress.ServerCommandTypes.server_progress);
+        ("timestamp", float_ server_progress.ServerCommandTypes.server_timestamp);
+      ]
+    |> json_to_multiline
+  in
+  try Sys_utils.protected_write_exn server_progress_file content with
+  | exn ->
+    let e = Exception.wrap exn in
+    Hh_logger.log
+      "SERVER_PROGRESS_EXCEPTION(write) %s\n%s"
+      (Exception.get_ctor_string e)
+      (Exception.get_backtrace_string e |> Exception.clean_stack);
+    HackEventLogger.server_progress_write_exn ~server_progress_file e;
+    ()
+
+(** This reads the specified progress file, which is assumed to exist.
+It first acquires a non-exclusive (reader) lock. (Locks on unix are
+advisory; we trust write_progress_file above to also acquire a writer
+lock).  If there are failures, we log, and return a human-readable
+string that indicates why. *)
+let read_progress_file ~(server_progress_file : string) :
+    ServerCommandTypes.server_progress =
+  let content = ref "[not yet read content]" in
+  try
+    content := Sys_utils.protected_read_exn server_progress_file;
+    let json = Some (Hh_json.json_of_string !content) in
+    let server_progress = Hh_json_helpers.Jget.string_exn json "progress" in
+    let server_warning = Hh_json_helpers.Jget.string_opt json "warning" in
+    let server_timestamp = Hh_json_helpers.Jget.float_exn json "timestamp" in
+    ServerCommandTypes.{ server_progress; server_warning; server_timestamp }
+  with
+  | exn ->
+    let e = Exception.wrap exn in
+    Hh_logger.log
+      "SERVER_PROGRESS_EXCEPTION(read) %s\n%s\n%s"
+      (Exception.get_ctor_string e)
+      (Exception.get_backtrace_string e |> Exception.clean_stack)
+      !content;
+    HackEventLogger.server_progress_read_exn ~server_progress_file e;
+    ServerCommandTypes.
+      {
+        server_progress = "unknown hh_server state";
+        server_warning = None;
+        server_timestamp = Unix.gettimeofday ();
+      }

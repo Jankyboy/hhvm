@@ -37,6 +37,8 @@ pub mod classes {
 
     pub const HH_BUILTIN_ENUM: &str = "\\HH\\BuiltinEnum";
 
+    pub const HH_BUILTIN_ENUM_CLASS: &str = "\\HH\\BuiltinEnumClass";
+
     pub const THROWABLE: &str = "\\Throwable";
 
     pub const STD_CLASS: &str = "\\stdClass";
@@ -51,6 +53,8 @@ pub mod classes {
 
     pub const STRINGISH: &str = "\\Stringish";
 
+    pub const STRINGISH_OBJECT: &str = "\\StringishObject";
+
     pub const XHP_CHILD: &str = "\\XHPChild";
 
     pub const IMEMOIZE_PARAM: &str = "\\HH\\IMemoizeParam";
@@ -62,6 +66,8 @@ pub mod classes {
     pub const IDISPOSABLE: &str = "\\IDisposable";
 
     pub const IASYNC_DISPOSABLE: &str = "\\IAsyncDisposable";
+
+    pub const MEMBER_OF: &str = "\\HH\\MemberOf";
 }
 
 pub mod collections {
@@ -105,9 +111,8 @@ pub mod collections {
 }
 
 pub mod members {
+    use hash::{HashMap, HashSet};
     use lazy_static::lazy_static;
-    use std::collections::HashMap;
-    use std::collections::HashSet;
 
     pub const M_CLASS: &str = "class";
 
@@ -170,7 +175,7 @@ pub mod members {
         pub static ref AS_LOWERCASE_SET: HashSet<String> = {
             AS_SET
                 .iter()
-                .fold(HashSet::<String>::new(), |mut set, special_name| {
+                .fold(HashSet::<String>::default(), |mut set, special_name| {
                     set.insert(special_name.to_ascii_lowercase());
                     set
                 })
@@ -179,7 +184,7 @@ pub mod members {
             vec![__CALL, __CALL_STATIC, __GET, __ISSET, __SET, __UNSET]
                 .iter()
                 .fold(
-                    HashMap::<String, &'static str>::new(),
+                    HashMap::<String, &'static str>::default(),
                     |mut set, special_name| {
                         set.insert(special_name.to_ascii_lowercase(), special_name);
                         set
@@ -217,51 +222,21 @@ pub mod user_attributes {
 
     pub const MEMOIZE_LSB: &str = "__MemoizeLSB";
 
-    pub const PHP_STD_LIB: &str = "__PHPStdLib";
+    pub const POLICY_SHARDED_MEMOIZE: &str = "__PolicyShardedMemoize";
 
-    pub const HIPHOP_SPECIFIC: &str = "__HipHopSpecific";
+    pub const POLICY_SHARDED_MEMOIZE_LSB: &str = "__PolicyShardedMemoizeLSB";
+
+    pub const PHP_STD_LIB: &str = "__PHPStdLib";
 
     pub const ACCEPT_DISPOSABLE: &str = "__AcceptDisposable";
 
     pub const RETURN_DISPOSABLE: &str = "__ReturnDisposable";
 
-    pub const PURE: &str = "__Pure";
-
-    pub const CIPP: &str = "__Cipp";
-
-    pub const CIPP_LOCAL: &str = "__CippLocal";
-
-    pub const CIPP_GLOBAL: &str = "__CippGlobal";
-
-    pub const REACTIVE: &str = "__Rx";
-
-    pub const LOCAL_REACTIVE: &str = "__RxLocal";
-
-    pub const SHALLOW_REACTIVE: &str = "__RxShallow";
-
-    pub const MUTABLE: &str = "__Mutable";
-
-    pub const MUTABLE_RETURN: &str = "__MutableReturn";
-
-    pub const ONLY_RX_IF_IMPL: &str = "__OnlyRxIfImpl";
-
     pub const LSB: &str = "__LSB";
-
-    pub const AT_MOST_RX_AS_FUNC: &str = "__AtMostRxAsFunc";
-
-    pub const AT_MOST_RX_AS_ARGS: &str = "__AtMostRxAsArgs";
 
     pub const SEALED: &str = "__Sealed";
 
-    pub const RETURNS_VOID_TO_RX: &str = "__ReturnsVoidToRx";
-
-    pub const MAYBE_MUTABLE: &str = "__MaybeMutable";
-
     pub const LATE_INIT: &str = "__LateInit";
-
-    pub const OWNED_MUTABLE: &str = "__OwnedMutable";
-
-    pub const NON_RX: &str = "__NonRx";
 
     pub const NEWABLE: &str = "__Newable";
 
@@ -287,8 +262,24 @@ pub mod user_attributes {
 
     pub const ENABLE_UNSTABLE_FEATURES: &str = "__EnableUnstableFeatures";
 
+    pub const ENUM_CLASS: &str = "__EnumClass";
+
+    pub const VIA_LABEL: &str = "__ViaLabel";
+
+    pub const POLICIED: &str = "__Policied";
+
+    pub const INFERFLOWS: &str = "__InferFlows";
+
+    pub const EXTERNAL: &str = "__External";
+
+    pub const SUPPORT_DYNAMIC_TYPE: &str = "__SupportDynamicType";
+
+    pub const MODULE: &str = "__Module";
+
+    pub const INTERNAL: &str = "__Internal";
+
     lazy_static! {
-        static ref AS_SET: HashSet<&'static str> = vec![
+        pub static ref AS_SET: HashSet<&'static str> = vec![
             OVERRIDE,
             CONSISTENT_CONSTRUCT,
             CONST,
@@ -296,29 +287,14 @@ pub mod user_attributes {
             ENTRY_POINT,
             MEMOIZE,
             MEMOIZE_LSB,
+            POLICY_SHARDED_MEMOIZE,
+            POLICY_SHARDED_MEMOIZE_LSB,
             PHP_STD_LIB,
-            HIPHOP_SPECIFIC,
             ACCEPT_DISPOSABLE,
             RETURN_DISPOSABLE,
-            PURE,
-            CIPP,
-            CIPP_LOCAL,
-            CIPP_GLOBAL,
-            REACTIVE,
-            LOCAL_REACTIVE,
-            MUTABLE,
-            MUTABLE_RETURN,
-            SHALLOW_REACTIVE,
-            ONLY_RX_IF_IMPL,
             LSB,
             SEALED,
-            RETURNS_VOID_TO_RX,
-            MAYBE_MUTABLE,
             LATE_INIT,
-            AT_MOST_RX_AS_FUNC,
-            AT_MOST_RX_AS_ARGS,
-            OWNED_MUTABLE,
-            NON_RX,
             NEWABLE,
             ENFORCEABLE,
             EXPLICIT,
@@ -331,13 +307,28 @@ pub mod user_attributes {
             REIFIABLE,
             NEVER_INLINE,
             ENABLE_UNSTABLE_FEATURES,
+            ENUM_CLASS,
+            VIA_LABEL,
+            POLICIED,
+            INFERFLOWS,
+            EXTERNAL,
+            SUPPORT_DYNAMIC_TYPE,
+            MODULE,
         ]
         .into_iter()
         .collect();
     }
 
-    pub fn is_memoized(name: &str) -> bool {
+    pub fn is_memoized_regular(name: &str) -> bool {
         name == MEMOIZE || name == MEMOIZE_LSB
+    }
+
+    pub fn is_memoized_policy_sharded(name: &str) -> bool {
+        name == POLICY_SHARDED_MEMOIZE || name == POLICY_SHARDED_MEMOIZE_LSB
+    }
+
+    pub fn is_memoized(name: &str) -> bool {
+        is_memoized_regular(name) || is_memoized_policy_sharded(name)
     }
 
     // TODO(hrust) these should probably be added to the above map/fields, too
@@ -364,8 +355,8 @@ pub mod user_attributes {
 }
 
 pub mod attribute_kinds {
+    use hash::HashMap;
     use lazy_static::lazy_static;
-    use std::collections::HashMap;
 
     pub const CLS: &str = "\\HH\\ClassAttribute";
 
@@ -389,6 +380,10 @@ pub mod attribute_kinds {
 
     pub const TYPE_CONST: &str = "\\HH\\TypeConstantAttribute";
 
+    pub const LAMBDA: &str = "\\HH\\LambdaAttribute";
+
+    pub const ENUM_CLS: &str = "\\HH\\EnumClassAttribute";
+
     pub static PLAIN_ENGLISH: &[(&str, &str)] = &[
         (CLS, "a class"),
         (ENUM, "an enum"),
@@ -400,7 +395,9 @@ pub mod attribute_kinds {
         (PARAMETER, "a parameter"),
         (TYPE_PARAM, "a type parameter"),
         (FILE, "a file"),
-        (TYPE_CONST, "a type pub constant"),
+        (TYPE_CONST, "a type constant"),
+        (LAMBDA, "a lambda expression"),
+        (ENUM_CLS, "an enum class"),
     ];
 
     lazy_static! {
@@ -413,22 +410,14 @@ pub mod attribute_kinds {
 pub mod special_functions {
     use lazy_static::lazy_static;
 
-    pub const TUPLE: &str = "tuple"; /* pseudo-function */
-
     pub const ECHO: &str = "echo"; /* pseudo-function */
 
-    pub const ASSERT_: &str = "assert";
-
     pub const HHAS_ADATA: &str = "__hhas_adata";
-
-    pub const SPLICE: &str = "__splice__";
 
     pub fn is_special_function(x: &str) -> bool {
         lazy_static! {
             static ref ALL_SPECIAL_FUNCTIONS: Vec<&'static str> =
-                vec![TUPLE, ECHO, ASSERT_, HHAS_ADATA, SPLICE,]
-                    .into_iter()
-                    .collect();
+                vec![ECHO, HHAS_ADATA,].into_iter().collect();
         }
         ALL_SPECIAL_FUNCTIONS.contains(&x)
     }
@@ -485,8 +474,6 @@ pub mod pseudo_functions {
 
     pub const HH_LOOP_FOREVER: &str = "\\hh_loop_forever";
 
-    pub const ASSERT: &str = "\\assert";
-
     pub const ECHO: &str = "\\echo";
 
     pub const ECHO_NO_NS: &str = "echo";
@@ -505,7 +492,6 @@ pub mod pseudo_functions {
         HH_LOG_LEVEL,
         HH_FORCE_SOLVE,
         HH_LOOP_FOREVER,
-        ASSERT,
         ECHO,
         EMPTY,
         EXIT,
@@ -576,8 +562,6 @@ pub mod typehints {
 
     pub const STRING: &str = "string";
 
-    pub const ARRAY: &str = "array";
-
     pub const DARRAY: &str = "darray";
 
     pub const VARRAY: &str = "varray";
@@ -608,7 +592,6 @@ pub mod typehints {
                 BOOL,
                 FLOAT,
                 STRING,
-                ARRAY,
                 DARRAY,
                 VARRAY,
                 VARRAY_OR_DARRAY,
@@ -623,14 +606,10 @@ pub mod typehints {
     }
 
     lazy_static! {
-        static ref RESERVED_GLOBAL_NAMES: HashSet<&'static str> = vec![
-            ARRAY,
-            CALLABLE,
-            crate::classes::SELF,
-            crate::classes::PARENT
-        ]
-        .into_iter()
-        .collect();
+        static ref RESERVED_GLOBAL_NAMES: HashSet<&'static str> =
+            vec![CALLABLE, crate::classes::SELF, crate::classes::PARENT]
+                .into_iter()
+                .collect();
     }
 
     pub fn is_reserved_global_name(x: &str) -> bool {
@@ -639,8 +618,8 @@ pub mod typehints {
 
     lazy_static! {
         static ref RESERVED_HH_NAMES: HashSet<&'static str> = vec![
-            VOID, NORETURN, INT, BOOL, FLOAT, NUM, STRING, RESOURCE, MIXED, ARRAY, ARRAYKEY,
-            DYNAMIC, WILDCARD, NULL, NONNULL, NOTHING, THIS
+            VOID, NORETURN, INT, BOOL, FLOAT, NUM, STRING, RESOURCE, MIXED, ARRAYKEY, DYNAMIC,
+            WILDCARD, NULL, NONNULL, NOTHING, THIS
         ]
         .into_iter()
         .collect();
@@ -757,62 +736,51 @@ pub mod hh {
 }
 
 pub mod rx {
-    pub const FREEZE: &str = "\\HH\\Rx\\freeze";
-
-    pub const MUTABLE_: &str = "\\HH\\Rx\\mutable";
-
-    pub const TRAVERSABLE: &str = "\\HH\\Rx\\Traversable";
-
     pub const IS_ENABLED: &str = "\\HH\\Rx\\IS_ENABLED";
+}
 
-    pub const KEYED_TRAVERSABLE: &str = "\\HH\\Rx\\KeyedTraversable";
+pub mod readonly {
+    pub const AS_MUT: &str = "\\HH\\Readonly\\as_mut";
+}
 
-    pub const ASYNC_ITERATOR: &str = "\\HH\\Rx\\AsyncIterator";
+pub mod coeffects {
+    use lazy_static::lazy_static;
+    use std::collections::HashSet;
 
-    pub const MOVE: &str = "\\HH\\Rx\\move";
+    pub const DEFAULTS: &str = "defaults";
 
-    pub const PURE: &str = "Pure";
+    pub const RX_LOCAL: &str = "rx_local";
 
-    pub const CIPP: &str = "Cipp";
+    pub const RX_SHALLOW: &str = "rx_shallow";
 
-    pub const CIPP_LOCAL: &str = "CippLocal";
+    pub const RX: &str = "rx";
 
-    pub const CIPP_GLOBAL: &str = "CippGlobal";
+    pub const WRITE_THIS_PROPS: &str = "write_this_props";
 
-    pub const RX: &str = "Rx";
+    pub const WRITE_PROPS: &str = "write_props";
 
-    pub const RX_LOCAL: &str = "RxLocal";
+    pub const CONTROLLED: &str = "controlled";
 
-    pub const RX_SHALLOW: &str = "RxShallow";
+    pub const POLICIED_LOCAL: &str = "policied_local";
 
-    pub const MUTABLE: &str = "Mutable";
+    pub const POLICIED_SHALLOW: &str = "policied_shallow";
 
-    pub const MAYBE_MUTABLE: &str = "MaybeMutable";
+    pub const POLICIED: &str = "policied";
 
-    pub const OWNED_MUTABLE: &str = "OwnedMutable";
+    pub const POLICIED_OF: &str = "policied_of";
 
-    pub fn is_reactive_typehint(x: &str) -> bool {
-        use lazy_static::lazy_static;
-        use std::collections::HashSet;
+    pub const PURE: &str = "pure";
 
+    pub const READ_GLOBALS: &str = "read_globals";
+
+    pub const GLOBALS: &str = "globals";
+
+    pub fn is_any_policied(x: &str) -> bool {
         lazy_static! {
-            static ref REACTIVE_TYPEHINTS: HashSet<&'static str> = vec![
-                PURE,
-                CIPP,
-                CIPP_LOCAL,
-                CIPP_GLOBAL,
-                RX,
-                RX_LOCAL,
-                RX_SHALLOW,
-                MUTABLE,
-                MAYBE_MUTABLE,
-                OWNED_MUTABLE,
-            ]
-            .into_iter()
-            .collect();
+            static ref POLICIED_SET: HashSet<&'static str> =
+                vec![POLICIED, POLICIED_OF,].into_iter().collect();
         }
-
-        REACTIVE_TYPEHINTS.contains(x)
+        POLICIED_SET.contains(x)
     }
 }
 
@@ -858,31 +826,6 @@ pub mod superglobals {
     }
 }
 
-pub mod ppl_functions {
-    use lazy_static::lazy_static;
-    use std::collections::HashSet;
-
-    pub static ALL_RESERVED: &[&str] = &[
-        "sample",
-        "\\sample",
-        "factor",
-        "\\factor",
-        "observe",
-        "\\observe",
-        "condition",
-        "\\condition",
-        "sample_model",
-        "\\sample_model",
-    ];
-
-    lazy_static! {
-        static ref ALL_RESERVED_SET: HashSet<&'static str> = ALL_RESERVED.iter().cloned().collect();
-    }
-    pub fn is_reserved(x: &str) -> bool {
-        ALL_RESERVED_SET.contains(x)
-    }
-}
-
 pub mod xhp {
     pub const PCDATA: &str = "pcdata";
     pub const ANY: &str = "any";
@@ -902,6 +845,7 @@ pub mod regex {
 pub mod emitter_special_functions {
     pub const EVAL: &str = "\\eval";
     pub const SET_FRAME_METADATA: &str = "\\HH\\set_frame_metadata";
+    pub const SYSTEMLIB_REIFIED_GENERICS: &str = "\\__systemlib_reified_generics";
 }
 
 pub mod math {
@@ -910,8 +854,39 @@ pub mod math {
     pub const NEG_INF: &str = "-INF";
 }
 
-pub mod pocket_universes {
-    pub const MEMBERS: &str = "Members";
+pub mod expression_trees {
+    pub const MAKE_TREE: &str = "makeTree";
+
+    pub const INT_TYPE: &str = "intType";
+    pub const FLOAT_TYPE: &str = "floatType";
+    pub const BOOL_TYPE: &str = "boolType";
+    pub const STRING_TYPE: &str = "stringType";
+    pub const NULL_TYPE: &str = "nullType";
+    pub const VOID_TYPE: &str = "voidType";
+    pub const SYMBOL_TYPE: &str = "symbolType";
+
+    pub const VISIT_INT: &str = "visitInt";
+    pub const VISIT_FLOAT: &str = "visitFloat";
+    pub const VISIT_BOOL: &str = "visitBool";
+    pub const VISIT_STRING: &str = "visitString";
+    pub const VISIT_NULL: &str = "visitNull";
+    pub const VISIT_BINOP: &str = "visitBinop";
+    pub const VISIT_UNOP: &str = "visitUnop";
+    pub const VISIT_LOCAL: &str = "visitLocal";
+    pub const VISIT_LAMBDA: &str = "visitLambda";
+    pub const VISIT_GLOBAL_FUNCTION: &str = "visitGlobalFunction";
+    pub const VISIT_STATIC_METHOD: &str = "visitStaticMethod";
+    pub const VISIT_CALL: &str = "visitCall";
+    pub const VISIT_ASSIGN: &str = "visitAssign";
+    pub const VISIT_TERNARY: &str = "visitTernary";
+    pub const VISIT_IF: &str = "visitIf";
+    pub const VISIT_WHILE: &str = "visitWhile";
+    pub const VISIT_RETURN: &str = "visitReturn";
+    pub const VISIT_FOR: &str = "visitFor";
+    pub const VISIT_BREAK: &str = "visitBreak";
+    pub const VISIT_CONTINUE: &str = "visitContinue";
+
+    pub const SPLICE: &str = "splice";
 }
 
 #[cfg(test)]

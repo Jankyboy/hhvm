@@ -63,9 +63,9 @@ let rec flatten_ acc stack = function
     else (
       (* interval 2 is nested within interval 1 *)
       (* avoid creating zero-length intervals *)
-      ( if snd pos1 <> snd pos2 then
+      (if snd pos1 <> snd pos2 then
         let pos1_rest = (snd pos2, snd pos1) in
-        Caml.Stack.push (pos1_rest, x) stack );
+        Caml.Stack.push (pos1_rest, x) stack);
       let pos1_head = (fst pos1, fst pos2) in
       flatten_ ((pos1_head, x) :: acc) stack rl
     )
@@ -84,10 +84,10 @@ let walk content pos_level_list =
       ()
     else
       let size = j - !i in
-      result := (level_opt, String.sub content !i size) :: !result;
+      result := (level_opt, String.sub content ~pos:!i ~len:size) :: !result;
       i := !i + size
   in
-  List.iter pos_level_list (fun ((char_start, char_end), level) ->
+  List.iter pos_level_list ~f:(fun ((char_start, char_end), level) ->
       add None char_start;
       add (Some level) char_end);
   add None (String.length content);

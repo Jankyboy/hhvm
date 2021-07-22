@@ -133,6 +133,7 @@ way to determine how much progress the server made.
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/base/file-util.h"
 #include "hphp/runtime/base/ini-setting.h"
+#include "hphp/runtime/base/memory-manager.h"
 #include "hphp/runtime/base/plain-file.h"
 #include "hphp/runtime/base/program-functions.h"
 #include "hphp/runtime/base/runtime-option.h"
@@ -156,6 +157,7 @@ way to determine how much progress the server made.
 #include "hphp/util/process.h"
 #include "hphp/util/trace.h"
 #include "hphp/util/user-info.h"
+#include "hphp/zend/zend-strtod.h"
 
 #include <folly/io/async/AsyncServerSocket.h>
 #include <folly/io/async/EventBaseManager.h>
@@ -458,6 +460,7 @@ int fd = fdNetworkSocket.toFd();
     m_dispatcher->enqueue(fd);
   }
 
+  using folly::AsyncServerSocket::AcceptCallback::acceptError;
   void acceptError(const std::exception& ex) noexcept override {
     Logger::Warning("Error accepting connection: %s", ex.what());
   }
@@ -657,7 +660,6 @@ const StaticString
   s_access("access");
 
 Array init_ini_settings(const std::string& settings) {
-  ARRPROV_USE_RUNTIME_LOCATION();
   String s(settings.c_str(), CopyString);
   auto var = Variant::attach(HHVM_FN(json_decode)(s, true));
 
@@ -802,7 +804,7 @@ Array init_cli_globals(int argc, char** argv, int xhprof, Array& ini,
       retEnv.set(String(envvar.first), String(envvar.second));
     }
   } else {
-    retEnv = empty_array();
+    retEnv = empty_dict_array();
   }
 
   for (auto env = envp; *env; ++env) {
@@ -1309,7 +1311,7 @@ int mkdir_recursive(const char* path, int mode) {
   return 0;
 }
 
-folly::Optional<int> cli_process_command_loop(int fd) {
+Optional<int> cli_process_command_loop(int fd) {
   FTRACE(1, "cli_process_command_loop({}): starting...\n", fd);
   std::string cmd;
   cli_read(fd, cmd);
@@ -1317,17 +1319,18 @@ folly::Optional<int> cli_process_command_loop(int fd) {
   if (cmd == "version_bad") {
     // Returning will cause us to re-run the script locally when not in force
     // server mode.
-    return folly::none;
+    return std::nullopt;
   }
 
   if (cmd != "version_ok") {
     // Server is too old / didn't send a version. Only version 0 is compatible
     // with an unversioned server.
-    return folly::none;
+    return std::nullopt;
   } else {
     cli_read(fd, cmd);
   }
 
+  cli_client_init();
   for (;; cli_read(fd, cmd)) {
     FTRACE(2, "cli_process_command_loop({}): got command: {}\n", fd, cmd);
 
@@ -1585,12 +1588,12 @@ folly::Optional<int> cli_process_command_loop(int fd) {
   }
 }
 
-folly::Optional<int> run_client(const char* sock_path,
+Optional<int> run_client(const char* sock_path,
                                 const std::vector<std::string>& args) {
   if (RuntimeOption::RepoAuthoritative) {
     Logger::Warning("Unable to use CLI server to run script in "
                     "repo-auth mode.");
-    return folly::none;
+    return std::nullopt;
   }
   FTRACE(1, "run_command_on_cli_server({}, ...): sending command...\n",
          sock_path);
@@ -1605,7 +1608,7 @@ folly::Optional<int> run_client(const char* sock_path,
   if (delegate < 0) {
     Logger::Warning("Could not create delegate for CLI server: %s",
                     folly::errnoStr(errno).c_str());
-    return folly::none;
+    return std::nullopt;
   }
   FTRACE(2, "run_command_on_cli_server(): delegate = {}\n", delegate);
 
@@ -1614,7 +1617,7 @@ folly::Optional<int> run_client(const char* sock_path,
   if (fd < 0) {
     Logger::Info("Could not attach to CLI server: %s",
                  folly::errnoStr(errno).c_str());
-    return folly::none;
+    return std::nullopt;
   }
 
   FTRACE(2, "run_command_on_cli_server(): fd = {}\n", fd);
@@ -1627,11 +1630,8 @@ folly::Optional<int> run_client(const char* sock_path,
     getcwd(cwd, PATH_MAX);
     cli_write(fd, cwd);
 
-    hphp_session_init(Treadmill::SessionKind::CLIServer);
-    SCOPE_EXIT {
-      hphp_context_exit();
-      hphp_session_exit();
-    };
+    zend_get_bigint_data();
+    tl_heap.getCheck()->init();
     auto settings = IniSetting::GetAllAsJSON();
     cli_write(fd, settings);
 
@@ -1646,7 +1646,11 @@ folly::Optional<int> run_client(const char* sock_path,
     cli_write(fd, 0, args, env_vec);
     return cli_process_command_loop(fd);
   } catch (const Exception& ex) {
-    Logger::Error("Problem communicating with CLI server: %s", ex.what());
+    Logger::Error(
+      "Problem communicating with CLI server: %s\n"
+      "It likely crashed. Check the HHVM error log and look for coredumps",
+      ex.what()
+    );
     exit(255);
   }
 }
@@ -1760,7 +1764,7 @@ int cli_openfd_unsafe(const String& filename, int flags, mode_t mode,
 }
 
 Array cli_env() {
-  return tl_env ? *tl_env : empty_array();
+  return tl_env ? *tl_env : empty_dict_array();
 }
 
 bool is_cli_server_mode() { return tl_cliSock != -1; }
@@ -1770,7 +1774,7 @@ uint64_t cli_server_api_version() {
     return s_cliServerComputedVersion;
   }
   std::string key;
-  for (const auto it : s_extensionHandlers) {
+  for (const auto& it : s_extensionHandlers) {
     key += it.first.c_str();
   }
   s_cliServerComputedVersion = murmur_hash_64A(
@@ -1787,7 +1791,7 @@ void run_command_on_cli_server(const char* sock_path,
                                const std::vector<std::string>& args,
                                int& count) {
   int ret = 0;
-  while (count) {
+  while (count > 0) {
     auto r = run_client(sock_path, args);
     if (!r) return;
     ret = *r;

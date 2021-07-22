@@ -22,12 +22,11 @@
 #include "hphp/runtime/vm/jit/vasm-unit.h"
 #include "hphp/runtime/vm/jit/vasm-util.h"
 
-#include "hphp/ppc64-asm/asm-ppc64.h"
-
 #include "hphp/util/copy-ptr.h"
 #include "hphp/util/dataflow-worklist.h"
 #include "hphp/util/match.h"
 #include "hphp/util/non-invalidating-vector.h"
+#include "hphp/util/optional.h"
 
 #include <boost/range/adaptor/reversed.hpp>
 
@@ -160,13 +159,13 @@ struct RegInfo {
   // by this instruction? This field is calculated lazily and then
   // cached. Even if there's information here, we may still need to do
   // context sensitive checks to see if it's usuable.
-  folly::Optional<RematInfo> cachedRemat;
+  Optional<RematInfo> cachedRemat;
 };
 
 using BlockVector = jit::vector<Vlabel>;
 using BlockSet = boost::dynamic_bitset<>;
 using WeightMap = jit::fast_map<Vreg, uint64_t>;
-using PhiWeightVector = jit::vector<folly::Optional<uint64_t>>;
+using PhiWeightVector = jit::vector<Optional<uint64_t>>;
 using PenaltyVector = PhysReg::Map<int64_t>;
 
 // Information about each inferred loop. A loop is represented by its header
@@ -223,6 +222,15 @@ struct State {
   jit::vector<VregSet> uses;
   jit::vector<VregSet> gens;
 
+  // Tracks if the stack pointer has been recorded upon entry to the block.
+  // Built during initial calculate_liveness, and used by the spiller to
+  // establish if spilling is allowed.
+  BlockSet spRecordedIn{};
+  BlockSet spRecordedOut{};
+
+  // Whether each block contain an unrecordbasenativesp
+  BlockSet hasUnrecordbasenativesp{};
+
   // All physical registers (including ignored), which have a def in a
   // block
   jit::vector<RegSet> physDefs;
@@ -239,7 +247,7 @@ struct State {
   // register has potentially changed in value (in a known way)
   // between a block and where some Vreg is defined.
   jit::fast_map<std::tuple<PhysReg, Vreg, Vlabel>,
-                std::pair<folly::Optional<int64_t>, bool>>
+                std::pair<Optional<int64_t>, bool>>
   physRecoverableCache;
 
   // Loop information. A loop is represented by its header block.
@@ -260,7 +268,7 @@ struct State {
   jit::vector<PenaltyVector> penalties;
 
   // Vreg state
-  jit::vector<folly::Optional<RegInfo>> regInfo;
+  jit::vector<Optional<RegInfo>> regInfo;
 
   // All Vregs belonging to particular RegClasses. Used to quickly
   // filter VregSets.
@@ -337,7 +345,7 @@ std::string show(const PhiWeightVector& v) {
   return folly::sformat(
     "[{}]",
     from(v)
-      | map([] (const folly::Optional<uint64_t>& w) -> std::string {
+      | map([] (const Optional<uint64_t>& w) -> std::string {
           if (!w) return "*";
           return std::to_string(*w);
         })
@@ -924,6 +932,9 @@ void calculate_liveness(State& state, const BlockSet* changed = nullptr) {
     assertx(state.gens.size() == unit.blocks.size());
     assertx(state.physDefs.size() == unit.blocks.size());
     assertx(state.physChangedBefore.size() == unit.blocks.size());
+    assertx(state.spRecordedIn.size() == unit.blocks.size());
+    assertx(state.spRecordedOut.size() == unit.blocks.size());
+    assertx(state.hasUnrecordbasenativesp.size() == unit.blocks.size());
     assertx(changed->size() == unit.blocks.size());
   } else {
     state.liveIn.resize(unit.blocks.size());
@@ -933,13 +944,19 @@ void calculate_liveness(State& state, const BlockSet* changed = nullptr) {
     state.gens.resize(unit.blocks.size());
     state.physDefs.resize(unit.blocks.size());
     state.physChangedBefore.resize(unit.blocks.size());
+    state.spRecordedIn.resize(unit.blocks.size());
+    state.spRecordedOut.resize(unit.blocks.size());
+    state.hasUnrecordbasenativesp.resize(unit.blocks.size());
   }
 
-  auto const processBlock = [&] (Vblock& block,
+  auto const processBlock = [&] (Vlabel b,
                                  VregSet& g,
                                  VregSet& k,
                                  VregSet& u,
-                                 RegSet& r) {
+                                 RegSet& r,
+                                 bool& spRecorded,
+                                 bool& hasUnrecordbasenativesp) {
+    auto& block = unit.blocks[b];
     for (auto& inst : boost::adaptors::reverse(block.code)) {
       auto const& defs = defs_set_cached(state, inst);
       auto const& uses = uses_set_cached(state, inst);
@@ -948,6 +965,14 @@ void calculate_liveness(State& state, const BlockSet* changed = nullptr) {
       g -= defs;
       g |= uses;
       u |= uses;
+      if (inst.op == Vinstr::recordbasenativesp) {
+        assert_flog(!spRecorded, "Block B{} {} initiailizes native SP, "
+                    "but already initialized.", b, show(unit, inst));
+        spRecorded = true;
+      }
+      if (inst.op == Vinstr::unrecordbasenativesp) {
+        hasUnrecordbasenativesp = true;
+      }
     }
     g -= state.flags;
     k -= state.flags;
@@ -964,21 +989,36 @@ void calculate_liveness(State& state, const BlockSet* changed = nullptr) {
       auto& k = state.defs[b];
       auto& u = state.uses[b];
       auto& r = state.physDefs[b];
+      bool spRecorded = state.spRecordedIn[b];
+      bool hasUnrecordbasenativesp = false;
       g.reset();
       k.reset();
       u.reset();
       r = RegSet{};
-      processBlock(unit.blocks[b], g, k, u, r);
+      processBlock(b, g, k, u, r, spRecorded, hasUnrecordbasenativesp);
+      state.spRecordedOut[b] = spRecorded;
+      state.hasUnrecordbasenativesp[b] = hasUnrecordbasenativesp;
+      for (auto const succ : succs(unit.blocks[b])) {
+        state.spRecordedIn[succ] = spRecorded;
+      }
     } else if (debug) {
       VregSet g;
       VregSet k;
       VregSet u;
       RegSet r;
-      processBlock(unit.blocks[b], g, k, u, r);
+      bool spRecorded = state.spRecordedIn[b];
+      bool hasUnrecordbasenativesp = false;
+      processBlock(b, g, k, u, r, spRecorded, hasUnrecordbasenativesp);
       always_assert(g == state.gens[b]);
       always_assert(k == state.defs[b]);
       always_assert(u == state.uses[b]);
       always_assert(r == state.physDefs[b]);
+      always_assert(state.spRecordedOut[b] == spRecorded);
+      for (auto const succ : succs(unit.blocks[b])) {
+        always_assert(state.spRecordedIn[succ] == spRecorded);
+      }
+      always_assert(state.hasUnrecordbasenativesp[b] ==
+                    hasUnrecordbasenativesp);
     }
 
     state.liveIn[b].reset();
@@ -1268,10 +1308,9 @@ size_t block_loop_depth(const State& state, Vlabel b) {
 // Return "weight" of a block, an approximation of how many times it will be
 // executed.
 int64_t block_weight(const State& state, Vlabel b) {
-  // Force the weight to always be greater than 0. To minimize
-  // distortions in the proportionality between blocks, multiply the
-  // actual value by 100.
-  return std::max<int64_t>(state.unit.blocks[b].weight * 100, 1);
+  // Weight cannot be zero, as that means doing anything in it is
+  // "free" (leads to nonesense decisions).
+  return std::max<int64_t>(state.unit.blocks[b].weight, 1);
 }
 
 State make_state(Vunit& unit, const Abi& abi) {
@@ -1282,7 +1321,6 @@ State make_state(Vunit& unit, const Abi& abi) {
     switch (arch()) {
       case Arch::X64:   return reg::xmm15;
       case Arch::ARM:   return vixl::d31;
-      case Arch::PPC64: return ppc64_asm::reg::v29;
     }
     always_assert(false);
   }();
@@ -1719,7 +1757,7 @@ void hoist_constants(State& state, BlockSet& changed) {
     // Search a block for a constant defining the given Vreg. We stop
     // looking if we encounter a non-constant materialization
     // instruction.
-    auto const findVreg = [&] (Vreg r, Vlabel succ) -> folly::Optional<size_t> {
+    auto const findVreg = [&] (Vreg r, Vlabel succ) -> Optional<size_t> {
       size_t idx = 0;
       auto const& code = unit.blocks[succ].code;
       auto const limit = code.size();
@@ -1736,11 +1774,11 @@ void hoist_constants(State& state, BlockSet& changed) {
             if (inst.ldimmb_.d == r) return idx;
             break;
           default:
-            return folly::none;
+            return std::nullopt;
         }
         ++idx;
       }
-      return folly::none;
+      return std::nullopt;
     };
 
     VregSet hoisted;
@@ -2149,10 +2187,10 @@ void infer_register_classes(State& state) {
   // this.
   VregSet incompatible;
 
-  // Returns the common RegClass between c1 and c2, or folly::none if none
+  // Returns the common RegClass between c1 and c2, or std::nullopt if none
   // exists.
   auto const merge = [] (RegClass c1,
-                         RegClass c2) -> folly::Optional<RegClass> {
+                         RegClass c2) -> Optional<RegClass> {
     // We shouldn't be mixing SF with anything
     assertx((c1 == RegClass::SF) == (c2 == RegClass::SF));
     if (c1 == RegClass::Any) return c2;
@@ -2166,7 +2204,7 @@ void infer_register_classes(State& state) {
         (c1 == RegClass::GP || c1 == RegClass::SIMD)) {
       return c1;
     }
-    return folly::none;
+    return std::nullopt;
   };
 
   auto haveWide = false;
@@ -2896,7 +2934,7 @@ RematLookup find_defining_inst_for_remat(State& state,
 
             // Found a def. Recursively find the defining instruction
             // for each predecessor Vreg.
-            folly::Optional<Vinstr> common;
+            Optional<Vinstr> common;
             Vlabel defBlock;
             auto anyRecursive = false;
             for (auto const p : preds) {
@@ -3094,9 +3132,9 @@ bool is_simple_vptr(const Vptr& ptr) {
 
 // Given an instruction which writes to the given PhysReg, if the
 // instruction modifies the PhysReg in a tracked way, return the
-// inverse of that change. Return folly::none if the register is
+// inverse of that change. Return std::nullopt if the register is
 // changed in an unpredictable way.
-folly::Optional<int64_t> tracked_physical_register_change(const State& state,
+Optional<int64_t> tracked_physical_register_change(const State& state,
                                                           PhysReg r,
                                                           const Vinstr& inst,
                                                           Vlabel b) {
@@ -3109,12 +3147,12 @@ folly::Optional<int64_t> tracked_physical_register_change(const State& state,
     case Vinstr::lea: {
       auto const& i = inst.lea_;
       assertx(i.d == r);
-      if (i.s.base != r || !is_simple_vptr(i.s)) return folly::none;
+      if (i.s.base != r || !is_simple_vptr(i.s)) return std::nullopt;
       return -i.s.disp;
     }
     case Vinstr::copy:
       assertx(inst.copy_.d == r);
-      if (inst.copy_.s != r) return folly::none;
+      if (inst.copy_.s != r) return std::nullopt;
       return 0;
     case Vinstr::copyargs: {
       auto const& srcs = unit.tuples[inst.copyargs_.s];
@@ -3123,7 +3161,7 @@ folly::Optional<int64_t> tracked_physical_register_change(const State& state,
       DEBUG_ONLY size_t defCount = 0;
       for (size_t i = 0; i < dsts.size(); ++i) {
         if (dsts[i] != r) continue;
-        if (srcs[i] != r) return folly::none;
+        if (srcs[i] != r) return std::nullopt;
         ++defCount;
       }
       assertx(defCount > 0);
@@ -3142,14 +3180,14 @@ folly::Optional<int64_t> tracked_physical_register_change(const State& state,
           assertx(phijmp.op == Vinstr::phijmp);
           auto const& srcs = unit.tuples[phijmp.phijmp_.uses];
           assertx(srcs.size() == dsts.size());
-          if (srcs[i] != r) return folly::none;
+          if (srcs[i] != r) return std::nullopt;
         }
       }
       assertx(defCount > 0);
       return 0;
     }
     default:
-      return folly::none;
+      return std::nullopt;
   }
 }
 
@@ -3165,9 +3203,9 @@ folly::Optional<int64_t> tracked_physical_register_change(const State& state,
 
 struct PhysRecoverableResult {
   // The statically known offset of the value of `phys' at the current
-  // point to its value when 'target' was defined. folly::none if it's
+  // point to its value when 'target' was defined. std::nullopt if it's
   // changed in an unrecoverable way.
-  folly::Optional<int64_t> offset;
+  Optional<int64_t> offset;
   // If the calculation of `offset' involved information from a
   // loop. This implies the result is ephemeral (can change across
   // calculations), and thus any caching of it cannot be kept across
@@ -3184,7 +3222,7 @@ PhysRecoverableResult physical_register_is_recoverable(
     Vlabel currentBlock,
     size_t startInstIdx,
     int64_t startOffset,
-    jit::vector<folly::Optional<int64_t>>& inOffsets,
+    jit::vector<Optional<int64_t>>& inOffsets,
     jit::vector<Vlabel>& cleanup) {
   /*
    * Recursively explore every path backwards from `currentBlock' at
@@ -3219,11 +3257,11 @@ PhysRecoverableResult physical_register_is_recoverable(
    * the block. If we loop around and attempt to process the block
    * again, we'll see an offset in the `inOffsets' vector. If our
    * `currentOffset' does not match what's stored in the vector, we
-   * know the final result is folly::none (no recoverable value). This
+   * know the final result is std::nullopt (no recoverable value). This
    * mismatch means that there's two paths going into the block where
    * `phys' has a different offset, which means the offset isn't
    * consistent and thus not recoverable. If the offset matches the
-   * one in `inOffsets', we return a folly::none offset with the
+   * one in `inOffsets', we return a std::nullopt offset with the
    * recursion flag set.
    *
    * We cannot return an offset in this case since the block hasn't
@@ -3296,7 +3334,7 @@ PhysRecoverableResult physical_register_is_recoverable(
     auto const it =
       state.physRecoverableCache.find({phys, target, currentBlock});
     if (it != state.physRecoverableCache.end()) {
-      if (!it->second.first) return {folly::none, it->second.second};
+      if (!it->second.first) return {std::nullopt, it->second.second};
       return {*it->second.first + startOffset, it->second.second};
     }
 
@@ -3304,7 +3342,7 @@ PhysRecoverableResult physical_register_is_recoverable(
     // recursive flag and ignore this result. If they don't we won't
     // set the flag, and the lack of an offset indicates a failure.
     if (!inOffsets.empty() && inOffsets[currentBlock]) {
-      return {folly::none, startOffset == *inOffsets[currentBlock]};
+      return {std::nullopt, startOffset == *inOffsets[currentBlock]};
     }
 
     // No loop. Record our start offset to catch a later loop.
@@ -3312,7 +3350,7 @@ PhysRecoverableResult physical_register_is_recoverable(
     inOffsets[currentBlock] = startOffset;
   }
 
-  auto const cache = [&] (folly::Optional<int64_t> offset,
+  auto const cache = [&] (Optional<int64_t> offset,
                           bool recursive = false)
     -> PhysRecoverableResult {
 
@@ -3336,7 +3374,7 @@ PhysRecoverableResult physical_register_is_recoverable(
       DEBUG_ONLY auto const result = state.physRecoverableCache.emplace(
         std::make_tuple(phys, target, currentBlock),
         std::make_pair(
-          offset ? folly::make_optional(*offset - startOffset) : folly::none,
+          offset ? make_optional(*offset - startOffset) : std::nullopt,
           recursive
         )
       );
@@ -3370,7 +3408,7 @@ PhysRecoverableResult physical_register_is_recoverable(
           // continue onwards. Otherwise, give up.
           auto const off =
             tracked_physical_register_change(state, phys, inst, currentBlock);
-          if (!off) return cache(folly::none);
+          if (!off) return cache(std::nullopt);
           currentOffset += *off;
           continue;
         }
@@ -3400,7 +3438,7 @@ PhysRecoverableResult physical_register_is_recoverable(
   // 'phys' or the target instruction by now.
   assertx(!preds.empty());
 
-  folly::Optional<int64_t> predOffset;
+  Optional<int64_t> predOffset;
   auto anyRecursive = false;
   for (auto const pred : preds) {
     auto const result = physical_register_is_recoverable(
@@ -3423,7 +3461,7 @@ PhysRecoverableResult physical_register_is_recoverable(
       // it. Otherwise, we failed (note we don't care about recursive
       // flag if we fail).
       if (result.recursive) continue;
-      return cache(folly::none);
+      return cache(std::nullopt);
     }
 
     // Otherwise make sure the results from all predecessors are the
@@ -3431,7 +3469,7 @@ PhysRecoverableResult physical_register_is_recoverable(
     if (!predOffset) {
       predOffset = *result.offset;
     } else if (*predOffset != *result.offset) {
-      return cache(folly::none);
+      return cache(std::nullopt);
     }
   }
   // If we don't have an offset, it means every path was recursive
@@ -3445,7 +3483,7 @@ PhysRecoverableResult physical_register_is_recoverable(
 // only one physical register with a non-zero recoverable offset,
 // return that. Note that this will return an offset of zero if the
 // instruction uses no physical registers.
-folly::Optional<int64_t> used_physical_registers_recoverable(State& state,
+Optional<int64_t> used_physical_registers_recoverable(State& state,
                                                              RematInfo& remat,
                                                              Vlabel b,
                                                              size_t instIdx) {
@@ -3454,7 +3492,7 @@ folly::Optional<int64_t> used_physical_registers_recoverable(State& state,
   auto const physUses =
     phys_uses_set_cached(state, remat.instr) & state.physChanged;
 
-  folly::Optional<int64_t> offset{0};
+  Optional<int64_t> offset{0};
   size_t count = 0;
   physUses.forEach(
     [&] (PhysReg phys) {
@@ -3464,7 +3502,7 @@ folly::Optional<int64_t> used_physical_registers_recoverable(State& state,
       assertx(defs.size() == 1);
       auto const target = *defs.begin();
 
-      jit::vector<folly::Optional<int64_t>> inOffsets;
+      jit::vector<Optional<int64_t>> inOffsets;
       jit::vector<Vlabel> cleanup;
       auto const result = physical_register_is_recoverable(
         state,
@@ -3621,8 +3659,8 @@ Vinstr reload_with_remat(State& state,
 // is a trivial rematerialization. The block/instruction position is
 // used as a starting point to resolve the defining instruction
 // only. If the rematerialization is trivial, it is returned,
-// folly::none otherwise.
-folly::Optional<Vinstr> is_trivial_remat(State& state,
+// std::nullopt otherwise.
+Optional<Vinstr> is_trivial_remat(State& state,
                                          Vreg r,
                                          Vlabel b,
                                          size_t instIdx) {
@@ -3637,13 +3675,13 @@ folly::Optional<Vinstr> is_trivial_remat(State& state,
       return remat.instr;
     case Vinstr::reload:
       // If we ever have to reload it, it's obviously not trivial.
-      return folly::none;
+      return std::nullopt;
     default: {
       assertx(isPure(remat.instr));
       // If the instruction uses any non-ignored registers, we cannot
       // treat it as trivial, as we do not know if they'll be
       // available or not.
-      if (uses_set_cached(state, remat.instr).any()) return folly::none;
+      if (uses_set_cached(state, remat.instr).any()) return std::nullopt;
       // However we can treat it as trivial if it uses only ignored
       // physical registers, whose values are recoverable at this
       // point.
@@ -3651,12 +3689,12 @@ folly::Optional<Vinstr> is_trivial_remat(State& state,
         used_physical_registers_recoverable(state, remat, b, instIdx);
       // If the physical register's value is not recoverable, we
       // cannot rematerialize.
-      if (!offset) return folly::none;
+      if (!offset) return std::nullopt;
       // Otherwise we can only use it if we can successfully fold the
       // offset into the instruction (if the offset is zero, this will
       // always succeed).
       if (fold_offset_into_instr(remat.instr, *offset)) return remat.instr;
-      return folly::none;
+      return std::nullopt;
     }
   }
 }
@@ -4060,10 +4098,11 @@ SpillWeightAt spill_weight_at(State&,
 
 struct SpillerState {
   // Default state is no Vregs are live
-  explicit SpillerState(State& state)
+  SpillerState(State& state, bool spRecordedIn)
     : gp{size_t(state.gpUnreserved.size())}
     , simd{size_t(state.simdUnreserved.size())}
     , state{&state}
+    , spRecorded{spRecordedIn}
   {}
 
   // We track the Vreg state separately for each register class.
@@ -4075,6 +4114,7 @@ struct SpillerState {
   PerClass gp;
   PerClass simd;
   State* state;
+  bool spRecorded;
 
   // Given a Vreg, return the per-class state appropriate for that Vreg (or
   // nullptr if untracked). This lets code manipulate the state generically
@@ -4277,7 +4317,7 @@ struct SpillerState {
   bool checkInvariants(Vlabel b, size_t instIdx) const {
     auto const impl = [&] (const PerClass& per) {
       // If we can't spill, we should never have a Vreg in memory.
-      always_assert(IMPLIES(!state->abi.canSpill, per.inMem.none()));
+      always_assert(IMPLIES(!spRecorded, per.inMem.none()));
       // We should never have more un-spilled Vregs than there are physical
       // registers for the class (except before a call to spill()).
       always_assert(per.inReg.size() <= per.numRegs);
@@ -4308,12 +4348,12 @@ struct SpillerResults {
     , changed{state.unit.blocks.size()} {}
 
   struct PerBlock {
-    folly::Optional<SpillerState> in;
-    folly::Optional<SpillerState> out;
+    Optional<SpillerState> in;
+    Optional<SpillerState> out;
     // Phi inputs/outputs. If a bit is set at index N, it means the phi
     // input/output at position N of the phi instruction is non-spilled.
-    folly::Optional<boost::dynamic_bitset<>> inPhi;
-    folly::Optional<boost::dynamic_bitset<>> outPhi;
+    Optional<boost::dynamic_bitset<>> inPhi;
+    Optional<boost::dynamic_bitset<>> outPhi;
   };
   jit::vector<PerBlock> perBlock;
   VregSet ssaize;
@@ -4411,9 +4451,9 @@ spill_weight_at_impl(State& state,
   // Record a use of the current Vreg at the given instruction
   // index. If we can trivially rematerialize the Vreg at this point
   // and fold it into the instruction, do not consider it as a real
-  // use and instead continue (returning folly::none). Otherwise,
+  // use and instead continue (returning std::nullopt). Otherwise,
   // returns the spill weight resulting from that usage.
-  auto const recordUse = [&] (size_t idx) -> folly::Optional<SpillWeightAt> {
+  auto const recordUse = [&] (size_t idx) -> Optional<SpillWeightAt> {
     auto weight = block_weight(state, b);
     auto allTrivial = true;
     if (auto const trivial = is_trivial_remat(state, reg, b, idx)) {
@@ -4425,7 +4465,7 @@ spill_weight_at_impl(State& state,
         auto& inst = unit.blocks[b].code[idx];
         if (can_fold_remat_with_use(state, *trivial, inst, reg)) {
           // We can fold it, so continue on.
-          return folly::none;
+          return std::nullopt;
         }
       }
     } else {
@@ -4452,9 +4492,9 @@ spill_weight_at_impl(State& state,
 
   // Record a use of the current Vreg by a copy instruction. These may
   // or may not result in an actual usage. If it does, return the
-  // spill weight. Otherwise return folly::none.
+  // spill weight. Otherwise return std::nullopt.
   auto const recordCopyUse =
-    [&] (Vreg dst, size_t idx, bool copy) -> folly::Optional<SpillWeightAt> {
+    [&] (Vreg dst, size_t idx, bool copy) -> Optional<SpillWeightAt> {
     // Copies are special. A copy to a physical register is treated
     // like a use. If the src is live after the copy, treat it like a
     // use as well. Otherwise we just start tracking the destination.
@@ -4462,7 +4502,7 @@ spill_weight_at_impl(State& state,
       return copy ? recordUse(idx) : recordUseNoFold(idx);
     } else {
       reg = dst;
-      return folly::none;
+      return std::nullopt;
     }
   };
 
@@ -4882,7 +4922,7 @@ size_t setup_initial_spiller_state(State& state,
                                    SpillerResults& results,
                                    const SpillingNeededPerBlock& spilling) {
   auto& unit = state.unit;
-  SpillerState initial{state};
+  SpillerState initial{state, state.spRecordedIn[b]};
 
   const VregList* phiDefs = nullptr;
   if (unit.blocks[b].code.front().op == Vinstr::phidef) {
@@ -4904,7 +4944,7 @@ size_t setup_initial_spiller_state(State& state,
     // it's always in registers, or always in memory for all
     // predecessors.
     for (auto const r : state.liveIn[b]) {
-      folly::Optional<bool> inReg;
+      Optional<bool> inReg;
       for (auto const pred : state.preds[b]) {
         auto const& out = results.perBlock[pred].out;
         if (!out) continue;
@@ -4922,7 +4962,7 @@ size_t setup_initial_spiller_state(State& state,
     // Same for Vregs defined by a phidef
     auto const size = phiDefs->size();
     for (size_t i = 0; i < size; ++i) {
-      folly::Optional<bool> inReg;
+      Optional<bool> inReg;
       for (auto const pred : state.preds[b]) {
         auto const& outPhi = results.perBlock[pred].outPhi;
         if (!outPhi) continue;
@@ -5008,6 +5048,10 @@ size_t setup_initial_spiller_state(State& state,
       for (auto const r : state.liveIn[b]) {
         auto initialState = initial.forReg(r);
         if (!initialState) continue;
+        if (r.isPhys()) {
+          initialState->inReg.add(r);
+          continue;
+        }
 
         // The penalty for assuming this Vreg is in a physical register
         // versus the penalty for assuming it is spilled.
@@ -5335,8 +5379,8 @@ size_t process_phijmp_spills(State& state,
 
   // We have to spill. Make sure we can.
   always_assert_flog(
-    IMPLIES(!state.abi.canSpill, spills.none()),
-    "Trying to spill for {} in {} when not allowed "
+    IMPLIES(!spiller.spRecorded, spills.none()),
+    "Trying to spill for {} in {} when not allowed (sp not recorded) "
     "(Spills: {})",
     show(state.unit, phijmp),
     b,
@@ -5635,8 +5679,8 @@ ProcessCopyResults process_copy_spills(State& state,
 
   // We have to spill. Make sure we can.
   always_assert_flog(
-    IMPLIES(!state.abi.canSpill, spills.none()),
-    "Trying to spill for {} in {} when not allowed "
+    IMPLIES(!spiller.spRecorded, spills.none()),
+    "Trying to spill for {} in {} when not allowed (sp not recorded) "
     "(Spills: {})",
     show(state.unit, unit.blocks[b].code[instIdx]),
     b,
@@ -6022,6 +6066,46 @@ ProcessCopyResults process_copy_spills(State& state,
   return {addedBefore + addedAfter, addedBefore};
 }
 
+size_t process_unrecordbasenativesp_spills(State& state,
+                                           Vlabel b,
+                                           size_t instIdx,
+                                           SpillerState& spiller,
+                                           SpillerResults& results) {
+  auto rematAvail = spiller.gp.inReg | spiller.simd.inReg;
+  auto const reloads = spiller.inMem();
+  size_t added = 0;
+  results.ssaize |= reloads;
+  spiller.dropDead(reloads, nullptr, b, instIdx);
+  for (auto const r : reloads) {
+    auto s = spiller.forReg(r);
+    s->inMem.remove(r);
+    s->inReg.add(r);
+  }
+  vmodify(
+    state.unit, b, instIdx,
+    [&] (Vout& v) {
+      for (auto const r : reloads) {
+        assertx(!r.isPhys());
+        auto const inst = reload_with_remat(
+          state,
+          b,
+          instIdx,
+          rematAvail,
+          r,
+          r
+        );
+        if (inst.op != Vinstr::reload) results.rematerialized.add(r);
+        v << inst;
+        ++added;
+        rematAvail.add(r);
+      }
+      return 0;
+    }
+  );
+  results.changed[b] = true;
+  return added;
+}
+
 // Run spiller logic for normal instructions (not phis or copies). Return the
 // number of instructions inserted.
 size_t process_inst_spills(State& state,
@@ -6102,7 +6186,7 @@ size_t process_inst_spills(State& state,
   spiller.dropDead(folded, nullptr, b, instIdx);
 
   // Moving the uses into registers may require us to spill other Vregs (except
-  // the ones we just reloaded).
+  // the ones we're about to use).
   spills |= spiller.spill(
     b, instIdx + 1, results,
     [&] (Vreg) { return block_weight(state, b) * kSpillReloadMultiplier; },
@@ -6145,18 +6229,27 @@ size_t process_inst_spills(State& state,
     assertx(!s->inReg[r] && !s->inMem[r]);
     s->inReg.add(r);
   }
-  // Adding the defs may have caused us to need to spill even more (but not any
-  // uses or defs).
+
+  // Adding the defs may have caused us to need to spill even more We
+  // cannot spill any defs, because they're going to be in physical
+  // registers regardless, and acrosses need to be kept alive across
+  // the defs. However, we can spill the uses here if necessary. It
+  // will require some special handling below.
   spills |= spiller.spill(
     b, instIdx + 1, results,
-    [&] (Vreg) { return block_weight(state, b) * kSpillReloadMultiplier; },
-    defs | acrosses | uses
+    [&] (Vreg r) {
+      // "Spilling" for a reloaded Vreg is free, because we can simply
+      // keep its spill slot alive after the reload.
+      if (reloads[r]) return int64_t{0};
+      return block_weight(state, b) * kSpillReloadMultiplier;
+    },
+    defs | acrosses
   );
 
   // Make sure we can spill.
   always_assert_flog(
-    IMPLIES(!state.abi.canSpill, spills.none() && reloads.none()),
-    "Trying to spill/reload for {} in {} when not allowed "
+    IMPLIES(!spiller.spRecorded, spills.none() && reloads.none()),
+    "Trying to spill/reload for {} in {} when not allowed (sp not recorded) "
     "(Spills: {}, Reloads: {})",
     show(state.unit, inst),
     b,
@@ -6170,13 +6263,16 @@ size_t process_inst_spills(State& state,
 
   // Bail out if we don't need to emit anything (hopefully the common case).
   if (spills.none() && reloads.none()) return 0;
-  // We should either spill or reload a Vreg, not both.
-  assertx((spills & reloads).none());
+
+  // Okay to spill uses, but not defs or acrosses.
+  assertx((spills & (defs | acrosses)).none());
 
   // We always spill/reload a Vreg to itself, so they'll need to be
   // re-SSAized.
   results.ssaize |= spills;
   results.ssaize |= reloads;
+
+  jit::fast_map<Vreg, Vreg> useRewrites;
 
   size_t added = 0;
   vmodify(
@@ -6185,6 +6281,52 @@ size_t process_inst_spills(State& state,
       // First emit the spills (which decreases register pressure).
       for (auto const r : spills) {
         assertx(!r.isPhys());
+
+        // If the Vreg is reloaded, we already have a perfectly valid
+        // spill slot for it, so nothing needs to be done.
+        if (reloads[r]) continue;
+
+        /*
+         * Special case: if we're spilling a Vreg that's used by the
+         * instruction, we need to take special care. We cannot simply
+         * spill it, as it will then not by in a physical register
+         * when the instruction operates. Instead we'll use ssaalias
+         * to make a "copy" of the Vreg, spill the original, and
+         * rewrite the instruction to use the "copy". Copy is in
+         * quotes because ssaalias uses the SSA rewriting to pass to
+         * ensure no actual copy is created.
+         *
+         * For example:
+         *   conjureuse src (where src needs to be spilled)
+         *
+         * Becomes:
+         *   ssaalias src -> src2
+         *   spill src -> src
+         *   conjureuse src2
+         *
+         * After SSA:
+         *   spill src -> src3
+         *   conjureuse src
+         *
+         * At first glance this might appear to be ineffective because
+         * it keeps the original Vreg alive after the spill, and the
+         * whole point is to decrease register pressure. It works
+         * because we'll only spill uses if the register pressure is
+         * exceeded because of defs. In this scheme, the Vreg always
+         * becomes dead immediately after its used (before the defs),
+         * so we'll still lower register pressure where we need to.
+         */
+        if (uses[r]) {
+          auto const d = state.unit.makeReg();
+          auto const& info = reg_info(state, r);
+          set_reg_class_bits(state, d, info.regClass);
+          reg_info_insert(state, d, info);
+          v << ssaalias{r, d};
+          results.ssaize.add(d);
+          useRewrites.emplace(r, d);
+          ++added;
+        }
+
         auto const spillResults = spill_with_remat(
           state,
           v,
@@ -6193,7 +6335,7 @@ size_t process_inst_spills(State& state,
           rematAvail,
           r,
           r,
-          true,
+          !uses[r],
           true
         );
         added += spillResults.added;
@@ -6206,23 +6348,53 @@ size_t process_inst_spills(State& state,
       // possibly with rematerialization.
       for (auto const r : reloads) {
         assertx(!r.isPhys());
+
+        // Destination of the reload. Normally this is the same
+        // Vreg. However if we're both reloading and spilling the
+        // Vreg, we reload it into a fresh Vreg to keep the spill slot
+        // alive (this makes the actual spill a no-op).
+        auto const d = [&] {
+          if (!spills[r]) return r;
+          auto const d = state.unit.makeReg();
+          auto const& info = reg_info(state, r);
+          set_reg_class_bits(state, d, info.regClass);
+          reg_info_insert(state, d, info);
+          useRewrites.emplace(r, d);
+          return d;
+        }();
+
         auto const inst = reload_with_remat(
           state,
           b,
           instIdx,
           rematAvail,
           r,
-          r
+          d
         );
-        if (inst.op != Vinstr::reload) results.rematerialized.add(r);
+        if (inst.op != Vinstr::reload) results.rematerialized.add(d);
         v << inst;
         ++added;
-        rematAvail.add(r);
+        if (r == d) rematAvail.add(r);
       }
 
       return 0;
     }
   );
+
+  // Rewrites any uses of the instruction to match new Vregs created
+  // above. Note: we cannot use "inst" here because the vmodify above
+  // has invalidated the reference.
+  if (!useRewrites.empty()) {
+    visitRegsMutable(
+      unit, unit.blocks[b].code[instIdx + added],
+      [&] (Vreg r) {
+        auto const it = useRewrites.find(r);
+        return (it == useRewrites.end()) ? r : it->second;
+      },
+      [&] (Vreg r) { return r; }
+    );
+    invalidate_cached_operands(unit.blocks[b].code[instIdx + added]);
+  }
   results.changed[b] = true;
 
   return added;
@@ -6270,6 +6442,10 @@ void process_spills_skip(const State& state,
       s->inReg.add(r);
     }
   }
+
+  // Since we jumped to the end of the block without processing update the
+  // spRecorded state to the block out state.
+  spiller.spRecorded = state.spRecordedOut[b];
 }
 
 // Run the spiller logic on an instruction which we've determined
@@ -6335,6 +6511,7 @@ SpillerResults process_spills(State& state,
     };
 
     if (!needsSpilling.perBlock[b].any &&
+        !state.hasUnrecordbasenativesp[b] &&
         !state.uses[b].intersects(spiller.inMem())) {
       // Be efficient if there's no potential spills to worry about.
       process_spills_skip(state, b, spiller, results);
@@ -6352,16 +6529,29 @@ SpillerResults process_spills(State& state,
 
         auto& inst = unit.blocks[b].code[instIdx];
 
+        if (inst.op == Vinstr::recordbasenativesp) {
+          spiller.spRecorded = true;
+        }
+
         // If this instruction cannot cause any spills, and it does
         // not use any spilled registers, we can process it more
         // efficiently.
         if (!needsSpilling.perBlock[b](instIdx - addedInsts) &&
-            !uses_set_cached(state, inst).intersects(spiller.inMem())) {
+            !uses_set_cached(state, inst).intersects(spiller.inMem()) &&
+            inst.op != Vinstr::unrecordbasenativesp) {
           process_inst_spills_fast(state, inst, b, instIdx, spiller, results);
           continue;
         }
 
         switch (inst.op) {
+          case Vinstr::unrecordbasenativesp: {
+            auto const added =
+              process_unrecordbasenativesp_spills(state, b, instIdx,
+                                                  spiller, results);
+            addedInsts += added;
+            instIdx += added;
+            break;
+          }
           case Vinstr::phijmp: {
             auto const added =
               process_phijmp_spills(state, b, instIdx, inst, spiller, results);
@@ -6699,24 +6889,72 @@ void hoist_spills_in_loop(State& state,
     // the spill out of the loop, we won't need any spills within the
     // loop, so it's a gain since we can get rid of them.
     for (size_t i = 0; i < unit.blocks[b].code.size(); ++i) {
-      auto const& inst = unit.blocks[b].code[i];
+      auto& inst = unit.blocks[b].code[i];
 
-      auto const process = [&] (Vreg r1, Vreg r2, bool reload) {
+      auto const process = [&] (Vreg r1, Vreg r2, bool spill, bool reload) {
         auto const c1 = canonicalize(r1);
         auto const c2 = canonicalize(r2);
         if (c1 != c2) return;
         if (!candidates[c1]) return;
-        credit(
-          c1, b,
-          !!is_trivial_remat(state, r1, b, i),
-          reload
-        );
+
+        if (r1 != r2 && live_in_at(state, r1, b, i+1)) {
+          // If the instruction writes to a different Vreg than it
+          // reads from, but the src is live across the instruction,
+          // assess a penalty instead of a credit. The instruction
+          // will be turned into a copy, where both the src and dst
+          // are spilled. Since src interferes with dst, the (mem to
+          // mem) copy cannot be coalesced away. Instead it will be
+          // lowered into a load/store pair. This is actually more
+          // expensive than the previous spill/reload/copy/
+          penalty(c1, b, false, false);
+        } else if (spill || reload) {
+          // Otherwise the copy will either be trivial (same src and
+          // dst), or we optimistically assume it will be coalesced
+          // away. In that case, we're removing the instruction
+          // entirely, so its a credit. This is only applicable to
+          // spills or reloads.
+          credit(
+            c1, b,
+            !!is_trivial_remat(state, r1, b, i),
+            reload
+          );
+        }
       };
 
-      if (inst.op == Vinstr::spill) {
-        process(inst.spill_.s, inst.spill_.d, false);
-      } else if (inst.op == Vinstr::reload) {
-        process(inst.reload_.s, inst.reload_.d, true);
+      switch (inst.op) {
+        case Vinstr::spill:
+          process(inst.spill_.s, inst.spill_.d, true, false);
+          break;
+        case Vinstr::reload:
+          process(inst.reload_.s, inst.reload_.d, false, true);
+          break;
+        case Vinstr::copy:
+          process(inst.copy_.s, inst.copy_.d, false, false);
+          break;
+        case Vinstr::copyargs: {
+          auto const& srcs = unit.tuples[inst.copyargs_.s];
+          auto const& dsts = unit.tuples[inst.copyargs_.d];
+          assertx(srcs.size() == dsts.size());
+          for (size_t i = 0; i < srcs.size(); ++i) {
+            process(srcs[i], dsts[i], false, false);
+          }
+          break;
+        }
+        case Vinstr::ssaalias:
+        case Vinstr::phidef:
+        case Vinstr::phijmp:
+          // These will not be removed
+          break;
+        default: {
+          // Pure instructions which def a candidate will be removed,
+          // so provide the proper credit.
+          if (!isPure(inst)) break;
+          auto const& defs = defs_set_cached(state, inst);
+          if (defs.size() != 1) break;
+          auto const canon = canonicalize(*defs.begin());
+          if (candidates[canon]) credit(canon, b, true, true);
+          break;
+        }
       }
     }
 
@@ -6921,7 +7159,14 @@ void hoist_spills_in_loop(State& state,
           // physical register has to be removed.
           if (!candidates[canonicalize(inst.copy_.d)]) break;
           if (inst.copy_.s.isPhys() || inst.copy_.s == inst.copy_.d) {
-            assertx(results.rematerialized[inst.copy_.d]);
+            // The dest of the copy is a candidate, which means it's
+            // live-in to the loop. However, if the source is a
+            // physical register, we're defining dest (inside the
+            // loop). This can only happen if we've rematerialized the
+            // dest. The only other case is if this is a nop copy,
+            // which always can be removed.
+            assertx(!inst.copy_.s.isPhys() ||
+                    results.rematerialized[inst.copy_.d]);
             inst.nop_ = nop{};
             inst.op = Vinstr::nop;
             results.changed[b] = true;
@@ -7335,7 +7580,7 @@ void fixup_spill_mismatches(State& state, SpillerResults& results) {
 
       always_assert(
         IMPLIES(
-          !state.abi.canSpill,
+          !state.spRecordedIn[succ],
           mismatch.spills.none() && mismatch.reloads.none()
         )
       );
@@ -8382,7 +8627,7 @@ void assign_spill_colors(State& state,
   for (auto const& chunk : chunks) {
     if (chunk.none()) continue;
 
-    folly::Optional<bool> isWide;
+    Optional<bool> isWide;
     for (auto const r : chunk) {
       auto const& info = reg_info(state, r);
       assertx(is_spill(info.regClass));
@@ -8834,7 +9079,10 @@ struct FreeRegs {
   // chooses the color, and does not mark it as taken or modify any
   // other internal state. If the Vreg represents a spill, it will be
   // chosen from the pre-computed spill colors. Otherwise, a physical
-  // register is chosen to try to maximize satisfied hints.
+  // register is chosen to try to maximize satisfied hints. A physical
+  // register which is part of `physUses' will not be selected (doing
+  // so would not be valid, as this represents the physical registers
+  // used by this instruction, which must remain as they are).
   //
   // For the register case, the heuristic may decide to migrate a
   // (already taken) physical register to a different (free) physical
@@ -8859,7 +9107,7 @@ struct FreeRegs {
   };
 
   template <typename W>
-  Coloring choose(Vreg r, W&& moveWeight) const {
+  Coloring choose(Vreg r, RegSet physUses, W&& moveWeight) const {
     // Find best physical register for a Vreg, choosing from the set
     // of registers in "mask".
     auto const findBest = [&] (RegSet mask) -> Coloring {
@@ -8986,7 +9234,7 @@ struct FreeRegs {
                 info.penaltyIdx < state->penalties.size());
         auto const& penalties = state->penalties[info.penaltyIdx];
         return buildPhysWeights(
-          r, mask, [&] (PhysReg r) { return penalties[r]; }
+          r, mask - physUses, [&] (PhysReg r) { return penalties[r]; }
         );
       }();
 
@@ -9019,7 +9267,7 @@ struct FreeRegs {
         // Build a candidate list to move the Vreg to. We only support
         // moving to a free physical register.
         auto const moveWeights = buildPhysWeights(
-          assignedTo, mask & regs,
+          assignedTo, (mask & regs) - physUses,
           [&] (PhysReg r) { return movePenalties[r]; }
         );
 
@@ -9277,7 +9525,6 @@ bool can_single_swap(PhysReg r1, PhysReg r2) {
   switch (arch()) {
     case Arch::X64:   return r1.isGP() && r2.isGP();
     case Arch::ARM:   return false;
-    case Arch::PPC64: return false;
   }
   always_assert(false);
 }
@@ -9476,6 +9723,7 @@ size_t color_inst(State& state,
     // will move a Vreg if it resides in the destination.
     auto const coloring = free.choose(
       r,
+      uses.physRegs(),
       [&] (Vreg from, Vreg to) -> int64_t {
         // Move weight calculation. This matches the logic below for
         // determining whether a copy is actually needed.
@@ -9956,7 +10204,8 @@ size_t color_block_initialize(
     // Choose a physical register for this Vreg. "Moving" here is
     // free, because it just results in a change to a previous
     // assignment.
-    auto const coloring = free.choose(r, [] (Vreg, Vreg) { return 0; });
+    auto const coloring =
+      free.choose(r, RegSet{}, [] (Vreg, Vreg) { return 0; });
     assert_found_color(r, coloring.color);
 
     auto const selected = color_reg(coloring.color);
@@ -9979,7 +10228,8 @@ size_t color_block_initialize(
       if (!is_colorable(info.regClass)) continue;
       assertx(is_color_none(info.color));
 
-      auto const coloring = free.choose(defs[i], [] (Vreg, Vreg) { return 0; });
+      auto const coloring =
+        free.choose(defs[i], RegSet{}, [] (Vreg, Vreg) { return 0; });
       assert_found_color(defs[i], coloring.color);
       info.color = coloring.color;
 
@@ -10794,8 +11044,8 @@ int sp_change(const State& state, const Vinstr& inst) {
 // Per-block information about the offset of the stack pointer (relative to its
 // position at the start of the unit).
 struct SPOffset {
-  folly::Optional<int> in;
-  folly::Optional<int> out;
+  Optional<int> in;
+  Optional<int> out;
 };
 using SPOffsets = jit::vector<SPOffset>;
 
@@ -10817,9 +11067,12 @@ SPOffsets calculate_sp_offsets(const State& state) {
     for (size_t i = 0; i < block.code.size(); i++) {
       auto const& inst = block.code[i];
       if (inst.op == Vinstr::recordbasenativesp) {
-        assert_flog(!spOffset, "Block B{} Instr {} initiailizes native SP, "
-                    "but already initialized.", b, i);
+        assertx(!spOffset);
         spOffset = 0;
+      } else if (inst.op == Vinstr::unrecordbasenativesp) {
+        assert_flog(spOffset, "Block B{} Instr {} uninitiailizes native SP, "
+                    "but already uninitialized.", b, i);
+        spOffset = std::nullopt;
       } else if (spOffset) {
         *spOffset += sp_change(state, inst);
         // Don't support moving the stack pointer before where it started
@@ -10878,7 +11131,7 @@ bool materialize_spill(const State& state,
                        Vlabel b,
                        Vinstr& inst,
                        size_t& instIdx,
-                       folly::Optional<int> skip) {
+                       Optional<int> skip) {
   auto const getSkip = [&skip] {
     // We have already asserted there is no spilling prior to
     // recordbasenativesp
@@ -11037,7 +11290,7 @@ void materialize_spills(const State& state, size_t spillSpace) {
 
     for (size_t i = 0; i < state.unit.blocks[b].code.size(); ++i) {
       auto& inst = state.unit.blocks[b].code[i];
-      folly::Optional<int> skip;
+      Optional<int> skip;
       if (spOffset) skip = -*spOffset - spillSpace;
       if (materialize_spill(state, b, inst, i, skip)) {
         assertx(sp_change(state, inst) == 0);
@@ -11045,6 +11298,9 @@ void materialize_spills(const State& state, size_t spillSpace) {
         if (inst.op == Vinstr::recordbasenativesp) {
           assertx(!spOffset);
           spOffset = 0;
+        } else if (inst.op == Vinstr::unrecordbasenativesp) {
+          assertx(spOffset);
+          spOffset = std::nullopt;
         } else if (spOffset) {
           *spOffset += sp_change(state, inst);
           assertx(*spOffset <= 0);
@@ -11073,10 +11329,12 @@ struct SPAdjustLiveness {
   bool out = false; // If true, the spill slots/stack pointer is live-out
   // If set, the index of the first instruction in the block which goes from
   // dead to alive.
-  folly::Optional<size_t> begin;
+  Optional<size_t> begin;
   // If set, the index of the last instruction in the block which goes from
   // alive to dead.
-  folly::Optional<size_t> end;
+  Optional<size_t> end;
+  // Whether this block contains an indirect fixup
+  bool hasIndirectFixup;
 };
 
 // Implementation of spill liveness algorithm, templated to allow for
@@ -11111,6 +11369,8 @@ jit::vector<SPAdjustLiveness> find_spill_liveness_impl(const State& state,
     }
   };
 
+  jit::vector<SPAdjustLiveness> liveness(unit.blocks.size());
+
   for (auto const b : state.rpo) {
     auto& live = slotLiveness[b];
     resize(live.in);
@@ -11129,6 +11389,7 @@ jit::vector<SPAdjustLiveness> find_spill_liveness_impl(const State& state,
         live.kill[o] = false;
         live.gen[o] = true;
       }
+      if (instrHasIndirectFixup(inst)) liveness[b].hasIndirectFixup = true;
     }
 
     live.in = live.gen;
@@ -11153,8 +11414,6 @@ jit::vector<SPAdjustLiveness> find_spill_liveness_impl(const State& state,
     }
   }
 
-  jit::vector<SPAdjustLiveness> liveness(unit.blocks.size());
-
   for (auto const b : state.rpo) {
     auto& live = liveness[b];
     bool spRecorded = spOff[b].in.has_value();
@@ -11172,20 +11431,23 @@ jit::vector<SPAdjustLiveness> find_spill_liveness_impl(const State& state,
         auto const& inst = block.code[i];
         assertx(inst.op != Vinstr::reload);
         if (inst.op == Vinstr::recordbasenativesp) spRecorded = true;
+        else if (inst.op == Vinstr::unrecordbasenativesp) spRecorded = false;
         if (!is_spill_inst(inst)) continue;
         live.begin = i;
-        always_assert_flog(spRecorded, "Trying to spill before allowed. "
-                           "Spill space is being allocated due to a spill at "
-                           "B{} Instr {}, but the base native sp is not yet "
-                           "recorded.", b, i);
+        // This should be caught earlier when the spill occurs.
+        assert_flog(spRecorded, "Trying to spill before allowed. "
+                    "Spill space is being allocated due to a spill at "
+                    "B{} Instr {}, but the base native sp is not yet "
+                    "recorded.", b, i);
         break;
       }
     } else {
-      always_assert_flog(spRecorded, "Trying to spill before it is allowed. "
-                         "Spill slots are live at the start of B{}, but the "
-                         "base native sp is not yet recorded. There is a "
-                         "spill somewhere in a loop that is not dominated by "
-                         "the recording of the base native sp.", b);
+      always_assert_flog(spRecorded, "Trying to spill before or after it is "
+                         "allowed. Spill slots are live at the start of B{}, "
+                         "but the base native sp is not yet recorded. There "
+                         "is a spill somewhere in a loop that is not "
+                         "dominated by the recording of the base native sp.",
+                         b);
     }
 
     // If there are no spill slots alive going out of the block and there's any
@@ -11257,7 +11519,18 @@ jit::vector<SPAdjustLiveness> find_sp_liveness(const State& state,
       auto& block = unit.blocks[b];
       for (size_t i = 0; i < block.code.size(); ++i) {
         auto const& inst = block.code[i];
-        if (!in && inst.op == Vinstr::recordbasenativesp) in = 0;
+        if (inst.op == Vinstr::recordbasenativesp) {
+          assertx(!in);
+          in = 0;
+          continue;
+        }
+        if (inst.op == Vinstr::unrecordbasenativesp) {
+          assertx(in);
+          assert_flog(*in == 0, "Base native sp unrecorded when spill space "
+                      "is live.");
+          in = std::nullopt;
+          continue;
+        }
         if (!in || sp_change(state, inst) == 0) continue;
         live.begin = i;
         found = true;
@@ -11269,16 +11542,26 @@ jit::vector<SPAdjustLiveness> find_sp_liveness(const State& state,
       found = true;
     }
 
-    if (!out) continue;
-    if (*out == 0) {
+    if (!out || *out == 0) {
       // The out-offset of the block is 0, so the stack pointer offset is dead
       // going out of the block. Look backwards for any instruction which
       // changes it to make the stack pointer offset alive.
       auto& block = unit.blocks[b];
       for (size_t i = block.code.size(); i > 0; --i) {
         auto const& inst = block.code[i-1];
-        if (inst.op == Vinstr::recordbasenativesp) break;
-        if (sp_change(state, inst) == 0) continue;
+        if (inst.op == Vinstr::recordbasenativesp) {
+          assertx(out);
+          assert_flog(*out == 0, "Base native sp unrecorded when spill space "
+                      "is live.");
+          out = std::nullopt;
+          continue;
+        }
+        if (inst.op == Vinstr::unrecordbasenativesp) {
+          assertx(!out);
+          out = 0;
+          continue;
+        }
+        if (!out || sp_change(state, inst) == 0) continue;
         live.end = i - 1;
         found = true;
         break;
@@ -11369,6 +11652,7 @@ void expand_spill_liveness(const State& state,
 
 // Insert stack pointer adjustments at the appropriate places
 void insert_sp_adjustments(State& state, size_t spillSpace) {
+  assertx(spillSpace != 0);
   // We make use of the stack pointer offset info to determine liveness of the
   // stack pointer, and establish if the base sp has been recorded.
   auto const spOffsets = calculate_sp_offsets(state);
@@ -11405,8 +11689,42 @@ void insert_sp_adjustments(State& state, size_t spillSpace) {
     return 1;
   };
 
+  auto const adjust_rip = [&](Vlabel b, size_t begin, size_t end) {
+    assertx(begin < state.unit.blocks[b].code.size());
+    assertx(end <= state.unit.blocks[b].code.size());
+    for (size_t i = begin; i < end; ++i) {
+      auto& inst = state.unit.blocks[b].code[i];
+      if (instrHasIndirectFixup(inst)) {
+        updateIndirectFixupBySpill(inst, spillSpace);
+      }
+    }
+  };
+
+  auto const prologue = isPrologue(state.unit.context->kind);
   for (auto const b : state.rpo) {
     auto const& spill = spillLiveness[b];
+
+    if (prologue && spill.hasIndirectFixup) {
+      if (spill.begin) {
+        // Spill begins in this block
+        assertx(!spill.in);
+        assertx(IMPLIES(!spill.end, spill.out));
+        assertx(IMPLIES(spill.end, !spill.out));
+        auto const end =
+          spill.end ? *spill.end + 1 : state.unit.blocks[b].code.size();
+        adjust_rip(b, *spill.begin, end);
+      } else if (spill.end) {
+        // Spill ends in this block
+        assertx(spill.in);
+        assertx(!spill.out);
+        adjust_rip(b, 0, *spill.end + 1);
+      } else if (spill.in && spill.out) {
+        // Spill persists in this block
+        adjust_rip(b, 0, state.unit.blocks[b].code.size());
+      } else {
+        assertx(!spill.in && !spill.out);
+      }
+    }
 
     size_t added = 0;
     if (spill.begin) {
@@ -11454,112 +11772,6 @@ void insert_sp_adjustments(State& state, size_t spillSpace) {
   }
 }
 
-// Look in the given block for any jccs which aren't at the end and have an
-// invalid next label. If so, split the block into two at the jcc.
-void split_block(State& state, Vlabel block) {
-  auto& unit = state.unit;
-
-  jit::vector<Vinstr> orig;
-  orig.swap(unit.blocks[block].code);
-
-  for (auto const& inst : orig) {
-    unit.blocks[block].code.emplace_back(inst);
-
-    // If the jcc has an invalid next label, that means it marks a place where
-    // the block should be split.
-    if (inst.op == Vinstr::jcc && !inst.jcc_.targets[0].isValid()) {
-      auto const newBlock = unit.makeBlock(
-        unit.blocks[block].area_idx,
-        unit.blocks[block].weight
-      );
-      unit.blocks[block].code.back().jcc_.targets[0] = newBlock;
-      block = newBlock;
-    }
-  }
-}
-
-// Split side exit instructions into a more explicit form. A side exit
-// instruction is something like fallbackcc or bindjcc, which conditionally
-// exits the unit (without any explicit control flow). We might have to insert
-// stack pointer adjustment code when we exit the unit, so we need a place to
-// insert the adjustments. Change these instructions into a conditional jump to
-// a block which uses their unconditional version. After inserting adjustment
-// code, we may have not inserted anything, and we can re-collapse them. Return
-// true if we made any changes.
-bool split_side_exits(State& state) {
-  auto& unit = state.unit;
-
-  jit::vector<Vlabel> blocksToSplit;
-  for (auto const b : state.rpo) {
-    for (size_t i = 0; i < unit.blocks[b].code.size(); ++i) {
-      auto const makeExitBlock = [&] (const Vinstr& exit) {
-        assertx(isBlockEnd(exit));
-
-        // Make a new exit block and populate it with the exit instruction
-        auto const target = unit.makeBlock(AreaIndex::Cold, 0);
-        auto& inst = unit.blocks[b].code[i];
-        auto& code = unit.blocks[target].code;
-        code.emplace_back(exit);
-        code.back().set_irctx(inst.irctx());
-
-        // Change the side-exit instruction to be a conditional jump to the
-        // block (or fall through). Note that this breaks vasm invariants, as we
-        // might have a jcc in the middle of a block now. This will be fixed up
-        // afterwards. We set the next label as invalid as the marker to
-        // split_block() that the block should be split here.
-        inst.jcc_ = jcc{
-          getConditionCode(inst),
-          getSFUseReg(inst),
-          {Vlabel{}, target}
-        };
-        inst.op = Vinstr::jcc;
-        invalidate_cached_operands(inst);
-        // Mark this block as needing splitting at jccs.
-        blocksToSplit.emplace_back(b);
-      };
-
-      auto const& inst = unit.blocks[b].code[i];
-      if (inst.op == Vinstr::fallbackcc) {
-        makeExitBlock(
-          fallback{
-            inst.fallbackcc_.target,
-            inst.fallbackcc_.spOff,
-            inst.fallbackcc_.trflags,
-            inst.fallbackcc_.args
-          }
-        );
-      } else if (inst.op == Vinstr::bindjcc) {
-        makeExitBlock(
-          bindjmp{
-            inst.bindjcc_.target,
-            inst.bindjcc_.spOff,
-            inst.bindjcc_.trflags,
-            inst.bindjcc_.args
-          }
-        );
-      } else if (inst.op == Vinstr::jcci) {
-        auto const target = inst.jcci_.target;
-        auto const ctx = inst.irctx();
-        makeExitBlock(jmpi{inst.jcci_.taken});
-        unit.blocks[b].code.emplace_back(jmp{target});
-        unit.blocks[b].code.back().set_irctx(ctx);
-      }
-    }
-  }
-
-  // Split any block which now has embedded jccs. This is a rare case where
-  // we've changed the CFG, so we need to recalculate RPO and predecessor
-  // information.
-  if (!blocksToSplit.empty()) {
-    for (auto const b : blocksToSplit) split_block(state, b);
-    compute_rpo(state);
-    state.preds = computePreds(unit);
-    return true;
-  }
-
-  return false;
-}
-
 // Turn spills into load/store instructions, adjusting the stack pointer where
 // appropriate.
 void lower_spills(State& state) {
@@ -11569,32 +11781,15 @@ void lower_spills(State& state) {
   auto const spillSpace =
     state.numSpillSlots * 8 + state.numWideSpillSlots * 16;
 
-  assertx(IMPLIES(!state.abi.canSpill, spillSpace == 0));
   assertx((spillSpace % 16) == 0);
 
   // Common case, no spills.
   if (spillSpace == 0) return;
 
-  // We need to split side exit instructions (which implicitly leave the unit
-  // intra-block) into explicit jumps to exit blocks. We might have to insert
-  // stack pointer adjustment code in those side-exits.
-  auto const split = split_side_exits(state);
   // Insert any stack pointer adjustments
   insert_sp_adjustments(state, spillSpace);
   // Actually transform the spills
   materialize_spills(state, spillSpace);
-
-  // If we split any side exits, try to unsplit any that we can
-  // again. If we didn't insert any adjustment code, they can be
-  // transformed back. This can change the CFG again, but nothing
-  // after this needs any of the pre-calculated information. The
-  // exception is if we're in debug builds and we're going to call
-  // calculate_sp_offsets() below.
-  if (split) {
-    optimizeExits(state.unit, 0);
-    optimizeJmps(state.unit, 0);
-    if (debug) compute_rpo(state);
-  }
 
   // Do a second stack pointer offset calculation which will check if the
   // adjustment code kept the stack pointer in a consistent state.
@@ -11740,8 +11935,14 @@ void allocateRegistersWithGraphColor(Vunit& unit, const Abi& abi) {
     printUnit(0, "before vasm-graph-color", unit);
   }
 
-  splitCriticalEdges(unit);
   assertx(check(unit));
+  // We don't want to mutate the cfg at all (it can interfere with
+  // vasm-block-counts), so we assert that the unit has had critical
+  // edges pre-split, and that we don't have side exiting
+  // instructions. No side exiting instructions means that any place
+  // we leave the unit, there's an explicit exit block.
+  assertx(checkNoCriticalEdges(unit));
+  assertx(checkNoSideExits(unit));
 
   auto state = make_state(unit, abi);
   SCOPE_ASSERT_DETAIL("Graph color state") { return show(state); };

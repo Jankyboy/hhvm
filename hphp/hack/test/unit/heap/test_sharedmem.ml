@@ -64,20 +64,20 @@ let test_local_changes
   in
   let expect_add key value =
     IntHeap.add key value;
-    expect_value key (Some value)
+    expect_value ~name:key (Some value)
   in
   let expect_remove key =
     IntHeap.remove_batch (IntHeap.KeySet.singleton key);
-    expect_value key None
+    expect_value ~name:key None
   in
   let test () =
-    expect_value "Filled" (Some 0);
-    expect_value "Empty" None;
+    expect_value ~name:"Filled" (Some 0);
+    expect_value ~name:"Empty" None;
 
     IntHeap.LocalChanges.push_stack ();
 
-    expect_value "Filled" (Some 0);
-    expect_value "Empty" None;
+    expect_value ~name:"Filled" (Some 0);
+    expect_value ~name:"Empty" None;
 
     (* For local changes we allow overriding values *)
     expect_add "Filled" 1;
@@ -90,8 +90,8 @@ let test_local_changes
     expect_add "Empty" 2;
 
     IntHeap.LocalChanges.pop_stack ();
-    expect_value "Filled" (Some 0);
-    expect_value "Empty" None;
+    expect_value ~name:"Filled" (Some 0);
+    expect_value ~name:"Empty" None;
 
     (* Commit changes are reflected in the shared memory *)
     IntHeap.LocalChanges.push_stack ();
@@ -101,8 +101,8 @@ let test_local_changes
 
     IntHeap.LocalChanges.commit_all ();
     IntHeap.LocalChanges.pop_stack ();
-    expect_value "Filled" (Some 1);
-    expect_value "Empty" (Some 2);
+    expect_value ~name:"Filled" (Some 1);
+    expect_value ~name:"Empty" (Some 2);
 
     IntHeap.LocalChanges.push_stack ();
 
@@ -110,8 +110,8 @@ let test_local_changes
     expect_remove "Empty";
 
     IntHeap.LocalChanges.pop_stack ();
-    expect_value "Filled" (Some 1);
-    expect_value "Empty" (Some 2);
+    expect_value ~name:"Filled" (Some 1);
+    expect_value ~name:"Empty" (Some 2);
 
     IntHeap.LocalChanges.push_stack ();
 
@@ -120,8 +120,8 @@ let test_local_changes
 
     IntHeap.LocalChanges.commit_all ();
     IntHeap.LocalChanges.pop_stack ();
-    expect_value "Filled" None;
-    expect_value "Empty" None;
+    expect_value ~name:"Filled" None;
+    expect_value ~name:"Empty" None;
 
     IntHeap.LocalChanges.push_stack ();
 
@@ -129,12 +129,12 @@ let test_local_changes
     expect_add "Empty" 2;
     IntHeap.LocalChanges.commit_batch (IntHeap.KeySet.singleton "Filled");
     IntHeap.LocalChanges.revert_batch (IntHeap.KeySet.singleton "Empty");
-    expect_value "Filled" (Some 0);
-    expect_value "Empty" None;
+    expect_value ~name:"Filled" (Some 0);
+    expect_value ~name:"Empty" None;
 
     IntHeap.LocalChanges.pop_stack ();
-    expect_value "Filled" (Some 0);
-    expect_value "Empty" None
+    expect_value ~name:"Filled" (Some 0);
+    expect_value ~name:"Empty" None
   in
   IntHeap.add "Filled" 0;
   test ();
@@ -165,7 +165,7 @@ let test_cache_behavior
     expect
       ~msg:
         (Printf.sprintf
-           "Expected L1 cacke size of %d, got %d"
+           "Expected L1 cache size of %d, got %d"
            expected_l1
            actual_l1)
       (actual_l1 = expected_l1);
@@ -173,7 +173,7 @@ let test_cache_behavior
     expect
       ~msg:
         (Printf.sprintf
-           "Expected L2 cacke size of %d, got %d"
+           "Expected L2 cache size of %d, got %d"
            expected_l2
            actual_l2)
       (actual_l2 = expected_l2)
@@ -210,19 +210,36 @@ let test_cache_behavior
 
 module TestNoCache =
   SharedMem.NoCache (SharedMem.Immediate) (StringKey) (IntVal)
-module TestWithCache =
+
+(* We shall not mix compressions, so create 2 separate caches  *)
+module TestWithCacheLz4 =
+  SharedMem.WithCache (SharedMem.Immediate) (StringKey) (IntVal) (Capacity)
+module TestWithCacheZstd =
   SharedMem.WithCache (SharedMem.Immediate) (StringKey) (IntVal) (Capacity)
 
 let tests () =
+  let zstd_compression_with_default_level = 3 in
+  let lz4_compression = 0 in
   let list =
     [
-      ("test_local_changes_no_cache", test_local_changes (module TestNoCache));
+      ( "test_local_changes_no_cache",
+        test_local_changes (module TestNoCache),
+        lz4_compression );
       ( "test_local_changes_with_cache",
-        test_local_changes (module TestWithCache) );
-      ("test_cache_behavior", test_cache_behavior (module TestWithCache));
+        test_local_changes (module TestWithCacheLz4),
+        lz4_compression );
+      ( "test_local_changes_with_cache_zstd",
+        test_local_changes (module TestWithCacheZstd),
+        zstd_compression_with_default_level );
+      ( "test_cache_behavior",
+        test_cache_behavior (module TestWithCacheLz4),
+        lz4_compression );
+      ( "test_cache_behavior_zstd",
+        test_cache_behavior (module TestWithCacheZstd),
+        zstd_compression_with_default_level );
     ]
   in
-  let setup_test (name, test) =
+  let setup_test (name, test, compression) =
     ( name,
       fun () ->
         let num_workers = 0 in
@@ -238,6 +255,7 @@ let tests () =
               shm_min_avail = 0;
               log_level = 0;
               sample_rate = 0.0;
+              compression;
             }
         in
         ignore (handle : SharedMem.handle);

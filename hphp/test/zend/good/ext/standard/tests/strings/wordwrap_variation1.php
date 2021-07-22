@@ -17,9 +17,6 @@ $cut = true;
 // resource variable
 $fp = fopen(__FILE__, "r");
 
-// get an unset variable
-$unset_var = 'string_val';
-unset($unset_var);
 
 // array with different values
 $values =  varray [
@@ -51,7 +48,7 @@ $values =  varray [
   FALSE,
 
   // objects
-  new stdclass(),
+  new stdClass(),
 
   // Null
   NULL,
@@ -64,11 +61,7 @@ $values =  varray [
   // resource variable
   $fp,
 
-  // undefined variable
-  @$undefined_var,
 
-  // unset variable
-  @$unset_var
 ];
 
 // loop though each element of the array and check the working of wordwrap()
@@ -94,7 +87,7 @@ for($index = 0; $index < count($values); $index ++) {
   $counter ++;
 }
 
-// close the resource 
+// close the resource
 fclose($fp);
 
 echo "Done\n";

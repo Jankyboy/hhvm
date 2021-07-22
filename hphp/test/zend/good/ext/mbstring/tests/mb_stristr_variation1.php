@@ -28,16 +28,13 @@ function entrypoint_mb_stristr_variation1(): void {
    */
 
   echo "*** Testing mb_stristr() : usage variation ***\n";
-  set_error_handler(fun('test_error_handler'));
+  set_error_handler(test_error_handler<>);
 
   // Initialise function arguments not being substituted (if any)
   $needle = b'string_val';
   $part = true;
   $encoding = 'utf-8';
 
-  //get an unset variable
-  $unset_var = 10;
-  unset ($unset_var);
 
   // heredoc string
   $heredoc = b<<<EOT
@@ -91,11 +88,7 @@ EOT;
         'instance of classWithToString' => new classWithToString(),
         'instance of classWithoutToString' => new classWithoutToString(),
 
-        // undefined data
-        'undefined var' => @$undefined_var,
 
-        // unset data
-        'unset var' => @$unset_var,
 
         // resource variable
         'resource' => $fp      

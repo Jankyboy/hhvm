@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_BCMARKER_H_
-#define incl_HPHP_JIT_BCMARKER_H_
+#pragma once
 
 #include <string>
 
@@ -45,20 +44,25 @@ struct BCMarker {
    */
   static BCMarker Dummy() {
     return BCMarker {
-      SrcKey(DummyFuncId, 0, ResumeMode::None),
-      FPInvOffset{0},
+      SrcKey(FuncId::Dummy, 0, ResumeMode::None),
+      SBInvOffset{0},
+      false,
       TransIDSet{},
+      nullptr,
       nullptr
     };
   }
 
   BCMarker() = default;
 
-  BCMarker(SrcKey sk, FPInvOffset sp, const TransIDSet& tids, SSATmp* fp)
+  BCMarker(SrcKey sk, SBInvOffset bcSPOff, bool stublogue,
+           const TransIDSet& tids, SSATmp* fp, SSATmp* sp)
     : m_sk(sk)
-    , m_spOff(sp)
+    , m_bcSPOff(bcSPOff)
+    , m_stublogue(stublogue)
     , m_profTransIDs{tids}
     , m_fp{fp}
+    , m_sp{sp}
     , m_fixupSk(sk)
   {
     assertx(valid());
@@ -66,26 +70,28 @@ struct BCMarker {
 
   bool operator==(const BCMarker& b) const {
     return b.m_sk == m_sk &&
-           b.m_spOff == m_spOff &&
+           b.m_bcSPOff == m_bcSPOff &&
+           b.m_stublogue == m_stublogue &&
            b.m_profTransIDs == m_profTransIDs &&
-           b.m_fp == m_fp;
+           b.m_fp == m_fp &&
+           b.m_sp == m_sp;
   }
   bool operator!=(const BCMarker& b) const { return !operator==(b); }
 
   std::string show() const;
   bool valid() const;
-  bool isDummy() const { return m_sk.valid() &&
-                                m_sk.funcID() == DummyFuncId; }
-  bool hasFunc() const { return valid() && !isDummy(); }
+  bool hasFunc() const { return valid() && !m_sk.funcID().isDummy(); }
 
-  SrcKey      sk()       const { assertx(valid()); return m_sk;            }
-  const Func* func()     const { assertx(hasFunc()); return m_sk.func();   }
-  Offset      bcOff()    const { assertx(valid()); return m_sk.offset();   }
-  bool        hasThis()  const { assertx(valid()); return m_sk.hasThis();  }
-  bool        prologue() const { assertx(valid()); return m_sk.prologue(); }
-  FPInvOffset spOff()    const { assertx(valid()); return m_spOff;         }
-  SSATmp*     fp()       const { assertx(valid()); return m_fp;            }
-  SrcKey      fixupSk()  const { assertx(valid()); return m_fixupSk;       }
+  SrcKey      sk()        const { assertx(valid()); return m_sk;            }
+  const Func* func()      const { assertx(hasFunc()); return m_sk.func();   }
+  Offset      bcOff()     const { assertx(valid()); return m_sk.offset();   }
+  bool        hasThis()   const { assertx(valid()); return m_sk.hasThis();  }
+  bool        prologue()  const { assertx(valid()); return m_sk.prologue(); }
+  SBInvOffset bcSPOff()   const { assertx(valid()); return m_bcSPOff;       }
+  bool        stublogue() const { assertx(valid()); return m_stublogue;     }
+  SSATmp*     fp()        const { assertx(valid()); return m_fp;            }
+  SSATmp*     sp()        const { assertx(valid()); return m_sp;            }
+  SrcKey      fixupSk()   const { assertx(valid()); return m_fixupSk;       }
 
   const TransIDSet& profTransIDs() const {
     assertx(valid());
@@ -109,38 +115,37 @@ struct BCMarker {
     return m_fixupSk.offset();
   }
 
-  // Return a copy of this marker with an updated sp, fp, or sk.
-  BCMarker adjustSP(FPInvOffset sp) const {
-    return BCMarker { m_sk, sp, m_profTransIDs, m_fp };
+  // Return a copy of this marker with an updated bcSPOff, fp, or fixupSK.
+  BCMarker adjustSPOff(SBInvOffset bcSPOff) const {
+    return BCMarker { m_sk, bcSPOff, m_stublogue, m_profTransIDs, m_fp, m_sp };
   }
   BCMarker adjustFP(SSATmp* fp) const {
-    return BCMarker { m_sk, m_spOff, m_profTransIDs, fp };
+    return BCMarker { m_sk, m_bcSPOff, m_stublogue, m_profTransIDs, fp, m_sp };
   }
   BCMarker adjustFixupSK(SrcKey sk) const {
     auto ret = *this;
     ret.m_fixupSk = sk;
     return ret;
   }
-  BCMarker setPrologue() const {
-    auto ret = *this;
-    ret.m_sk = SrcKey{func(), bcOff(), SrcKey::PrologueTag{}};
-    return ret;
-  }
 
   void reset() {
     m_sk = SrcKey();
-    m_spOff = FPInvOffset{0};
+    m_bcSPOff = SBInvOffset{0};
+    m_stublogue = false;
     TransIDSet emptyTransIDSet;
     m_profTransIDs.swap(emptyTransIDSet);
     m_fp = nullptr;
+    m_sp = nullptr;
     m_fixupSk = SrcKey();
   }
 
 private:
   SrcKey      m_sk;
-  FPInvOffset m_spOff{0};
+  SBInvOffset m_bcSPOff{0};
+  bool        m_stublogue;
   TransIDSet  m_profTransIDs;
   SSATmp*     m_fp{nullptr};
+  SSATmp*     m_sp{nullptr};
 
   // Normally the fixup SrcKey is the same as the SrcKey for the marker,
   // however, when inlining has dropped an inner frame the fixup SrcKey will
@@ -153,4 +158,3 @@ private:
 
 }}
 
-#endif

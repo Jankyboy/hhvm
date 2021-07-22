@@ -66,6 +66,12 @@ type range = {
 }
 [@@deriving eq]
 
+type textDocumentSaveReason =
+  | Manual [@value 1]
+  | AfterDelay [@value 2]
+  | FocusOut [@value 3]
+[@@deriving enum]
+
 (* Represents a location inside a resource, such as a line inside a text file *)
 module Location = struct
   type t = {
@@ -236,7 +242,7 @@ module SymbolInformation = struct
     | Object [@value 19]
     | Key [@value 20]
     | Null [@value 21]
-    | EnumMember [@value 22]
+    | MemberOf [@value 22]
     | Struct [@value 23]
   [@@deriving enum]
 
@@ -365,7 +371,7 @@ module Initialize = struct
     | Verbose
 
   (* These hack-specific options they're all optional in initialize request,
-    and we pick a default if necessary while parsing. *)
+     and we pick a default if necessary while parsing. *)
   and initializationOptions = {
     useTextEditAutocomplete: bool;
     liveSyntaxErrors: bool;
@@ -667,6 +673,18 @@ module DidChange = struct
   }
 end
 
+(* WillSaveWaitUntilTextDocument request, method="textDocument/willSaveWaitUntil" *)
+module WillSaveWaitUntil = struct
+  type params = willSaveWaitUntilTextDocumentParams
+
+  and willSaveWaitUntilTextDocumentParams = {
+    textDocument: TextDocumentIdentifier.t;
+    reason: textDocumentSaveReason;
+  }
+
+  and result = TextEdit.t list
+end
+
 (* Watched files changed notification, method="workspace/didChangeWatchedFiles" *)
 module DidChangeWatchedFiles = struct
   type registerOptions = { watchers: fileSystemWatcher list }
@@ -712,7 +730,7 @@ end
 
 module CodeAction = struct
   (* A code action represents a change that can be performed in code, e.g. to fix a problem or
-    to refactor code. *)
+     to refactor code. *)
   type t = {
     (* A short, human-readable, title for this code action. *)
     title: string;
@@ -781,7 +799,7 @@ module Completion = struct
     | File [@value 17]
     | Reference [@value 18]
     | Folder [@value 19]
-    | EnumMember [@value 20]
+    | MemberOf [@value 20]
     | Constant [@value 21]
     | Struct [@value 22]
     | Event [@value 23]
@@ -830,6 +848,10 @@ module Completion = struct
     items: completionItem list;
   }
 
+  and completionDocumentation =
+    | MarkedStringsDocumentation of markedString list
+    | UnparsedDocumentation of Hh_json.json
+
   and completionItem = {
     label: string;
     (* the label in the UI *)
@@ -841,7 +863,7 @@ module Completion = struct
     (* nuclide-specific, right column *)
     itemType: string option;
     (* nuclide-specific, left column *)
-    documentation: markedString list option;
+    documentation: completionDocumentation option;
     (* human-readable doc-comment *)
     sortText: string option;
     (* used for sorting; if absent, uses label *)
@@ -1149,7 +1171,7 @@ module RegisterCapability = struct
   let make_registration (registerOptions : lsp_registration_options) :
       registration =
     (* The ID field is arbitrary but unique per type of capability (for future
-    deregistering, which we don't do). *)
+       deregistering, which we don't do). *)
     let (id, method_) =
       match registerOptions with
       | DidChangeWatchedFilesRegistrationOptions _ ->
@@ -1191,6 +1213,7 @@ type lsp_request =
   | HackTestStartServerRequestFB
   | HackTestStopServerRequestFB
   | HackTestShutdownServerlessRequestFB
+  | WillSaveWaitUntilRequest of WillSaveWaitUntil.params
   | UnknownRequest of string * Hh_json.json option
 
 type lsp_result =
@@ -1222,6 +1245,7 @@ type lsp_result =
   | HackTestStopServerResultFB
   | HackTestShutdownServerlessResultFB
   | RegisterCapabilityRequestResult
+  | WillSaveWaitUntilResult of WillSaveWaitUntil.result
   | ErrorResult of Error.t
 
 type lsp_notification =

@@ -66,14 +66,14 @@ let find_saved_symbolindex ~(ignore_hh_version : bool) :
            ~saved_state_type:Saved_state_loader.Symbol_index)
     in
     match res with
-    | Ok { Saved_state_loader.saved_state_info; _ } ->
+    | Ok { Saved_state_loader.main_artifacts; _ } ->
       Ok
         (Path.to_string
-           saved_state_info
-             .Saved_state_loader.Symbol_index_info.symbol_index_path)
+           main_artifacts.Saved_state_loader.Symbol_index_info.symbol_index_path)
     | Error load_error ->
       Error (Saved_state_loader.long_user_message_of_error load_error)
-  with _ -> Error "Exception searching for saved state"
+  with
+  | _ -> Error "Exception searching for saved state"
 
 (* Determine the correct filename to use for the db_path or build it *)
 let find_or_build_sqlite_file
@@ -151,6 +151,7 @@ let read_si_results (stmt : Sqlite3.stmt) : si_results =
   let results = ref [] in
   while is_row (Sqlite3.step stmt) do
     let name = Sqlite3.Data.to_string (Sqlite3.column stmt 0) in
+    let name = Option.value_exn name in
     let kindnum = to_int (Sqlite3.column stmt 1) in
     let kind = int_to_kind kindnum in
     let filehash = to_int64 (Sqlite3.column stmt 2) in
@@ -292,6 +293,7 @@ let fetch_namespaces ~(sienv : si_env) : string list =
   let namespace_list = ref [] in
   while is_row (Sqlite3.step stmt) do
     let name = Sqlite3.Data.to_string (Sqlite3.column stmt 0) in
+    let name = Option.value_exn name in
     namespace_list := name :: !namespace_list
   done;
   !namespace_list

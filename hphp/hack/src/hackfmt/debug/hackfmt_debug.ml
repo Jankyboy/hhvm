@@ -13,7 +13,6 @@ module SyntaxTree = Full_fidelity_syntax_tree.WithSyntax (Syntax)
 open Hh_prelude
 
 type debug_config = {
-  print_ast: bool;
   print_doc: bool;
   print_nesting_graph: bool;
   print_rule_dependencies: bool;
@@ -23,7 +22,6 @@ type debug_config = {
 let debug_config =
   ref
     {
-      print_ast = false;
       print_doc = false;
       print_nesting_graph = false;
       print_rule_dependencies = false;
@@ -32,10 +30,6 @@ let debug_config =
 
 let init_with_options () =
   [
-    ( "--ast",
-      Arg.Unit
-        (fun () -> debug_config := { !debug_config with print_ast = true }),
-      " Print out an ast dump before the formatted result " );
     ( "--doc",
       Arg.Unit
         (fun () -> debug_config := { !debug_config with print_doc = true }),
@@ -48,9 +42,10 @@ let init_with_options () =
               !debug_config with
               chunk_ids =
                 Some
-                  (try List.map (Str.split (Str.regexp ",") s) ~f:int_of_string
-                   with Failure _ ->
-                     raise (Failure "Invalid id list specification"));
+                  (try
+                     List.map (Str.split (Str.regexp ",") s) ~f:int_of_string
+                   with
+                  | Failure _ -> raise (Failure "Invalid id list specification"));
             }),
       " Comma separate list of chunk ids to inspect (default is all)" );
     ( "--nesting",
@@ -86,7 +81,7 @@ let debug_chunk_groups env ~range source_text chunk_groups =
     | None -> (fun id c -> Some (id, c))
     | Some id_list ->
       fun id c ->
-        if List.exists id_list (fun x -> x = id) then
+        if List.exists id_list ~f:(fun x -> x = id) then
           Some (id, c)
         else
           None
@@ -129,4 +124,14 @@ let debug_full_text source_text =
 
 let debug_text_range source_text start_char end_char =
   Printf.printf "Subrange passed:\n%s\n"
-  @@ String.sub (SourceText.text source_text) start_char (end_char - start_char)
+  @@ String.sub
+       (SourceText.text source_text)
+       ~pos:start_char
+       ~len:(end_char - start_char)
+
+let debug env ~range source_text doc chunk_groups =
+  if !debug_config.print_doc then ignore (Doc.dump doc);
+  let range =
+    Option.value range ~default:(0, Full_fidelity_source_text.length source_text)
+  in
+  debug_chunk_groups env ~range source_text chunk_groups

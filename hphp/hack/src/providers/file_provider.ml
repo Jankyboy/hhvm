@@ -25,7 +25,7 @@ type file_type =
 exception File_provider_stale
 
 module FileHeap =
-  SharedMem.WithCache (SharedMem.ProfiledImmediate) (Relative_path.S)
+  SharedMem.NoCache (SharedMem.ProfiledImmediate) (Relative_path.S)
     (struct
       type t = file_type
 
@@ -33,15 +33,14 @@ module FileHeap =
 
       let description = "File"
     end)
-    (struct
-      let capacity = 1000
-    end)
 
 let read_file_contents_from_disk (fn : Relative_path.t) : string option =
-  (try Some (Sys_utils.cat (Relative_path.to_absolute fn)) with _ -> None)
+  try Some (Sys_utils.cat (Relative_path.to_absolute fn)) with
+  | _ -> None
 
 let get fn =
   match Provider_backend.get () with
+  | Provider_backend.Analysis -> failwith "invalid"
   | Provider_backend.Shared_memory -> FileHeap.get fn
   | Provider_backend.Local_memory _
   | Provider_backend.Decl_service _ ->
@@ -49,6 +48,7 @@ let get fn =
 
 let get_unsafe fn =
   match Provider_backend.get () with
+  | Provider_backend.Analysis -> failwith "invalid"
   | Provider_backend.Shared_memory ->
     begin
       match get fn with
@@ -62,6 +62,7 @@ let get_unsafe fn =
 
 let get_contents fn =
   match Provider_backend.get () with
+  | Provider_backend.Analysis -> failwith "invalid"
   | Provider_backend.Shared_memory ->
     begin
       match FileHeap.get fn with
@@ -80,6 +81,7 @@ let get_contents fn =
 
 let get_ide_contents_unsafe fn =
   match Provider_backend.get () with
+  | Provider_backend.Analysis -> failwith "invalid"
   | Provider_backend.Shared_memory ->
     begin
       match FileHeap.get fn with
@@ -89,11 +91,12 @@ let get_ide_contents_unsafe fn =
   | Provider_backend.Local_memory _
   | Provider_backend.Decl_service _ ->
     failwith
-      ( "File_provider.get_ide_contents_unsafe not supported "
-      ^ "with local/decl memory provider" )
+      ("File_provider.get_ide_contents_unsafe not supported "
+      ^ "with local/decl memory provider")
 
 let provide_file fn contents =
   match Provider_backend.get () with
+  | Provider_backend.Analysis -> failwith "invalid"
   | Provider_backend.Shared_memory -> FileHeap.add fn contents
   | Provider_backend.Local_memory _
   | Provider_backend.Decl_service _ ->
@@ -102,7 +105,8 @@ let provide_file fn contents =
 
 let provide_file_hint fn contents =
   match Provider_backend.get () with
-  | Provider_backend.Shared_memory -> FileHeap.write_around fn contents
+  | Provider_backend.Analysis -> failwith "invalid"
+  | Provider_backend.Shared_memory -> FileHeap.add fn contents
   | Provider_backend.Local_memory _
   | Provider_backend.Decl_service _ ->
     failwith
@@ -110,6 +114,7 @@ let provide_file_hint fn contents =
 
 let remove_batch paths =
   match Provider_backend.get () with
+  | Provider_backend.Analysis -> failwith "invalid"
   | Provider_backend.Shared_memory -> FileHeap.remove_batch paths
   | Provider_backend.Local_memory _
   | Provider_backend.Decl_service _ ->
@@ -122,18 +127,20 @@ let local_changes_pop_sharedmem_stack () = FileHeap.LocalChanges.pop_stack ()
 
 let local_changes_commit_batch paths =
   match Provider_backend.get () with
+  | Provider_backend.Analysis -> failwith "invalid"
   | Provider_backend.Shared_memory -> FileHeap.LocalChanges.commit_batch paths
   | Provider_backend.Local_memory _
   | Provider_backend.Decl_service _ ->
     failwith
-      ( "File_provider.local_changes_commit_batch not supported "
-      ^ "with local/decl memory provider" )
+      ("File_provider.local_changes_commit_batch not supported "
+      ^ "with local/decl memory provider")
 
 let local_changes_revert_batch paths =
   match Provider_backend.get () with
+  | Provider_backend.Analysis -> failwith "invalid"
   | Provider_backend.Shared_memory -> FileHeap.LocalChanges.revert_batch paths
   | Provider_backend.Local_memory _
   | Provider_backend.Decl_service _ ->
     failwith
-      ( "File_provider.local_changes_revert_batch not supported "
-      ^ "with local/decl memory provider" )
+      ("File_provider.local_changes_revert_batch not supported "
+      ^ "with local/decl memory provider")

@@ -9,25 +9,15 @@ function test_fn($name, $base, $with_error) {
 
   echo "- no error -\n";
   $base(TPATTERN);
-  var_dump(preg_last_error() === PREG_NO_ERROR);
   $error = null;
   $with_error(TPATTERN, inout $error);
   var_dump($error === null);
 
   echo "- error induced -\n";
   $base(TBACKTRACK_PATTERN);
-  var_dump(preg_last_error() === PREG_BACKTRACK_LIMIT_ERROR);
   $error = null;
   $with_error(TBACKTRACK_PATTERN, inout $error);
   var_dump($error === PREG_BACKTRACK_LIMIT_ERROR);
-
-  echo "- error state preserved -\n";
-  $base(TPATTERN);
-  var_dump(preg_last_error() === PREG_NO_ERROR);
-  $error = null;
-  $with_error(TBACKTRACK_PATTERN, inout $error);
-  var_dump($error === PREG_BACKTRACK_LIMIT_ERROR);
-  var_dump(preg_last_error() === PREG_NO_ERROR);
 }
 
 function test_preg_grep() {
@@ -106,6 +96,42 @@ function test_preg_split() {
   );
 }
 
+function test_preg_replace_callback() {
+  $_c = null;
+  test_fn(
+    'preg_replace_callback',
+    $p ==> preg_replace_callback($p, $x ==> $x, TINPUT, -1, inout $_c),
+    ($p, inout $e) ==> preg_replace_callback_with_error(
+      $p,
+      $x ==> $x,
+      TINPUT,
+      -1,
+      inout $_c,
+      inout $e,
+    ),
+  );
+}
+
+function test_preg_replace_callback_array() {
+  $_c = null;
+  test_fn(
+    'preg_replace_callback_array',
+    $p ==> preg_replace_callback_array(
+      darray[$p => $x ==> $x],
+      TINPUT,
+      -1,
+      inout $_c,
+    ),
+    ($p, inout $e) ==> preg_replace_callback_array_with_error(
+      darray[$p => $x ==> $x],
+      TINPUT,
+      -1,
+      inout $_c,
+      inout $e,
+    ),
+  );
+}
+
 <<__EntryPoint>>
 function main_preg_last_error() {
   // Set low backtrack limit to trigger PREG_BACKTRACK_LIMIT_ERROR
@@ -119,4 +145,6 @@ function main_preg_last_error() {
   test_preg_replace();
   test_preg_replace_with_count();
   test_preg_split();
+  test_preg_replace_callback();
+  test_preg_replace_callback_array();
 }

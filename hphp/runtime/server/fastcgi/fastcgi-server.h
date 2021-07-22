@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_RUNTIME_SERVER_FASTCGI_FASTCGI_SERVER_H_
-#define incl_HPHP_RUNTIME_SERVER_FASTCGI_FASTCGI_SERVER_H_
+#pragma once
 
 #include "hphp/runtime/server/fastcgi/fastcgi-session.h"
 #include "hphp/runtime/server/fastcgi/fastcgi-transport.h"
@@ -92,6 +91,7 @@ struct FastCGIServer : public Server,
                 bool useFileSocket);
   ~FastCGIServer() override {
     waitForEnd();
+    m_socket.reset();
   }
 
   // These are currently unimplemented (TODO(#4129))
@@ -174,5 +174,3 @@ private:
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif // incl_HPHP_HTTP_SERVER_FASTCGI_FASTCGI_SERVER_H_

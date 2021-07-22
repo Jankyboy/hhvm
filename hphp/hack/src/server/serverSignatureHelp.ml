@@ -85,7 +85,7 @@ let get_positional_info (cst : Syntax.t) (file_offset : int) :
           |> List.mapi ~f:(fun idx elem -> (idx, elem))
           |> List.find_map ~f:(fun (idx, child) ->
                  (* Don't bother range checking if we're in the final argument, since we
-          already checked that in in_args_area up above. *)
+                    already checked that in in_args_area up above. *)
                  let matches_end =
                    idx = List.length arguments - 1
                    || file_offset < trailing_end_offset child
@@ -105,12 +105,28 @@ let get_occurrence_info
     | SymbolOccurrence.Method (classname, methodname) ->
       let classname = Utils.add_ns classname in
       let ft =
-        if String.equal methodname "__construct" then
-          Decl_provider.get_class_constructor ctx classname
-        else
-          Option.first_some
-            (Decl_provider.get_class_method ctx classname methodname)
-            (Decl_provider.get_static_method ctx classname methodname)
+        Decl_provider.get_class ctx classname
+        |> Option.bind ~f:(fun cls ->
+               if String.equal methodname "__construct" then
+                 Decl_provider.Class.construct cls |> fst
+               else
+                 Option.first_some
+                   (Decl_provider.Class.get_method cls methodname)
+                   (Decl_provider.Class.get_smethod cls methodname))
+        |> Option.map ~f:(fun class_elt ->
+               (* We'll convert class_elt to fun_decl here solely as a lazy
+                  convenience, so that the "display" code below can display
+                  both class_elt and fun_decl uniformally. *)
+               {
+                 fe_module = None;
+                 fe_internal = false;
+                 Typing_defs.fe_pos = Lazy.force class_elt.Typing_defs.ce_pos;
+                 fe_type = Lazy.force class_elt.Typing_defs.ce_type;
+                 fe_deprecated = class_elt.Typing_defs.ce_deprecated;
+                 fe_php_std_lib = false;
+                 fe_support_dynamic_type =
+                   Typing_defs.get_ce_support_dynamic_type class_elt;
+               })
       in
       (ft, occurrence)
     | _ ->
@@ -194,7 +210,8 @@ let go_quarantined
         let param_docs =
           match siginfo_documentation with
           | Some siginfo_documentation ->
-            Some (Docblock_parser.get_param_docs siginfo_documentation)
+            Some
+              (Docblock_parser.get_param_docs ~docblock:siginfo_documentation)
           | None -> None
         in
         let ft_params =

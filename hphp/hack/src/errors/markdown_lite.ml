@@ -12,11 +12,12 @@ type delimiter =
   | Asterisk
   | DoubleAsterisk
   | DoubleTilde
+[@@deriving ord]
 
 module DelimiterKind = struct
   type t = delimiter
 
-  let compare = compare
+  let compare = compare_delimiter
 end
 
 module DelimiterSet = Caml.Set.Make (DelimiterKind)
@@ -63,7 +64,7 @@ let format_markdown
     in
     let styles =
       (* Second condition: if we're supposed to bold the message anyway
-        (e.g. in the main message), then add italics to it (and add bold later below) *)
+         (e.g. in the main message), then add italics to it (and add bold later below) *)
       if
         DelimiterSet.mem Asterisk delimiters
         || (DelimiterSet.mem DoubleAsterisk delimiters && add_bold)
@@ -100,7 +101,7 @@ let format_markdown
 let eat_prefix (prefix : string) (state : parse_state) : parse_state option =
   let { parsed; remaining } = state in
   Option.Monad_infix.(
-    String.chop_prefix remaining prefix >>= fun remaining ->
+    String.chop_prefix remaining ~prefix >>= fun remaining ->
     Some { parsed; remaining })
 
 (* Success if p s fails, returning original s *)

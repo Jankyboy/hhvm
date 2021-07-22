@@ -23,10 +23,8 @@ type env = {
    * until we can properly set up saved states to surface parse errors during
    * typechecking properly. *)
   show_all_errors: bool;
-  lower_coroutines: bool;
   fail_open: bool;
   parser_options: ParserOptions.t;
-  fi_mode: FileInfo.mode;
   file: Relative_path.t;
   disable_global_state_mutation: bool;
 }
@@ -40,7 +38,6 @@ let make_env
     ?(keep_errors = true)
     ?(quick_mode = false)
     ?(show_all_errors = false)
-    ?(lower_coroutines = true)
     ?(fail_open = true)
     ?(parser_options = ParserOptions.default)
     ?(disable_global_state_mutation = false)
@@ -54,9 +51,7 @@ let make_env
     keep_errors;
     quick_mode = (not codegen) && quick_mode;
     show_all_errors;
-    lower_coroutines;
     parser_options;
-    fi_mode = FileInfo.Mpartial;
     fail_open;
     file;
     disable_global_state_mutation;
@@ -69,7 +64,7 @@ let should_surface_errors env =
 
 type aast_result = {
   fi_mode: FileInfo.mode;
-  ast: (Pos.t, unit, unit, unit) Aast.program;
+  ast: (unit, unit, unit) Aast.program;
   content: string;
   file: Relative_path.t;
   comments: Scoured_comments.t;
@@ -107,7 +102,7 @@ let process_lowpri_errors (env : env) (lowpri_errors : (Pos.t * string) list) =
 let process_non_syntax_errors (_ : env) (errors : Errors.error list) =
   List.iter ~f:Errors.add_error errors
 
-let process_lint_errors (_ : env) (errors : Relative_path.t Lint.t list) =
+let process_lint_errors (_ : env) (errors : Pos.t Lint.t list) =
   List.iter ~f:Lint.add_lint errors
 
 external rust_from_text_ffi :
@@ -138,7 +133,6 @@ let from_text_rust (env : env) (source_text : SourceText.t) :
         keep_errors = env.keep_errors;
         quick_mode = env.quick_mode;
         show_all_errors = env.show_all_errors;
-        lower_coroutines = env.lower_coroutines;
         fail_open = env.fail_open;
         parser_options = env.parser_options;
       }
@@ -166,10 +160,10 @@ let process_lowerer_result
         fi_mode = r.file_mode;
         ast = aast;
         content =
-          ( if env.codegen then
+          (if env.codegen then
             ""
           else
-            SourceText.text source_text );
+            SourceText.text source_text);
         comments = r.scoured_comments;
         file = env.file;
         lowpri_errors_ = ref r.lowpri_errors;
@@ -182,42 +176,9 @@ let from_file (env : env) : aast_result =
   let source_text = SourceText.from_file env.file in
   from_text env source_text
 
-let aast_to_tast aast =
-  let tany = Typing_defs.mk (Typing_reason.Rnone, Typing_defs.make_tany ()) in
-  let endo =
-    object
-      inherit [_] Aast.map
-
-      method on_'ex _ pos = (pos, tany)
-
-      method on_'fb _ _ = ()
-
-      method on_'en _ _ = Tast.dummy_saved_env
-
-      method on_'hi _ _ = tany
-    end
-  in
-  endo#on_program () aast
-
-let tast_to_aast tast =
-  let endo =
-    object
-      inherit [_] Aast.map
-
-      method on_'ex _ (pos, _) = pos
-
-      method on_'fb _ _ = ()
-
-      method on_'en _ _ = ()
-
-      method on_'hi _ _ = ()
-    end
-  in
-  endo#on_program () tast
-
 type aast_to_nast_env = { mutable last_pos: Pos.t }
 
-let aast_to_nast aast =
+let aast_to_nast aast : Nast.program =
   let i _ x = x in
   let endo =
     object (self)
@@ -237,28 +198,12 @@ let aast_to_nast aast =
 
       method on_'fb _ _ = Nast.NamedWithUnsafeBlocks
 
-      method on_'ex = self#check_pos
-
-      method on_'hi = i
+      method on_'ex = i
 
       method on_'en = i
     end
   in
   endo#on_program { last_pos = Pos.none } aast
-
-(**
- * Converts a legacy ast (ast.ml) into a typed ast (tast.ml / aast.ml)
- * so that codegen and typing both operate on the same ast structure.
- *
- * There are some errors that are not valid hack but are still expected
- * to produce valid bytecode. hh_single_compile is expected to catch
- * these errors.
- *)
-let from_text_to_empty_tast (env : env) (source_text : SourceText.t) :
-    Rust_aast_parser_types.tast_result =
-  let result = from_text_rust env source_text in
-  Rust_aast_parser_types.
-    { result with aast = Result.map ~f:aast_to_tast result.aast }
 
 (*****************************************************************************(
  * Backward compatibility matter (should be short-lived)
@@ -312,7 +257,8 @@ let defensive_program
         fn
     in
     legacy @@ from_text env source
-  with e ->
+  with
+  | e ->
     Rust_pointer.free_leaked_pointer ();
 
     (* If we fail to lower, try to just make a source text and get the file mode *)
@@ -321,7 +267,8 @@ let defensive_program
       try
         let source = Full_fidelity_source_text.make fn content in
         Full_fidelity_parser.parse_mode source
-      with _ -> None
+      with
+      | _ -> None
     in
     let err = Exn.to_string e in
     let fn = Relative_path.suffix fn in
@@ -338,20 +285,7 @@ let defensive_program
 
 let defensive_from_file ?quick ?show_all_errors popt fn =
   let content =
-    (try Sys_utils.cat (Relative_path.to_absolute fn) with _ -> "")
+    try Sys_utils.cat (Relative_path.to_absolute fn) with
+    | _ -> ""
   in
   defensive_program ?quick ?show_all_errors popt fn content
-
-let defensive_from_file_with_default_popt ?quick ?show_all_errors fn =
-  defensive_from_file ?quick ?show_all_errors ParserOptions.default fn
-
-let defensive_program_with_default_popt
-    ?quick ?show_all_errors ?fail_open ?elaborate_namespaces fn content =
-  defensive_program
-    ?quick
-    ?show_all_errors
-    ?fail_open
-    ?elaborate_namespaces
-    ParserOptions.default
-    fn
-    content

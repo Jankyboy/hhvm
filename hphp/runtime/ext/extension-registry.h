@@ -1,5 +1,4 @@
-#ifndef incl_HPHP_EXTENSION_REGISTRY_H
-#define incl_HPHP_EXTENSION_REGISTRY_H
+#pragma once
 
 #include "hphp/runtime/ext/extension.h"
 #include "hphp/runtime/base/ini-setting.h"
@@ -34,6 +33,7 @@ Array getLoaded(bool enabled_only = true);
 void moduleLoad(const IniSetting::Map& ini, Hdf hdf);
 
 // called by hphp_process_init/exit
+void cliClientInit();
 void moduleInit();
 void moduleShutdown();
 void threadInit();
@@ -51,4 +51,3 @@ void deserialize(jit::ProfDataDeserializer& des);
 
 }
 
-#endif // incl_HPHP_EXTENSION_REGISTRY_H

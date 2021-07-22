@@ -18,7 +18,7 @@
  */
 use crate::syntax::*;
 
-pub trait SyntaxType<'a, C>: SyntaxTypeBase<'a, C>
+pub trait SyntaxType<C>: SyntaxTypeBase<C>
 {
     fn make_end_of_file(ctx: &C, end_of_file_token: Self) -> Self;
     fn make_script(ctx: &C, script_declarations: Self) -> Self;
@@ -30,11 +30,15 @@ pub trait SyntaxType<'a, C>: SyntaxTypeBase<'a, C>
     fn make_variable_expression(ctx: &C, variable_expression: Self) -> Self;
     fn make_pipe_variable_expression(ctx: &C, pipe_variable_expression: Self) -> Self;
     fn make_file_attribute_specification(ctx: &C, file_attribute_specification_left_double_angle: Self, file_attribute_specification_keyword: Self, file_attribute_specification_colon: Self, file_attribute_specification_attributes: Self, file_attribute_specification_right_double_angle: Self) -> Self;
-    fn make_enum_declaration(ctx: &C, enum_attribute_spec: Self, enum_keyword: Self, enum_name: Self, enum_colon: Self, enum_base: Self, enum_type: Self, enum_includes_keyword: Self, enum_includes_list: Self, enum_left_brace: Self, enum_enumerators: Self, enum_right_brace: Self) -> Self;
+    fn make_enum_declaration(ctx: &C, enum_attribute_spec: Self, enum_keyword: Self, enum_name: Self, enum_colon: Self, enum_base: Self, enum_type: Self, enum_left_brace: Self, enum_use_clauses: Self, enum_enumerators: Self, enum_right_brace: Self) -> Self;
+    fn make_enum_use(ctx: &C, enum_use_keyword: Self, enum_use_names: Self, enum_use_semicolon: Self) -> Self;
     fn make_enumerator(ctx: &C, enumerator_name: Self, enumerator_equal: Self, enumerator_value: Self, enumerator_semicolon: Self) -> Self;
+    fn make_enum_class_declaration(ctx: &C, enum_class_attribute_spec: Self, enum_class_enum_keyword: Self, enum_class_class_keyword: Self, enum_class_name: Self, enum_class_colon: Self, enum_class_base: Self, enum_class_extends: Self, enum_class_extends_list: Self, enum_class_left_brace: Self, enum_class_elements: Self, enum_class_right_brace: Self) -> Self;
+    fn make_enum_class_enumerator(ctx: &C, enum_class_enumerator_type: Self, enum_class_enumerator_name: Self, enum_class_enumerator_equal: Self, enum_class_enumerator_initial_value: Self, enum_class_enumerator_semicolon: Self) -> Self;
     fn make_record_declaration(ctx: &C, record_attribute_spec: Self, record_modifier: Self, record_keyword: Self, record_name: Self, record_extends_keyword: Self, record_extends_opt: Self, record_left_brace: Self, record_fields: Self, record_right_brace: Self) -> Self;
     fn make_record_field(ctx: &C, record_field_type: Self, record_field_name: Self, record_field_init: Self, record_field_semi: Self) -> Self;
     fn make_alias_declaration(ctx: &C, alias_attribute_spec: Self, alias_keyword: Self, alias_name: Self, alias_generic_parameter: Self, alias_constraint: Self, alias_equal: Self, alias_type: Self, alias_semicolon: Self) -> Self;
+    fn make_context_alias_declaration(ctx: &C, ctx_alias_attribute_spec: Self, ctx_alias_keyword: Self, ctx_alias_name: Self, ctx_alias_generic_parameter: Self, ctx_alias_as_constraint: Self, ctx_alias_equal: Self, ctx_alias_context: Self, ctx_alias_semicolon: Self) -> Self;
     fn make_property_declaration(ctx: &C, property_attribute_spec: Self, property_modifiers: Self, property_type: Self, property_declarators: Self, property_semicolon: Self) -> Self;
     fn make_property_declarator(ctx: &C, property_name: Self, property_initializer: Self) -> Self;
     fn make_namespace_declaration(ctx: &C, namespace_header: Self, namespace_body: Self) -> Self;
@@ -45,8 +49,8 @@ pub trait SyntaxType<'a, C>: SyntaxTypeBase<'a, C>
     fn make_namespace_group_use_declaration(ctx: &C, namespace_group_use_keyword: Self, namespace_group_use_kind: Self, namespace_group_use_prefix: Self, namespace_group_use_left_brace: Self, namespace_group_use_clauses: Self, namespace_group_use_right_brace: Self, namespace_group_use_semicolon: Self) -> Self;
     fn make_namespace_use_clause(ctx: &C, namespace_use_clause_kind: Self, namespace_use_name: Self, namespace_use_as: Self, namespace_use_alias: Self) -> Self;
     fn make_function_declaration(ctx: &C, function_attribute_spec: Self, function_declaration_header: Self, function_body: Self) -> Self;
-    fn make_function_declaration_header(ctx: &C, function_modifiers: Self, function_keyword: Self, function_name: Self, function_type_parameter_list: Self, function_left_paren: Self, function_parameter_list: Self, function_right_paren: Self, function_capability_provisional: Self, function_colon: Self, function_type: Self, function_where_clause: Self) -> Self;
-    fn make_capability_provisional(ctx: &C, capability_provisional_at: Self, capability_provisional_left_brace: Self, capability_provisional_type: Self, capability_provisional_unsafe_plus: Self, capability_provisional_unsafe_type: Self, capability_provisional_right_brace: Self) -> Self;
+    fn make_function_declaration_header(ctx: &C, function_modifiers: Self, function_keyword: Self, function_name: Self, function_type_parameter_list: Self, function_left_paren: Self, function_parameter_list: Self, function_right_paren: Self, function_contexts: Self, function_colon: Self, function_readonly_return: Self, function_type: Self, function_where_clause: Self) -> Self;
+    fn make_contexts(ctx: &C, contexts_left_bracket: Self, contexts_types: Self, contexts_right_bracket: Self) -> Self;
     fn make_where_clause(ctx: &C, where_clause_keyword: Self, where_clause_constraints: Self) -> Self;
     fn make_where_constraint(ctx: &C, where_constraint_left_type: Self, where_constraint_operator: Self, where_constraint_right_type: Self) -> Self;
     fn make_methodish_declaration(ctx: &C, methodish_attribute: Self, methodish_function_decl_header: Self, methodish_function_body: Self, methodish_semicolon: Self) -> Self;
@@ -61,8 +65,9 @@ pub trait SyntaxType<'a, C>: SyntaxTypeBase<'a, C>
     fn make_const_declaration(ctx: &C, const_modifiers: Self, const_keyword: Self, const_type_specifier: Self, const_declarators: Self, const_semicolon: Self) -> Self;
     fn make_constant_declarator(ctx: &C, constant_declarator_name: Self, constant_declarator_initializer: Self) -> Self;
     fn make_type_const_declaration(ctx: &C, type_const_attribute_spec: Self, type_const_modifiers: Self, type_const_keyword: Self, type_const_type_keyword: Self, type_const_name: Self, type_const_type_parameters: Self, type_const_type_constraint: Self, type_const_equal: Self, type_const_type_specifier: Self, type_const_semicolon: Self) -> Self;
+    fn make_context_const_declaration(ctx: &C, context_const_modifiers: Self, context_const_const_keyword: Self, context_const_ctx_keyword: Self, context_const_name: Self, context_const_type_parameters: Self, context_const_constraint: Self, context_const_equal: Self, context_const_ctx_list: Self, context_const_semicolon: Self) -> Self;
     fn make_decorated_expression(ctx: &C, decorated_expression_decorator: Self, decorated_expression_expression: Self) -> Self;
-    fn make_parameter_declaration(ctx: &C, parameter_attribute: Self, parameter_visibility: Self, parameter_call_convention: Self, parameter_type: Self, parameter_name: Self, parameter_default_value: Self) -> Self;
+    fn make_parameter_declaration(ctx: &C, parameter_attribute: Self, parameter_visibility: Self, parameter_call_convention: Self, parameter_readonly: Self, parameter_type: Self, parameter_name: Self, parameter_default_value: Self) -> Self;
     fn make_variadic_parameter(ctx: &C, variadic_parameter_call_convention: Self, variadic_parameter_type: Self, variadic_parameter_ellipsis: Self) -> Self;
     fn make_old_attribute_specification(ctx: &C, old_attribute_specification_left_double_angle: Self, old_attribute_specification_attributes: Self, old_attribute_specification_right_double_angle: Self) -> Self;
     fn make_attribute_specification(ctx: &C, attribute_specification_attributes: Self) -> Self;
@@ -71,7 +76,7 @@ pub trait SyntaxType<'a, C>: SyntaxTypeBase<'a, C>
     fn make_inclusion_directive(ctx: &C, inclusion_expression: Self, inclusion_semicolon: Self) -> Self;
     fn make_compound_statement(ctx: &C, compound_left_brace: Self, compound_statements: Self, compound_right_brace: Self) -> Self;
     fn make_expression_statement(ctx: &C, expression_statement_expression: Self, expression_statement_semicolon: Self) -> Self;
-    fn make_markup_section(ctx: &C, markup_text: Self, markup_suffix: Self) -> Self;
+    fn make_markup_section(ctx: &C, markup_hashbang: Self, markup_suffix: Self) -> Self;
     fn make_markup_suffix(ctx: &C, markup_suffix_less_than_question: Self, markup_suffix_name: Self) -> Self;
     fn make_unset_statement(ctx: &C, unset_keyword: Self, unset_left_paren: Self, unset_variables: Self, unset_right_paren: Self, unset_semicolon: Self) -> Self;
     fn make_using_statement_block_scoped(ctx: &C, using_block_await_keyword: Self, using_block_using_keyword: Self, using_block_left_paren: Self, using_block_expressions: Self, using_block_right_paren: Self, using_block_body: Self) -> Self;
@@ -92,8 +97,7 @@ pub trait SyntaxType<'a, C>: SyntaxTypeBase<'a, C>
     fn make_case_label(ctx: &C, case_keyword: Self, case_expression: Self, case_colon: Self) -> Self;
     fn make_default_label(ctx: &C, default_keyword: Self, default_colon: Self) -> Self;
     fn make_return_statement(ctx: &C, return_keyword: Self, return_expression: Self, return_semicolon: Self) -> Self;
-    fn make_goto_label(ctx: &C, goto_label_name: Self, goto_label_colon: Self) -> Self;
-    fn make_goto_statement(ctx: &C, goto_statement_keyword: Self, goto_statement_label_name: Self, goto_statement_semicolon: Self) -> Self;
+    fn make_yield_break_statement(ctx: &C, yield_break_keyword: Self, yield_break_break: Self, yield_break_semicolon: Self) -> Self;
     fn make_throw_statement(ctx: &C, throw_keyword: Self, throw_expression: Self, throw_semicolon: Self) -> Self;
     fn make_break_statement(ctx: &C, break_keyword: Self, break_semicolon: Self) -> Self;
     fn make_continue_statement(ctx: &C, continue_keyword: Self, continue_semicolon: Self) -> Self;
@@ -101,10 +105,10 @@ pub trait SyntaxType<'a, C>: SyntaxTypeBase<'a, C>
     fn make_concurrent_statement(ctx: &C, concurrent_keyword: Self, concurrent_statement: Self) -> Self;
     fn make_simple_initializer(ctx: &C, simple_initializer_equal: Self, simple_initializer_value: Self) -> Self;
     fn make_anonymous_class(ctx: &C, anonymous_class_class_keyword: Self, anonymous_class_left_paren: Self, anonymous_class_argument_list: Self, anonymous_class_right_paren: Self, anonymous_class_extends_keyword: Self, anonymous_class_extends_list: Self, anonymous_class_implements_keyword: Self, anonymous_class_implements_list: Self, anonymous_class_body: Self) -> Self;
-    fn make_anonymous_function(ctx: &C, anonymous_attribute_spec: Self, anonymous_static_keyword: Self, anonymous_async_keyword: Self, anonymous_function_keyword: Self, anonymous_left_paren: Self, anonymous_parameters: Self, anonymous_right_paren: Self, anonymous_colon: Self, anonymous_type: Self, anonymous_use: Self, anonymous_body: Self) -> Self;
+    fn make_anonymous_function(ctx: &C, anonymous_attribute_spec: Self, anonymous_async_keyword: Self, anonymous_function_keyword: Self, anonymous_left_paren: Self, anonymous_parameters: Self, anonymous_right_paren: Self, anonymous_ctx_list: Self, anonymous_colon: Self, anonymous_readonly_return: Self, anonymous_type: Self, anonymous_use: Self, anonymous_body: Self) -> Self;
     fn make_anonymous_function_use_clause(ctx: &C, anonymous_use_keyword: Self, anonymous_use_left_paren: Self, anonymous_use_variables: Self, anonymous_use_right_paren: Self) -> Self;
     fn make_lambda_expression(ctx: &C, lambda_attribute_spec: Self, lambda_async: Self, lambda_signature: Self, lambda_arrow: Self, lambda_body: Self) -> Self;
-    fn make_lambda_signature(ctx: &C, lambda_left_paren: Self, lambda_parameters: Self, lambda_right_paren: Self, lambda_colon: Self, lambda_type: Self) -> Self;
+    fn make_lambda_signature(ctx: &C, lambda_left_paren: Self, lambda_parameters: Self, lambda_right_paren: Self, lambda_contexts: Self, lambda_colon: Self, lambda_readonly_return: Self, lambda_type: Self) -> Self;
     fn make_cast_expression(ctx: &C, cast_left_paren: Self, cast_type: Self, cast_right_paren: Self, cast_operand: Self) -> Self;
     fn make_scope_resolution_expression(ctx: &C, scope_resolution_qualifier: Self, scope_resolution_operator: Self, scope_resolution_name: Self) -> Self;
     fn make_member_selection_expression(ctx: &C, member_object: Self, member_operator: Self, member_name: Self) -> Self;
@@ -119,12 +123,12 @@ pub trait SyntaxType<'a, C>: SyntaxTypeBase<'a, C>
     fn make_nullable_as_expression(ctx: &C, nullable_as_left_operand: Self, nullable_as_operator: Self, nullable_as_right_operand: Self) -> Self;
     fn make_conditional_expression(ctx: &C, conditional_test: Self, conditional_question: Self, conditional_consequence: Self, conditional_colon: Self, conditional_alternative: Self) -> Self;
     fn make_eval_expression(ctx: &C, eval_keyword: Self, eval_left_paren: Self, eval_argument: Self, eval_right_paren: Self) -> Self;
-    fn make_define_expression(ctx: &C, define_keyword: Self, define_left_paren: Self, define_argument_list: Self, define_right_paren: Self) -> Self;
     fn make_isset_expression(ctx: &C, isset_keyword: Self, isset_left_paren: Self, isset_argument_list: Self, isset_right_paren: Self) -> Self;
-    fn make_function_call_expression(ctx: &C, function_call_receiver: Self, function_call_type_args: Self, function_call_left_paren: Self, function_call_argument_list: Self, function_call_right_paren: Self) -> Self;
+    fn make_function_call_expression(ctx: &C, function_call_receiver: Self, function_call_type_args: Self, function_call_enum_class_label: Self, function_call_left_paren: Self, function_call_argument_list: Self, function_call_right_paren: Self) -> Self;
     fn make_function_pointer_expression(ctx: &C, function_pointer_receiver: Self, function_pointer_type_args: Self) -> Self;
     fn make_parenthesized_expression(ctx: &C, parenthesized_expression_left_paren: Self, parenthesized_expression_expression: Self, parenthesized_expression_right_paren: Self) -> Self;
     fn make_braced_expression(ctx: &C, braced_expression_left_brace: Self, braced_expression_expression: Self, braced_expression_right_brace: Self) -> Self;
+    fn make_et_splice_expression(ctx: &C, et_splice_expression_dollar: Self, et_splice_expression_left_brace: Self, et_splice_expression_expression: Self, et_splice_expression_right_brace: Self) -> Self;
     fn make_embedded_braced_expression(ctx: &C, embedded_braced_expression_left_brace: Self, embedded_braced_expression_expression: Self, embedded_braced_expression_right_brace: Self) -> Self;
     fn make_list_expression(ctx: &C, list_keyword: Self, list_left_paren: Self, list_members: Self, list_right_paren: Self) -> Self;
     fn make_collection_literal_expression(ctx: &C, collection_literal_name: Self, collection_literal_left_brace: Self, collection_literal_initializers: Self, collection_literal_right_brace: Self) -> Self;
@@ -155,19 +159,18 @@ pub trait SyntaxType<'a, C>: SyntaxTypeBase<'a, C>
     fn make_xhp_expression(ctx: &C, xhp_open: Self, xhp_body: Self, xhp_close: Self) -> Self;
     fn make_xhp_close(ctx: &C, xhp_close_left_angle: Self, xhp_close_name: Self, xhp_close_right_angle: Self) -> Self;
     fn make_type_constant(ctx: &C, type_constant_left_type: Self, type_constant_separator: Self, type_constant_right_type: Self) -> Self;
-    fn make_pu_access(ctx: &C, pu_access_left_type: Self, pu_access_separator: Self, pu_access_right_type: Self) -> Self;
     fn make_vector_type_specifier(ctx: &C, vector_type_keyword: Self, vector_type_left_angle: Self, vector_type_type: Self, vector_type_trailing_comma: Self, vector_type_right_angle: Self) -> Self;
     fn make_keyset_type_specifier(ctx: &C, keyset_type_keyword: Self, keyset_type_left_angle: Self, keyset_type_type: Self, keyset_type_trailing_comma: Self, keyset_type_right_angle: Self) -> Self;
     fn make_tuple_type_explicit_specifier(ctx: &C, tuple_type_keyword: Self, tuple_type_left_angle: Self, tuple_type_types: Self, tuple_type_right_angle: Self) -> Self;
     fn make_varray_type_specifier(ctx: &C, varray_keyword: Self, varray_left_angle: Self, varray_type: Self, varray_trailing_comma: Self, varray_right_angle: Self) -> Self;
-    fn make_vector_array_type_specifier(ctx: &C, vector_array_keyword: Self, vector_array_left_angle: Self, vector_array_type: Self, vector_array_right_angle: Self) -> Self;
+    fn make_function_ctx_type_specifier(ctx: &C, function_ctx_type_keyword: Self, function_ctx_type_variable: Self) -> Self;
     fn make_type_parameter(ctx: &C, type_attribute_spec: Self, type_reified: Self, type_variance: Self, type_name: Self, type_param_params: Self, type_constraints: Self) -> Self;
     fn make_type_constraint(ctx: &C, constraint_keyword: Self, constraint_type: Self) -> Self;
+    fn make_context_constraint(ctx: &C, ctx_constraint_keyword: Self, ctx_constraint_ctx_list: Self) -> Self;
     fn make_darray_type_specifier(ctx: &C, darray_keyword: Self, darray_left_angle: Self, darray_key: Self, darray_comma: Self, darray_value: Self, darray_trailing_comma: Self, darray_right_angle: Self) -> Self;
-    fn make_map_array_type_specifier(ctx: &C, map_array_keyword: Self, map_array_left_angle: Self, map_array_key: Self, map_array_comma: Self, map_array_value: Self, map_array_right_angle: Self) -> Self;
     fn make_dictionary_type_specifier(ctx: &C, dictionary_type_keyword: Self, dictionary_type_left_angle: Self, dictionary_type_members: Self, dictionary_type_right_angle: Self) -> Self;
-    fn make_closure_type_specifier(ctx: &C, closure_outer_left_paren: Self, closure_function_keyword: Self, closure_inner_left_paren: Self, closure_parameter_list: Self, closure_inner_right_paren: Self, closure_colon: Self, closure_return_type: Self, closure_outer_right_paren: Self) -> Self;
-    fn make_closure_parameter_type_specifier(ctx: &C, closure_parameter_call_convention: Self, closure_parameter_type: Self) -> Self;
+    fn make_closure_type_specifier(ctx: &C, closure_outer_left_paren: Self, closure_readonly_keyword: Self, closure_function_keyword: Self, closure_inner_left_paren: Self, closure_parameter_list: Self, closure_inner_right_paren: Self, closure_contexts: Self, closure_colon: Self, closure_readonly_return: Self, closure_return_type: Self, closure_outer_right_paren: Self) -> Self;
+    fn make_closure_parameter_type_specifier(ctx: &C, closure_parameter_call_convention: Self, closure_parameter_readonly: Self, closure_parameter_type: Self) -> Self;
     fn make_classname_type_specifier(ctx: &C, classname_keyword: Self, classname_left_angle: Self, classname_type: Self, classname_trailing_comma: Self, classname_right_angle: Self) -> Self;
     fn make_field_specifier(ctx: &C, field_question: Self, field_name: Self, field_arrow: Self, field_type: Self) -> Self;
     fn make_field_initializer(ctx: &C, field_initializer_name: Self, field_initializer_arrow: Self, field_initializer_value: Self) -> Self;
@@ -187,13 +190,6 @@ pub trait SyntaxType<'a, C>: SyntaxTypeBase<'a, C>
     fn make_intersection_type_specifier(ctx: &C, intersection_left_paren: Self, intersection_types: Self, intersection_right_paren: Self) -> Self;
     fn make_error(ctx: &C, error_error: Self) -> Self;
     fn make_list_item(ctx: &C, list_item: Self, list_separator: Self) -> Self;
-    fn make_pocket_atom_expression(ctx: &C, pocket_atom_glyph: Self, pocket_atom_expression: Self) -> Self;
-    fn make_pocket_identifier_expression(ctx: &C, pocket_identifier_qualifier: Self, pocket_identifier_pu_operator: Self, pocket_identifier_field: Self, pocket_identifier_operator: Self, pocket_identifier_name: Self) -> Self;
-    fn make_pocket_atom_mapping_declaration(ctx: &C, pocket_atom_mapping_glyph: Self, pocket_atom_mapping_name: Self, pocket_atom_mapping_left_paren: Self, pocket_atom_mapping_mappings: Self, pocket_atom_mapping_right_paren: Self, pocket_atom_mapping_semicolon: Self) -> Self;
-    fn make_pocket_enum_declaration(ctx: &C, pocket_enum_attributes: Self, pocket_enum_modifiers: Self, pocket_enum_enum: Self, pocket_enum_name: Self, pocket_enum_left_brace: Self, pocket_enum_fields: Self, pocket_enum_right_brace: Self) -> Self;
-    fn make_pocket_field_type_expr_declaration(ctx: &C, pocket_field_type_expr_case: Self, pocket_field_type_expr_type: Self, pocket_field_type_expr_name: Self, pocket_field_type_expr_semicolon: Self) -> Self;
-    fn make_pocket_field_type_declaration(ctx: &C, pocket_field_type_case: Self, pocket_field_type_type: Self, pocket_field_type_type_parameter: Self, pocket_field_type_semicolon: Self) -> Self;
-    fn make_pocket_mapping_id_declaration(ctx: &C, pocket_mapping_id_name: Self, pocket_mapping_id_initializer: Self) -> Self;
-    fn make_pocket_mapping_type_declaration(ctx: &C, pocket_mapping_type_keyword: Self, pocket_mapping_type_name: Self, pocket_mapping_type_equal: Self, pocket_mapping_type_type: Self) -> Self;
+    fn make_enum_class_label_expression(ctx: &C, enum_class_label_qualifier: Self, enum_class_label_hash: Self, enum_class_label_expression: Self) -> Self;
 
 }

@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_DATETIME_H_
-#define incl_HPHP_DATETIME_H_
+#pragma once
 
 #include <memory>
 
@@ -245,7 +244,13 @@ public:
   int hour12() const { return (m_time->h % 12) ? (int) m_time->h % 12 : 12;}
   int minute() const { return m_time->i;}
   int second() const { return m_time->s;}
-  double fraction() const { return m_time->f;}
+  double fraction() const {
+#if TIMELIB_VERSION >= TIMELIB_MODERN
+      return m_time->us / 1000000.0;
+#else
+      return m_time->f;
+#endif
+  }
   int zoneType() const { return m_time->zone_type;}
   int beat() const;    // Swatch Beat a.k.a. Internet Time
   int dow() const;     // day of week
@@ -315,8 +320,8 @@ private:
       m_errors = ec;
     }
     Array getLastWarnings() const {
-      if (!m_errors) return Array::CreateDArray();
-      DArrayInit ret(m_errors->warning_count);
+      if (!m_errors) return Array::CreateDict();
+      DictInit ret(m_errors->warning_count);
       for(int i = 0; i < m_errors->warning_count; i++) {
         timelib_error_message *em = m_errors->warning_messages + i;
         ret.set(em->position, String(em->message, CopyString));
@@ -324,8 +329,8 @@ private:
       return ret.toArray();
     }
     Array getLastErrors() const {
-      if (!m_errors) return Array::CreateDArray();
-      DArrayInit ret(m_errors->error_count);
+      if (!m_errors) return Array::CreateDict();
+      DictInit ret(m_errors->error_count);
       for(int i = 0; i < m_errors->error_count; i++) {
         timelib_error_message *em = m_errors->error_messages + i;
         ret.set(em->position, String(em->message, CopyString));
@@ -361,7 +366,8 @@ private:
 
   // helpers
   static Array ParseTime(timelib_time* time,
-                         struct timelib_error_container* error);
+                        timelib_error_container* error);
+
   void update();
   String rfcFormat(const String& format) const;
   String stdcFormat(const String& format) const;
@@ -369,5 +375,3 @@ private:
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif // incl_HPHP_DATETIME_H_

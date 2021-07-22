@@ -116,20 +116,10 @@ function with_parent_constructor_call(): void {
 }
 
 class WithReactiveMethods {
-  <<__Rx>>
   public function reactive(): void {}
 
-  <<__Rx>>
   public function call_reactive(): void {
     $this->reactive();
-  }
-
-  <<__RxShallow>>
-  public function shallow_reactive(): void {}
-
-  <<__RxShallow>>
-  public function call_shallow_reactive(): void {
-    $this->shallow_reactive();
   }
 }
 
@@ -144,4 +134,23 @@ class WithLateInit {
   public function setCount(int $count): void {
     $this->count = $count;
   }
+}
+
+abstract class TestExtractConstruct {
+    public function __construct() {}
+}
+
+interface IAsConstraint{}
+abstract class WithTparamConstraint<T as IAsConstraint>{}
+
+class WithPropInConstruct<T> {
+  public function __construct(public T $x)[] {}
+}
+
+class WithTypeConstant {
+  const type T = string;
+}
+
+class WithTypeConstantParamConstraint<T as WithTypeConstant::T> {
+  public function foo(): void {}
 }

@@ -14,17 +14,12 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VM_SOURCE_LOCATION_H_
-#define incl_HPHP_VM_SOURCE_LOCATION_H_
+#pragma once
 
 #include "hphp/parser/location.h"
 #include "hphp/runtime/base/types.h"
 
 namespace HPHP {
-
-///////////////////////////////////////////////////////////////////////////////
-
-struct Unit;
 
 ///////////////////////////////////////////////////////////////////////////////
 // Location tables.
@@ -90,6 +85,7 @@ struct OffsetRange {
 };
 
 using OffsetRangeVec = std::vector<OffsetRange>;
+using OffsetFuncRangeVec = std::vector<std::pair<const Func*, OffsetRangeVec>>;
 using LineToOffsetRangeVecMap = std::map<int, OffsetRangeVec>;
 
 /*
@@ -155,17 +151,13 @@ namespace SourceLocation {
  */
 int getLineNumber(const LineTable& table, Offset pc);
 bool getLoc(const SourceLocTable& table, Offset pc, SourceLoc& sLoc);
-void stashLineTable(const Unit* unit, LineTable table);
-void stashExtendedLineTable(const Unit* unit, SourceLocTable table);
 
-const SourceLocTable& getLocTable(const Unit*);
-
-void removeUnit(const Unit* unit);
-const LineTable& loadLineTable(const Unit* unit);
-const LineTable* getLineTable(const Unit* unit);
 LineInfo getLineInfo(const LineTable& table, Offset pc);
 
-LineToOffsetRangeVecMap getLineToOffsetRangeVecMap(const Unit* unit);
+void generateLineToOffsetRangesMap(
+  const SourceLocTable& srcLocTable,
+  LineToOffsetRangeVecMap& map
+);
 
 }
 
@@ -176,4 +168,3 @@ LineToOffsetRangeVecMap getLineToOffsetRangeVecMap(const Unit* unit);
 #include "hphp/runtime/vm/source-location-inl.h"
 #undef incl_HPHP_VM_SOURCE_LOCATION_INL_H_
 
-#endif // incl_HPHP_VM_SOURCE_LOCATION_H_

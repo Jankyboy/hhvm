@@ -21,8 +21,10 @@
 #include "hphp/runtime/base/perf-warning.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/stats.h"
+#include "hphp/runtime/base/bespoke/layout.h"
 #include "hphp/runtime/vm/debug/debug.h"
 #include "hphp/runtime/vm/vm-regs.h"
+#include "hphp/runtime/vm/workload-stats.h"
 
 #include "hphp/runtime/vm/jit/code-cache.h"
 #include "hphp/runtime/vm/jit/guard-type-profile.h"
@@ -30,16 +32,20 @@
 #include "hphp/runtime/vm/jit/mcgen.h"
 #include "hphp/runtime/vm/jit/perf-counters.h"
 #include "hphp/runtime/vm/jit/prof-data.h"
+#include "hphp/runtime/vm/jit/relocation.h"
+#include "hphp/runtime/vm/jit/service-requests.h"
 #include "hphp/runtime/vm/jit/srcdb.h"
-#include "hphp/runtime/vm/jit/stub-alloc.h"
+#include "hphp/runtime/vm/jit/tc-prologue.h"
 #include "hphp/runtime/vm/jit/tc-record.h"
 #include "hphp/runtime/vm/jit/timer.h"
 #include "hphp/runtime/vm/jit/trans-db.h"
 #include "hphp/runtime/vm/jit/unique-stubs.h"
 #include "hphp/runtime/vm/jit/unwind-itanium.h"
+#include "hphp/runtime/vm/jit/vasm-emit.h"
 #include "hphp/runtime/vm/jit/write-lease.h"
 
 #include "hphp/util/disasm.h"
+#include "hphp/util/logger.h"
 #include "hphp/util/mutex.h"
 #include "hphp/util/rds-local.h"
 #include "hphp/util/trace.h"
@@ -55,6 +61,8 @@ __gxx_personality_v0(int, _Unwind_Action, uint64_t, _Unwind_Exception*,
 TRACE_SET_MOD(mcg);
 
 namespace HPHP { namespace jit { namespace tc {
+
+__thread bool tl_is_jitting = false;
 
 CodeCache* g_code{nullptr};
 SrcDB g_srcDB;
@@ -73,7 +81,45 @@ bool shouldPGOFunc(const Func* func) {
   return profData() != nullptr;
 }
 
+// A code reuse block owns temporary code blocks used to emit into a reused
+// segment of another view.
+struct CodeReuseBlock {
+  CodeBlock reusedMain, reusedCold, reusedFrozen;
+
+  // Get a view into possibly reused code blocks (if there is space, and
+  // reusable TC is enabled).
+  CodeCache::View getMaybeReusedView(CodeCache::View& src,
+                                     const TransRange& range) {
+    if (!RuntimeOption::EvalEnableReusableTC) return src;
+    auto main = &src.main();
+    auto cold = &src.cold();
+    auto frozen = &src.frozen();
+
+    auto const pad = RuntimeOption::EvalReusableTCPadding;
+    size_t mainSize   = range.main.size() + pad;
+    size_t coldSize   = range.cold.size() + pad;
+    size_t frozenSize = range.frozen.size() + pad;
+    if (auto const s = (TCA)main->allocInner(mainSize)) {
+      reusedMain.init(s, mainSize, "Reused main");
+      main = &reusedMain;
+    }
+    if (auto const s = (TCA)cold->allocInner(coldSize)) {
+      reusedCold.init(s, coldSize, "Reused cold");
+      cold = &reusedCold;
+    }
+    if (cold != frozen) {
+      if (auto const s = (TCA)frozen->allocInner(frozenSize)) {
+        reusedFrozen.init(s, frozenSize, "Reused frozen");
+        frozen = &reusedFrozen;
+      }
+    }
+
+    return CodeCache::View(*main, *cold, *frozen, src.data(), false);
+  }
+};
+
 }
+///////////////////////////////////////////////////////////////////////////////
 
 TransLoc TransRange::loc() const {
   TransLoc loc;
@@ -92,129 +138,132 @@ bool canTranslate() {
     RuntimeOption::EvalJitGlobalTranslationLimit;
 }
 
-static AtomicVector<uint32_t> s_func_counters{0, 0};
-static InitFiniNode s_func_counters_reinit(
-  [] {
-    UnsafeReinitEmptyAtomicVector(s_func_counters,
-                                  RuntimeOption::EvalFuncCountHint);
-  },
-  InitFiniNode::When::PostRuntimeOptions, "s_func_counters reinit"
-);
+using FuncCounterMap = tbb::concurrent_hash_map<FuncId, uint32_t,
+                                                FuncIdHashCompare>;
+static FuncCounterMap s_func_counters;
 
 using SrcKeyCounters = tbb::concurrent_hash_map<SrcKey, uint32_t,
                                                 SrcKey::TbbHashCompare>;
 
 static SrcKeyCounters s_sk_counters;
 
-bool shouldTranslateNoSizeLimit(SrcKey sk, TransKind kind) {
+static RDS_LOCAL_NO_CHECK(bool, s_jittingTimeLimitExceeded);
+
+TranslationResult::Scope shouldTranslateNoSizeLimit(SrcKey sk, TransKind kind) {
   // If we've hit Eval.JitGlobalTranslationLimit, then we stop translating.
-  if (!canTranslate()) {
-    return false;
+  if (!canTranslate()) return TranslationResult::Scope::Process;
+
+  if (*s_jittingTimeLimitExceeded) return TranslationResult::Scope::Request;
+
+  auto const maxTransTime = RuntimeOption::EvalJitMaxRequestTranslationTime;
+  if (maxTransTime >= 0 && RuntimeOption::ServerExecutionMode()) {
+    auto const transCounter = Timer::CounterValue(Timer::mcg_translate);
+    if (transCounter.wall_time_elapsed >= maxTransTime) {
+      if (Trace::moduleEnabledRelease(Trace::mcg, 1)) {
+        Trace::traceRelease("Skipping translation. "
+                            "Time budget of %" PRId64 " exceeded. "
+                            "%" PRId64 "us elapsed. "
+                            "%" PRId64 " translations completed\n",
+                            maxTransTime,
+                            transCounter.wall_time_elapsed,
+                            transCounter.count);
+      }
+      *s_jittingTimeLimitExceeded = true;
+      return TranslationResult::Scope::Request;
+    }
   }
 
-  const Func* func = sk.func();
+  auto const func = sk.func();
 
   // Do not translate functions from units marked as interpret-only.
   if (func->unit()->isInterpretOnly()) {
-    return false;
+    return TranslationResult::Scope::Transient;
   }
 
   // Refuse to JIT Live translations if Eval.JitPGOOnly is enabled.
   if (RuntimeOption::EvalJitPGOOnly &&
       (kind == TransKind::Live || kind == TransKind::LivePrologue)) {
-    return false;
+    return TranslationResult::Scope::Transient;
   }
 
   // Refuse to JIT Live / Profile translations for a function until
   // Eval.JitLiveThreshold / Eval.JitProfileThreshold is hit.
-  const bool isLive = kind == TransKind::Live ||
+  auto const isLive = kind == TransKind::Live ||
                       kind == TransKind::LivePrologue;
-  const bool isProf = kind == TransKind::Profile ||
+  auto const isProf = kind == TransKind::Profile ||
                       kind == TransKind::ProfPrologue;
   if (isLive || isProf) {
-    auto const funcId = func->getFuncId();
-    s_func_counters.ensureSize(funcId + 1);
-    s_func_counters[funcId].fetch_add(1, std::memory_order_relaxed);
     uint32_t skCount = 1;
-    {
+    if (RuntimeOption::EvalJitSrcKeyThreshold > 1) {
       SrcKeyCounters::accessor acc;
       if (!s_sk_counters.insert(acc, SrcKeyCounters::value_type(sk, 1))) {
         skCount = ++acc->second;
       }
     }
-    auto const funcThreshold = isLive ? RuntimeOption::EvalJitLiveThreshold
-                                      : RuntimeOption::EvalJitProfileThreshold;
-    if (s_func_counters[funcId] < funcThreshold) {
-      return false;
+    {
+      FuncCounterMap::accessor acc;
+      if (!s_func_counters.insert(acc, {func->getFuncId(), 1})) ++acc->second;
+      auto const funcThreshold = isLive ? RuntimeOption::EvalJitLiveThreshold
+                                        : RuntimeOption::EvalJitProfileThreshold;
+      if (acc->second < funcThreshold) {
+        return TranslationResult::Scope::Transient;
+      }
     }
     if (skCount < RuntimeOption::EvalJitSrcKeyThreshold) {
-      return false;
+      return TranslationResult::Scope::Transient;
     }
   }
 
-  return true;
+  return TranslationResult::Scope::Success;
 }
 
 static std::atomic_flag s_did_log = ATOMIC_FLAG_INIT;
 static std::atomic<bool> s_TCisFull{false};
 
-bool shouldTranslate(SrcKey sk, TransKind kind) {
-  if (s_TCisFull.load(std::memory_order_relaxed) ||
-      !shouldTranslateNoSizeLimit(sk, kind)) {
-    return false;
+TranslationResult::Scope shouldTranslate(SrcKey sk, TransKind kind) {
+  if (s_TCisFull.load(std::memory_order_relaxed)) {
+    return TranslationResult::Scope::Process;
   }
 
-  const auto serverMode = RuntimeOption::ServerExecutionMode();
-  const auto maxTransTime = RuntimeOption::EvalJitMaxRequestTranslationTime;
-  const auto transCounter = Timer::CounterValue(Timer::mcg_translate);
-
-  if (serverMode && maxTransTime >= 0 &&
-      transCounter.wall_time_elapsed >= maxTransTime) {
-
-    if (Trace::moduleEnabledRelease(Trace::mcg, 1)) {
-      Trace::traceRelease("Skipping translation. "
-                          "Time budget of %" PRId64 " exceeded. "
-                          "%" PRId64 "us elapsed. "
-                          "%" PRId64 " translations completed\n",
-                          maxTransTime,
-                          transCounter.wall_time_elapsed,
-                          transCounter.count);
-    }
-    return false;
+  if (*s_jittingTimeLimitExceeded) {
+    return TranslationResult::Scope::Request;
   }
 
   auto const main_under = code().main().used() < CodeCache::AMaxUsage;
   auto const cold_under = code().cold().used() < CodeCache::AColdMaxUsage;
   auto const froz_under = code().frozen().used() < CodeCache::AFrozenMaxUsage;
 
-  // Otherwise, follow the Eval.JitAMaxUsage limits.
-  if (main_under && cold_under && froz_under) return true;
+  if (main_under && cold_under && froz_under) {
+    return shouldTranslateNoSizeLimit(sk, kind);
+  }
 
-  // We use cold and frozen for all kinds of translations, but we allow PGO
-  // translations past the limit for main if there's still space in code.hot.
+  // We use cold and frozen for all kinds of translations, but we
+  // allow PGO translations past the limit for main if there's still
+  // space in code.hot.
   if (cold_under && froz_under) {
     switch (kind) {
       case TransKind::ProfPrologue:
       case TransKind::Profile:
       case TransKind::OptPrologue:
       case TransKind::Optimize:
-        return code().hotEnabled();
+        if (code().hotEnabled()) return shouldTranslateNoSizeLimit(sk, kind);
+        break;
       default:
         break;
     }
   }
 
-  // Set a flag so we quickly bail from trying to generate new translations next
-  // time.
+  // Set a flag so we quickly bail from trying to generate new
+  // translations next time.
   s_TCisFull.store(true, std::memory_order_relaxed);
   Treadmill::enqueue([] { s_sk_counters.clear(); });
 
   if (main_under && !s_did_log.test_and_set() &&
       RuntimeOption::EvalProfBranchSampleFreq == 0) {
-    // If we ran out of TC space in cold or frozen but not in main, something
-    // unexpected is happening and we should take note of it.  We skip this
-    // logging if TC branch profiling is on, since it fills up code and frozen
-    // at a much higher rate.
+    // If we ran out of TC space in cold or frozen but not in main,
+    // something unexpected is happening and we should take note of
+    // it. We skip this logging if TC branch profiling is on, since
+    // it fills up code and frozen at a much higher rate.
     if (!cold_under) {
       logPerfWarning("cold_full", 1, [] (StructuredLogEntry&) {});
     }
@@ -222,7 +271,8 @@ bool shouldTranslate(SrcKey sk, TransKind kind) {
       logPerfWarning("frozen_full", 1, [] (StructuredLogEntry&) {});
     }
   }
-  return false;
+
+  return TranslationResult::Scope::Process;
 }
 
 bool newTranslation() {
@@ -273,6 +323,7 @@ void requestInit() {
   assertx(!g_unwind_rds.isInit());
   memset(g_unwind_rds.get(), 0, sizeof(UnwindRDS));
   g_unwind_rds.markInit();
+  *s_jittingTimeLimitExceeded.getCheck() = false;
 }
 
 void requestExit() {
@@ -338,17 +389,6 @@ bool isProfileCodeAddress(TCA addr) {
 
 bool isHotCodeAddress(TCA addr) {
   return g_code->hot().contains(addr);
-}
-
-void freeTCStub(TCA stub) {
-  // We need to lock the code because s_freeStubs.push() writes to the stub and
-  // the metadata to protect s_freeStubs itself.
-  auto codeLock = lockCode();
-  auto metaLock = lockMetadata();
-
-  assertx(code().frozen().contains(stub));
-
-  markStubFreed(stub);
 }
 
 void checkFreeProfData() {
@@ -453,54 +493,357 @@ LocalTCBuffer::LocalTCBuffer(Address start, size_t initialSize) {
 }
 
 OptView LocalTCBuffer::view() {
-  if (!valid()) return folly::none;
+  if (!valid()) return std::nullopt;
   return CodeCache::View(m_main, m_cold, m_frozen, m_data, true);
 }
 
-bool reachedTranslationLimit(TransKind kind, SrcKey sk, const SrcRec& srcRec) {
-  const auto numTrans = srcRec.numTrans();
+////////////////////////////////////////////////////////////////////////////////
+// Translator internals
+Translator::Translator(SrcKey sk, TransKind kind)
+  : sk(sk), kind(kind), unit(), vunit()
+{}
 
-  // Optimized translations perform this check at relocation time to avoid
-  // invalidating all of their SrcKeys early.
-  if (kind == TransKind::Optimize) return false;
+Translator::~Translator() = default;
 
-  if ((kind == TransKind::Profile &&
-       numTrans != RuntimeOption::EvalJitMaxProfileTranslations) ||
-      (kind != TransKind::Profile &&
-       numTrans != RuntimeOption::EvalJitMaxTranslations)) {
-    return false;
-  }
-  INC_TPC(max_trans);
+Optional<TranslationResult>
+Translator::acquireLeaseAndRequisitePaperwork() {
+  computeKind();
 
-  if (debug && Trace::moduleEnabled(Trace::mcg, 2)) {
-    auto srLock = srcRec.readlock();
-    const auto& tns = srcRec.translations();
-    TRACE(1, "Too many (%zd) translations: %s, BC offset %d\n",
-          tns.size(), sk.unit()->filepath()->data(),
-          sk.offset());
-    SKTRACE(2, sk, "{\n");
-    TCA topTrans = srcRec.getTopTranslation();
-    for (size_t i = 0; i < tns.size(); ++i) {
-      auto const tca = tns[i].entry();
-      auto const rec = transdb::getTransRec(tca);
-      assertx(rec);
-      SKTRACE(2, sk, "%zd %p\n", i, tca);
-      if (tca == topTrans) {
-        SKTRACE(2, sk, "%zd: *Top*\n", i);
+  // Avoid a race where we would create a Live translation while
+  // retranslateAll is in flight and we haven't generated an
+  // Optimized translation yet.
+  auto const shouldEmitLiveTranslation = [&] {
+    if (mcgen::retranslateAllPending() && !isProfiling(kind) && profData()) {
+      // When bespokes are enabled, we can't emit live translations until the
+      // bespoke hierarchy is finalized.
+      if (allowBespokeArrayLikes() && !bespoke::Layout::HierarchyFinalized()) {
+        return false;
       }
-      if (rec->kind == TransKind::Anchor) {
-        SKTRACE(2, sk, "%zd: Anchor\n", i);
-      } else {
-        SKTRACE(2, sk, "%zd: guards {\n", i);
-        for (unsigned j = 0; j < rec->guards.size(); ++j) {
-          FTRACE(2, "{}\n", rec->guards[j]);
+      // Functions that are marked as being profiled or marked as having been
+      // optimized are about to have their translations invalidated during the
+      // publish phase of retranslate all.  Don't allow live translations to be
+      // emitted in this scenario.
+      auto const fid = sk.func()->getFuncId();
+      return !profData()->profiling(fid) &&
+             !profData()->optimized(fid);
+    }
+    return true;
+  };
+  if (!shouldEmitLiveTranslation()) {
+    return TranslationResult::failTransiently();
+  }
+
+  if (auto const p = getCached()) return *p;
+
+  // Acquire the appropriate lease otherwise bail to a fallback
+  // execution mode (eg. interpreter) by returning a nullptr
+  // translation address.
+  m_lease.emplace(sk.func(), kind);
+  if (!(*m_lease)) return TranslationResult::failTransiently();
+  computeKind();  // Recompute the kind in case we are no longer profiling.
+  if (!m_lease->checkKind(kind)) return TranslationResult::failTransiently();
+
+  // Check again if we can emit live translations for the given
+  // func now that we have the lock.
+  if (!shouldEmitLiveTranslation()) {
+    return TranslationResult::failTransiently();
+  }
+
+  if (auto const s = shouldTranslate();
+      s != TranslationResult::Scope::Success) {
+    if (s == TranslationResult::Scope::Process) setCachedForProcessFail();
+    return TranslationResult{s};
+  }
+
+  if (UNLIKELY(RID().isJittingDisabled())) {
+    TRACE(2, "punting because jitting code was disabled\n");
+    return TranslationResult::failTransiently();
+  }
+
+  // Check for cached one last time since we have all the locks now.
+  return getCached();
+}
+
+TranslationResult::Scope Translator::shouldTranslate(bool noSizeLimit) {
+  if (kind == TransKind::Invalid) computeKind();
+  if (noSizeLimit) {
+    return shouldTranslateNoSizeLimit(sk, kind);
+  }
+  return ::HPHP::jit::tc::shouldTranslate(sk, kind);
+}
+
+Optional<TranslationResult>
+Translator::translate(Optional<CodeCache::View> view) {
+  // If the TransDB is enabled, we allocate TransIDs for all translations in
+  // ProfData to keep each translation's ID the same in both ProfData and
+  // TransDB.
+  if (profData() && (isProfiling(kind) || transdb::enabled())) {
+    transId = profData()->allocTransID();
+  }
+
+  if (!newTranslation()) return TranslationResult::failForProcess();
+
+  WorkloadStats::EnsureInit();
+  WorkloadStats guard(WorkloadStats::InTrans);
+  SCOPE_EXIT {
+    unit.reset();
+    vunit.reset();
+  };
+
+  {
+    tl_is_jitting = true;
+    this->gen();
+    SCOPE_EXIT {
+      tl_is_jitting = false;
+    };
+  }
+
+  // Check for translation failure.
+  // TODO: categorize failure
+  if (!vunit) return TranslationResult::failTransiently();
+
+  Timer timer(Timer::mcg_finishTranslation);
+
+  tracing::Block _b{
+    "emit-translation",
+      [&] {
+        return traceProps(*vunit);
+      }
+  };
+
+  auto codeLock = lockCode(false);
+  if (!view.has_value()) {
+    if (RuntimeOption::EvalEnableReusableTC) {
+      auto const initialSize = 256;
+      m_localBuffer = std::make_unique<uint8_t[]>(initialSize);
+      m_localTCBuffer =
+        std::make_unique<LocalTCBuffer>(m_localBuffer.get(), initialSize);
+      view = m_localTCBuffer->view();
+    } else {
+      // Using the global TC view.  Better lock things.
+      codeLock.lock();
+    }
+  }
+
+  // Tag the translation start, and build the trans meta.
+  // Generate vasm into the code view, retrying if we fill hot.
+  while (true) {
+    if (!view.has_value() || !view->isLocal()) {
+      view.emplace(code().view(kind));
+    }
+    CGMeta fixups;
+    TransLocMaker maker{*view};
+    const bool align = isPrologue(kind);
+    try {
+      view->alignForTranslation(align);
+      maker.markStart();
+      emitVunit(*vunit, unit.get(), *view, fixups,
+                mcgen::dumpTCAnnotation(kind) ? getAnnotations()
+                                              : nullptr);
+    } catch (const DataBlockFull& dbFull) {
+      if (dbFull.name == "hot") {
+        always_assert(!view->isLocal());
+        code().disableHot();
+        // Rollback tags and try again.
+        maker.rollback();
+        fixups.clear();
+        continue;
+      }
+      // Rollback so the area can be used by something else.
+      auto const range = maker.rollback();
+      auto const bytes = range.main.size() + range.cold.size() +
+                         range.frozen.size();
+      // There should be few of these.  They mean there is wasted work
+      // performing translation for functions that don't have space in the TC.
+      logPerfWarning("translation_overflow", 1, [&] (StructuredLogEntry& e) {
+        e.setStr("kind", show(kind));
+        e.setStr("srckey", show(sk));
+        e.setStr("data_block", dbFull.name);
+        e.setInt("bytes_dropped", bytes);
+      });
+      if (RuntimeOption::ServerExecutionMode()) {
+        Logger::Warning("TC area %s filled up!", dbFull.name.c_str());
+      }
+      reset();
+      return TranslationResult::failForProcess();
+    }
+    transMeta.emplace(*view);
+    transMeta->fixups = std::move(fixups);
+    transMeta->range = maker.markEnd();
+    break;
+  }
+
+  if (isProfiling(kind)) {
+    profData()->setProfiling(sk.func());
+  }
+
+  Timer metaTimer(Timer::mcg_finishTranslation_metadata);
+  if (unit && unit->logEntry()) {
+    auto metaLock = lockMetadata();
+    logTranslation(this, transMeta->range);
+  }
+
+  if (!RuntimeOption::EvalJitLogAllInlineRegions.empty()) {
+    logFrames(*vunit);
+  }
+
+  return std::nullopt;
+}
+
+bool Translator::translateSuccess() const {
+  return transMeta.has_value();
+}
+
+Optional<TranslationResult> Translator::relocate(bool alignMain) {
+  assertx(transMeta.has_value());
+  // Code emitted directly is relocated during emission (or emitted
+  // directly in place).
+  if (!transMeta->view.isLocal()) {
+    assertx(!RuntimeOption::EvalEnableReusableTC);
+    return std::nullopt;
+  }
+
+  WorkloadStats::EnsureInit();
+  WorkloadStats guard(WorkloadStats::InTrans);
+
+  auto const& range = transMeta->range;
+  auto& fixups = transMeta->fixups;
+
+  RelocationInfo rel;
+  {
+    auto codeLock = lockCode();
+    while (true) {
+      auto finalView = code().view(kind);
+      CodeReuseBlock crb;
+      auto dstView = crb.getMaybeReusedView(finalView, range);
+      auto& srcView = transMeta->view;
+      TransLocMaker maker{dstView};
+
+      try {
+        dstView.alignForTranslation(alignMain);
+        maker.markStart();
+        auto origin = range.data;
+        if (!origin.empty()) {
+          dstView.data().bytes(origin.size(),
+                               srcView.data().toDestAddress(origin.begin()));
+
+          auto dest = maker.dataRange();
+          auto oAddr = origin.begin();
+          auto dAddr = dest.begin();
+          while (oAddr != origin.end()) {
+            assertx(dAddr != dest.end());
+            rel.recordAddress(oAddr++, dAddr++, 0);
+          }
         }
-        SKTRACE(2, sk, "%zd } guards\n", i);
+
+        jit::relocate(rel, dstView.main(), range.main.begin(), range.main.end(),
+                      srcView.main(), fixups, nullptr, AreaIndex::Main);
+        jit::relocate(rel, dstView.cold(), range.cold.begin(), range.cold.end(),
+                      srcView.cold(), fixups, nullptr, AreaIndex::Cold);
+        if (&srcView.cold() != &srcView.frozen()) {
+          jit::relocate(rel, dstView.frozen(), range.frozen.begin(),
+                        range.frozen.end(), srcView.frozen(), fixups, nullptr,
+                        AreaIndex::Frozen);
+        }
+
+      } catch (const DataBlockFull& dbFull) {
+        if (dbFull.name == "hot") {
+          maker.rollback();
+          code().disableHot();
+          continue;
+        }
+        // Rollback so the area can be used by something else.
+        maker.rollback();
+        auto const bytes = range.main.size() + range.cold.size() +
+                           range.frozen.size();
+        // There should be few of these.  They mean there is wasted work
+        // performing translation for functions that don't have space in the TC.
+        logPerfWarning("translation_overflow", 1, [&] (StructuredLogEntry& e) {
+          e.setStr("kind", show(kind));
+          e.setStr("srckey", show(sk));
+          e.setStr("data_block", dbFull.name);
+          e.setInt("bytes_dropped", bytes);
+        });
+        reset();
+        return TranslationResult::failForProcess();
+      }
+      transMeta->range = maker.markEnd();
+      transMeta->view = finalView;
+      break;
+    }
+  }
+  adjustForRelocation(rel);
+  adjustMetaDataForRelocation(rel, nullptr, fixups);
+  adjustCodeForRelocation(rel, fixups);
+  return std::nullopt;
+}
+
+Optional<TranslationResult> Translator::bindOutgoingEdges() {
+  assertx(transMeta.has_value());
+  auto& meta = transMeta->fixups;
+  for (auto& b : meta.smashableBinds) {
+    // We can't bind to fallback translations, so use the stub. they do not
+    // exist yet outside of retranslate all, which has a different mechanism
+    // to achieve that.
+    if (b.fallback) {
+      auto const stub = svcreq::getOrEmitStub(
+        svcreq::StubType::Retranslate, b.sk, b.spOff);
+      if (stub == nullptr) {
+        reset();
+        return TranslationResult::failForProcess();
+      }
+      b.smashable.patch(stub);
+      continue;
+    }
+
+    auto sr = createSrcRec(b.sk, b.spOff);
+    if (sr == nullptr) {
+      reset();
+      return TranslationResult::failForProcess();
+    }
+
+    // If the target is translated, bind it.
+    if (sr->getTopTranslation()) {
+      auto srLock = sr->writelock();
+      if (sr->getTopTranslation()) {
+        sr->chainFrom(b.smashable);
+        continue;
       }
     }
-    SKTRACE(2, sk, "} /* Too many translations */\n");
+
+    // May need a stub, so create it.
+    auto const stub = svcreq::getOrEmitStub(
+      svcreq::StubType::Translate, b.sk, b.spOff);
+    if (stub == nullptr) {
+      reset();
+      return TranslationResult::failForProcess();
+    }
+
+    auto srLock = sr->writelock();
+    sr->chainFrom(b.smashable, stub);
   }
-  return true;
+
+  return std::nullopt;
+}
+
+TranslationResult Translator::publish() {
+  assertx(transMeta.has_value());
+  auto codeLock = lockCode();
+  auto metaLock = lockMetadata();
+  publishMetaInternal();
+  publishCodeInternal();
+  return TranslationResult{transMeta->range.loc().entry()};
+}
+
+void Translator::publishMetaInternal() {
+  assertx(transMeta.has_value());
+  this->publishMetaImpl();
+}
+
+void Translator::publishCodeInternal() {
+  assertx(transMeta.has_value());
+  this->publishCodeImpl();
+  updateCodeSizeCounters();
 }
 
 ////////////////////////////////////////////////////////////////////////////////

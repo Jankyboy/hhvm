@@ -1,6 +1,7 @@
 <?hh
 
 class X {
+  <<__NEVER_INLINE>>
   function __construct() {
   }
 }
@@ -10,7 +11,7 @@ function handler($kind, $name) {
 }
 
 <<__EntryPoint>> function test(): void {
-  fb_setprofile('handler');
+  fb_setprofile(handler<>);
   try {
     new X;
   } catch (Exception $e) {

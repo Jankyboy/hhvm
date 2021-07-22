@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_XBOX_SERVER_H_
-#define incl_HPHP_XBOX_SERVER_H_
+#pragma once
 
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/type-string.h"
@@ -41,32 +40,13 @@ struct XboxServer {
 
 public:
   /**
-   * Send/PostMessage paradigm for local and remote RPC.
-   */
-  static bool SendMessage(const String& message,
-                          Array& ret,
-                          int timeout_ms,
-                          const String& host = "localhost");
-  static bool PostMessage(const String& message, const String& host = "localhost");
-
-  /**
    * Local tasklet for parallel processing.
    */
   static Resource TaskStart(const String& msg, const String& reqInitDoc = "",
       ServerTaskEvent<XboxServer, XboxTransport> *event = nullptr);
-  static void TaskStartFromNonRequest(
-    const folly::StringPiece msg,
-    const folly::StringPiece reqInitDoc = "");
   static bool TaskStatus(const Resource& task);
   static int TaskResult(const Resource& task, int timeout_ms, Variant *ret);
   static int TaskResult(XboxTransport* const job, int timeout_ms, Variant *ret);
-
-  /**
-   * Gets the ServerInfo and RequestHandler for the current xbox worker thread.
-   * Returns NULL for non-xbox threads.
-   */
-  static std::shared_ptr<XboxServerInfo> GetServerInfo();
-  static RPCRequestHandler *GetRequestHandler();
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -80,7 +60,6 @@ struct XboxServerInfo : SatelliteServerInfo {
 
   void reload() {
     m_threadCount = RuntimeOption::XboxServerThreadCount;
-    m_port        = RuntimeOption::XboxServerPort;
     m_maxRequest  = RuntimeOption::XboxServerInfoMaxRequest;
     m_maxDuration = RuntimeOption::XboxServerInfoDuration;
     m_reqInitFunc = RuntimeOption::XboxServerInfoReqInitFunc;
@@ -183,5 +162,3 @@ private:
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif // incl_HPHP_XBOX_SERVER_H_

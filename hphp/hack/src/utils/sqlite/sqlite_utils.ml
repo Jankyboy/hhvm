@@ -72,7 +72,8 @@ let to_int64_exn (value : Sqlite3.Data.t) : int64 =
 
 (* Coerce a value to an Int64, and ignore errors *)
 let to_int64 (value : Sqlite3.Data.t) : int64 =
-  (try to_int64_exn value with Invalid_argument _ -> 0L)
+  try to_int64_exn value with
+  | Invalid_argument _ -> 0L
 
 (* Convert a sqlite data value to an ocaml int, or raise an exception *)
 let to_int_exn (value : Sqlite3.Data.t) : int =
@@ -88,7 +89,8 @@ let to_int_exn (value : Sqlite3.Data.t) : int =
 
 (* Convert a sqlite data value to an ocaml int, and ignore errors *)
 let to_int (value : Sqlite3.Data.t) : int =
-  (try to_int_exn value with Invalid_argument _ -> 0)
+  try to_int_exn value with
+  | Invalid_argument _ -> 0
 
 (* To save a bool to sqlite have to convert it to int64 *)
 let bool_to_sqlite (value : bool) : Sqlite3.Data.t =
@@ -105,10 +107,23 @@ let to_bool_exn (value : Sqlite3.Data.t) : bool =
 
 (* Convert a sqlite data value to an ocaml int, and ignore errors *)
 let to_bool (value : Sqlite3.Data.t) : bool =
-  (try to_bool_exn value with Invalid_argument _ -> false)
+  try to_bool_exn value with
+  | Invalid_argument _ -> false
 
 let column_str stmt idx = to_str_exn (Sqlite3.column stmt idx)
 
 let column_blob stmt idx = to_blob_exn (Sqlite3.column stmt idx)
 
 let column_int64 stmt idx = to_int64_exn (Sqlite3.column stmt idx)
+
+let optional f g stmt idx =
+  let data = f stmt idx in
+  match data with
+  | Sqlite3.Data.NULL -> None
+  | _ -> Some (g data)
+
+let column_str_option = optional Sqlite3.column to_str_exn
+
+let column_blob_option = optional Sqlite3.column to_blob_exn
+
+let column_int64_option = optional Sqlite3.column to_int64_exn

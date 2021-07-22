@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_APC_NAMED_ENTITY_H_
-#define incl_HPHP_APC_NAMED_ENTITY_H_
+#pragma once
 
 #include "hphp/runtime/base/apc-handle-defs.h"
 #include "hphp/runtime/vm/unit.h"
@@ -32,6 +31,14 @@ struct APCNamedEntity {
     assertx(!func->isPersistent());
   }
 
+  explicit APCNamedEntity(const Class* cls)
+    : m_entity(cls->preClass()->namedEntity())
+    , m_name(cls->name())
+    , m_handle(APCKind::ClassEntity, kInvalidDataType)
+  {
+    assertx(!cls->isPersistent());
+  }
+
   static const APCNamedEntity* fromHandle(const APCHandle* handle) {
     return reinterpret_cast<const APCNamedEntity*>(
       intptr_t(handle) - offsetof(APCNamedEntity, m_handle)
@@ -39,9 +46,15 @@ struct APCNamedEntity {
   }
   APCHandle* getHandle() { return &m_handle; }
   Variant getEntityOrNull() const {
-    assertx(m_handle.kind() == APCKind::FuncEntity);
-    auto const f = Func::load(m_entity, m_name);
-    return f ? Variant{f} : Variant{Variant::NullInit{}};
+    assertx(m_handle.kind() == APCKind::FuncEntity ||
+            m_handle.kind() == APCKind::ClassEntity);
+    if (m_handle.kind() == APCKind::FuncEntity) {
+      auto const f = Func::load(m_entity, m_name);
+      return f ? Variant{f} : Variant{Variant::NullInit{}};
+    } else {
+      auto const f = Class::load(m_entity, m_name);
+      return f ? Variant{f} : Variant{Variant::NullInit{}};
+    }
   }
 
 private:
@@ -52,4 +65,3 @@ private:
 
 }
 
-#endif

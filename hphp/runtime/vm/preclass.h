@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VM_PRECLASS_H_
-#define incl_HPHP_VM_PRECLASS_H_
+#pragma once
 
 #include "hphp/runtime/base/atomic-shared-ptr.h"
 #include "hphp/runtime/base/attr.h"
@@ -40,6 +39,7 @@ struct Class;
 struct Func;
 struct ObjectData;
 struct NamedEntity;
+struct StaticCoeffects;
 struct StringData;
 struct Unit;
 
@@ -66,36 +66,6 @@ using BuiltinDtorFunction = LowPtr<void(ObjectData*, const Class*)>;
  * differ since names may have different meanings.  For example, if the
  * PreClass "extends Foo", and Foo is defined differently in different
  * requests, we will make a different Class.
- *
- * Hoistability:
- *
- *    When a Unit is loaded at run time, each PreClass in the Unit which is
- *    determined to be `hoistable' will be loaded by the runtime (in the order
- *    they appear in the source) before the Unit's pseudo-main is executed.
- *    The hoistability rules ensure that loading a PreClass which is determined
- *    to be hoistable will never cause the autoload facility to be invoked.
- *
- *    A class is considered `hoistable' iff the following conditions apply:
- *
- *      - It's defined at the top level.
- *
- *      - There is no other definition for a class of the same name in
- *        its Unit.
- *
- *      - It uses no traits.  (It may however *be* a trait.)
- *
- *      - It implements no interfaces.  (It may however *be* an interface.)
- *
- *      - It is not an enum.
- *
- *      - It has no parent OR
- *           The parent is hoistable and defined earlier in the unit OR
- *           The parent is already defined when the unit is required
- *
- *    The very last condition here (parent already defined when the unit is
- *    required) is not known at parse time.  This leads to the Maybe/Always
- *    split below.
- *
  */
 struct PreClass : AtomicCountable {
   friend struct PreClassEmitter;
@@ -104,13 +74,6 @@ struct PreClass : AtomicCountable {
 
   /////////////////////////////////////////////////////////////////////////////
   // Types.
-
-  enum Hoistable {
-    NotHoistable,
-    Mergeable,
-    MaybeHoistable,
-    AlwaysHoistable,
-  };
 
   /*
    * Instance property information.
@@ -160,15 +123,25 @@ struct PreClass : AtomicCountable {
   struct Const {
     Const(const StringData* name,
           const TypedValueAux& val,
-          const StringData* phpCode);
+          const StringData* phpCode,
+          const bool fromTrait);
 
     void prettyPrint(std::ostream&, const PreClass*) const;
 
     const StringData* name()     const { return m_name; }
     const TypedValueAux& val()   const { return m_val; }
     const StringData* phpCode()  const { return m_phpCode; }
-    bool isAbstract()      const { return m_val.constModifiers().isAbstract(); }
-    bool isType()          const { return m_val.constModifiers().isType(); }
+    bool isFromTrait()     const { return m_fromTrait; }
+    bool isAbstractAndUninit()   const {
+      return (m_val.constModifiers().isAbstract() &&
+              !m_val.is_init() &&
+              m_val.is_const_val_missing());
+    }
+    bool isAbstract()            const {
+      return m_val.constModifiers().isAbstract();
+    }
+    ConstModifiers::Kind kind()  const { return m_val.constModifiers().kind(); }
+    StaticCoeffects coeffects()  const;
 
     template<class SerDe> void serde(SerDe& sd);
 
@@ -179,6 +152,7 @@ struct PreClass : AtomicCountable {
      * statically available (e.g. "const X = self::Y + 5;") */
     TypedValueAux m_val;
     LowStringPtr m_phpCode;
+    bool m_fromTrait : 1;
   };
 
   /*
@@ -275,12 +249,13 @@ struct PreClass : AtomicCountable {
   };
 
 private:
-  typedef IndexedStringMap<Func*,false,Slot> MethodMap;
-  typedef IndexedStringMap<Prop,true,Slot> PropMap;
-  typedef IndexedStringMap<Const,true,Slot> ConstMap;
+  typedef IndexedStringMap<Func*,Slot> MethodMap;
+  typedef IndexedStringMap<Prop,Slot> PropMap;
+  typedef IndexedStringMap<Const,Slot> ConstMap;
 
 public:
   typedef VMFixedVector<LowStringPtr> InterfaceVec;
+  typedef VMFixedVector<LowStringPtr> IncludedEnumsVec;
   typedef VMFixedVector<LowStringPtr> UsedTraitVec;
   typedef VMFixedVector<ClassRequirement> ClassRequirementsVec;
   typedef VMFixedVector<TraitPrecRule> TraitPrecRuleVec;
@@ -292,7 +267,7 @@ public:
 
   PreClass(Unit* unit, int line1, int line2, const StringData* n,
            Attr attrs, const StringData* parent, const StringData* docComment,
-           Id id, Hoistable hoistable);
+           Id id);
   ~PreClass();
 
   void atomicRelease();
@@ -313,7 +288,6 @@ public:
   const StringData* name()         const { return m_name; }
   const StringData* parent()       const { return m_parent; }
   const StringData* docComment()   const { return m_docComment; }
-  Hoistable         hoistability() const { return m_hoistable; }
 
   int64_t dynConstructSampleRate() const {
     return m_dynConstructSampleRate;
@@ -343,6 +317,7 @@ public:
    * Accessors for vectory data.
    */
   const InterfaceVec& interfaces()           const { return m_interfaces; }
+  const IncludedEnumsVec& includedEnums()    const { return m_includedEnums; }
   const UsedTraitVec& usedTraits()           const { return m_usedTraits; }
   const ClassRequirementsVec& requirements() const { return m_requirements; }
   const TraitPrecRuleVec& traitPrecRules()   const { return m_traitPrecRules; }
@@ -452,7 +427,6 @@ private:
   int m_line2;
   Id m_id;
   Attr m_attrs;
-  Hoistable m_hoistable;
   LowStringPtr m_name;
   LowStringPtr m_parent;
   LowStringPtr m_docComment;
@@ -460,6 +434,7 @@ private:
   Slot m_ifaceVtableSlot{kInvalidSlot};
   TypeConstraint m_enumBaseTy;
   InterfaceVec m_interfaces;
+  IncludedEnumsVec m_includedEnums;
   UsedTraitVec m_usedTraits;
   ClassRequirementsVec m_requirements;
   TraitPrecRuleVec m_traitPrecRules;
@@ -480,5 +455,3 @@ typedef AtomicSharedPtr<PreClass> PreClassPtr;
 #define incl_HPHP_VM_PRECLASS_INL_H_
 #include "hphp/runtime/vm/preclass-inl.h"
 #undef incl_HPHP_VM_PRECLASS_INL_H_
-
-#endif // incl_HPHP_VM_PRECLASS_H_

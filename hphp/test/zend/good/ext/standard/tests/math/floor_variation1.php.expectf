@@ -37,16 +37,5 @@ float(0)
 float(0)
 
 -- Iteration 13 --
-
-Notice: %s
-float(1)
-
--- Iteration 14 --
-float(0)
-
--- Iteration 15 --
-float(0)
-
--- Iteration 16 --
 float(%f)
 ===Done===

@@ -171,7 +171,7 @@ let empty = Unbacked Relative_path.Map.empty
 
 let filter a ~f =
   match a with
-  | Unbacked a -> Unbacked (Relative_path.Map.filter a f)
+  | Unbacked a -> Unbacked (Relative_path.Map.filter a ~f)
   | Backed (local_changes, db_path) ->
     let file_deltas = local_changes.Naming_sqlite.file_deltas in
     Backed
@@ -179,6 +179,7 @@ let filter a ~f =
           local_changes with
           Naming_sqlite.file_deltas =
             Naming_sqlite.fold
+              ~warn_on_naming_costly_iter:true
               ~db_path
               ~init:file_deltas
               ~f:
@@ -201,6 +202,7 @@ let fold a ~init ~f =
   | Unbacked a -> Relative_path.Map.fold a ~init ~f
   | Backed (local_changes, db_path) ->
     Naming_sqlite.fold
+      ~warn_on_naming_costly_iter:true
       ~db_path
       ~init
       ~f
@@ -212,6 +214,7 @@ let get_files a =
   | Backed (local_changes, db_path) ->
     (* Reverse at the end to preserve ascending sort order. *)
     Naming_sqlite.fold
+      ~warn_on_naming_costly_iter:true
       ~db_path
       ~init:[]
       ~f:(fun path _ acc -> path :: acc)
@@ -236,39 +239,48 @@ let get_file_info a key =
     | Some Naming_sqlite.Deleted -> None
     | None -> Naming_sqlite.get_file_info db_path key)
 
-let get_file_info_unsafe a key =
-  Core_kernel.Option.value_exn (get_file_info a key)
+exception File_info_not_found
 
-let get_dep_set_files (naming_table : t) (deps : Typing_deps.DepSet.t) :
-    Relative_path.Set.t =
-  match naming_table with
-  | Unbacked _ ->
+let get_file_info_unsafe a key =
+  match get_file_info a key with
+  | Some info -> info
+  | None -> raise File_info_not_found
+
+let get_64bit_dep_set_files
+    (naming_table : t) (mode : Typing_deps_mode.t) (deps : Typing_deps.DepSet.t)
+    : Relative_path.Set.t =
+  match (naming_table, Typing_deps_mode.hash_mode mode) with
+  | (Unbacked _, _) ->
     failwith
-      "get_dep_set_files not supported for unbacked naming tables. Use Typing_deps.get_ifiles instead."
-  | Backed (local_changes, db_path) ->
+      "get_64bit_dep_set_files not supported for unbacked naming tables. Use Typing_deps.get_ifiles instead."
+  | (_, Typing_deps.Mode.Hash32Bit) ->
+    failwith "get_64bit_dep_set_files not supported for 32bit deps."
+  | (Backed (local_changes, db_path), Typing_deps.Mode.Hash64Bit) ->
     let base_results =
       Typing_deps.DepSet.fold
         deps
         ~init:Relative_path.Set.empty
         ~f:(fun dep acc ->
-          (* NOTE: currently, we issue three queries per dependency hash. If
-          there are a lot of dependency hashes, it may be necessary to
-          optimize this so that we issue larger bulk queries, with conditions
-          like
-
-            SELECT * FROM NAMING_FUNS
-            WHERE
-              HASH BETWEEN A AND B OR
-              HASH BETWEEN C AND D OR
-              HASH BETWEEN E AND F ...
-          *)
-          let consts = Naming_sqlite.get_const_paths_by_dep_hash db_path dep in
-          let funs = Naming_sqlite.get_fun_paths_by_dep_hash db_path dep in
-          let types = Naming_sqlite.get_type_paths_by_dep_hash db_path dep in
-          acc
-          |> Relative_path.Set.union consts
-          |> Relative_path.Set.union funs
-          |> Relative_path.Set.union types)
+          (* NOTE: This is done with three separate SQL queries into three separate tables. *)
+          let acc =
+            Option.fold
+              (Naming_sqlite.get_const_path_by_64bit_dep db_path dep)
+              ~init:acc
+              ~f:Relative_path.Set.add
+          in
+          let acc =
+            Option.fold
+              (Naming_sqlite.get_fun_path_by_64bit_dep db_path dep)
+              ~init:acc
+              ~f:Relative_path.Set.add
+          in
+          let acc =
+            Option.fold
+              (Naming_sqlite.get_type_path_by_64bit_dep db_path dep)
+              ~init:acc
+              ~f:(fun acc (path, _kind) -> Relative_path.Set.add acc path)
+          in
+          acc)
     in
 
     Relative_path.Map.fold
@@ -278,7 +290,10 @@ let get_dep_set_files (naming_table : t) (deps : Typing_deps.DepSet.t) :
         match file_info with
         | Naming_sqlite.Deleted -> Relative_path.Set.remove acc path
         | Naming_sqlite.Modified file_info ->
-          let file_deps = Typing_deps.deps_of_file_info file_info in
+          let file_deps =
+            Typing_deps.(
+              DepSet.of_list mode @@ Files.deps_of_file_info mode file_info)
+          in
           if
             not
               (Typing_deps.DepSet.is_empty
@@ -287,8 +302,8 @@ let get_dep_set_files (naming_table : t) (deps : Typing_deps.DepSet.t) :
             Relative_path.Set.add acc path
           else
             (* If this file happened to be present in the base changes, it
-            would be permissible to include it since we can return an
-            overestimate, but we may as well remove it. *)
+               would be permissible to include it since we can return an
+               overestimate, but we may as well remove it. *)
             Relative_path.Set.remove acc path)
 
 let has_file a key =
@@ -296,11 +311,12 @@ let has_file a key =
   | Some _ -> true
   | None -> false
 
-let iter a ~f =
+let iter ?(warn_on_naming_costly_iter = true) a ~f =
   match a with
   | Unbacked a -> Relative_path.Map.iter a ~f
   | Backed (local_changes, db_path) ->
     Naming_sqlite.fold
+      ~warn_on_naming_costly_iter
       ~db_path
       ~init:()
       ~f:(fun path fi () -> f path fi)
@@ -408,11 +424,11 @@ let save naming_table db_name =
   | Unbacked naming_table ->
     let t = Unix.gettimeofday () in
     (* Ideally, we would have a commit hash, which would result in the same
-      content version given the same version of source files. However,
-      using a unique version every time we save the naming table from scratch
-      is good enough to enable us to check that the local changes diff
-      provided as an argument to load_from_sqlite_with_changes_since_baseline
-      is compatible with the underlying SQLite table. *)
+       content version given the same version of source files. However,
+       using a unique version every time we save the naming table from scratch
+       is good enough to enable us to check that the local changes diff
+       provided as an argument to load_from_sqlite_with_changes_since_baseline
+       is compatible with the underlying SQLite table. *)
     let base_content_version =
       Printf.sprintf "%d-%s" (int_of_float t) (Random_id.short_string ())
     in
@@ -459,26 +475,26 @@ let from_saved saved =
          ~init:Relative_path.Map.empty
          ~f:(fun fn saved acc ->
            let file_info = FileInfo.from_saved fn saved in
-           Relative_path.Map.add acc fn file_info))
+           Relative_path.Map.add acc ~key:fn ~data:file_info))
   in
   let _t = Hh_logger.log_duration "Loaded naming table from blob" t in
   naming_table
 
 let to_saved a =
   match a with
-  | Unbacked a -> Relative_path.Map.map a FileInfo.to_saved
+  | Unbacked a -> Relative_path.Map.map a ~f:FileInfo.to_saved
   | Backed _ ->
     fold a ~init:Relative_path.Map.empty ~f:(fun path fi acc ->
         Relative_path.Map.add acc ~key:path ~data:(FileInfo.to_saved fi))
 
 let to_fast a =
   match a with
-  | Unbacked a -> Relative_path.Map.map a FileInfo.simplify
+  | Unbacked a -> Relative_path.Map.map a ~f:FileInfo.simplify
   | Backed _ ->
     fold a ~init:Relative_path.Map.empty ~f:(fun path fi acc ->
         Relative_path.Map.add acc ~key:path ~data:(FileInfo.simplify fi))
 
-let saved_to_fast saved = Relative_path.Map.map saved FileInfo.saved_to_names
+let saved_to_fast saved = Relative_path.Map.map saved ~f:FileInfo.saved_to_names
 
 (*****************************************************************************)
 (* Forward naming table creation functions *)
@@ -503,19 +519,19 @@ let update_reverse_entries_helper
       | Some fi ->
         Naming_provider.remove_type_batch
           backend
-          (fi.FileInfo.classes |> List.map ~f:snd |> SSet.of_list);
+          (fi.FileInfo.classes |> List.map ~f:snd);
         Naming_provider.remove_type_batch
           backend
-          (fi.FileInfo.typedefs |> List.map ~f:snd |> SSet.of_list);
+          (fi.FileInfo.typedefs |> List.map ~f:snd);
         Naming_provider.remove_type_batch
           backend
-          (fi.FileInfo.record_defs |> List.map ~f:snd |> SSet.of_list);
+          (fi.FileInfo.record_defs |> List.map ~f:snd);
         Naming_provider.remove_fun_batch
           backend
-          (fi.FileInfo.funs |> List.map ~f:snd |> SSet.of_list);
+          (fi.FileInfo.funs |> List.map ~f:snd);
         Naming_provider.remove_const_batch
           backend
-          (fi.FileInfo.consts |> List.map ~f:snd |> SSet.of_list)
+          (fi.FileInfo.consts |> List.map ~f:snd)
       | None -> ())
     changed_file_infos;
 
@@ -555,23 +571,23 @@ let update_reverse_entries ctx file_deltas =
   in
   update_reverse_entries_helper ctx changed_files_info
 
-let choose_local_changes ~local_changes ~custom_local_changes =
-  match custom_local_changes with
+let choose_local_changes ~local_changes ~changes_since_baseline =
+  match changes_since_baseline with
   | None -> local_changes
-  | Some custom_local_changes ->
+  | Some changes_since_baseline ->
     if
       String.equal
-        custom_local_changes.Naming_sqlite.base_content_version
+        changes_since_baseline.Naming_sqlite.base_content_version
         local_changes.Naming_sqlite.base_content_version
     then
-      custom_local_changes
+      changes_since_baseline
     else
       failwith
         (Printf.sprintf
            "%s\nSQLite content version: %s\nLocal changes content version: %s"
            "Incompatible local changes diff supplied."
            local_changes.Naming_sqlite.base_content_version
-           custom_local_changes.Naming_sqlite.base_content_version)
+           changes_since_baseline.Naming_sqlite.base_content_version)
 
 (**
   Loads the naming table from a SQLite database. The optional custom local
@@ -588,8 +604,7 @@ let choose_local_changes ~local_changes ~custom_local_changes =
   the local changes.
  *)
 let load_from_sqlite_for_type_checking
-    ~(should_update_reverse_entries : bool)
-    ~(custom_local_changes : Naming_sqlite.local_changes option)
+    ~(changes_since_baseline : Naming_sqlite.local_changes option)
     (ctx : Provider_context.t)
     (db_path : string) : t =
   Hh_logger.log "Loading naming table from SQLite...";
@@ -603,14 +618,11 @@ let load_from_sqlite_for_type_checking
   let local_changes =
     choose_local_changes
       ~local_changes:(Naming_sqlite.get_local_changes db_path)
-      ~custom_local_changes
+      ~changes_since_baseline
   in
   let t = Hh_logger.log_duration "Loaded local naming table changes" t in
-  if should_update_reverse_entries then begin
-    update_reverse_entries ctx local_changes.Naming_sqlite.file_deltas;
-    let _t = Hh_logger.log_duration "Updated reverse naming table entries" t in
-    ()
-  end;
+  update_reverse_entries ctx local_changes.Naming_sqlite.file_deltas;
+  let _t = Hh_logger.log_duration "Updated reverse naming table entries" t in
   Backed (local_changes, db_path)
 
 let load_from_sqlite_with_changed_file_infos
@@ -656,26 +668,10 @@ let load_from_sqlite_with_changes_since_baseline
     (ctx : Provider_context.t)
     (changes_since_baseline : Naming_sqlite.local_changes option)
     (db_path : string) : t =
-  load_from_sqlite_for_type_checking
-    ~should_update_reverse_entries:true
-    ~custom_local_changes:changes_since_baseline
-    ctx
-    db_path
-
-let load_from_sqlite_for_batch_update
-    (ctx : Provider_context.t) (db_path : string) : t =
-  load_from_sqlite_for_type_checking
-    ~should_update_reverse_entries:false
-    ~custom_local_changes:None
-    ctx
-    db_path
+  load_from_sqlite_for_type_checking ~changes_since_baseline ctx db_path
 
 let load_from_sqlite (ctx : Provider_context.t) (db_path : string) : t =
-  load_from_sqlite_for_type_checking
-    ~should_update_reverse_entries:true
-    ~custom_local_changes:None
-    ctx
-    db_path
+  load_from_sqlite_for_type_checking ~changes_since_baseline:None ctx db_path
 
 let get_forward_naming_fallback_path a : string option =
   match a with
@@ -724,7 +720,7 @@ let save_async naming_table ~init_id ~root ~destination_path =
   Stdlib.close_out chan;
 
   let open SaveAsync in
-  Future.make
+  FutureProcess.make
     (Process.run_entry
        Process_types.Default
        save_entry

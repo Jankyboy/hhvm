@@ -69,13 +69,16 @@ Type get_type_of_reified_list(const UserAttributeMap& ua) {
   auto const it = ua.find(s___Reified.get());
   assertx(it != ua.end());
   auto const tv = it->second;
-  assertx(tvIsHAMSafeVArray(&tv));
+  assertx(tvIsVec(&tv));
   auto const info = extractSizeAndPosFromReifiedAttribute(tv.m_data.parr);
   auto const numGenerics = info.m_typeParamInfo.size();
   assertx(numGenerics > 0);
-  std::vector<Type> types(numGenerics, RO::EvalHackArrDVArrs ? TDictN : TDArrN);
-  return RO::EvalHackArrDVArrs ? vec(types) : arr_packed_varray(types);
+  std::vector<Type> types(numGenerics, TDictN);
+  return vec(types);
 }
+
+const StaticString s_reified_generics_var("0ReifiedGenerics");
+const StaticString s_coeffects_var("0Coeffects");
 
 State entry_state(const Index& index, const Context& ctx,
                   const KnownArgs* knownArgs) {
@@ -94,9 +97,9 @@ State entry_state(const Index& index, const Context& ctx,
       }
     }
     auto const maybeThisType = thisType(index, ctx);
-    auto const thisType = maybeThisType ? *maybeThisType : TObj;
+    auto thisType = maybeThisType ? *maybeThisType : TObj;
     if (index.lookup_this_available(ctx.func)) return thisType;
-    return opt(thisType);
+    return opt(std::move(thisType));
   }();
   ret.locals.resize(ctx.func->locals.size());
   ret.iters.resize(ctx.func->numIters);
@@ -109,16 +112,12 @@ State entry_state(const Index& index, const Context& ctx,
           std::vector<Type> pack(knownArgs->args.begin() + locId,
                                  knownArgs->args.end());
           for (auto& p : pack) p = unctx(std::move(p));
-          ret.locals[locId] = RuntimeOption::EvalHackArrDVArrs
-            ? vec(std::move(pack))
-            : arr_packed_varray(std::move(pack));
+          ret.locals[locId] = vec(std::move(pack));
         } else {
           ret.locals[locId] = unctx(knownArgs->args[locId]);
         }
       } else {
-        ret.locals[locId] = ctx.func->params[locId].isVariadic
-          ? (RuntimeOption::EvalHackArrDVArrs ? TVec : TVArr)
-          : TUninit;
+        ret.locals[locId] = ctx.func->params[locId].isVariadic ? TVec : TUninit;
       }
       continue;
     }
@@ -133,9 +132,7 @@ State entry_state(const Index& index, const Context& ctx,
     }
     // Because we throw a non-recoverable error for having fewer than the
     // required number of args, all function parameters must be initialized.
-    ret.locals[locId] = ctx.func->params[locId].isVariadic
-      ? (RuntimeOption::EvalHackArrDVArrs ? TVec : TVArr)
-      : TInitCell;
+    ret.locals[locId] = ctx.func->params[locId].isVariadic ? TVec : TInitCell;
   }
 
   // Closures have use vars, we need to look up their types from the index.
@@ -149,9 +146,21 @@ State entry_state(const Index& index, const Context& ctx,
    */
   if (ctx.func->isReified) {
     // Currently closures cannot be reified
-    assert(!ctx.func->isClosureBody);
-    assert(locId < ret.locals.size());
+    assertx(!ctx.func->isClosureBody);
+    assertx(locId < ret.locals.size());
+    assertx(ctx.func->locals[locId].name->same(s_reified_generics_var.get()));
     ret.locals[locId++] = get_type_of_reified_list(ctx.func->userAttributes);
+  }
+
+  /*
+   * Functions with coeffect rules have a hidden local that's always the first
+   * (non-parameter) local (after reified generics, if exists),
+   * which stores the ambient coeffects.
+   */
+  if (has_coeffects_local(ctx.func)) {
+    assertx(locId < ret.locals.size());
+    assertx(ctx.func->locals[locId].name->same(s_coeffects_var.get()));
+    ret.locals[locId++] = TInt;
   }
 
   auto afterParamsLocId = uint32_t{0};
@@ -234,9 +243,8 @@ prepare_incompleteQ(const Index& index,
       ai.bdata[dv].stateIn.copy_from(entryState);
       incompleteQ.push(rpoId(ai, dv));
       for (auto locId = paramId; locId < numParams; ++locId) {
-        ai.bdata[dv].stateIn.locals[locId] = ctx.func->params[locId].isVariadic
-          ? (RuntimeOption::EvalHackArrDVArrs ? TVec : TVArr)
-          : TUninit;
+        ai.bdata[dv].stateIn.locals[locId] =
+          ctx.func->params[locId].isVariadic ? TVec : TUninit;
       }
     }
   }
@@ -290,6 +298,7 @@ FuncAnalysis do_analyze_collect(const Index& index,
   auto const bump = trace_bump_for(ctx.cls, ctx.func);
   Trace::Bump bumper1{Trace::hhbbc, bump};
   Trace::Bump bumper2{Trace::hhbbc_cfg, bump};
+  Trace::Bump bumper3{Trace::hhbbc_index, bump};
 
   if (knownArgs) {
     FTRACE(2, "{:.^70}\n", "Inline Interp");
@@ -386,7 +395,7 @@ FuncAnalysis do_analyze_collect(const Index& index,
       if (flags.updateInfo.replacedBcs.size() ||
           flags.updateInfo.unchangedBcs != blk->hhbcs.size() ||
           flags.updateInfo.fallthrough != blk->fallthrough) {
-        blockUpdates[bid] = flags.updateInfo;
+        blockUpdates[bid] = std::move(flags.updateInfo);
       } else {
         blockUpdates.erase(bid);
       }
@@ -403,6 +412,8 @@ FuncAnalysis do_analyze_collect(const Index& index,
           }
         }
       }
+
+      ai.bdata[bid].noThrow = flags.noThrow;
     }
 
     if (any(collect.opts & CollectionOpts::EffectFreeOnly) &&
@@ -430,7 +441,7 @@ FuncAnalysis do_analyze_collect(const Index& index,
    * In this case, we leave the return type as TBottom, to indicate
    * the same to callers.
    */
-  assert(ai.inferredReturn.subtypeOf(BCell));
+  assertx(ai.inferredReturn.subtypeOf(BCell));
 
   // For debugging, print the final input states for each block.
   FTRACE(2, "{}", [&] {
@@ -446,9 +457,10 @@ FuncAnalysis do_analyze_collect(const Index& index,
     for (auto& bd : ai.bdata) {
       folly::format(
         &ret,
-        "{}block {}:\nin {}",
+        "{}block {}{}:\nin {}",
         sep,
         ai.rpoBlocks[bd.rpoId],
+        bd.noThrow ? " (no throw)" : "",
         state_string(*ctx.func, bd.stateIn, collect)
       );
     }
@@ -504,6 +516,8 @@ void expand_hni_prop_types(ClassAnalysis& clsAnalysis) {
     auto it = propState.find(prop.name);
     if (it == end(propState)) return;
 
+    it->second.everModified = true;
+
     /*
      * When any functions are interceptable, we don't require the constraints to
      * actually match, and relax all the HNI types to Gen.
@@ -513,10 +527,7 @@ void expand_hni_prop_types(ClassAnalysis& clsAnalysis) {
      * known to return things matching the property type hints for
      * some properties, or not to take their arguments by reference.
      */
-    auto const hniTy =
-      clsAnalysis.anyInterceptable
-        ? TCell
-        : from_hni_constraint(prop.userType);
+    auto const hniTy = from_hni_constraint(prop.userType);
     if (it->second.ty.subtypeOf(hniTy)) {
       it->second.ty = hniTy;
       return;
@@ -541,6 +552,41 @@ void expand_hni_prop_types(ClassAnalysis& clsAnalysis) {
 
 //////////////////////////////////////////////////////////////////////
 
+}
+
+//////////////////////////////////////////////////////////////////////
+
+const php::Func* ClassAnalysisWorklist::next() {
+  if (worklist.empty()) return nullptr;
+  auto f = worklist.front();
+  inWorklist.erase(f);
+  worklist.pop_front();
+  return f;
+}
+
+bool ClassAnalysisWorklist::schedule(const php::Func& f) {
+  auto const insert = inWorklist.emplace(&f);
+  if (!insert.second) return false;
+  worklist.emplace_back(&f);
+  return true;
+}
+
+void ClassAnalysisWorklist::scheduleForProp(SString name) {
+  auto const it = propDeps.find(name);
+  if (it == propDeps.end()) return;
+  for (auto const f : it->second) schedule(*f);
+}
+
+void ClassAnalysisWorklist::scheduleForPropMutate(SString name) {
+  auto const it = propMutateDeps.find(name);
+  if (it == propMutateDeps.end()) return;
+  for (auto const f : it->second) schedule(*f);
+}
+
+void ClassAnalysisWorklist::scheduleForReturnType(const php::Func& callee) {
+  auto const it = returnTypeDeps.find(&callee);
+  if (it == returnTypeDeps.end()) return;
+  for (auto const f : it->second) schedule(*f);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -571,7 +617,7 @@ FuncAnalysis analyze_func_inline(const Index& index,
                                  const Type& thisType,
                                  const CompactVector<Type>& args,
                                  CollectionOpts opts) {
-  assert(!ctx.func->isClosureBody);
+  assertx(!ctx.func->isClosureBody);
   auto const knownArgs = KnownArgs { thisType, args };
   return do_analyze(index, ctx, nullptr, &knownArgs,
                     opts | CollectionOpts::Inlining);
@@ -583,11 +629,11 @@ ClassAnalysis analyze_class(const Index& index, const Context& ctx) {
 
   {
     Trace::Bump bumper{Trace::hhbbc, kSystemLibBump,
-        is_systemlib_part(*ctx.unit)};
+      is_systemlib_part(*ctx.unit)};
     FTRACE(2, "{:#^70}\n", "Class");
   }
 
-  ClassAnalysis clsAnalysis(ctx, index.any_interceptable_functions());
+  ClassAnalysis clsAnalysis(ctx);
   auto const associatedClosures = index.lookup_closures(ctx.cls);
   auto const associatedMethods  = index.lookup_extra_methods(ctx.cls);
   auto const isHNIBuiltin       = ctx.cls->attrs & AttrBuiltin;
@@ -606,20 +652,12 @@ ClassAnalysis analyze_class(const Index& index, const Context& ctx) {
   for (auto& prop : const_cast<php::Class*>(ctx.cls)->properties) {
     auto const cellTy = from_cell(prop.val);
 
-    if (is_closure(*ctx.cls) ||
-        (prop.attrs & (AttrSystemInitialValue | AttrLateInit)) ||
-        (!cellTy.subtypeOf(TUninit) &&
-         index.satisfies_constraint(ctx, cellTy, prop.typeConstraint) &&
-         std::all_of(prop.ubs.begin(), prop.ubs.end(),
-                     [&](TypeConstraint ub) {
-                       applyFlagsToUB(ub, prop.typeConstraint);
-                       return index.satisfies_constraint(ctx, cellTy, ub);
-                     }))) {
-      prop.attrs |= AttrInitialSatisfiesTC;
-    } else {
+    if (prop_might_have_bad_initial_value(index, *ctx.cls, prop)) {
       prop.attrs = (Attr)(prop.attrs & ~AttrInitialSatisfiesTC);
       // If Uninit, it will be determined in the 86[s,p]init function.
-      if (!cellTy.subtypeOf(TUninit)) clsAnalysis.badPropInitialValues = true;
+      if (!cellTy.subtypeOf(BUninit)) clsAnalysis.badPropInitialValues = true;
+    } else {
+      prop.attrs |= AttrInitialSatisfiesTC;
     }
 
     if (!(prop.attrs & AttrPrivate)) continue;
@@ -641,7 +679,7 @@ ClassAnalysis analyze_class(const Index& index, const Context& ctx) {
     }
 
     if (!(prop.attrs & AttrStatic)) {
-      auto t = loosen_all(loosen_dvarrayness(cellTy));
+      auto t = loosen_vec_or_dict(loosen_all(cellTy));
       if (!is_closure(*ctx.cls) && t.subtypeOf(BUninit)) {
         /*
          * For non-closure classes, a property of type KindOfUninit
@@ -663,6 +701,8 @@ ClassAnalysis analyze_class(const Index& index, const Context& ctx) {
       auto& elem = clsAnalysis.privateProperties[prop.name];
       elem.ty = std::move(t);
       elem.tc = &prop.typeConstraint;
+      elem.attrs = prop.attrs;
+      elem.everModified = false;
     } else {
       // Same thing as the above regarding TUninit and TBottom.
       // Static properties don't need to exclude closures for this,
@@ -675,6 +715,8 @@ ClassAnalysis analyze_class(const Index& index, const Context& ctx) {
       auto& elem = clsAnalysis.privateStatics[prop.name];
       elem.ty = std::move(t);
       elem.tc = &prop.typeConstraint;
+      elem.attrs = prop.attrs;
+      elem.everModified = false;
     }
   }
 
@@ -720,79 +762,269 @@ ClassAnalysis analyze_class(const Index& index, const Context& ctx) {
    * fact that there are infinitely growing chains in our type lattice
    * under union_of.
    *
-   * So if we've visited the whole class some number of times and
-   * still aren't at a fixed point, we'll set the property state to
-   * the result of widening the old state with the new state, and then
-   * reset the counter.  This guarantees eventual termination.
+   * So if we've visited a func some number of times and still aren't
+   * at a fixed point, we'll set the property state to the result of
+   * widening the old state with the new state, and then reset the
+   * counter.  This guarantees eventual termination.
    */
-  auto totalVisits = uint32_t{0};
 
-  for (;;) {
-    auto const previousProps   = clsAnalysis.privateProperties;
-    auto const previousStatics = clsAnalysis.privateStatics;
+  ClassAnalysisWork work;
+  clsAnalysis.work = &work;
 
-    CompactVector<FuncAnalysis> methodResults;
-    CompactVector<FuncAnalysis> closureResults;
+  clsAnalysis.methods.reserve(initResults.size() + ctx.cls->methods.size());
+  for (auto& m : initResults) {
+    clsAnalysis.methods.emplace_back(std::move(m));
+  }
+  if (associatedClosures) {
+    clsAnalysis.closures.reserve(associatedClosures->size());
+  }
 
-    // Analyze every method in the class until we reach a fixed point
-    // on the private property states.
-    for (auto& f : ctx.cls->methods) {
-      if (f->name->isame(s_86pinit.get()) ||
-          f->name->isame(s_86sinit.get()) ||
-          f->name->isame(s_86linit.get()) ||
-          f->name->isame(s_86cinit.get())) {
-        continue;
-      }
+  auto const startPrivateProperties = clsAnalysis.privateProperties;
+  auto const startPrivateStatics = clsAnalysis.privateStatics;
 
-      auto const wf = php::WideFunc::cns(f.get());
-      auto const context = AnalysisContext { ctx.unit, wf, ctx.cls };
-      methodResults.push_back(do_analyze(index, context, &clsAnalysis));
+  struct FuncMeta {
+    const php::Unit* unit;
+    const php::Class* cls;
+    CompactVector<FuncAnalysisResult>* output;
+    size_t startReturnRefinements;
+    size_t localReturnRefinements = 0;
+    int outputIdx = -1;
+    size_t visits = 0;
+  };
+  hphp_fast_map<const php::Func*, FuncMeta> funcMeta;
+
+  auto const getMeta = [&] (const php::Func& f) -> FuncMeta& {
+    auto metaIt = funcMeta.find(&f);
+    assertx(metaIt != funcMeta.end());
+    return metaIt->second;
+  };
+
+  // Build up the initial worklist:
+  for (auto const& f : ctx.cls->methods) {
+    if (f->name->isame(s_86pinit.get()) ||
+        f->name->isame(s_86sinit.get()) ||
+        f->name->isame(s_86linit.get()) ||
+        f->name->isame(s_86cinit.get())) {
+      continue;
     }
+    auto const DEBUG_ONLY inserted = work.worklist.schedule(*f);
+    assertx(inserted);
+    auto [type, refinements] = index.lookup_return_type_raw(f.get());
+    work.returnTypes.emplace(f.get(), std::move(type));
+    funcMeta.emplace(
+      f.get(),
+      FuncMeta{ctx.unit, ctx.cls, &clsAnalysis.methods, refinements}
+    );
+  }
 
-    if (associatedClosures) {
-      for (auto const c : *associatedClosures) {
-        auto const wf = php::WideFunc::cns(c->methods[0].get());
-        auto const context = AnalysisContext { ctx.unit, wf, c };
-        closureResults.push_back(do_analyze(index, context, &clsAnalysis));
-      }
+  if (associatedClosures) {
+    for (auto const c : *associatedClosures) {
+      auto const f = c->methods[0].get();
+      auto const DEBUG_ONLY inserted = work.worklist.schedule(*f);
+      assertx(inserted);
+      auto [type, refinements] = index.lookup_return_type_raw(f);
+      work.returnTypes.emplace(f, std::move(type));
+      funcMeta.emplace(
+        f, FuncMeta{ctx.unit, c, &clsAnalysis.closures, refinements}
+      );
     }
-
-    if (associatedMethods) {
-      for (auto const m : *associatedMethods) {
-        // We throw the results of the analysis away. We're only doing
-        // this for the effects on the private properties, and the
-        // results aren't meaningful outside of this context.
-        auto const wf = php::WideFunc::cns(m);
-        auto const context = AnalysisContext { m->unit, wf, ctx.cls };
-        do_analyze(index, context, &clsAnalysis);
-      }
-    }
-
-    // Check if we've reached a fixed point yet.
-    if (previousProps   == clsAnalysis.privateProperties &&
-        previousStatics == clsAnalysis.privateStatics) {
-      clsAnalysis.methods.reserve(initResults.size() + methodResults.size());
-      for (auto& m : initResults) {
-        clsAnalysis.methods.push_back(std::move(m));
-      }
-      for (auto& m : methodResults) {
-        clsAnalysis.methods.push_back(std::move(m));
-      }
-      clsAnalysis.closures.reserve(closureResults.size());
-      for (auto& m : closureResults) {
-        clsAnalysis.closures.push_back(std::move(m));
-      }
-      break;
-    }
-
-    if (totalVisits++ >= options.analyzeClassWideningLimit) {
-      widen_props(clsAnalysis.privateProperties);
-      widen_props(clsAnalysis.privateStatics);
+  }
+  if (associatedMethods) {
+    for (auto const m : *associatedMethods) {
+      auto const DEBUG_ONLY inserted = work.worklist.schedule(*m);
+      assertx(inserted);
+      funcMeta.emplace(m, FuncMeta{m->unit, ctx.cls, nullptr, 0, 0});
     }
   }
 
+  // Keep analyzing until we have more functions scheduled (the fixed
+  // point).
+  while (!work.worklist.empty()) {
+    // First analyze funcs until we hit a fixed point for the
+    // properties. Until we reach that, the return types are *not*
+    // guaranteed to be correct.
+    while (auto const f = work.worklist.next()) {
+      auto& meta = getMeta(*f);
+
+      auto const wf = php::WideFunc::cns(f);
+      auto const context = AnalysisContext { meta.unit, wf, meta.cls };
+      auto results = do_analyze(index, context, &clsAnalysis);
+
+      if (meta.output) {
+        if (meta.outputIdx < 0) {
+          meta.outputIdx = meta.output->size();
+          meta.output->emplace_back(std::move(results));
+        } else {
+          (*meta.output)[meta.outputIdx] = std::move(results);
+        }
+      }
+
+      if (meta.visits++ >= options.analyzeClassWideningLimit) {
+        for (auto& prop : clsAnalysis.privateProperties) {
+          auto wide = widen_type(prop.second.ty);
+          if (prop.second.ty.strictlyMoreRefined(wide)) {
+            prop.second.ty = std::move(wide);
+            work.worklist.scheduleForProp(prop.first);
+          }
+        }
+        for (auto& prop : clsAnalysis.privateStatics) {
+          auto wide = widen_type(prop.second.ty);
+          if (prop.second.ty.strictlyMoreRefined(wide)) {
+            prop.second.ty = std::move(wide);
+            work.worklist.scheduleForProp(prop.first);
+          }
+        }
+      }
+    }
+
+    // We've hit a fixed point for the properties. Other local
+    // information (such as return type information) is now correct
+    // (but might not be optimal).
+
+    auto bail = false;
+
+    // Reflect any improved return types into the results. This will
+    // make them available for local analysis and they'll eventually
+    // be written back into the Index.
+    for (auto& kv : funcMeta) {
+      auto const f = kv.first;
+      auto& meta = kv.second;
+      if (!meta.output) continue;
+      assertx(meta.outputIdx >= 0);
+      auto& results = (*meta.output)[meta.outputIdx];
+
+      auto const oldTypeIt = work.returnTypes.find(f);
+      assertx(oldTypeIt != work.returnTypes.end());
+      auto& oldType = oldTypeIt->second;
+      results.inferredReturn =
+        loosen_interfaces(std::move(results.inferredReturn));
+
+      // Heed the return type refinement limit
+      if (results.inferredReturn.strictlyMoreRefined(oldType)) {
+        if (meta.startReturnRefinements + meta.localReturnRefinements
+            < options.returnTypeRefineLimit) {
+          oldType = results.inferredReturn;
+          work.worklist.scheduleForReturnType(*f);
+        } else if (meta.localReturnRefinements > 0) {
+          results.inferredReturn = oldType;
+        }
+        ++meta.localReturnRefinements;
+      } else if (!more_refined_for_index(results.inferredReturn, oldType)) {
+        // If we have a monotonicity violation, bail out immediately
+        // and let the Index complain.
+        bail = true;
+      }
+
+      results.localReturnRefinements = meta.localReturnRefinements;
+      if (results.localReturnRefinements > 0) --results.localReturnRefinements;
+    }
+    if (bail) break;
+
+    hphp_fast_set<const php::Func*> changed;
+
+    // We've made the return types available for local analysis. Now
+    // iterate again and see if we can improve them.
+    while (auto const f = work.worklist.next()) {
+      auto& meta = getMeta(*f);
+
+      auto const wf = php::WideFunc::cns(f);
+      auto const context = AnalysisContext { meta.unit, wf, meta.cls };
+
+      work.propsRefined = false;
+      auto results = do_analyze(index, context, &clsAnalysis);
+      assertx(!work.propsRefined);
+
+      if (!meta.output) continue;
+
+      auto returnTypeIt = work.returnTypes.find(f);
+      assertx(returnTypeIt != work.returnTypes.end());
+
+      auto& oldReturn = returnTypeIt->second;
+      results.inferredReturn =
+        loosen_interfaces(std::move(results.inferredReturn));
+
+      // Heed the return type refinement limit
+      if (results.inferredReturn.strictlyMoreRefined(oldReturn)) {
+        if (meta.startReturnRefinements + meta.localReturnRefinements
+            < options.returnTypeRefineLimit) {
+          oldReturn = results.inferredReturn;
+          work.worklist.scheduleForReturnType(*f);
+          changed.emplace(f);
+        } else if (meta.localReturnRefinements > 0) {
+          results.inferredReturn = oldReturn;
+        }
+        ++meta.localReturnRefinements;
+      } else if (!more_refined_for_index(results.inferredReturn, oldReturn)) {
+        // If we have a monotonicity violation, bail out immediately
+        // and let the Index complain.
+        bail = true;
+      }
+
+      results.localReturnRefinements = meta.localReturnRefinements;
+      if (results.localReturnRefinements > 0) --results.localReturnRefinements;
+
+      assertx(meta.outputIdx >= 0);
+      (*meta.output)[meta.outputIdx] = std::move(results);
+    }
+    if (bail) break;
+
+    // Return types have reached a fixed point. However, this means
+    // that we might be able to further improve property types. So, if
+    // a method has an improved return return, examine the methods
+    // which depend on that return type. Drop any property info for
+    // properties those methods write to. Reschedule any methods which
+    // or write to those properties. The idea is we want to re-analyze
+    // all mutations of those properties again, since the refined
+    // returned types may result in better property types. This
+    // process may repeat multiple times, but will eventually reach a
+    // fixed point.
+
+    if (!work.propMutators.empty()) {
+      auto const resetProp = [&] (SString name,
+                                  const PropState& src,
+                                  PropState& dst) {
+        auto dstIt = dst.find(name);
+        auto const srcIt = src.find(name);
+        if (dstIt == dst.end()) {
+          assertx(srcIt == src.end());
+          return;
+        }
+        assertx(srcIt != src.end());
+        dstIt->second.ty = srcIt->second.ty;
+        dstIt->second.everModified = srcIt->second.everModified;
+      };
+
+      hphp_fast_set<SString> retryProps;
+      for (auto const f : changed) {
+        auto const deps = work.worklist.depsForReturnType(*f);
+        if (!deps) continue;
+        for (auto const dep : *deps) {
+          auto const propsIt = work.propMutators.find(dep);
+          if (propsIt == work.propMutators.end()) continue;
+          for (auto const prop : propsIt->second) retryProps.emplace(prop);
+        }
+      }
+
+      // Schedule the funcs which mutate the props before the ones
+      // that read them.
+      for (auto const prop : retryProps) {
+        resetProp(prop, startPrivateProperties,
+                  clsAnalysis.privateProperties);
+        resetProp(prop, startPrivateStatics,
+                  clsAnalysis.privateStatics);
+        work.worklist.scheduleForPropMutate(prop);
+      }
+      for (auto const prop : retryProps) {
+        work.worklist.scheduleForProp(prop);
+      }
+    }
+
+    // This entire loop will eventually terminate when we cannot
+    // improve properties nor return types.
+  }
+
   Trace::Bump bumper{Trace::hhbbc, kSystemLibBump,
-      is_systemlib_part(*ctx.unit)};
+    is_systemlib_part(*ctx.unit)};
 
   // For debugging, print the final state of the class analysis.
   FTRACE(2, "{}", [&] {
@@ -821,12 +1053,66 @@ ClassAnalysis analyze_class(const Index& index, const Context& ctx) {
     return ret;
   }());
 
+  clsAnalysis.work = nullptr;
   return clsAnalysis;
 }
 
 //////////////////////////////////////////////////////////////////////
 
-std::vector<std::pair<State,StepFlags>>
+PropagatedStates::PropagatedStates(State&& state, StateMutationUndo undos)
+  : m_locals{std::move(state.locals)}
+  , m_undos{std::move(undos)}
+{
+  for (size_t i = 0; i < state.stack.size(); ++i) {
+    m_stack.emplace_back(std::move(state.stack[i].type));
+  }
+}
+
+void PropagatedStates::next() {
+  // The undo log shouldn't be empty, and we should be at a mark
+  // (which marks instruction boundary).
+  assertx(!m_undos.events.empty());
+  assertx(boost::get<StateMutationUndo::Mark>(&m_undos.events.back()));
+
+  m_lastPush.reset();
+  m_afterLocals.clear();
+  m_undos.events.pop_back();
+
+  // Use the undo log to "unwind" the current state.
+  while (true) {
+    assertx(!m_undos.events.empty());
+    auto const stop = match<bool>(
+      m_undos.events.back(),
+      [] (const StateMutationUndo::Mark&) { return true; },
+      [this] (StateMutationUndo::Push) {
+        assertx(!m_stack.empty());
+        if (!m_lastPush) m_lastPush.emplace(std::move(m_stack.back()));
+        m_stack.pop_back();
+        return false;
+      },
+      [this] (StateMutationUndo::Pop& p) {
+        m_stack.emplace_back(std::move(p.t));
+        return false;
+      },
+      [this] (StateMutationUndo::Stack& s) {
+        assertx(s.idx < m_stack.size());
+        m_stack[s.idx] = std::move(s.t);
+        return false;
+      },
+      [this] (StateMutationUndo::Local& l) {
+        assertx(l.id < m_locals.size());
+        auto& old = m_locals[l.id];
+        m_afterLocals.emplace_back(std::make_pair(l.id, std::move(old)));
+        old = std::move(l.t);
+        return false;
+      }
+    );
+    if (stop) break;
+    m_undos.events.pop_back();
+  }
+}
+
+PropagatedStates
 locally_propagated_states(const Index& index,
                           const AnalysisContext& ctx,
                           CollectedInfo& collect,
@@ -835,21 +1121,33 @@ locally_propagated_states(const Index& index,
   Trace::Bump bumper{Trace::hhbbc, 10};
 
   auto const blk = ctx.func.blocks()[bid].get();
-  auto interp = Interp { index, ctx, collect, bid, blk, state };
 
-  std::vector<std::pair<State,StepFlags>> ret;
-  ret.reserve(blk->hhbcs.size() + 1);
+  // Set up the undo log for the interp. We reserve it using this size
+  // heuristic which captures typical undo log sizes.
+  StateMutationUndo undos;
+  undos.events.reserve((blk->hhbcs.size() + 1) * 4);
 
-  for (auto& op : blk->hhbcs) {
-    ret.emplace_back(state, StepFlags{});
-    ret.back().second = step(interp, op);
+  auto interp = Interp { index, ctx, collect, bid, blk, state, &undos };
+
+  for (auto const& op : blk->hhbcs) {
+    auto const markIdx = undos.events.size();
+    // Record instruction boundary
+    undos.events.emplace_back(StateMutationUndo::Mark{});
+    // Interpret it. This appends more info to the undo log.
+    auto const stepFlags = step(interp, op);
+    // Store the step flags in the mark we recorded before the
+    // interpret.
+    auto& mark = boost::get<StateMutationUndo::Mark>(undos.events[markIdx]);
+    mark.wasPEI = stepFlags.wasPEI;
+    mark.mayReadLocalSet = stepFlags.mayReadLocalSet;
+    mark.unreachable = state.unreachable;
     state.stack.compact();
   }
-
-  ret.emplace_back(std::move(state), StepFlags{});
-  return ret;
+  // Add a final mark to maintain invariants (this will be popped
+  // immediately when the first next() is called).
+  undos.events.emplace_back(StateMutationUndo::Mark{});
+  return PropagatedStates{std::move(state), std::move(undos)};
 }
-
 
 State locally_propagated_bid_state(const Index& index,
                                    const AnalysisContext& ctx,

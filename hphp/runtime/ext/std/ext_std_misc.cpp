@@ -30,7 +30,6 @@
 #include "hphp/runtime/vm/bytecode.h"
 #include "hphp/runtime/vm/type-profile.h"
 
-#include "hphp/runtime/ext/std/ext_std_math.h"
 #include "hphp/runtime/ext/std/ext_std_options.h"
 #include "hphp/runtime/server/cli-server.h"
 #include "hphp/runtime/server/server-stats.h"
@@ -45,6 +44,8 @@
 
 #include "hphp/util/current-executable.h"
 #include "hphp/util/logger.h"
+
+#include "hphp/zend/zend-math.h"
 
 namespace HPHP {
 
@@ -363,7 +364,7 @@ int64_t HHVM_FUNCTION(connection_timeout) {
 
 static Class* getClassByName(const char* name, int len) {
   String className(name, len, CopyString);
-  return Unit::loadClass(className.get());
+  return Class::load(className.get());
 }
 
 Variant HHVM_FUNCTION(constant, const String& name) {
@@ -503,7 +504,7 @@ Variant HHVM_FUNCTION(time_nanosleep, int seconds, int nanoseconds) {
 
   recordNanosleepTime(req, &rem);
   if (errno == EINTR) {
-    return make_darray(
+    return make_dict_array(
       s_seconds, (int64_t)rem.tv_sec,
       s_nanoseconds, (int64_t)rem.tv_nsec
     );
@@ -580,10 +581,11 @@ Variant HHVM_FUNCTION(unpack, const String& format, const String& data) {
 Array HHVM_FUNCTION(sys_getloadavg) {
   double load[3];
   getloadavg(load, 3);
-  return make_varray(load[0], load[1], load[2]);
+  return make_vec_array(load[0], load[1], load[2]);
 }
 
 Variant HHVM_FUNCTION(array_mark_legacy, const Variant& v, bool recursive) {
+  Variant force_cow = v;
   auto const result =
     recursive ? arrprov::markTvRecursively(*v.asTypedValue(), /*legacy=*/true)
               : arrprov::markTvShallow(*v.asTypedValue(), /*legacy=*/true);
@@ -591,6 +593,7 @@ Variant HHVM_FUNCTION(array_mark_legacy, const Variant& v, bool recursive) {
 }
 
 Variant HHVM_FUNCTION(array_unmark_legacy, const Variant& v, bool recursive) {
+  Variant force_cow = v;
   auto const result =
     recursive ? arrprov::markTvRecursively(*v.asTypedValue(), /*legacy=*/false)
               : arrprov::markTvShallow(*v.asTypedValue(), /*legacy=*/false);
@@ -598,17 +601,6 @@ Variant HHVM_FUNCTION(array_unmark_legacy, const Variant& v, bool recursive) {
 }
 
 bool HHVM_FUNCTION(is_array_marked_legacy, const Variant& v) {
-  if (!RO::EvalHackArrDVArrs) {
-    if (!v.isVec() && !v.isDict() &&
-        !(v.isPHPArray() && (v.asCArrRef().isVArray() ||
-                             v.asCArrRef().isDArray()))) {
-      raise_warning(
-        "is_array_marked_legacy expects a dict, vec, darray, or varray"
-      );
-    }
-  } else if (!v.isVec() && !v.isDict()) {
-    raise_warning("is_array_marked_legacy expects a dict or vec");
-  }
   return v.isArray() && v.asCArrRef()->isLegacyArray();
 }
 

@@ -7,8 +7,8 @@ print "1 + 1 --> "; print 1 + 1; print "\n";
 print "1.5 + 1 --> "; print 1.5 + 1; print "\n";
 print "1 + 1.5 --> "; print 1 + 1.5; print "\n";
 print "1.5 + 1.0 --> "; print 1.5 + 1.0; print "\n";
-#print "print array(1, 2) + array(3, 4) --> "; print array(1, 2) + array(3, 4);
-#  print "\n";
+//print "print array(1, 2) + array(3, 4) --> "; print array(1, 2) + array(3, 4);
+//  print "\n";
 print "\"5.5\" + 5 --> "; print "5.5" + 5; print "\n";
 print "5 + \"5.5\" --> "; print 5 + "5.5"; print "\n";
 print "5.5 + \"5\" --> "; print 5.5 + "5"; print "\n";
@@ -117,25 +117,25 @@ try {
 print "\n";
 
 print "5 & 3 --> "; print 5 & 3; print "\n";
-print "5.0 & 3.0 --> "; print 5.0 & 3.0; print "\n";
+print "5.0 & 3.0 --> "; print (int)5.0 & (int)3.0; print "\n";
 print "\n";
 
 print "5 | 3 --> "; print 5 | 3; print "\n";
-print "5.0 | 3.0 --> "; print 5.0 | 3.0; print "\n";
+print "5.0 | 3.0 --> "; print (int)5.0 | (int)3.0; print "\n";
 print "\n";
 
 print "5 ^ 3 --> "; print 5 ^ 3; print "\n";
-print "5.0 ^ 3.0 --> "; print 5.0 ^ 3.0; print "\n";
+print "5.0 ^ 3.0 --> "; print (int)5.0 ^ (int)3.0; print "\n";
 print "\n";
 
 print "5 << 1 --> "; print 5 << 1; print "\n";
-print "5 << 1.0 --> "; print 5 << 1.0; print "\n";
-print "5 << \"hi\" --> "; print 5 << "hi"; print "\n";
+print "5 << 1.0 --> "; print 5 << (int)(1.0); print "\n";
+print "5 << \"hi\" --> "; print 5 << (int)("hi"); print "\n";
 print "\n";
 
 print "5 >> 1 --> "; print 5 >> 1; print "\n";
-print "5 >> 1.0 --> "; print 5 >> 1.0; print "\n";
-print "5 >> \"hi\" --> "; print 5 >> "hi"; print "\n";
+print "5 >> 1.0 --> "; print 5 >> (int)(1.0); print "\n";
+print "5 >> \"hi\" --> "; print 5 >> (int)("hi"); print "\n";
 print "\n";
 
 print "!0 --> "; print !0; print "\n";

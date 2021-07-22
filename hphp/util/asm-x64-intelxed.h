@@ -14,8 +14,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_UTIL_ASM_X64_INTELXED_H_
-#define incl_HPHP_UTIL_ASM_X64_INTELXED_H_
+#pragma once
 
 extern "C" {
 #include <xed-interface.h>
@@ -183,6 +182,8 @@ public:
   // exactly the same as movzbl but takes an extra byte.
   void loadzbl(MemoryRef m, Reg32 r)        { xedInstrMR(XED_ICLASS_MOVZX,
                                                          m, r, sz::byte); }
+  void loadzwl(MemoryRef m, Reg32 r)        { xedInstrMR(XED_ICLASS_MOVZX,
+                                                         m, r, sz::word); }
   void movzbl(Reg8 src, Reg32 dest)         { xedInstrRR(XED_ICLASS_MOVZX,
                                                          src, dest); }
   void movsbl(Reg8 src, Reg32 dest)         { xedInstrRR(XED_ICLASS_MOVSX,
@@ -233,6 +234,7 @@ public:
 
   void push(MemoryRef m)      { xedInstrM(XED_ICLASS_PUSH, m); }
   void pop (MemoryRef m)      { xedInstrM(XED_ICLASS_POP, m); }
+  void prefetch(MemoryRef m)  { xedInstrM(XED_ICLASS_PREFETCHT1, m); }
   void incq(MemoryRef m)      { xedInstrM(XED_ICLASS_INC, m); }
   void incl(MemoryRef m)      { xedInstrM(XED_ICLASS_INC, m, sz::dword); }
   void incw(MemoryRef m)      { xedInstrM(XED_ICLASS_INC, m, sz::word); }
@@ -1032,4 +1034,3 @@ private:
 
 }}
 
-#endif

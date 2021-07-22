@@ -51,49 +51,46 @@ std::vector<FuncId> s_funcOrder;
 using CallAddrFuncs = tbb::concurrent_hash_map<TCA,FuncId>;
 CallAddrFuncs s_callToFuncId;
 
-using FuncPair = std::pair<FuncId,FuncId>;
+using FuncPair = std::pair<FuncId::Int,FuncId::Int>;
 using CallCounters = tbb::concurrent_hash_map<FuncPair,uint32_t>;
 CallCounters s_callCounters;
 
 // Map that keeps track of the size of optimized translations/prologues for each
 // function.
-using FuncSizes = tbb::concurrent_hash_map<FuncId,uint32_t>;
+using FuncSizes = tbb::concurrent_hash_map<FuncId::Int,uint32_t>;
 FuncSizes s_funcSizes;
 
 ////////////////////////////////////////////////////////////////////////////////
 
 uint32_t getFuncSize(FuncId funcId) {
   FuncSizes::const_accessor acc;
-  return s_funcSizes.find(acc, funcId) ? acc->second : 1; // avoid div by 0
+  return s_funcSizes.find(acc, funcId.toInt()) ? acc->second : 1; // avoid div by 0
 }
 
 hfsort::TargetGraph
 createCallGraphFromProfCode(jit::hash_map<hfsort::TargetId, FuncId>& funcID) {
   ProfData::Session pds;
-  assertx(profData() != nullptr);
 
   using hfsort::TargetId;
 
   hfsort::TargetGraph cg;
   jit::hash_map<FuncId, TargetId> targetID;
-  auto pd = profData();
+  auto const pd = profData();
+  assertx(pd);
 
   // Create one node (aka target) for each function that was profiled.
-  const auto maxFuncId = pd->maxProfilingFuncId();
-
-  FTRACE(1, "createCallGraph: maxFuncId = {}\n", maxFuncId);
-  for (FuncId fid = 0; fid <= maxFuncId; fid++) {
-    if (!Func::isFuncIdValid(fid) || !pd->profiling(fid)) continue;
-    const auto func = Func::fromFuncId(fid);
-    const auto baseOffset = func->base();
-    const auto transIds = pd->funcProfTransIDs(fid);
+  FTRACE(1, "createCallGraph\n");
+  pd->forEachProfilingFunc([&](auto const& func) {
+    always_assert(func);
+    auto const fid = func->getFuncId();
+    auto const transIds = pd->funcProfTransIDs(fid);
     uint32_t size = 1; // avoid zero-sized functions
     uint32_t profCount = 0;
     for (auto transId : transIds) {
       const auto trec = pd->transRec(transId);
       assertx(trec->kind() == TransKind::Profile);
       size += trec->asmSize();
-      if (trec->srcKey().offset() == baseOffset) {
+      if (trec->srcKey().offset() == 0) {
         profCount += pd->transCounter(transId);
       }
     }
@@ -102,7 +99,7 @@ createCallGraphFromProfCode(jit::hash_map<hfsort::TargetId, FuncId>& funcID) {
     targetID[fid] = targetId;
     funcID[targetId] = fid;
     FTRACE(1, "  - adding node FuncId = {} => TargetId = {}\n", fid, targetId);
-  }
+  });
 
   // Add arcs with weights
 
@@ -134,12 +131,11 @@ createCallGraphFromProfCode(jit::hash_map<hfsort::TargetId, FuncId>& funcID) {
     }
   };
 
-  for (FuncId fid = 0; fid <= maxFuncId; fid++) {
-    if (!Func::isFuncIdValid(fid) || !pd->profiling(fid)) continue;
-
-    auto func = Func::fromFuncId(fid);
-    const auto calleeTargetId = targetID[fid];
-    const auto transIds = pd->funcProfTransIDs(fid);
+  pd->forEachProfilingFunc([&] (auto const& func) {
+    always_assert(func);
+    auto const fid = func->getFuncId();
+    auto const calleeTargetId = targetID[fid];
+    auto const transIds = pd->funcProfTransIDs(fid);
     uint64_t totalCalls = 0;
     for (int nargs = 0; nargs <= func->numNonVariadicParams() + 1; nargs++) {
       auto transId = pd->proflogueTransId(func, nargs);
@@ -156,7 +152,7 @@ createCallGraphFromProfCode(jit::hash_map<hfsort::TargetId, FuncId>& funcID) {
     }
     auto samples = cg.getSamples(calleeTargetId);
     cg.setSamples(calleeTargetId, std::max(totalCalls, samples));
-  }
+  });
   cg.normalizeArcWeights();
   return cg;
 }
@@ -185,8 +181,8 @@ createCallGraphFromOptCode(jit::hash_map<hfsort::TargetId, FuncId>& funcID) {
            it.first.first, it.first.second, it.second);
     auto const weight = it.second;
     if (weight == 0) continue; // don't create arcs with zero weight
-    auto const callerFid = it.first.first;
-    auto const calleeFid = it.first.second;
+    auto const callerFid = FuncId::fromInt(it.first.first);
+    auto const calleeFid = FuncId::fromInt(it.first.second);
     auto const callerTid = getTargetID(callerFid);
     auto const calleeTid = getTargetID(calleeFid);
     cg.incArcWeight(callerTid, calleeTid, weight);
@@ -251,8 +247,13 @@ std::pair<std::vector<FuncId>, uint64_t> hfsortFuncs() {
     }
   }
 
-  auto clusters = hfsort::clusterize(cg);
-  sort(clusters.begin(), clusters.end(), hfsort::compareClustersDensity);
+  std::vector<hfsort::Cluster> clusters;
+  if (RuntimeOption::EvalJitPGOHFSortPlus) {
+    clusters = hfsort::hfsortPlus(cg);
+  } else {
+    clusters = hfsort::clusterize(cg);
+    sort(clusters.begin(), clusters.end(), hfsort::compareClustersDensity);
+  }
   if (serverMode) {
     Logger::Info("retranslateAll: finished clusterizing the functions");
   }
@@ -291,7 +292,9 @@ std::pair<std::vector<FuncId>, uint64_t> hfsortFuncs() {
     }
   }
   if (auto const extra = cg.targets.size() - seen.size()) {
-    Logger::Info("retranslateAll: %lu functions had no samples!", extra);
+    if (serverMode) {
+      Logger::Info("retranslateAll: %lu functions had no samples!", extra);
+    }
     for (int i = 0; i < cg.targets.size(); ++i) {
       if (!seen.count(i)) {
         addFuncId(i);
@@ -328,7 +331,7 @@ uint64_t compute() {
 void serialize(ProfDataSerializer& ser) {
   write_raw(ser, safe_cast<uint32_t>(s_funcOrder.size()));
   for (auto const funcId : s_funcOrder) {
-    write_raw(ser, funcId);
+    write_func_id(ser, funcId);
   }
 }
 
@@ -337,8 +340,7 @@ void deserialize(ProfDataDeserializer& des) {
   s_funcOrder.clear();
   s_funcOrder.reserve(sz);
   for (auto i = sz; i > 0; --i) {
-    auto const origId = read_raw<FuncId>(des);
-    s_funcOrder.push_back(des.getFid(origId));
+    s_funcOrder.push_back(read_func_id(des));
   }
 }
 
@@ -354,7 +356,8 @@ void setCallFuncId(TCA callRetAddr, FuncId funcId) {
 
 FuncId getCallFuncId(TCA callRetAddr) {
   CallAddrFuncs::const_accessor acc;
-  return s_callToFuncId.find(acc, callRetAddr) ? acc->second : InvalidFuncId;
+  return s_callToFuncId.find(acc, callRetAddr)
+    ? acc->second : FuncId::Invalid;
 }
 
 void clearCallFuncId(TCA callRetAddr) {
@@ -368,14 +371,14 @@ void incCount(const ActRec* fp) {
   if (callerRip == nullptr) return;
   auto const callee = fp->func()->getFuncId();
   auto const caller = getCallFuncId(callerRip);
-  if (caller == InvalidFuncId) {
+  if (caller.isInvalid()) {
     // assert callerRip is not in the hot code area, where only optimized code
     // lives
     assert_flog(!tc::isHotCodeAddress(callerRip),
                 "callerRip not found: {}", callerRip);
     return;
   }
-  auto pair = FuncPair(caller, callee);
+  auto pair = FuncPair(caller.toInt(), callee.toInt());
   {
     CallCounters::accessor acc;
     if (!s_callCounters.insert(acc, CallCounters::value_type(pair, 1))) {
@@ -395,7 +398,7 @@ void recordTranslation(const TransRec& transRec) {
                                   : transRec.acoldLen ? transRec.acoldLen
                                                       : transRec.afrozenLen;
   FuncSizes::accessor acc;
-  if (!s_funcSizes.insert(acc, FuncSizes::value_type(funcId, size))) {
+  if (!s_funcSizes.insert(acc, FuncSizes::value_type(funcId.toInt(), size))) {
     acc->second += size;
   }
 }

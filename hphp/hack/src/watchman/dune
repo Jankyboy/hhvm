@@ -11,20 +11,7 @@
     logging_common
     sys_utils
     utils_core)
-  (preprocess (pps lwt_ppx)) ; See T41851208
-)
-
-(library
-  (name watchman_lwt)
-  (wrapped false)
-  (modules
-    watchman_lwt
-  )
-  (libraries
-    watchman
-    buffered_line_reader_lwt
-  )
-  (preprocess (pps lwt_ppx))
+  (preprocess (pps lwt_ppx ppx_deriving.std))
 )
 
 (library
@@ -36,5 +23,5 @@
     hh_json
     logging
     utils_core)
-  (preprocess (pps lwt_ppx)) ; See T41851208
+  (preprocess (pps lwt_ppx ppx_deriving.std))
 )

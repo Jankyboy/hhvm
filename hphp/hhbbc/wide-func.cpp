@@ -16,6 +16,7 @@
 #include "hphp/hhbbc/wide-func.h"
 
 #include "hphp/hhbbc/bc.h"
+#include "hphp/hhbbc/interp.h"
 #include "hphp/util/trace.h"
 
 #ifdef __GNUG__
@@ -34,6 +35,8 @@ TRACE_SET_MOD(hhbbc_mem);
 
 using Buffer = CompactVector<char>;
 
+static_assert(std::is_same<LSString, LowStringPtr>::value);
+
 constexpr int32_t kNoSrcLoc = -1;
 
 constexpr uint8_t k16BitCode = 0xfe;
@@ -43,17 +46,15 @@ constexpr uint8_t k32BitCode = 0xff;
 // bytecode ops, but less than 512. How convenient!
 constexpr uint8_t k9BitOpShift = 0xff;
 
+// Most static strings will have addresses that fit in 4 bytes. We set
+// this flag when encoding a string address that needs the full 8 bytes.
+constexpr uint64_t kStringDataFlag = 0x1;
+
 template <typename>
 struct is_compact_vector : std::false_type {};
 
 template <typename T, typename A>
 struct is_compact_vector<CompactVector<T, A>> : std::true_type {};
-
-template <typename T> constexpr bool copy_as_bytes() {
-  return std::is_trivially_copyable<T>::value ||
-         std::is_same<T, LowStringPtr>::value ||
-         std::is_same<T, SSwitchTabEnt>::value;
-}
 
 std::string name(const std::type_info& type) {
 #ifdef __GNUG__
@@ -68,11 +69,14 @@ std::string name(const std::type_info& type) {
 #endif // _GNUG_
 }
 
+BytecodeVec decodeBytecodeVec(const Buffer& buffer, size_t& pos);
+void encodeBytecodeVec(Buffer& buffer, const BytecodeVec& bcs);
+
 //////////////////////////////////////////////////////////////////////
 
 template <typename T>
 T decode_as_bytes(const Buffer& buffer, size_t& pos) {
-  static_assert(copy_as_bytes<T>(), "");
+  static_assert(std::is_trivially_copyable<T>::value);
   alignas(alignof(T)) char data[sizeof(T)];
   memmove(&data[0], &buffer[pos], sizeof(T));
   pos += sizeof(T);
@@ -86,6 +90,14 @@ T decode(const Buffer& buffer, size_t& pos) {
   assertx(pos < buffer.size());
   ITRACE(5, "at {}: {}\n", pos, name(typeid(T)));
   Trace::Indent _;
+
+  if constexpr (std::is_same<T, BlockUpdateInfo>::value) {
+    T result;
+    result.fallthrough  = DECODE_MEMBER(fallthrough);
+    result.unchangedBcs = DECODE_MEMBER(unchangedBcs);
+    result.replacedBcs  = decodeBytecodeVec(buffer, pos);
+    return result;
+  }
 
   if constexpr (std::is_same<T, FCallArgs>::value) {
     using FCA = FCallArgsBase;
@@ -118,13 +130,33 @@ T decode(const Buffer& buffer, size_t& pos) {
     return T{first, count};
   }
 
+  if constexpr (std::is_same<T, LowStringPtr>::value) {
+    auto const lo = decode_as_bytes<uint32_t>(buffer, pos);
+    if (!(lo & kStringDataFlag)) {
+      return LowStringPtr(reinterpret_cast<const StringData*>(lo));
+    }
+    auto const hi = decode_as_bytes<uint32_t>(buffer, pos);
+    auto const both = (uint64_t(hi) << 32) | (uint64_t(lo) & ~kStringDataFlag);
+    return LowStringPtr(reinterpret_cast<const StringData*>(both));
+  }
+
   if constexpr (std::is_same<T, MKey>::value) {
     auto const mcode = DECODE_MEMBER(mcode);
     switch (mcode) {
-      case MET: case MPT: case MQT: return T(mcode, DECODE_MEMBER(litstr));
-      case MEI: case MEC: case MPC: return T(mcode, DECODE_MEMBER(int64));
-      case MEL: case MPL:           return T(mcode, DECODE_MEMBER(local));
-      case MW:                      return T();
+      case MET: case MPT: case MQT: {
+        auto const litstr = DECODE_MEMBER(litstr);
+        return T(mcode, litstr, DECODE_MEMBER(rop));
+      }
+      case MEI: case MEC: case MPC: {
+        auto const iva = DECODE_MEMBER(int64);
+        return T(mcode, iva, DECODE_MEMBER(rop));
+      }
+      case MEL: case MPL: {
+        auto const local = DECODE_MEMBER(local);
+        return T(mcode, local, DECODE_MEMBER(rop));
+      }
+      case MW:
+        return T();
     }
   }
 
@@ -133,6 +165,12 @@ T decode(const Buffer& buffer, size_t& pos) {
     auto const name = base + kInvalidLocalName;
     auto const id   = DECODE_MEMBER(id) + NoLocalId;
     return T(name, id);
+  }
+
+  if constexpr (std::is_same<T, SSwitchTabEnt>::value) {
+    auto const first = DECODE_MEMBER(first);
+    auto const second = DECODE_MEMBER(second);
+    return T{first, second};
   }
 
   if constexpr (is_compact_vector<T>::value) {
@@ -158,7 +196,7 @@ T decode(const Buffer& buffer, size_t& pos) {
     return Op(safe_cast<uint16_t>(next) + k9BitOpShift);
   }
 
-  if constexpr (copy_as_bytes<T>()) {
+  if constexpr (std::is_trivially_copyable<T>::value) {
     return decode_as_bytes<T>(buffer, pos);
   }
 }
@@ -169,7 +207,7 @@ T decode(const Buffer& buffer, size_t& pos) {
 
 template <typename T>
 void encode_as_bytes(Buffer& buffer, const T& data) {
-  static_assert(copy_as_bytes<T>(), "");
+  static_assert(std::is_trivially_copyable<T>::value);
   auto const ptr = reinterpret_cast<const char*>(&data);
   buffer.insert(buffer.end(), ptr, ptr + sizeof(T));
 }
@@ -179,7 +217,12 @@ void encode(Buffer& buffer, const T& data) {
   ITRACE(5, "at {}: {}\n", buffer.size(), name(typeid(T)));
   Trace::Indent _;
 
-  if constexpr (std::is_same<T, FCallArgs>::value) {
+  if constexpr (std::is_same<T, BlockUpdateInfo>::value) {
+    encode(buffer, data.fallthrough);
+    encode(buffer, data.unchangedBcs);
+    encodeBytecodeVec(buffer, data.replacedBcs);
+
+  } else if constexpr (std::is_same<T, FCallArgs>::value) {
     auto base = data.base();
     if (data.enforceInOut()) {
       auto const flags = base.flags | FCallArgsBase::EnforceInOut;
@@ -207,18 +250,44 @@ void encode(Buffer& buffer, const T& data) {
     encode(buffer, data.first);
     encode(buffer, data.count);
 
+  } else if constexpr (std::is_same<T, LowStringPtr>::value) {
+    static_assert(alignof(StringData) % 2 == 0);
+    auto const raw = uintptr_t(data.get());
+    if (raw <= std::numeric_limits<uint32_t>::max()) {
+      encode_as_bytes(buffer, safe_cast<uint32_t>(raw));
+    } else {
+      auto const hi = raw >> 32;
+      auto const lo = (raw & 0xffffffff) | kStringDataFlag;
+      encode_as_bytes(buffer, safe_cast<uint32_t>(lo));
+      encode_as_bytes(buffer, safe_cast<uint32_t>(hi));
+    }
+
   } else if constexpr (std::is_same<T, MKey>::value) {
     encode(buffer, data.mcode);
     switch (data.mcode) {
-      case MET: case MPT: case MQT: encode(buffer, data.litstr); break;
-      case MEI: case MEC: case MPC: encode(buffer, data.int64);  break;
-      case MEL: case MPL:           encode(buffer, data.local);  break;
-      case MW:                                                   break;
+      case MET: case MPT: case MQT:
+        encode(buffer, data.litstr);
+        encode(buffer, data.rop);
+        break;
+      case MEI: case MEC: case MPC:
+        encode(buffer, data.int64);
+        encode(buffer, data.rop);
+        break;
+      case MEL: case MPL:
+        encode(buffer, data.local);
+        encode(buffer, data.rop);
+        break;
+      case MW:
+        break;
     }
 
   } else if constexpr (std::is_same<T, NamedLocal>::value) {
     encode(buffer, safe_cast<uint32_t>(data.name - kInvalidLocalName));
     encode(buffer, data.id - NoLocalId);
+
+  } else if constexpr (std::is_same<T, SSwitchTabEnt>::value) {
+    encode(buffer, data.first);
+    encode(buffer, data.second);
 
   } else if constexpr (is_compact_vector<T>::value) {
     encode(buffer, safe_cast<uint32_t>(data.size()));
@@ -245,7 +314,7 @@ void encode(Buffer& buffer, const T& data) {
       encode_as_bytes(buffer, safe_cast<uint8_t>(raw - k9BitOpShift));
     }
 
-  } else if constexpr (copy_as_bytes<T>()) {
+  } else if constexpr (std::is_trivially_copyable<T>::value) {
     encode_as_bytes(buffer, data);
   }
 }
@@ -466,4 +535,24 @@ void WideFunc::release() {
 
 //////////////////////////////////////////////////////////////////////
 
-}}}
+}
+
+//////////////////////////////////////////////////////////////////////
+
+CompressedBlockUpdate::CompressedBlockUpdate(BlockUpdateInfo&& in) {
+  php::encode(raw, in);
+  in = {};
+}
+
+void CompressedBlockUpdate::expand(BlockUpdateInfo& out) {
+  assertx(!raw.empty());
+  auto pos = size_t{0};
+  auto result = php::decode<BlockUpdateInfo>(raw, pos);
+  assertx(pos == raw.size());
+  out = std::move(result);
+  raw.clear();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+}}

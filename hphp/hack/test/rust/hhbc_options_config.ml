@@ -149,8 +149,9 @@ let check_configs (pair_json_str : string) : bool =
               interact_suffix;
             true
           end
-        with _ ->
-          Pervasives.flush stderr;
+        with
+        | _ ->
+          Out_channel.flush stderr;
           Printf.eprintf "RUST CRASHED #%d\n" !check_cnt;
           (* Record the inputs for easy inspection with less *)
           let file = Printf.sprintf "%s%d.configs" tmp_prefix !check_cnt in
@@ -158,7 +159,7 @@ let check_configs (pair_json_str : string) : bool =
           Printf.printf "jq . '%s'%s\n" file interact_suffix;
           true
       in
-      Pervasives.flush stdout;
+      Out_channel.flush stdout;
       not fail
     end else
       true
@@ -166,7 +167,7 @@ let check_configs (pair_json_str : string) : bool =
 
 let () =
   let input = Sys_utils.cat "/dev/stdin" in
-  let input = String.sub input 0 (String.length input - 1) in
+  let input = String.sub input ~pos:0 ~len:(String.length input - 1) in
   let pairs = String.split_on_chars ~on:['\x00'] input in
   let total_cnt = List.length pairs in
   let pass_cnt =
@@ -181,7 +182,7 @@ let () =
   in
   Printf.eprintf "PASSED %d/%d\n" pass_cnt total_cnt;
   exit
-    ( if pass_cnt = total_cnt then
+    (if pass_cnt = total_cnt then
       0
     else
-      1 )
+      1)

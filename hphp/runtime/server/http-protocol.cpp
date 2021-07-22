@@ -69,7 +69,7 @@ static bool read_all_post_data(Transport *transport,
 }
 
 static void CopyParams(Array& dest, const Array& src) {
-  IterateKVNoInc(
+  IterateKV(
     src.get(),
     [&](TypedValue k, TypedValue v) {
       const auto arraykey =
@@ -168,9 +168,6 @@ static void PrepareEnv(Array& env, Transport *transport) {
   case Arch::ARM:
     env.set(s_HHVM_ARCH, "arm");
     break;
-  case Arch::PPC64:
-    env.set(s_HHVM_ARCH, "ppc64");
-    break;
   }
 
   bool isServer =
@@ -216,9 +213,8 @@ static void StartRequest(Array& server) {
 void HttpProtocol::PrepareSystemVariables(Transport *transport,
                                           const RequestURI &r,
                                           const SourceRootInfo &sri) {
-  ARRPROV_USE_RUNTIME_LOCATION();
   auto const vhost = VirtualHost::GetCurrent();
-  auto const emptyArr = empty_darray();
+  auto const emptyArr = empty_dict_array();
   php_global_set(s__SERVER, emptyArr);
   php_global_set(s__GET, emptyArr);
   php_global_set(s__POST, emptyArr);
@@ -242,7 +238,7 @@ void HttpProtocol::PrepareSystemVariables(Transport *transport,
   }
 
 #define X(name)                                       \
-  auto name##arr = empty_darray();                    \
+  auto name##arr = empty_dict_array();                    \
   SCOPE_EXIT { php_global_set(s__##name, name##arr); };
 
   X(ENV)
@@ -310,8 +306,8 @@ void HttpProtocol::PrepareSystemVariables(Transport *transport,
 
   if (!postPopulated && shouldSetHttpRawPostData) {
     // Always try to populate $HTTP_RAW_POST_DATA if not populated
-    auto dummyPost = empty_darray();
-    auto dummyFiles = empty_darray();
+    auto dummyPost = empty_dict_array();
+    auto dummyFiles = empty_dict_array();
     PreparePostVariables(dummyPost, HTTP_RAW_POST_DATA,
                          dummyFiles, transport, r);
   }
@@ -744,7 +740,7 @@ static void CopyPathInfo(Array& server,
   }
   server.set(s_QUERY_STRING, r.queryString());
 
-  server.set(s_argv, make_varray(r.queryString()));
+  server.set(s_argv, make_vec_array(r.queryString()));
   server.set(s_argc, 1);
 }
 
@@ -1001,8 +997,10 @@ bool HttpProtocol::ProxyRequest(Transport *transport, bool force,
   if (extraHeaders) {
     for (HeaderMap::const_iterator iter = extraHeaders->begin();
          iter != extraHeaders->end(); ++iter) {
-      std::vector<std::string> &values = requestHeaders[iter->first];
-      values.insert(values.end(), iter->second.begin(), iter->second.end());
+      auto& values = requestHeaders[iter->first];
+      for (auto& h : iter->second) {
+        values.push_back(h);
+      }
     }
   }
 

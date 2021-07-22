@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VM_IR_OPCODE_H_
-#define incl_HPHP_VM_IR_OPCODE_H_
+#pragma once
 
 #include <type_traits>
 #include <vector>
@@ -54,13 +53,8 @@ struct SSATmp;
  *     DRefineS(N)  single dst's type is intersection of src N and paramType
  *     DParam(t)    single dst has type of the instruction's type parameter,
  *                    which must be a subtype of t
- *     DParamMayRelax(t) like DParam, except type may relax
  *     DAllocObj    single dst has a type of a newly allocated object; may be a
  *                    specialized object type if the class is known
- *     DVArr        single dst is either a packed array type or vec, depending
-                      on configuration
- *     DDArr        single dst is either a mixed array type or dict, depending
-                      on configuration
  *     DVecElem    single dst has type based on reading a vec element,
  *                    intersected with an optional type parameter
  *     DDictElem   single dst has type based on reading a dict element,
@@ -77,8 +71,6 @@ struct SSATmp;
  *     DGenIter     single dst for generator iteration. This can return
  *                     different types based on whether the generator is async.
  *     DSubtract(N,t) single dest has type of src N with t removed
- *     DCns         single dst's type is the union of legal types for PHP
- *                    constants
  *     DUnion(N1,...) single dest has type that is the union of the specified
  *                      N srcs.
  *     DMemoKey     single dst for memoization key generation. Type depends on
@@ -96,12 +88,6 @@ struct SSATmp;
  *     C(type)          source must be a constant, and subtype of type
  *     CStr             same as C(StaticStr)
  *     SVar(t1,...,tn)  variadic source list, all subtypes of {t1|..|tn}
- *     SVArr            source must be a packed array type or vec, depending
- *                      on configuration
- *     SDArr            source must be a mixed array type or dict, depending
- *                      on configuration
- *     CDArr            source must be a constant mixed array type or dict,
- *                      depending on configuration
  *
  * flags:
  *
@@ -156,10 +142,10 @@ bool isGuardOp(Opcode opc);
  * Returns the negated version of the specified opcode, if its a comparison
  * opcode and can be negated (not all comparisons can be negated).
  */
-folly::Optional<Opcode> negateCmpOp(Opcode opc);
+Optional<Opcode> negateCmpOp(Opcode opc);
 
 const char* opcodeName(Opcode opcode);
-folly::Optional<Opcode> nameToOpcode(const std::string&);
+Optional<Opcode> nameToOpcode(const std::string&);
 
 bool opHasExtraData(Opcode op);
 
@@ -213,5 +199,3 @@ template<> class FormatValue<HPHP::jit::Opcode> {
 }
 
 #include "hphp/runtime/vm/jit/ir-opcode-inl.h"
-
-#endif

@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_SERVICE_DATA_H_
-#define incl_HPHP_SERVICE_DATA_H_
+#pragma once
 
 #include <atomic>
 #include <chrono>
@@ -23,13 +22,12 @@
 #include <string>
 #include <vector>
 
-#include <folly/RWSpinLock.h>
 #include <folly/Synchronized.h>
 #include <folly/stats/Histogram.h>
 #include <folly/stats/MultiLevelTimeSeries.h>
-#include <folly/Optional.h>
 
 #include "hphp/util/assertions.h"
+#include "hphp/util/optional.h"
 
 namespace HPHP {
 
@@ -161,12 +159,12 @@ struct CounterCallback {
   void deinit() {
     if (m_key) {
       deregisterCounterCallback(*m_key);
-      m_key = folly::none;
+      m_key = std::nullopt;
     }
   }
 
 private:
-  folly::Optional<CounterHandle> m_key;
+  Optional<CounterHandle> m_key;
 };
 
 /*
@@ -231,7 +229,7 @@ void exportAll(std::map<std::string, int64_t>& statsMap);
 /*
  * Export a specific counter by key name.
  */
-folly::Optional<int64_t> exportCounterByKey(const std::string& key);
+Optional<int64_t> exportCounterByKey(const std::string& key);
 
 // Interface for a flat counter. All methods are thread safe.
 struct ExportedCounter {
@@ -266,7 +264,7 @@ struct ExportedTimeSeries {
   int64_t getSum();
   int64_t getRateByDuration(std::chrono::seconds duration);
 
-  folly::Optional<int64_t> getCounter(StatsType type, int seconds);
+  Optional<int64_t> getCounter(StatsType type, int seconds);
 
   void exportAll(const std::string& prefix,
                  std::map<std::string, int64_t>& statsMap);
@@ -275,8 +273,7 @@ struct ExportedTimeSeries {
   friend struct detail::FriendDeleter<ExportedTimeSeries>;
   ~ExportedTimeSeries() {}
 
-  folly::Synchronized<folly::MultiLevelTimeSeries<int64_t>,
-                      folly::RWSpinLock > m_timeseries;
+  folly::Synchronized<folly::MultiLevelTimeSeries<int64_t>> m_timeseries;
   const std::vector<ServiceData::StatsType> m_exportTypes;
 };
 
@@ -293,7 +290,7 @@ struct ExportedHistogram {
   friend struct detail::FriendDeleter<ExportedHistogram>;
   ~ExportedHistogram() {}
 
-  folly::Synchronized<folly::Histogram<int64_t>, folly::RWSpinLock> m_histogram;
+  folly::Synchronized<folly::Histogram<int64_t>> m_histogram;
   const std::vector<double> m_exportPercentiles;
 };
 
@@ -303,5 +300,3 @@ struct ExportedHistogram {
 }
 
 #include "hphp/util/service-data-inl.h"
-
-#endif // incl_HPHP_SERVICE_DATA_H_

@@ -5,14 +5,30 @@
 
 use std::cmp::Ordering;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
+use no_pos_hash::NoPosHash;
 use ocamlrep_derive::{FromOcamlRepIn, ToOcamlRep};
 
 use crate::{local_id::LocalId, typing_reason::Blame};
 
-#[derive(Clone, Debug, Eq, FromOcamlRepIn, Hash, Ord, Serialize, ToOcamlRep)]
-pub struct IdWithBlame<'a>(pub LocalId<'a>, Blame<'a>);
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    Serialize,
+    ToOcamlRep
+)]
+pub struct IdWithBlame<'a>(
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub LocalId<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] Blame<'a>,
+);
+arena_deserializer::impl_deserialize_in_arena!(IdWithBlame<'arena>);
 
 impl arena_trait::TrivialDrop for IdWithBlame<'_> {}
 

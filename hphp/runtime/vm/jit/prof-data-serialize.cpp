@@ -34,6 +34,7 @@
 #include "hphp/runtime/vm/instance-bits.h"
 #include "hphp/runtime/vm/jit/array-access-profile.h"
 #include "hphp/runtime/vm/jit/array-iter-profile.h"
+#include "hphp/runtime/vm/jit/array-layout.h"
 #include "hphp/runtime/vm/jit/call-target-profile.h"
 #include "hphp/runtime/vm/jit/cls-cns-profile.h"
 #include "hphp/runtime/vm/jit/containers.h"
@@ -45,14 +46,15 @@
 #include "hphp/runtime/vm/jit/prof-data.h"
 #include "hphp/runtime/vm/jit/region-selection.h"
 #include "hphp/runtime/vm/jit/switch-profile.h"
+#include "hphp/runtime/vm/jit/tc-internal.h"
 #include "hphp/runtime/vm/jit/trans-cfg.h"
 #include "hphp/runtime/vm/jit/type-profile.h"
 #include "hphp/runtime/vm/jit/vasm-block-counters.h"
 #include "hphp/runtime/vm/named-entity-defs.h"
 #include "hphp/runtime/vm/named-entity.h"
 #include "hphp/runtime/vm/property-profile.h"
+#include "hphp/runtime/vm/repo-file.h"
 #include "hphp/runtime/vm/repo-global-data.h"
-#include "hphp/runtime/vm/repo.h"
 #include "hphp/runtime/vm/treadmill.h"
 #include "hphp/runtime/vm/type-profile.h"
 #include "hphp/runtime/vm/unit.h"
@@ -62,6 +64,7 @@
 #include "hphp/util/job-queue.h"
 #include "hphp/util/logger.h"
 #include "hphp/util/managed-arena.h"
+#include "hphp/util/match.h"
 #include "hphp/util/numa.h"
 #include "hphp/util/process.h"
 #include "hphp/util/service-data.h"
@@ -85,39 +88,89 @@ constexpr uint32_t k86pinitSlot = 0x80000000u;
 constexpr uint32_t k86sinitSlot = 0x80000001u;
 constexpr uint32_t k86linitSlot = 0x80000002u;
 
-constexpr int kSerializedPtrBit = 0x1;
-constexpr int kSerializedTypeAliasBit = 0x2;
-constexpr int kSerializedRecordBit = 0x4;
+enum class SeenType : uint8_t {
+  Class,
+  Record,
+  TypeAlias,
+  End
+};
+
+constexpr ProfDataSerializer::Id kSerializedIdBit =
+  (ProfDataSerializer::Id{1} <<
+   (std::numeric_limits<ProfDataSerializer::Id>::digits - 1));
+
+ProfDataSerializer::Id read_id(ProfDataDeserializer& ser) {
+  auto const id = read_raw<ProfDataSerializer::Id>(ser);
+  always_assert(!(id & kSerializedIdBit));
+  return id;
+}
+
+Unit* deserializeImpl(ProfDataDeserializer& ser,
+                      ProfDataSerializer::Id id,
+                      Unit*) {
+  return ser.getUnit(id);
+}
+Func* deserializeImpl(ProfDataDeserializer& ser,
+                      ProfDataSerializer::Id id,
+                      Func*) {
+  return ser.getFunc(id);
+}
+Class* deserializeImpl(ProfDataDeserializer& ser,
+                       ProfDataSerializer::Id id,
+                       Class*) {
+  return ser.getClass(id);
+}
+RecordDesc* deserializeImpl(ProfDataDeserializer& ser,
+                            ProfDataSerializer::Id id,
+                            RecordDesc*) {
+  return ser.getRecord(id);
+}
+const TypeAlias* deserializeImpl(ProfDataDeserializer& ser,
+                                 ProfDataSerializer::Id id,
+                                 const TypeAlias*) {
+  return ser.getTypeAlias(id);
+}
+ArrayData* deserializeImpl(ProfDataDeserializer& ser,
+                           ProfDataSerializer::Id id,
+                           ArrayData*) {
+  return ser.getArray(id);
+}
+StringData* deserializeImpl(ProfDataDeserializer& ser,
+                            ProfDataSerializer::Id id,
+                            StringData*) {
+  return ser.getString(id);
+}
+const RepoAuthType::Array* deserializeImpl(ProfDataDeserializer& ser,
+                                           ProfDataSerializer::Id id,
+                                           const RepoAuthType::Array*) {
+  return ser.getArrayRAT(id);
+}
+FuncId deserializeImpl(ProfDataDeserializer& ser,
+                       ProfDataSerializer::Id id,
+                       FuncId) {
+  return ser.getFuncId(id);
+}
 
 template<typename F>
-auto deserialize(ProfDataDeserializer&ser, F&& f) -> decltype(f()) {
+auto deserialize(ProfDataDeserializer& ser, F&& f) -> decltype(f()) {
   using T = decltype(f());
-  auto const ptr = read_raw<uintptr_t>(ser);
-  if (!ptr) return T{};
-  if (ptr & kSerializedPtrBit) {
-    auto& ent = ser.getEnt(reinterpret_cast<T>(ptr - kSerializedPtrBit));
-    assertx(!ent);
-    ent = f();
-    ITRACE(3, "0x{:08x} => 0x{:08x}\n",
-           ptr - kSerializedPtrBit, reinterpret_cast<uintptr_t>(ent));
-    assertx(ent);
+  auto const id = read_raw<ProfDataSerializer::Id>(ser);
+  if (id & kSerializedIdBit) {
+    auto const ent = f();
+    ser.record(id - kSerializedIdBit, ent);
     return ent;
   }
-  auto const ent = ser.getEnt(reinterpret_cast<T>(ptr));
-  assertx(ent);
-  return ent;
+  return deserializeImpl(ser, id, T{});
 }
 
-void write_serialized_ptr(ProfDataSerializer& ser, const void* p) {
-  auto const ptr_as_int = reinterpret_cast<uintptr_t>(p);
-  assertx(!(ptr_as_int & kSerializedPtrBit));
-  write_raw(ser, ptr_as_int | kSerializedPtrBit);
+void write_serialized_id(ProfDataSerializer& ser, ProfDataSerializer::Id id) {
+  assertx(!(id & kSerializedIdBit));
+  write_raw(ser, id | kSerializedIdBit);
 }
 
-void write_raw_ptr(ProfDataSerializer& ser, const void* p) {
-  auto const ptr_as_int = reinterpret_cast<uintptr_t>(p);
-  assertx(!(ptr_as_int & kSerializedPtrBit));
-  write_raw(ser, ptr_as_int);
+void write_id(ProfDataSerializer& ser, ProfDataSerializer::Id id) {
+  assertx(!(id & kSerializedIdBit));
+  write_raw(ser, id);
 }
 
 /*
@@ -150,7 +203,7 @@ void read_container(ProfDataDeserializer& ser, F f) {
 }
 
 void write_unit_preload(ProfDataSerializer& ser, Unit* unit) {
-  write_raw_string(ser, unit->filepath());
+  write_raw_string(ser, unit->origFilepath());
 }
 
 struct UnitPreloader : JobQueueWorker<StringData*, void*> {
@@ -166,7 +219,7 @@ struct UnitPreloader : JobQueueWorker<StringData*, void*> {
     auto& nativeFuncs = Native::s_noNativeFuncs;
     DEBUG_ONLY auto unit = lookupUnit(path, "", nullptr, nativeFuncs, false);
     FTRACE(2, "Preloaded unit with path {}\n", path->data());
-    assertx(unit->filepath() == path);  // both static
+    assertx(unit->origFilepath() == path);  // both static
   }
 };
 using UnitPreloadDispatcher = JobQueueDispatcher<UnitPreloader>;
@@ -183,24 +236,25 @@ void read_unit_preload(ProfDataDeserializer& ser) {
 }
 
 void write_units_preload(ProfDataSerializer& ser) {
-  auto const maxFuncId = profData()->maxProfilingFuncId();
   std::vector<Unit*> units;
   hphp_fast_set<Unit*, pointer_hash<Unit>> seen;
   auto const check_unit =
     [] (Unit* unit) -> bool {
       if (!unit) return false;
-      auto const filepath = unit->filepath();
+      auto const filepath = unit->origFilepath();
       if (filepath->empty()) return false;
       // skip systemlib
       if (filepath->size() >= 2 && filepath->data()[1] == ':') return false;
       return true;
     };
-  for (FuncId fid = 0; fid <= maxFuncId; fid++) {
-    if (!Func::isFuncIdValid(fid) || !profData()->profiling(fid)) continue;
-    auto const u = Func::fromFuncId(fid)->unit();
-    if (!check_unit(u)) continue;
+  auto const pd = profData();
+  assertx(pd);
+  pd->forEachProfilingFunc([&](auto const& func) {
+    always_assert(func);
+    auto const u = func->unit();
+    if (!check_unit(u)) return;
     if (seen.insert(u).second) units.push_back(u);
-  }
+  });
   auto all_loaded = loadedUnitsRepoAuth();
   for (auto u : all_loaded) {
     if (!check_unit(u)) continue;
@@ -221,32 +275,6 @@ void read_units_preload(ProfDataDeserializer& ser) {
     s_preload_dispatcher->start();
   }
   read_container(ser, [&] { read_unit_preload(ser); });
-}
-
-void write_srckey(ProfDataSerializer& ser, SrcKey sk) {
-  ITRACE(2, "SrcKey>\n");
-  if (ser.serialize(sk.func())) {
-    Trace::Indent _i;
-    write_raw(ser, uintptr_t(-1));
-    write_func(ser, sk.func());
-  }
-  write_raw(ser, sk.toAtomicInt());
-  ITRACE(2, "SrcKey: {}\n", show(sk));
-}
-
-SrcKey read_srckey(ProfDataDeserializer& ser) {
-  ITRACE(2, "SrcKey>\n");
-  auto orig = read_raw<SrcKey::AtomicInt>(ser);
-  if (orig == uintptr_t(-1)) {
-    Trace::Indent _i;
-    read_func(ser);
-    orig = read_raw<SrcKey::AtomicInt>(ser);
-  }
-  auto const id = SrcKey::fromAtomicInt(orig).funcID();
-  assertx(uint32_t(orig) == id);
-  auto const sk = SrcKey::fromAtomicInt(orig - id + ser.getFid(id));
-  ITRACE(2, "SrcKey: {}\n", show(sk));
-  return sk;
 }
 
 void write_type(ProfDataSerializer& ser, Type t) {
@@ -284,18 +312,16 @@ RegionDesc::GuardedLocation read_guarded_location(ProfDataDeserializer& ser) {
 }
 
 void write_global_array_map(ProfDataSerializer& ser) {
-  write_container(ser, globalArrayTypeTable(),
-                  write_raw<const RepoAuthType::Array*>);
+  write_container(ser, globalArrayTypeTable(), write_array_rat);
 }
 
 void read_global_array_map(ProfDataDeserializer& ser) {
   BootStats::Block timer("DES_read_global_array_map",
                          RuntimeOption::ServerExecutionMode());
-  auto sz DEBUG_ONLY = read_raw<uint32_t>(ser);
-  assertx(sz == globalArrayTypeTable().size());
-  for (auto arr : globalArrayTypeTable()) {
-    auto const orig = read_raw<const RepoAuthType::Array*>(ser);
-    ser.recordRat(orig, arr);
+  auto const sz = read_raw<uint32_t>(ser);
+  always_assert(sz == globalArrayTypeTable().size());
+  for (auto const arr : globalArrayTypeTable()) {
+    ser.record(read_id(ser), arr);
   }
 }
 
@@ -315,14 +341,10 @@ RegionDesc::BlockPtr read_region_block(ProfDataDeserializer& ser) {
   auto const id = read_raw<RegionDesc::BlockId>(ser);
   auto const start = read_srckey(ser);
   auto const length = read_raw<int>(ser);
-  auto const initialSpOffset = read_raw<FPInvOffset>(ser);
+  auto const initialSpOffset = read_raw<SBInvOffset>(ser);
 
-  auto const block = std::make_shared<RegionDesc::Block>(id,
-                                                         start.func(),
-                                                         start.resumeMode(),
-                                                         start.offset(),
-                                                         length,
-                                                         initialSpOffset);
+  auto const block = std::make_shared<RegionDesc::Block>(
+    id, start, length, initialSpOffset);
 
   block->setProfTransID(read_raw<TransID>(ser));
 
@@ -403,7 +425,7 @@ void write_prof_trans_rec(ProfDataSerializer& ser,
   write_raw(ser, ptr->kind());
   write_srckey(ser, ptr->srcKey());
   if (ptr->kind() == TransKind::Profile) {
-    write_raw(ser, ptr->lastBcOff());
+    write_srckey(ser, ptr->lastSrcKey());
     write_region_desc(ser, ptr->region().get());
     write_raw(ser, ptr->asmSize());
   } else {
@@ -431,10 +453,10 @@ std::unique_ptr<ProfTransRec> read_prof_trans_rec(ProfDataDeserializer& ser) {
   if (kind == TransKind{}) return nullptr;
   auto const sk = read_srckey(ser);
   if (kind == TransKind::Profile) {
-    auto const lastBcOff = read_raw<Offset>(ser);
+    auto const lastSk = read_srckey(ser);
     auto const region = read_region_desc(ser);
     auto const asmSize = read_raw<uint32_t>(ser);
-    return std::make_unique<ProfTransRec>(lastBcOff, sk, region, asmSize);
+    return std::make_unique<ProfTransRec>(lastSk, sk, region, asmSize);
   }
 
   auto ret = std::make_unique<ProfTransRec>(sk, read_raw<int>(ser), 0);
@@ -448,108 +470,56 @@ std::unique_ptr<ProfTransRec> read_prof_trans_rec(ProfDataDeserializer& ser) {
   return ret;
 }
 
-bool write_type_alias(ProfDataSerializer&, const TypeAlias*);
-
-bool write_named_type(ProfDataSerializer& ser, const NamedEntity* ne) {
+bool write_seen_type(ProfDataSerializer& ser, const NamedEntity* ne) {
   if (!ne) return false;
   if (auto const cls = ne->clsList()) {
     if (!(cls->attrs() & AttrUnique)) return false;
-    auto const filepath = cls->preClass()->unit()->filepath();
+    auto const filepath = cls->preClass()->unit()->origFilepath();
     if (!filepath || filepath->empty()) return false;
-    if (!cls->wasSerialized()) write_class(ser, cls);
+    if (!ser.present(cls)) {
+      write_raw(ser, SeenType::Class);
+      write_class(ser, cls);
+    }
     return true;
   } else if (auto const rec = ne->recordList()) {
     if (!(rec->attrs() & AttrUnique)) return false;
-    auto const filepath = rec->preRecordDesc()->unit()->filepath();
+    auto const filepath = rec->preRecordDesc()->unit()->origFilepath();
     if (!filepath || filepath->empty()) return false;
-    if (!rec->wasSerialized()) write_record(ser, rec);
-    return true;
-  }
-  if (!ne->isPersistentTypeAlias()) return false;
-  return write_type_alias(ser, ne->getCachedTypeAlias());
-}
-
-bool write_type_alias(ProfDataSerializer& ser, const TypeAlias* td) {
-  SCOPE_EXIT {
-    ITRACE(2, "TypeAlias: {}\n", td->name);
-  };
-  ITRACE(2, "TypeAlias>\n");
-  // we're writing out Class* and TypeAlias* intermingled here. Set
-  // bit 1 for TypeAlias's so we can distinguish when reading back
-  // in. We also need to keep track of both whether we already tried
-  // serialize this one, and whether it was successful. Use td2 for
-  // that too.
-  auto const td2 = reinterpret_cast<const char*>(td) + kSerializedTypeAliasBit;
-  if (!ser.serialize(td)) {
-    return ser.wasSerialized(td2);
-  }
-  Trace::Indent _;
-
-  auto const unit = td->unit;
-  auto const name = td->name;
-  auto const tas = unit->typeAliases();
-  for (auto const& ta : tas) {
-    if (ta.name == name) {
-      auto const kind = get_ts_kind(ta.typeStructure.get());
-      switch (kind) {
-        case TypeStructure::Kind::T_unresolved:
-        case TypeStructure::Kind::T_xhp:
-        {
-          auto const clsname = get_ts_classname(ta.typeStructure.get());
-          if (!write_named_type(ser, NamedEntity::get(clsname,
-                                                      /*allowCreate*/false))) {
-            return false;
-          }
-          break;
-        }
-        case TypeStructure::Kind::T_null:
-        case TypeStructure::Kind::T_void:
-        case TypeStructure::Kind::T_int:
-        case TypeStructure::Kind::T_bool:
-        case TypeStructure::Kind::T_float:
-        case TypeStructure::Kind::T_string:
-        case TypeStructure::Kind::T_resource:
-        case TypeStructure::Kind::T_num:
-        case TypeStructure::Kind::T_arraykey:
-        case TypeStructure::Kind::T_nothing:
-        case TypeStructure::Kind::T_noreturn:
-        case TypeStructure::Kind::T_tuple:
-        case TypeStructure::Kind::T_fun:
-        case TypeStructure::Kind::T_array:
-        case TypeStructure::Kind::T_typevar:
-        case TypeStructure::Kind::T_shape:
-        case TypeStructure::Kind::T_darray:
-        case TypeStructure::Kind::T_varray:
-        case TypeStructure::Kind::T_varray_or_darray:
-        case TypeStructure::Kind::T_dict:
-        case TypeStructure::Kind::T_vec:
-        case TypeStructure::Kind::T_keyset:
-        case TypeStructure::Kind::T_vec_or_dict:
-        case TypeStructure::Kind::T_arraylike:
-        case TypeStructure::Kind::T_nonnull:
-        case TypeStructure::Kind::T_dynamic:
-        case TypeStructure::Kind::T_typeaccess:
-        case TypeStructure::Kind::T_mixed:
-          break;
-
-        case TypeStructure::Kind::T_reifiedtype:
-        case TypeStructure::Kind::T_class:
-        case TypeStructure::Kind::T_interface:
-        case TypeStructure::Kind::T_trait:
-        case TypeStructure::Kind::T_enum:
-          // these types don't occur in unresolved TypeStructures
-          always_assert(false);
-      }
-
-      if (!ser.serialize(td2)) always_assert(false);
-      write_serialized_ptr(ser, td2);
-      write_unit(ser, td->unit);
-      write_string(ser, td->name);
-      return true;
+    if (!ser.present(rec)) {
+      write_raw(ser, SeenType::Record);
+      write_record(ser, rec);
     }
+    return true;
+  } else if (auto const td = ne->getCachedTypeAlias()) {
+    if (!ne->isPersistentTypeAlias()) return false;
+    auto const filepath = td->unit()->origFilepath();
+    if (!filepath || filepath->empty()) return false;
+    if (!ser.present(td)) {
+      write_raw(ser, SeenType::TypeAlias);
+      write_typealias(ser, td);
+    }
+    return true;
   }
   return false;
 }
+
+void write_named_type(ProfDataSerializer& ser, const NamedEntity* ne) {
+  always_assert(ne);
+  if (auto const cls = ne->clsList()) {
+    write_raw(ser, SeenType::Class);
+    write_class(ser, cls);
+  } else if (auto const rec = ne->recordList()) {
+    write_raw(ser, SeenType::Record);
+    write_record(ser, rec);
+  } else if (auto const td = ne->getCachedTypeAlias()) {
+    write_raw(ser, SeenType::TypeAlias);
+    write_typealias(ser, td);
+  } else {
+    always_assert(false);
+  }
+}
+
+void read_named_type(ProfDataDeserializer& ser);
 
 Class* read_class_internal(ProfDataDeserializer& ser) {
   auto const id = read_raw<decltype(std::declval<PreClass*>()->id())>(ser);
@@ -568,30 +538,11 @@ Class* read_class_internal(ProfDataDeserializer& ser) {
                  });
 
   auto const preClass = unit->lookupPreClassId(id);
-  folly::Optional<TypeAlias> enumBaseReq;
-  SCOPE_EXIT {
-    if (enumBaseReq) {
-      preClass->enumBaseTy().namedEntity()->m_cachedTypeAlias.markUninit();
-    }
-  };
   if (preClass->attrs() & AttrEnum &&
       preClass->enumBaseTy().isObject()) {
-    auto const dt = read_raw<DataType>(ser);
-    auto const& tc = preClass->enumBaseTy();
-    auto const ne = tc.namedEntity();
-    if (!ne->m_cachedTypeAlias.bound() ||
-        !ne->m_cachedTypeAlias.isInit()) {
-      enumBaseReq.emplace();
-      enumBaseReq->type = dt == KindOfInt64 ?
-        AnnotType::Int : AnnotType::String;
-      enumBaseReq->name = tc.typeName();
-      ne->m_cachedTypeAlias.bind(
-        rds::Mode::Normal,
-        rds::LinkName{"TypeAlias", tc.typeName()}
-      );
-      ne->m_cachedTypeAlias.initWith(*enumBaseReq);
-    }
+    read_named_type(ser);
   }
+
   auto const ne = preClass->namedEntity();
   // If it's not persistent, make sure its NamedEntity is
   // unbound, ready for DefClass
@@ -600,7 +551,7 @@ Class* read_class_internal(ProfDataDeserializer& ser) {
     ne->m_cachedClass.markUninit();
   }
 
-  auto const cls = Unit::defClass(preClass, true);
+  auto const cls = Class::def(preClass, true);
   if (cls->pinitVec().size()) cls->initPropHandle();
   if (cls->numStaticProperties()) cls->initSPropHandles();
 
@@ -636,102 +587,106 @@ RecordDesc* read_record_internal(ProfDataDeserializer& ser) {
     ne->m_cachedRecordDesc.markUninit();
   }
 
-  auto const rec = Unit::defRecordDesc(preRec, true);
+  auto const rec = RecordDesc::def(preRec, true);
   return rec;
+}
+
+const TypeAlias* read_typealias_internal(ProfDataDeserializer& ser) {
+  const Id id = read_raw<Id>(ser);
+  auto const unit = read_unit(ser);
+  auto const has_class = read_raw<bool>(ser);
+  if (has_class) {
+    read_class(ser);
+  }
+  auto const has_record = read_raw<bool>(ser);
+  if (has_record) {
+    read_record(ser);
+  }
+  auto const td = unit->lookupTypeAliasId(id);
+  return TypeAlias::def(td);
 }
 
 /*
  * This reads in TypeAliases and Classes that are used for code gen,
  * but otherwise aren't needed for profiling. We just need them to be
  * loaded into the NamedEntity table, so this function just returns
- * whether or not to continue (the end of the list is marked by a
- * null pointer).
+ * whether or not to continue.
  */
-bool read_named_type(ProfDataDeserializer& ser) {
-  auto const ptr = read_raw<uintptr_t>(ser);
-  if (!ptr) return false;
-  assertx(ptr & kSerializedPtrBit);
-
-  if (!(ptr & kSerializedTypeAliasBit)) {
-    if (ptr & kSerializedRecordBit) {
-      ITRACE(2, "Record>\n");
-      Trace::Indent _;
-      auto& ent =
-        ser.getEnt(reinterpret_cast<RecordDesc*>(ptr - kSerializedPtrBit));
-      assertx(!ent);
-      ent = read_record_internal(ser);
-      assertx(ent);
-      ITRACE(2, "RecordDesc: {}\n", ent->name());
-      return true;
-    } else {
-      ITRACE(2, "Class>\n");
-      Trace::Indent _;
-      auto& ent = ser.getEnt(reinterpret_cast<Class*>(ptr - kSerializedPtrBit));
-      assertx(!ent);
-      ent = read_class_internal(ser);
-      assertx(ent);
-      ITRACE(2, "Class: {}\n", ent->name());
+bool read_seen_type(ProfDataDeserializer& ser) {
+  auto const type = read_raw<SeenType>(ser);
+  switch (type) {
+    case SeenType::Class: {
+      read_class(ser);
       return true;
     }
-  }
-
-  auto const unit = read_unit(ser);
-  auto const name = read_string(ser);
-  ITRACE(2, "TypeAlias: {}\n", name);
-  auto const tas = unit->typeAliases();
-  Id id = 0;
-  for (auto const& ta : tas) {
-    if (ta.name == name) {
-      unit->defTypeAlias(id);
+    case SeenType::Record: {
+      read_record(ser);
       return true;
     }
-    ++id;
+    case SeenType::TypeAlias: {
+      read_typealias(ser);
+      return true;
+    }
+    case SeenType::End: return false;
+    default:
+      always_assert(false);
   }
-  always_assert(false);
+}
+
+void read_named_type(ProfDataDeserializer& ser) {
+  auto const type = read_raw<SeenType>(ser);
+  switch (type) {
+    case SeenType::Class:
+      read_class(ser);
+      return;
+    case SeenType::Record:
+      read_record(ser);
+      return;
+    case SeenType::TypeAlias:
+      read_typealias(ser);
+      return;
+    default:
+      always_assert(false);
+  }
 }
 
 void write_profiled_funcs(ProfDataSerializer& ser, ProfData* pd) {
-  auto const maxFuncId = pd->maxProfilingFuncId();
-
-  for (FuncId fid = 0; fid <= maxFuncId; fid++) {
-    if (!Func::isFuncIdValid(fid) || !pd->profiling(fid)) continue;
-    write_func(ser, Func::fromFuncId(fid));
-  }
-  write_raw(ser, uintptr_t{});
+  pd->forEachProfilingFunc([&](auto const& func) {
+    always_assert(func);
+    write_func(ser, func);
+  });
+  write_func(ser, nullptr);
 }
 
 void read_profiled_funcs(ProfDataDeserializer& ser, ProfData* pd) {
   while (auto const func = read_func(ser)) {
-    pd->setProfiling(func->getFuncId());
+    pd->setProfiling(func);
   }
 }
 
-void write_named_types(ProfDataSerializer& ser, ProfData* pd) {
-  auto const maxFuncId = pd->maxProfilingFuncId();
-
+void write_seen_types(ProfDataSerializer& ser, ProfData* pd) {
   // in an attempt to get a sensible order for these, start with the
   // ones referenced by params and return constraints.
-  for (FuncId fid = 0; fid <= maxFuncId; fid++) {
-    if (!Func::isFuncIdValid(fid) || !pd->profiling(fid)) continue;
-    auto const func = Func::fromFuncId(fid);
+  pd->forEachProfilingFunc([&](auto const& func) {
+    always_assert(func);
     for (auto const& p : func->params()) {
-      write_named_type(ser, p.typeConstraint.namedEntity());
+      write_seen_type(ser, p.typeConstraint.namedEntity());
     }
-  }
+  });
 
   // Now just iterate and write anything that remains
   NamedEntity::foreach_name(
     [&] (NamedEntity& ne) {
-      write_named_type(ser, &ne);
+      write_seen_type(ser, &ne);
     }
   );
-  write_raw(ser, uintptr_t{});
+  write_raw(ser, SeenType::End);
 }
 
-void read_named_types(ProfDataDeserializer& ser) {
+void read_seen_types(ProfDataDeserializer& ser) {
   BootStats::Block timer("DES_read_classes_and_type_aliases_and_records",
                          RuntimeOption::ServerExecutionMode());
-  while (read_named_type(ser)) {
+  while (read_seen_type(ser)) {
     // nothing to do. this was just to make sure everything is loaded
     // into the NamedEntity table
   }
@@ -778,8 +733,8 @@ void maybe_output_prof_trans_rec_trace(
     const char *filePath = "";
     if (func->originalFilename() && func->originalFilename()->size()) {
       filePath = func->originalFilename()->data();
-    } else if (unit->filepath()->data() && unit->filepath()->size()) {
-      filePath = unit->filepath()->data();
+    } else if (unit->origFilepath()->data() && unit->origFilepath()->size()) {
+      filePath = unit->origFilepath()->data();
     }
     folly::dynamic blocks = folly::dynamic::array;
     for (const auto& block : profTransRec->region()->blocks()) {
@@ -789,13 +744,15 @@ void maybe_output_prof_trans_rec_trace(
       }
     }
     folly::dynamic profTransRecProfile = folly::dynamic::object;
-    profTransRecProfile["end_line_nunber"] = unit->getLineNumber(profTransRec->lastBcOff());
+    profTransRecProfile["end_bytecode_offset"] = profTransRec->lastSrcKey().printableOffset();
+    profTransRecProfile["end_line_number"] = profTransRec->lastSrcKey().lineNumber();
     profTransRecProfile["file_path"] = filePath;
     profTransRecProfile["function_name"] = sk.func()->fullName()->data();
     profTransRecProfile["profile"] = folly::dynamic::object("profileType", "ProfTransRec");
-    profTransRecProfile["start_line_number"] = unit->getLineNumber(profTransRec->region()->start().offset());
-    profTransRecProfile["translation_weight"] = translationWeight;
     profTransRecProfile["region"] = folly::dynamic::object("blocks", blocks);
+    profTransRecProfile["start_bytecode_offset"] = profTransRec->srcKey().printableOffset();
+    profTransRecProfile["start_line_number"] = profTransRec->region()->start().lineNumber();
+    profTransRecProfile["translation_weight"] = translationWeight;
     HPHP::Trace::traceRelease("json:%s\n", folly::toJson(profTransRecProfile).c_str());
   }
 }
@@ -898,6 +855,47 @@ void write_target_profiles(ProfDataSerializer& ser) {
   write_raw(ser, uint32_t{});
 }
 
+void write_rds_ordering_item(ProfDataSerializer& ser,
+                             const rds::Ordering::Item& item) {
+  write_string(ser, item.key);
+  write_raw(ser, item.size);
+  write_raw(ser, item.alignment);
+}
+
+rds::Ordering::Item read_rds_ordering_item(ProfDataDeserializer& des) {
+  auto const key = read_cpp_string(des);
+  auto const size =
+    read_raw<decltype(rds::Ordering::Item::size)>(des);
+  auto const alignment =
+    read_raw<decltype(rds::Ordering::Item::alignment)>(des);
+  return rds::Ordering::Item{key, size, alignment};
+}
+
+void write_rds_ordering(ProfDataSerializer& ser) {
+  rds::Ordering order;
+  if (RO::EvalReorderRDS) order = rds::profiledOrdering();
+  write_container(ser, order.persistent, write_rds_ordering_item);
+  write_container(ser, order.local, write_rds_ordering_item);
+  write_container(ser, order.normal, write_rds_ordering_item);
+}
+
+rds::Ordering read_rds_ordering(ProfDataDeserializer& des) {
+  rds::Ordering order;
+  read_container(
+    des,
+    [&] { order.persistent.emplace_back(read_rds_ordering_item(des)); }
+  );
+  read_container(
+    des,
+    [&] { order.local.emplace_back(read_rds_ordering_item(des)); }
+  );
+  read_container(
+    des,
+    [&] { order.normal.emplace_back(read_rds_ordering_item(des)); }
+  );
+  return order;
+}
+
 template<typename T>
 auto read_impl(ProfDataDeserializer& ser, T& out, bool) ->
   decltype(out.deserialize(ser),void()) {
@@ -929,16 +927,17 @@ void maybe_output_target_profile_trace(
         const char *filePath = "";
         if (func->originalFilename() && func->originalFilename()->size()) {
           filePath = func->originalFilename()->data();
-        } else if (unit->filepath()->data() && unit->filepath()->size()) {
-          filePath = unit->filepath()->data();
+        } else if (unit->origFilepath()->data() && unit->origFilepath()->size()) {
+          filePath = unit->origFilepath()->data();
         }
         folly::dynamic targetProfileInfo = folly::dynamic::object;
         targetProfileInfo["trans_id"] = pt.transId;
         targetProfileInfo["profile_raw_name"] = name->toCppString();
         targetProfileInfo["profile"] = prof.value().toDynamic();
         targetProfileInfo["file_path"] = filePath;
-        targetProfileInfo["line_number"] = unit->getLineNumber(pt.bcOff);
+        targetProfileInfo["line_number"] = func->getLineNumber(pt.bcOff);
         targetProfileInfo["function_name"] = func->fullName()->data();
+        targetProfileInfo["start_bytecode_offset"] = pt.bcOff;
         HPHP::Trace::traceRelease("json:%s\n", folly::toJson(targetProfileInfo).c_str());
       }
     }
@@ -953,11 +952,8 @@ struct SymbolFixup : boost::static_visitor<void> {
 
   template<typename T>
   void go(rds::Profile& pt) {
-    TargetProfile<T> prof({pt.transId},
-                          TransKind::Profile,
-                          pt.bcOff,
-                          name,
-                          size - sizeof(T));
+    auto prof = TargetProfile<T>::deserialize(
+      {pt.transId}, TransKind::Profile, pt.bcOff, name, size - sizeof(T));
 
     if (size == sizeof(T)) {
       read_maybe_serializable(ser, prof.value());
@@ -1058,32 +1054,61 @@ void merge_loaded_units(int numWorkers) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+
+void renameFile(const std::string& src, const std::string& dst) {
+  if (::rename(src.c_str(), dst.c_str()) != -1) return;
+
+  auto const msg =
+    folly::sformat("Failed to rename {} to {}, {}",
+                   src, dst, folly::errnoStr(errno));
+  Logger::Error(msg);
+  throw std::runtime_error(msg);
+};
+
+std::string mangleFilenameForCreate(const std::string& name) {
+  return name + ".part1";
+}
+
+std::string mangleFilenameForAppendStart(const std::string& name) {
+  return name + ".part2";
+}
+
+std::string mangleFilenameForAppendInProgress(const std::string& name) {
+  return name + ".part3";
+}
+
+////////////////////////////////////////////////////////////////////////////////
 }
 
 ProfDataSerializer::ProfDataSerializer(const std::string& name, FileMode mode)
-  : fileName(name)
+  : baseFileName(name)
   , fileMode(mode) {
 
-  std::string partialFile = name + ".part";
+  auto const check = [] (int ret, const std::string& file) {
+    if (ret != -1) return;
+    auto const msg =
+      folly::sformat("Failed to open file for write {}, {}", file,
+                     folly::errnoStr(errno));
+    Logger::Error(msg);
+    throw std::runtime_error(msg);
+  };
 
   if (fileMode == FileMode::Append) {
-    fd = open(partialFile.c_str(),
+    fileName = mangleFilenameForAppendInProgress(name);
+    auto const mangled = mangleFilenameForAppendStart(name);
+    fd = open(mangled.c_str(),
               O_CLOEXEC | O_APPEND | O_WRONLY, 0644);
+    check(fd, mangled);
+    renameFile(mangled, fileName);
   } else {
     // Delete old profile data to avoid confusion.  This should've happened from
     // outside the process, but in case it didn't happen, try to do it here.
     unlink(name.c_str());
 
-    fd = open(partialFile.c_str(),
+    fileName = mangleFilenameForCreate(name);
+    fd = open(fileName.c_str(),
               O_CLOEXEC | O_CREAT | O_TRUNC | O_WRONLY, 0644);
-  }
-
-  if (fd == -1) {
-    auto const msg =
-      folly::sformat("Failed to open file for write {}, {}", name,
-                     folly::errnoStr(errno));
-    Logger::Error(msg);
-    throw std::runtime_error(msg);
+    check(fd, fileName);
   }
 }
 
@@ -1093,21 +1118,19 @@ void ProfDataSerializer::finalize() {
   offset = 0;
   close(fd);
   fd = -1;
-  std::string partialFile = fileName + ".part";
+
+  // Rename file to its appropriate new name. If we're going to append
+  // additional profile data, rename it to another (different)
+  // temporary name (to mark the base data has been written). If not,
+  // rename it to its file name (signifying completion).
   if (fileMode == FileMode::Create && serializeOptProfEnabled()) {
     // Don't rename the file to it's final name yet as we're still going to
     // append the profile data collected for the optimized code to it.
-    FTRACE(1, "Finished serializing base profile data to {}\n", partialFile);
+    FTRACE(1, "Finished serializing base profile data to {}\n", fileName);
+    renameFile(fileName, mangleFilenameForAppendStart(baseFileName));
   } else {
-    if (rename(partialFile.c_str(), fileName.c_str()) == -1) {
-      auto const msg =
-        folly::sformat("Failed to rename {} to {}, {}",
-                       partialFile, fileName, folly::errnoStr(errno));
-      Logger::Error(msg);
-      throw std::runtime_error(msg);
-    } else {
-      FTRACE(1, "Finished serializing all profile data to {}\n", fileName);
-    }
+    FTRACE(1, "Finished serializing all profile data to {}\n", fileName);
+    renameFile(fileName, baseFileName);
   }
 }
 
@@ -1117,8 +1140,7 @@ ProfDataSerializer::~ProfDataSerializer() {
     // the data.  The file is likely corrupt or incomplete, so discard it.
     ftruncate(fd, 0);
     close(fd);
-    std::string partialFile = fileName + ".part";
-    unlink(partialFile.c_str());
+    unlink(fileName.c_str());
   }
 }
 
@@ -1137,6 +1159,26 @@ bool ProfDataDeserializer::done() {
   auto const end = lseek(fd, 0, SEEK_END);
   lseek(fd, pos, SEEK_SET); // go back to original position
   return offset == buffer_size && pos == end;
+}
+
+ProfDataSerializer::Mappers ProfDataDeserializer::getMappers() const {
+  ProfDataSerializer::Mappers mappers;
+  auto const rev = [] (auto const& i, auto& o) {
+    for (ProfDataSerializer::Id id = 1; id < i.map.size(); ++id) {
+      if (!i.map[id]) continue;
+      o.assign(id, i.map[id]);
+    }
+  };
+  rev(unitMap, mappers.unitMap);
+  rev(funcMap, mappers.funcMap);
+  rev(classMap, mappers.classMap);
+  rev(recordMap, mappers.recordMap);
+  rev(typeAliasMap, mappers.typeAliasMap);
+  rev(stringMap, mappers.stringMap);
+  rev(arrayMap, mappers.arrayMap);
+  rev(ratMap, mappers.ratMap);
+  rev(funcIdMap, mappers.funcIdMap);
+  return mappers;
 }
 
 void write_raw(ProfDataSerializer& ser, const void* data, size_t sz) {
@@ -1198,55 +1240,146 @@ void read_raw(ProfDataDeserializer& ser, void* data, size_t sz) {
   return read_raw(ser, data, sz);
 }
 
-StringData*& ProfDataDeserializer::getEnt(const StringData* p) {
-  return stringMap[uintptr_t(p)];
+Unit* ProfDataDeserializer::getUnit(ProfDataSerializer::Id id) const {
+  return unitMap.get(id);
 }
 
-ArrayData*& ProfDataDeserializer::getEnt(const ArrayData* p) {
-  return arrayMap[uintptr_t(p)];
+Func* ProfDataDeserializer::getFunc(ProfDataSerializer::Id id) const {
+  return funcMap.get(id);
 }
 
-Unit*& ProfDataDeserializer::getEnt(const Unit* p) {
-  return unitMap[uintptr_t(p)];
+Class* ProfDataDeserializer::getClass(ProfDataSerializer::Id id) const {
+  return classMap.get(id);
 }
 
-Func*& ProfDataDeserializer::getEnt(const Func* p) {
-  return funcMap[uintptr_t(p)];
+RecordDesc* ProfDataDeserializer::getRecord(ProfDataSerializer::Id id) const {
+  return recordMap.get(id);
 }
 
-Class*& ProfDataDeserializer::getEnt(const Class* p) {
-  return classMap[uintptr_t(p)];
+const TypeAlias*
+ProfDataDeserializer::getTypeAlias(ProfDataSerializer::Id id) const {
+  return typeAliasMap.get(id);
 }
 
-RecordDesc*& ProfDataDeserializer::getEnt(const RecordDesc* p) {
-  return recordMap[uintptr_t(p)];
+ArrayData* ProfDataDeserializer::getArray(ProfDataSerializer::Id id) const {
+  return arrayMap.get(id);
 }
 
-const RepoAuthType::Array*&
-ProfDataDeserializer::getEnt(const RepoAuthType::Array* p) {
-  return ratMap[uintptr_t(p)];
+StringData* ProfDataDeserializer::getString(ProfDataSerializer::Id id) const {
+  return stringMap.get(id);
 }
 
-bool ProfDataSerializer::serialize(const Unit* unit) {
-  return unit->serialize();
+const RepoAuthType::Array*
+ProfDataDeserializer::getArrayRAT(ProfDataSerializer::Id id) const {
+  return ratMap.get(id);
 }
 
-bool ProfDataSerializer::serialize(const Func* func) {
-  return func->serialize();
+FuncId ProfDataDeserializer::getFuncId(ProfDataSerializer::Id id) const {
+  return FuncId::fromInt(funcIdMap.get(id));
 }
 
-bool ProfDataSerializer::serialize(const Class* cls) {
-  return cls->serialize();
+void ProfDataDeserializer::record(ProfDataSerializer::Id id, Unit* unit) {
+  unitMap.record(id, unit);
 }
 
-bool ProfDataSerializer::serialize(const RecordDesc* rec) {
-  return rec->serialize();
+void ProfDataDeserializer::record(ProfDataSerializer::Id id, Func* func) {
+  funcMap.record(id, func);
+}
+
+void ProfDataDeserializer::record(ProfDataSerializer::Id id, Class* cls) {
+  classMap.record(id, cls);
+}
+
+void ProfDataDeserializer::record(ProfDataSerializer::Id id, RecordDesc* rec) {
+  recordMap.record(id, rec);
+}
+
+void ProfDataDeserializer::record(ProfDataSerializer::Id id,
+                                  const TypeAlias* ta) {
+  typeAliasMap.record(id, ta);
+}
+
+void ProfDataDeserializer::record(ProfDataSerializer::Id id, ArrayData* arr) {
+  arrayMap.record(id, arr);
+}
+
+void ProfDataDeserializer::record(ProfDataSerializer::Id id, StringData* str) {
+  stringMap.record(id, str);
+}
+
+void ProfDataDeserializer::record(ProfDataSerializer::Id id,
+                                  const RepoAuthType::Array* arr) {
+  ratMap.record(id, arr);
+}
+
+void ProfDataDeserializer::record(ProfDataSerializer::Id id, FuncId funcId) {
+  funcIdMap.record(id, funcId.toInt());
+}
+
+std::pair<ProfDataSerializer::Id, bool>
+ProfDataSerializer::serialize(const Unit* unit) {
+  return mappers.unitMap.get(unit);
+}
+
+std::pair<ProfDataSerializer::Id, bool>
+ProfDataSerializer::serialize(const Func* func) {
+  return mappers.funcMap.get(func);
+}
+
+std::pair<ProfDataSerializer::Id, bool>
+ProfDataSerializer::serialize(const Class* cls) {
+  return mappers.classMap.get(cls);
+}
+
+std::pair<ProfDataSerializer::Id, bool>
+ProfDataSerializer::serialize(const RecordDesc* rec) {
+  return mappers.recordMap.get(rec);
+}
+
+std::pair<ProfDataSerializer::Id, bool>
+ProfDataSerializer::serialize(const TypeAlias* td) {
+  return mappers.typeAliasMap.get(td);
+}
+
+std::pair<ProfDataSerializer::Id, bool>
+ProfDataSerializer::serialize(const ArrayData* ad) {
+  return mappers.arrayMap.get(ad);
+}
+
+std::pair<ProfDataSerializer::Id, bool>
+ProfDataSerializer::serialize(const StringData* sd) {
+  return mappers.stringMap.get(sd);
+}
+
+std::pair<ProfDataSerializer::Id, bool>
+ProfDataSerializer::serialize(const RepoAuthType::Array* arr) {
+  return mappers.ratMap.get(arr);
+}
+
+std::pair<ProfDataSerializer::Id, bool>
+ProfDataSerializer::serialize(FuncId fid) {
+  return mappers.funcIdMap.get(fid.toInt());
+}
+
+bool ProfDataSerializer::present(const Class* cls) const {
+  return mappers.classMap.present(cls);
+}
+
+bool ProfDataSerializer::present(const RecordDesc* rec) const {
+  return mappers.recordMap.present(rec);
+}
+
+bool ProfDataSerializer::present(const TypeAlias* ta) const {
+  return mappers.typeAliasMap.present(ta);
 }
 
 void write_raw_string(ProfDataSerializer& ser, const StringData* str) {
   uint32_t sz = str->size();
   write_raw(ser, sz);
   write_raw(ser, str->data(), sz);
+  if (allowBespokeArrayLikes()) {
+    write_raw(ser, str->color());
+  }
 }
 
 StringData* read_raw_string(ProfDataDeserializer& ser,
@@ -1262,14 +1395,29 @@ StringData* read_raw_string(ProfDataDeserializer& ser,
   if (sz > kBufLen) ptr = (char*)malloc(sz);
   SCOPE_EXIT { if (ptr != buffer) free(ptr); };
   read_raw(ser, ptr, sz);
-  if (!skip) return makeStaticString(ptr, sz);
+  auto const color = [&] {
+    if (allowBespokeArrayLikes()) return read_raw<uint16_t>(ser);
+    return uint16_t{0};
+  }();
+  if (!skip) {
+    auto const str = makeStaticString(ptr, sz);
+    str->setColor(color);
+    return str;
+  }
   return nullptr;
 }
 
 void write_string(ProfDataSerializer& ser, const StringData* str) {
-  if (!ser.serialize(str)) return write_raw(ser, str);
-  write_serialized_ptr(ser, str);
+  auto const [id, old] = ser.serialize(str);
+  if (old) return write_id(ser, id);
+  write_serialized_id(ser, id);
   write_raw_string(ser, str);
+}
+
+void write_string(ProfDataSerializer& ser, const std::string& str) {
+  uint64_t size = str.size();
+  write_raw(ser, size);
+  write_raw(ser, str.data(), size);
 }
 
 StringData* read_string(ProfDataDeserializer& ser) {
@@ -1279,20 +1427,34 @@ StringData* read_string(ProfDataDeserializer& ser) {
   );
 }
 
+std::string read_cpp_string(ProfDataDeserializer& ser) {
+  auto const size = read_raw<uint64_t>(ser);
+  constexpr uint32_t kMaxStringLen = 2 << 20;
+  if (size > kMaxStringLen) {
+    throw std::runtime_error("string too long, likely corrupt");
+  }
+  auto const buf = std::make_unique<char[]>(size);
+  read_raw(ser, buf.get(), size);
+  return std::string{buf.get(), size};
+}
+
 void write_array(ProfDataSerializer& ser, const ArrayData* arr) {
-  if (!ser.serialize(arr)) return write_raw(ser, arr);
-  write_serialized_ptr(ser, arr);
+  auto const [id, old] = ser.serialize(arr);
+  if (old) return write_id(ser, id);
+  write_serialized_id(ser, id);
   auto const str = internal_serialize(VarNR(const_cast<ArrayData*>(arr)));
   uint32_t sz = str.size();
   write_raw(ser, sz);
   write_raw(ser, str.data(), sz);
+
+  if (!allowBespokeArrayLikes()) return;
+  write_layout(ser, ArrayLayout::FromArray(arr));
 }
 
 ArrayData* read_array(ProfDataDeserializer& ser) {
   return deserialize(
     ser,
     [&] () -> ArrayData* {
-      ARRPROV_USE_RUNTIME_LOCATION();
       auto const sz = read_raw<uint32_t>(ser);
       String s{sz, ReserveStringMode{}};
       auto const range = s.bufferSlice();
@@ -1303,16 +1465,29 @@ ArrayData* read_array(ProfDataDeserializer& ser) {
         s.size(),
         VariableUnserializer::Type::Internal
       );
-      return ArrayData::GetScalarArray(std::move(v));
+      auto const result = ArrayData::GetScalarArray(std::move(v));
+
+      if (!allowBespokeArrayLikes()) return result;
+      return read_layout(ser).apply(result);
     }
   );
 }
 
+void write_array_rat(ProfDataSerializer& ser, const RepoAuthType::Array* arr) {
+  write_id(ser, ser.serialize(arr).first);
+}
+
+const RepoAuthType::Array* read_array_rat(ProfDataDeserializer& ser) {
+  auto const id = read_id(ser);
+  return ser.getArrayRAT(id);
+}
+
 void write_unit(ProfDataSerializer& ser, const Unit* unit) {
-  if (!ser.serialize(unit)) return write_raw(ser, unit);
-  ITRACE(2, "Unit: {}\n", unit->filepath());
-  write_serialized_ptr(ser, unit);
-  write_string(ser, unit->filepath());
+  auto const [id, old] = ser.serialize(unit);
+  if (old) return write_id(ser, id);
+  ITRACE(2, "Unit: {}\n", unit->origFilepath());
+  write_serialized_id(ser, id);
+  write_string(ser, unit->origFilepath());
 }
 
 Unit* read_unit(ProfDataDeserializer& ser) {
@@ -1337,16 +1512,17 @@ void write_class(ProfDataSerializer& ser, const Class* cls) {
   ITRACE(2, "Class>\n");
   Trace::Indent _;
 
-  if (!cls || !ser.serialize(cls)) return write_raw(ser, cls);
+  auto const [id, old] = ser.serialize(cls);
+  if (old) return write_id(ser, id);
 
-  write_serialized_ptr(ser, cls);
+  write_serialized_id(ser, id);
   write_raw(ser, cls->preClass()->id());
   write_unit(ser, cls->preClass()->unit());
 
   jit::vector<const Class*> dependents;
   auto record_dep = [&] (const Class* dep) {
     if (!dep) return;
-    if (!dep->wasSerialized() || !classHasPersistentRDS(dep)) {
+    if (!ser.present(dep) || !classHasPersistentRDS(dep)) {
       dependents.emplace_back(dep);
     }
   };
@@ -1358,7 +1534,7 @@ void write_class(ProfDataSerializer& ser, const Class* cls) {
   if (cls->preClass()->attrs() & AttrNoExpandTrait) {
     for (auto const tName : cls->preClass()->usedTraits()) {
       auto const trait =
-        Unit::lookupUniqueClassInContext(tName, nullptr, nullptr);
+        Class::lookupUniqueInContext(tName, nullptr, nullptr);
       assertx(trait);
       record_dep(trait);
     }
@@ -1368,11 +1544,17 @@ void write_class(ProfDataSerializer& ser, const Class* cls) {
     }
   }
 
+  if (cls->hasIncludedEnums()) {
+    for (auto const& e : cls->allIncludedEnums().range()) {
+      record_dep(e.get());
+    }
+  }
+
   write_container(ser, dependents, write_class);
 
   if (cls->attrs() & AttrEnum &&
       cls->preClass()->enumBaseTy().isObject()) {
-    write_raw(ser, cls->enumBaseTy().value_or(KindOfUninit));
+    write_named_type(ser, cls->preClass()->enumBaseTy().namedEntity());
   }
 
   if (cls->parent() == c_Closure::classof()) {
@@ -1417,17 +1599,17 @@ void write_record(ProfDataSerializer& ser, const RecordDesc* rec) {
   ITRACE(2, "RecordDesc>\n");
   Trace::Indent _;
 
-  auto const rec4 = reinterpret_cast<const char*>(rec) + kSerializedRecordBit;
-  if (!rec || !ser.serialize(rec)) return write_raw(ser, rec4);
+  auto const [id, old] = ser.serialize(rec);
+  if (old) return write_id(ser, id);
 
-  write_serialized_ptr(ser, rec4);
+  write_serialized_id(ser, id);
   write_raw(ser, rec->preRecordDesc()->id());
   write_unit(ser, rec->preRecordDesc()->unit());
 
   jit::vector<const RecordDesc*> dependents;
   auto record_dep = [&] (const RecordDesc* dep) {
     if (!dep) return;
-    if (!dep->wasSerialized() || !recordHasPersistentRDS(dep)) {
+    if (!ser.present(dep) || !recordHasPersistentRDS(dep)) {
       dependents.emplace_back(dep);
     }
   };
@@ -1449,6 +1631,59 @@ RecordDesc* read_record(ProfDataDeserializer& ser) {
   return ret;
 }
 
+void write_typealias(ProfDataSerializer& ser, const TypeAlias* td) {
+  SCOPE_EXIT {
+    ITRACE(2, "TypeAlias: {}\n", td->name());
+  };
+  ITRACE(2, "TypeAlias>\n");
+  Trace::Indent _;
+
+  auto const [id, old] = ser.serialize(td);
+  if (old) return write_id(ser, id);
+
+  write_serialized_id(ser, id);
+
+  auto const tdId = [td] {
+    Id tdId = 0;
+    auto const name = td->name();
+    for (auto const& ta : td->unit()->typeAliases()) {
+      if (ta.name == name) return tdId;
+      tdId++;
+    }
+    always_assert(false);
+  }();
+
+  write_raw(ser, tdId);
+  write_unit(ser, td->unit());
+
+  if (td->klass) {
+    write_raw(ser, true);
+    write_class(ser, td->klass);
+  } else {
+    write_raw(ser, false);
+  }
+  if (td->rec) {
+    write_raw(ser, true);
+    write_record(ser, td->rec);
+  } else {
+    write_raw(ser, false);
+  }
+}
+
+const TypeAlias* read_typealias(ProfDataDeserializer& ser) {
+  ITRACE(2, "TypeAlias>\n");
+  auto const ret = deserialize(
+    ser,
+    [&] () -> const TypeAlias* {
+      Trace::Indent _;
+      return read_typealias_internal(ser);
+    }
+  );
+
+  ITRACE(2, "TypeAlias: {}\n", ret ? ret->name() : staticEmptyString());
+  return ret;
+}
+
 void write_func(ProfDataSerializer& ser, const Func* func) {
   SCOPE_EXIT {
     ITRACE(2, "Func: {}\n", func ? func->fullName() : staticEmptyString());
@@ -1456,22 +1691,22 @@ void write_func(ProfDataSerializer& ser, const Func* func) {
   ITRACE(2, "Func>\n");
   Trace::Indent _;
 
-  if (!func || !ser.serialize(func)) return write_raw(ser, func);
+  auto const [id, old] = ser.serialize(func);
+  if (old) return write_id(ser, id);
 
-  write_serialized_ptr(ser, func);
-  uint32_t fid = func->getFuncId();
-  assertx(!(fid & 0x80000000));
+  write_serialized_id(ser, id);
+  write_func_id(ser, func->getFuncId());
+
   if (func == SystemLib::s_nullCtor ||
       (!func->isMethod() && func->isBuiltin() &&
       !func->isMethCaller())) {
     if (func == SystemLib::s_nullCtor) {
       assertx(func->name()->isame(s_86ctor.get()));
     }
-    fid = ~fid;
-    write_raw(ser, fid);
+    write_raw(ser, true);
     return write_string(ser, func->name());
   }
-  write_raw(ser, fid);
+  write_raw(ser, false);
 
   if (func->isMethod()) {
     auto const* cls = func->implCls();
@@ -1488,14 +1723,13 @@ void write_func(ProfDataSerializer& ser, const Func* func) {
     }();
     assertx(nslot & 0x80000000);
     write_raw(ser, nslot);
-    return write_class(ser, cls);
+    write_class(ser, cls);
+    return;
   }
 
-  // Ideally we'd write the func's index in its Unit; but we may not
-  // have that after Unit::initial_merge
-  const uint32_t off = func->base();
-  assertx(!(off & 0x80000000));
-  write_raw(ser, off);
+  const uint32_t sn = func->sn();
+  assertx(!(sn & 0x80000000));
+  write_raw(ser, sn);
   write_unit(ser, func->unit());
 }
 
@@ -1505,10 +1739,10 @@ Func* read_func(ProfDataDeserializer& ser) {
     ser,
     [&] () -> Func* {
       Trace::Indent _;
-      auto fid = read_raw<uint32_t>(ser);
+      auto const fid = read_id(ser);
+      auto const builtin_func = read_raw<bool>(ser);
       auto const func = [&] () -> const Func* {
-        if (fid & 0x80000000) {
-          fid = ~fid;
+        if (builtin_func) {
           auto const name = read_string(ser);
           if (name->isame(s_86ctor.get())) return SystemLib::s_nullCtor;
           return Func::lookup(name);
@@ -1524,22 +1758,20 @@ Func* read_func(ProfDataDeserializer& ser) {
         }
         auto const unit = read_unit(ser);
         for (auto const f : unit->funcs()) {
-          if (f->base() == id) {
-            Func::bind(f);
-            auto const handle = f->funcHandle();
-            if (!rds::isPersistentHandle(handle) &&
-                (!rds::isHandleInit(handle, rds::NormalTag{}) ||
-                 rds::handleToRef<LowPtr<Func>,
-                                  rds::Mode::Normal>(handle).get() != f)) {
-              rds::uninitHandle(handle);
-              Func::def(f, false);
+          if (f->sn() == id) {
+            auto const ne = f->getNamedEntity();
+            // If it's not persistent, make sure its NamedEntity is
+            // unbound, ready for DefFunc
+            if (ne->m_cachedFunc.bound() && ne->m_cachedFunc.isNormal()) {
+              ne->m_cachedFunc.markUninit();
             }
+            Func::def(f);
             return f;
           }
         }
         not_reached();
       }();
-      ser.recordFid(fid, func->getFuncId());
+      ser.record(fid, func->getFuncId());
       return const_cast<Func*>(func);
     }
   );
@@ -1555,16 +1787,8 @@ void write_clsmeth(ProfDataSerializer& ser, ClsMethDataRef clsMeth) {
     );
   };
   ITRACE(2, "ClsMeth>\n");
-  if (ser.serialize(clsMeth->getCls())) {
-    Trace::Indent _i;
-    write_raw(ser, uintptr_t(-1));
-    write_class(ser, clsMeth->getCls());
-  }
-  if (ser.serialize(clsMeth->getFunc())) {
-    Trace::Indent _i;
-    write_raw(ser, uintptr_t(-1));
-    write_func(ser, clsMeth->getFunc());
-  }
+  write_class(ser, clsMeth->getCls());
+  write_func(ser, clsMeth->getFunc());
 }
 
 ClsMethDataRef read_clsmeth(ProfDataDeserializer& ser) {
@@ -1592,12 +1816,67 @@ RegionEntryKey read_regionkey(ProfDataDeserializer& des) {
   return RegionEntryKey(srcKey, guards);
 }
 
+void write_prologueid(ProfDataSerializer& ser, const PrologueID& pid) {
+  ITRACE(2, "PrologueID>\n");
+  write_func(ser, pid.func());
+  write_raw(ser, safe_cast<uint32_t>(pid.nargs()));
+  ITRACE(2, "PrologueID: {}\n", show(pid));
+}
+
+PrologueID read_prologueid(ProfDataDeserializer& des) {
+  ITRACE(2, "PrologueID>\n");
+  auto const func = read_func(des);
+  auto const nargs = read_raw<uint32_t>(des);
+  auto const pid = PrologueID(func, nargs);
+  ITRACE(2, "PrologueID: {}\n", show(pid));
+  return pid;
+}
+
+void write_srckey(ProfDataSerializer& ser, SrcKey sk) {
+  ITRACE(2, "SrcKey>\n");
+  write_func(ser, sk.func());
+  write_raw(ser, sk.toAtomicInt());
+  ITRACE(2, "SrcKey: {}\n", show(sk));
+}
+
+SrcKey read_srckey(ProfDataDeserializer& ser) {
+  ITRACE(2, "SrcKey>\n");
+  auto const func = read_func(ser);
+  auto const orig = SrcKey::fromAtomicInt(read_raw<SrcKey::AtomicInt>(ser));
+  auto const sk = orig.withFuncID(func->getFuncId());
+  ITRACE(2, "SrcKey: {}\n", show(sk));
+  return sk;
+}
+
+void write_layout(ProfDataSerializer& ser, ArrayLayout layout) {
+  write_raw(ser, layout.toUint16());
+}
+
+ArrayLayout read_layout(ProfDataDeserializer& ser) {
+  return ArrayLayout::FromUint16(read_raw<uint16_t>(ser));
+}
+
+void write_func_id(ProfDataSerializer& ser, FuncId fid) {
+  write_id(ser, ser.serialize(fid).first);
+}
+
+FuncId read_func_id(ProfDataDeserializer& ser) {
+  auto const id = read_id(ser);
+  return ser.getFuncId(id);
+}
+
+namespace {
+
+ProfDataSerializer::Mappers s_lastMappers;
+
+}
+
 std::string serializeProfData(const std::string& filename) {
   try {
     ProfDataSerializer ser{filename, ProfDataSerializer::FileMode::Create};
 
     write_raw(ser, kMagic);
-    write_raw(ser, Repo::get().global().Signature);
+    write_raw(ser, RepoFile::globalData().Signature);
     auto schema = repoSchemaId();
     write_raw(ser, schema.size());
     write_raw(ser, schema.begin(), schema.size());
@@ -1621,6 +1900,8 @@ std::string serializeProfData(const std::string& filename) {
       Func::s_treadmill = false;
     };
 
+    write_rds_ordering(ser);
+
     write_units_preload(ser);
     ExtensionRegistry::serialize(ser);
     PropertyProfile::serialize(ser);
@@ -1631,15 +1912,31 @@ std::string serializeProfData(const std::string& filename) {
     auto const pd = profData();
     write_prof_data(ser, pd);
 
+    if (RO::EnableIntrinsicsExtension) {
+      write_container(ser, prioritySerializeClasses(), write_class);
+    }
+
     write_target_profiles(ser);
 
     // We've written everything directly referenced by the profile
     // data, but jitted code might still use Classes and TypeAliases
     // that haven't been otherwise mentioned (eg VerifyParamType,
     // InstanceOfD etc).
-    write_named_types(ser, pd);
+    write_seen_types(ser, pd);
+
+    if (allowBespokeArrayLikes()) {
+      serializeBespokeLayouts(ser);
+    }
+
+    // Record the size of prof so we can use it to fake jit.maturity
+    // if we're going to restart before running RTA.
+    write_raw(ser, (size_t)jit::tc::code().prof().used());
 
     ser.finalize();
+
+    if (serializeOptProfEnabled()) {
+      s_lastMappers = std::move(ser.getMappers());
+    }
 
     return "";
   } catch (std::runtime_error& err) {
@@ -1650,6 +1947,8 @@ std::string serializeProfData(const std::string& filename) {
 std::string serializeOptProfData(const std::string& filename) {
   try {
     ProfDataSerializer ser(filename, ProfDataSerializer::FileMode::Append);
+
+    ser.setMappers(std::move(s_lastMappers));
 
     // If enabled, recompute the function order using the call graph obtained
     // via instrumentation of the optimized code, then serialize it.
@@ -1669,20 +1968,22 @@ std::string serializeOptProfData(const std::string& filename) {
   }
 }
 
-std::string deserializeProfData(const std::string& filename, int numWorkers) {
+std::string deserializeProfData(const std::string& filename,
+                                int numWorkers,
+                                bool rds) {
   try {
-    ProfData::setTriedDeserialization();
+    if (!rds) ProfData::setTriedDeserialization();
 
     ProfDataDeserializer ser{filename};
 
     if (read_raw<decltype(kMagic)>(ser) != kMagic) {
       throw std::runtime_error("Not a profile-data dump");
     }
-    auto signature = read_raw<decltype(Repo::get().global().Signature)>(ser);
-    if (signature != Repo::get().global().Signature) {
+    auto signature = read_raw<decltype(RepoFile::globalData().Signature)>(ser);
+    if (signature != RepoFile::globalData().Signature) {
       auto const msg =
         folly::sformat("Mismatched repo-schema (expected signature '{}')",
-          Repo::get().global().Signature);
+                       RepoFile::globalData().Signature);
 
       throw std::runtime_error(msg);
     }
@@ -1720,6 +2021,13 @@ std::string deserializeProfData(const std::string& filename, int numWorkers) {
                          buildTime, currTime).c_str());
     }
 
+    // If we're loading RDS ordering, we can stop here.
+    auto const ordering = read_rds_ordering(ser);
+    if (rds) {
+      rds::setPreAssignments(ordering);
+      return "";
+    }
+
     read_units_preload(ser);
     ExtensionRegistry::deserialize(ser);
     PropertyProfile::deserialize(ser);
@@ -1731,9 +2039,23 @@ std::string deserializeProfData(const std::string& filename, int numWorkers) {
     read_prof_data(ser, pd);
     pd->setDeserialized(buildHost, tag, buildTime);
 
+    if (RO::EnableIntrinsicsExtension) {
+      read_container(ser, [&] { read_class(ser); });
+    }
+
     read_target_profiles(ser);
 
-    read_named_types(ser);
+    read_seen_types(ser);
+
+    if (allowBespokeArrayLikes()) {
+      deserializeBespokeLayouts(ser);
+    }
+
+    // If isJitSerializing() is true, we've restarted to reload the
+    // profiling data. Record the size of prof before we restarted so
+    // we can fake jit.maturity.
+    auto const prevProfSize = read_raw<size_t>(ser);
+    if (isJitSerializing()) ProfData::setPrevProfSize(prevProfSize);
 
     if (!ser.done()) {
       // We have profile data for the optimized code, so deserialize it too.
@@ -1761,11 +2083,22 @@ std::string deserializeProfData(const std::string& filename, int numWorkers) {
     // in (resulting in fatals when the wrapper tries to call it).
     merge_loaded_units(numWorkers);
 
+    if (isJitSerializing() && serializeOptProfEnabled()) {
+      s_lastMappers = ser.getMappers();
+    }
+
     return "";
   } catch (std::runtime_error& err) {
     return folly::sformat("Failed to deserialize profile data {}: {}",
                           filename, err.what());
   }
+}
+
+bool tryDeserializePartialProfData(const std::string& filename,
+                                   int numWorkers,
+                                   bool rds) {
+  auto const mangled = mangleFilenameForAppendStart(filename);
+  return deserializeProfData(mangled, numWorkers, rds).empty();
 }
 
 bool serializeOptProfEnabled() {

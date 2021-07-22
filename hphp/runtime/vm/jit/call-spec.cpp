@@ -103,7 +103,7 @@ bool CallSpec::verifySignature(const CallDest& dest,
     // TCell (for a TypedValue parameter) and wide TLvalToCell are special: one
     // SSATmp represents two argument registers, and the latter is passed as a
     // dummy TBottom argument. Make sure both are present.
-    if (param == TCell || (wide_tv_val && param == TLvalToCell)) {
+    if (param == TCell || param == TLvalToCell) {
       if (!(args[argi] <= param)) {
         fail("Incompatible type {} for first half of {} parameter {}",
              args[argi], param, parami);
@@ -125,6 +125,8 @@ bool CallSpec::verifySignature(const CallDest& dest,
       if (param <= TObj && args[argi].maybe(TNullptr)) continue;
       // Similarly for RecDesc|Nullptr
       if (param <= TRecDesc && args[argi].maybe(TNullptr)) continue;
+      // Similarly for TPtrToBool|Nullptr
+      if (param <= TPtrToBool && args[argi].maybe(TNullptr)) continue;
       // LdObjMethodS takes a TSmashable as uintptr_t.
       if (param <= TInt && args[argi] <= TSmashable) continue;
       fail(
@@ -138,15 +140,6 @@ bool CallSpec::verifySignature(const CallDest& dest,
   }
 
   return true;
-}
-
-folly::Optional<ArrayData::ArrayKind> getArrayKind(Type type) {
-  assertx(type <= TArr);
-  if (!allowBespokeArrayLikes() || type.arrSpec().vanilla()) {
-    if (type <= TVArr) return ArrayData::kPackedKind;
-    if (type <= TDArr) return ArrayData::kMixedKind;
-  }
-  return folly::none;
 }
 
 }}

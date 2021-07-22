@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_PROF_TRANS_DATA_H_
-#define incl_HPHP_PROF_TRANS_DATA_H_
+#pragma once
 
 #include "hphp/util/atomic-vector.h"
 #include "hphp/util/rds-local.h"
@@ -87,7 +86,7 @@ struct ProfTransRec {
    * Construct a ProfTransRec attached to a RegionDescPtr (region must be
    * non-null), for a profiling translation.
    */
-  ProfTransRec(Offset lastBcOff, SrcKey sk, RegionDescPtr region,
+  ProfTransRec(SrcKey lastSk, SrcKey sk, RegionDescPtr region,
                uint32_t asmSize);
 
   /*
@@ -105,21 +104,11 @@ struct ProfTransRec {
   uint32_t  asmSize()     const { return m_asmSize; }
 
   /*
-   * First BC offset in this translation.
+   * SP offset at the first BC offset in this translation.
    */
-  Offset startBcOff() const {
+  SBInvOffset startSpOff() const {
     assertx(m_kind == TransKind::Profile);
-    return m_region->start().offset();
-  }
-
-  /*
-   * Last BC offset in this translation.
-   *
-   * Precondition: kind() == TransKind::Profile
-   */
-  Offset lastBcOff()  const {
-    assertx(m_kind == TransKind::Profile);
-    return m_lastBcOff;
+    return m_region->entry()->initialSpOffset();
   }
 
   /*
@@ -129,7 +118,7 @@ struct ProfTransRec {
    */
   SrcKey lastSrcKey() const {
     assertx(m_kind == TransKind::Profile);
-    return SrcKey{m_sk, m_lastBcOff};
+    return m_lastSk;
   }
 
   /*
@@ -229,8 +218,9 @@ private:
   }
 
   TransKind m_kind;
+  uint32_t m_asmSize;  // size of the machine code
   union {
-    Offset m_lastBcOff; // offset of the last bytecode instr
+    SrcKey m_lastSk;    // SrcKey of the last bytecode instr
                         // for non-prologue translations
     int m_prologueArgs; // for prologues
   };
@@ -239,7 +229,6 @@ private:
     RegionDescPtr   m_region; // for TransProfile translations
     CallerRecPtr    m_callers; // for TransProfPrologue translations
   };
-  uint32_t m_asmSize;  // size of the machine code
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -259,8 +248,9 @@ struct ProfData {
   ProfData& operator=(const ProfData&) = delete;
 
   struct Session final {
-    Session() : m_ts(Treadmill::SessionKind::ProfData)
-               { requestInitProfData(); }
+    Session(Treadmill::SessionKind sk = Treadmill::SessionKind::ProfData)
+      : m_ts(sk)
+    { requestInitProfData(); }
     ~Session() { requestExitProfData(); }
     Session(Session&&) = delete;
     Session& operator=(Session&&) = delete;
@@ -295,6 +285,14 @@ struct ProfData {
     s_tag.store(makeStaticString(tag), std::memory_order_relaxed);
     s_buildTime.store(buildTime, std::memory_order_relaxed);
     s_wasDeserialized.store(true, std::memory_order_relaxed);
+  }
+
+  static size_t prevProfSize() {
+    return s_prevProfSize.load(std::memory_order_relaxed);
+  }
+  static void setPrevProfSize(size_t s) {
+    assertx(isJitSerializing());
+    s_prevProfSize.store(s, std::memory_order_relaxed);
   }
 
   /*
@@ -412,8 +410,8 @@ struct ProfData {
    * Check if a (function|SrcKey) has been marked as optimized.
    */
   bool optimized(FuncId funcId) const {
-    if (funcId >= m_optimizedFuncs.size()) return false;
-    return m_optimizedFuncs[funcId].load(std::memory_order_acquire);
+    auto const func = Func::fromFuncId(funcId);
+    return func->atomicFlags().check(Func::Flags::Optimized);
   }
   bool optimized(SrcKey sk) const {
     auto const it = m_optimizedSKs.find(sk.toAtomicInt());
@@ -424,30 +422,29 @@ struct ProfData {
    * Indicate that an optimized translation was emitted for a (function|SrcKey).
    */
   void setOptimized(FuncId funcId) {
-    m_optimizedFuncs.ensureSize(funcId + 1);
-    assertx(!m_optimizedFuncs[funcId].load(std::memory_order_relaxed));
-    m_optimizedFuncs[funcId].store(true, std::memory_order_release);
+    auto func = Func::fromFuncId(funcId);
+    DEBUG_ONLY auto const previousValue =
+      func->atomicFlags().set(Func::Flags::Optimized);
+    assertx(!previousValue);
     m_optimizedFuncCount.fetch_add(1, std::memory_order_relaxed);
+  }
+  void unsetOptimized(FuncId funcId) {
+    auto func = Func::fromFuncId(funcId);
+    DEBUG_ONLY auto const previousValue =
+      func->atomicFlags().unset(Func::Flags::Optimized);
+    assertx(previousValue);
+    m_optimizedFuncCount.fetch_sub(1, std::memory_order_relaxed);
   }
   void setOptimized(SrcKey sk) {
     m_optimizedSKs.emplace(sk.toAtomicInt(), true).first->second = true;
   }
 
   /*
-   * Returns true on the first call for the given `funcId', false for all
-   * subsequent calls.
-   *
-   * Used to ensure that each FuncId is only put in the retranslation queue
-   * once.
-   */
-  bool shouldQueue(FuncId funcId) {
-    m_queuedFuncs.ensureSize(funcId + 1);
-    return !m_queuedFuncs[funcId].exchange(true, std::memory_order_relaxed);
-  }
-
-  /*
    * Forget that a SrcKey is optimized.
    */
+  void clearAllOptimizedSKs() {
+    m_optimizedSKs.clear();
+  }
   void clearOptimized(SrcKey sk) {
     auto const it = m_optimizedSKs.find(sk.toAtomicInt());
     if (it == m_optimizedSKs.end()) return;
@@ -458,23 +455,27 @@ struct ProfData {
   /*
    * Check if a function is being profiled.
    */
+  bool profiling(const Func* func) const {
+    assertx(func);
+    return profiling(func->getFuncId());
+  }
   bool profiling(FuncId funcId) const {
-    if (funcId >= m_profilingFuncs.size()) return false;
-    return m_profilingFuncs[funcId].load(std::memory_order_acquire);
+    return m_profilingFuncs.find(funcId.toInt()) != m_profilingFuncs.end();
   }
 
   /*
    * Indicate that a function is being profiled.
    */
-  void setProfiling(FuncId funcId) {
-    if (profiling(funcId)) return;
+  void setProfiling(const Func* func) {
+    assertx(func);
 
-    m_profilingFuncs.ensureSize(funcId + 1);
-    m_profilingFuncs[funcId].store(true, std::memory_order_release);
-    m_profilingFuncCount.fetch_add(1, std::memory_order_relaxed);
+    auto const funcId = func->getFuncId();
+    if (!m_profilingFuncs.emplace(funcId.toInt(), true).second) {
+      // Someone else beat us, just return.
+      return;
+    }
 
-    auto const func = Func::fromFuncId(funcId);
-    auto const bcSize = func->past() - func->base();
+    auto const bcSize = func->bclen();
     m_profilingBCSize.fetch_add(bcSize, std::memory_order_relaxed);
 
     static auto const bcSizeCounter =
@@ -482,18 +483,13 @@ struct ProfData {
     bcSizeCounter->setValue(profilingBCSize());
   }
 
-  /*
-   * This returns an upper bound for the FuncIds of all the functions that are
-   * being profiled.  A proper call to profiling(funcId) still needs to be made
-   * to check whether each funcId was indeed profiled.
-   */
-  FuncId maxProfilingFuncId() const {
-    auto const s = m_profilingFuncs.size();
-    // Avoid wrapping around and returning a large integer.
-    if (s == 0) return 0;
-    // Avoid returning obviously invalid FuncIds.
-    if (s >= Func::nextFuncId()) return Func::nextFuncId() - 1;
-    return s - 1;
+  template<class Fn>
+  void forEachProfilingFunc(Fn fn) {
+    for (auto it : m_profilingFuncs) {
+      auto funcId = FuncId::fromInt(it.first);
+      auto func = Func::fromFuncId(funcId);
+      fn(func);
+    }
   }
 
   /*
@@ -501,7 +497,7 @@ struct ProfData {
    * optimized, respectively.
    */
   int64_t profilingFuncs() const {
-    return m_profilingFuncCount.load(std::memory_order_relaxed);
+    return m_profilingFuncs.size();
   }
   int64_t optimizedFuncs() const {
     return m_optimizedFuncCount.load(std::memory_order_relaxed);
@@ -589,7 +585,7 @@ struct ProfData {
 
     /* implicit */ operator uint64_t() const {
       assertx(nArgs >= 0);
-      return (uint64_t(func) << 32) | nArgs;
+      return (uint64_t(func.toInt()) << 32) | nArgs;
     }
   };
 
@@ -605,21 +601,12 @@ struct ProfData {
   std::atomic<bool> m_countersReset{false};
 
   /*
-   * Funcs that are being profiled or have already been optimized,
-   * respectively. Values in m_profilingFuncs and m_optimizedFuncs only ever
-   * transition from false -> true, and as a result, the atomic counters that
-   * go along with them are monotonically increasing.
+   * Funcs that are being profiled or have already been optimized.
+   * The atomic counters that go along with them are monotonically increasing.
    */
-  AtomicVector<bool> m_profilingFuncs;
-  AtomicVector<bool> m_optimizedFuncs;
-  std::atomic<int64_t> m_profilingFuncCount{0};
   std::atomic<int64_t> m_profilingBCSize{0};
   std::atomic<int64_t> m_optimizedFuncCount{0};
-
-  /*
-   * Funcs that have been queued for asynchronous retranslation.
-   */
-  AtomicVector<bool> m_queuedFuncs;
+  folly::AtomicHashMap<FuncId::Int, bool> m_profilingFuncs;
 
   /*
    * SrcKeys that have already been optimized. SrcKeys are marked as not
@@ -654,7 +641,7 @@ struct ProfData {
    * Cache for Func -> block end offsets. Values in this map cannot be modified
    * after insertion so no locking is necessary for lookups.
    */
-  folly::AtomicHashMap<FuncId, const jit::fast_set<Offset>>
+  folly::AtomicHashMap<FuncId::Int, const jit::fast_set<Offset>>
     m_blockEndOffsets;
 
   mutable folly::SharedMutex m_targetProfilesLock;
@@ -674,10 +661,9 @@ struct ProfData {
   static std::atomic<StringData*> s_buildHost;
   static std::atomic<StringData*> s_tag;
   static std::atomic<int64_t> s_buildTime;
+  static std::atomic<size_t> s_prevProfSize;
 };
 
 //////////////////////////////////////////////////////////////////////
 
 }}
-
-#endif

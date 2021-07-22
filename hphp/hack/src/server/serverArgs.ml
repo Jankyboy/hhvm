@@ -9,10 +9,8 @@
 open Hh_prelude
 include Cli_args
 
-type saved_state_target =
-  | Informant_induced_saved_state_target of
-      ServerMonitorUtils.target_saved_state
-  | Saved_state_target_info of saved_state_target_info
+type saved_state_target = Saved_state_target_info of saved_state_target_info
+[@@deriving show]
 
 (*****************************************************************************)
 (* The options from the command line *)
@@ -21,6 +19,7 @@ type saved_state_target =
 type options = {
   ai_mode: Ai_options.t option;
   check_mode: bool;
+  concatenate_prefix: string option;
   config: (string * string) list;
   custom_telemetry_data: (string * string) list;
   dump_fanout: bool;
@@ -28,9 +27,9 @@ type options = {
   from: string;
   gen_saved_ignore_type_errors: bool;
   ignore_hh_version: bool;
+  enable_ifc: string list;
   saved_state_ignore_hhconfig: bool;
   json_mode: bool;
-  load_state_canary: bool;
   log_inference_constraints: bool;
   max_procs: int option;
   no_load: bool;
@@ -40,6 +39,7 @@ type options = {
   replace_state_after_saving: bool;
   root: Path.t;
   save_filename: string option;
+  save_64bit: string option;
   save_naming_filename: string option;
   save_with_spec: save_state_spec_info option;
   should_detach: bool;
@@ -47,7 +47,6 @@ type options = {
   waiting_client: Unix.file_descr option;
   watchman_debug_logging: bool;
   with_saved_state: saved_state_target option;
-  with_dep_graph_v2: string option;
   allow_non_opt_build: bool;
   write_symbol_info: string option;
 }
@@ -66,6 +65,8 @@ module Messages = struct
 
   let check = " check and exit"
 
+  let concatenate_prefix = " combine multiple hack files"
+
   let config = " override arbitrary value from hh.conf (format: <key>=<value>)"
 
   let daemon = " detach process"
@@ -73,6 +74,9 @@ module Messages = struct
   let dump_fanout = " dump fanout to stdout as JSON, then exit"
 
   let dynamic_view = " start with dynamic view for IDE files on by default."
+
+  let enable_ifc =
+    " run IFC analysis on any file whose path is prefixed by the argument (format: comma separated list of path prefixes)"
 
   let from = " so we know who's invoking - e.g. nuclide, vim, emacs, vscode"
 
@@ -91,10 +95,6 @@ module Messages = struct
     " ignore hhconfig hash when loading saved states"
 
   let json = " output errors in json format (arc lint mode)"
-
-  let load_state_canary =
-    " Look up a saved state using the hg commit"
-    ^ " hash instead of the SVN rev."
 
   let log_inference_constraints =
     " (for hh debugging purpose only) log type"
@@ -122,21 +122,19 @@ module Messages = struct
   let save_with_spec =
     " save server state given a JSON spec:\n" ^ save_state_spec_json_descr
 
+  let save_64bit = " save discovered 64-bit to the given directory"
+
   let waiting_client =
     " send message to fd/handle when server has begun"
     ^ " starting and again when it's done starting"
 
   let watchman_debug_logging =
-    " Enable debug logging on Watchman client. This is very noisy"
+    " Logs full Watchman requests and responses. This is very noisy"
 
   let with_saved_state =
     " Init with the given saved state instead of fetching it.\n"
     ^ "Expects a JSON string specified as: "
     ^ saved_state_json_descr
-
-  let with_dep_graph_v2 =
-    " Use the new dependency graph format. Expects a file"
-    ^ " containing the new depency graph to use."
 
   let write_symbol_info = " write symbol info to json files"
 end
@@ -151,10 +149,12 @@ let print_json_version () =
 let parse_options () : options =
   let ai_mode = ref None in
   let check_mode = ref false in
+  let concatenate_prefix = ref None in
   let config = ref [] in
   let custom_telemetry_data = ref [] in
   let dump_fanout = ref false in
   let dynamic_view = ref false in
+  let enable_ifc = ref [] in
   let from = ref "" in
   let from_emacs = ref false in
   let from_hhclient = ref false in
@@ -163,7 +163,6 @@ let parse_options () : options =
   let ignore_hh = ref false in
   let saved_state_ignore_hhconfig = ref false in
   let json_mode = ref false in
-  let load_state_canary = ref false in
   let log_inference_constraints = ref false in
   let max_procs = ref None in
   let no_load = ref false in
@@ -174,13 +173,13 @@ let parse_options () : options =
   let replace_state_after_saving = ref false in
   let save = ref None in
   let save_with_spec = ref None in
+  let save_64bit = ref None in
   let save_naming = ref None in
   let should_detach = ref false in
   let version = ref false in
   let waiting_client = ref None in
   let watchman_debug_logging = ref false in
   let with_saved_state = ref None in
-  let with_dep_graph_v2 = ref None in
   let allow_non_opt_build = ref false in
   let write_symbol_info = ref None in
   let set_ai s = ai_mode := Some (Ai_options.prepare ~server:true s) in
@@ -191,12 +190,16 @@ let parse_options () : options =
   let set_wait fd = waiting_client := Some (Handle.wrap_handle fd) in
   let set_with_saved_state s = with_saved_state := Some s in
   let set_write_symbol_info s = write_symbol_info := Some s in
+  let set_enable_ifc s = enable_ifc := String_utils.split ',' s in
   let set_from s = from := s in
   let options =
     [
       ("--ai", Arg.String set_ai, Messages.ai);
       ("--allow-non-opt-build", Arg.Set allow_non_opt_build, "");
       ("--check", Arg.Set check_mode, Messages.check);
+      ( "--concatenate-all",
+        Arg.String (fun s -> concatenate_prefix := Some s),
+        Messages.concatenate_prefix );
       ( "--config",
         Arg.String (fun s -> config := String_utils.split2_exn '=' s :: !config),
         Messages.config );
@@ -210,6 +213,7 @@ let parse_options () : options =
       ("--daemon", Arg.Set should_detach, Messages.daemon);
       ("--dump-fanout", Arg.Set dump_fanout, Messages.dump_fanout);
       ("--dynamic-view", Arg.Set dynamic_view, Messages.dynamic_view);
+      ("--enable-ifc", Arg.String set_enable_ifc, Messages.enable_ifc);
       ("--from-emacs", Arg.Set from_emacs, Messages.from_emacs);
       ("--from-hhclient", Arg.Set from_hhclient, Messages.from_hhclient);
       ("--from-vim", Arg.Set from_vim, Messages.from_vim);
@@ -219,9 +223,6 @@ let parse_options () : options =
         Messages.gen_saved_ignore_type_errors );
       ("--ignore-hh-version", Arg.Set ignore_hh, Messages.ignore_hh_version);
       ("--json", Arg.Set json_mode, Messages.json);
-      ( "--load-state-canary",
-        Arg.Set load_state_canary,
-        Messages.load_state_canary );
       ( "--log-inference-constraints",
         Arg.Set log_inference_constraints,
         Messages.log_inference_constraints );
@@ -244,6 +245,9 @@ let parse_options () : options =
       ( "--save-state-with-spec",
         Arg.String set_save_with_spec,
         Messages.save_with_spec );
+      ( "--save-64bit",
+        Arg.String (fun s -> save_64bit := Some s),
+        Messages.save_64bit );
       ( "--saved-state-ignore-hhconfig",
         Arg.Set saved_state_ignore_hhconfig,
         Messages.saved_state_ignore_hhconfig );
@@ -255,9 +259,6 @@ let parse_options () : options =
       ( "--with-mini-state",
         Arg.String set_with_saved_state,
         Messages.with_saved_state );
-      ( "--with-dep-graph-v2",
-        Arg.String (fun x -> with_dep_graph_v2 := Some x),
-        Messages.with_dep_graph_v2 );
       ( "--write-symbol-info",
         Arg.String set_write_symbol_info,
         Messages.write_symbol_info );
@@ -275,12 +276,13 @@ let parse_options () : options =
     exit 0
   );
 
-  (* --json, --save, and --write-symbol-info all imply check *)
+  (* --json, --save, --write-symbol-info, --concatenate-all all imply check *)
   let check_mode =
     Option.is_some !write_symbol_info
     || !check_mode
     || !json_mode
     || Option.is_some !save
+    || Option.is_some !concatenate_prefix
   in
   if check_mode && Option.is_some !waiting_client then (
     Printf.eprintf "--check is incompatible with wait modes!\n";
@@ -303,16 +305,6 @@ let parse_options () : options =
     Exit.exit Exit_status.Input_error
   | _ -> ());
   let root_path = Path.make !root in
-  (ai_mode :=
-     match !ai_mode with
-     | Some ai ->
-       (* ai may have json mode enabled internally, in which case,
-        * it should not be disabled by hack if --json was not used *)
-       if !json_mode then
-         Some (Ai_options.set_json_mode ai true)
-       else
-         Some ai
-     | None -> None);
   Wwwroot.assert_www_directory root_path;
   if Option.is_some !save && Option.is_some save_with_spec then (
     Printf.eprintf
@@ -327,16 +319,17 @@ let parse_options () : options =
   {
     ai_mode = !ai_mode;
     check_mode;
+    concatenate_prefix = !concatenate_prefix;
     config = !config;
     custom_telemetry_data = !custom_telemetry_data;
     dump_fanout = !dump_fanout;
     dynamic_view = !dynamic_view;
+    enable_ifc = !enable_ifc;
     from = !from;
     gen_saved_ignore_type_errors = !gen_saved_ignore_type_errors;
     ignore_hh_version = !ignore_hh;
     saved_state_ignore_hhconfig = !saved_state_ignore_hhconfig;
     json_mode = !json_mode;
-    load_state_canary = !load_state_canary;
     log_inference_constraints = !log_inference_constraints;
     max_procs = !max_procs;
     no_load = !no_load;
@@ -346,13 +339,13 @@ let parse_options () : options =
     replace_state_after_saving = !replace_state_after_saving;
     root = root_path;
     save_filename = !save;
+    save_64bit = !save_64bit;
     save_with_spec;
     save_naming_filename = !save_naming;
     should_detach = !should_detach;
     waiting_client = !waiting_client;
     watchman_debug_logging = !watchman_debug_logging;
     with_saved_state;
-    with_dep_graph_v2 = !with_dep_graph_v2;
     allow_non_opt_build = !allow_non_opt_build;
     write_symbol_info = !write_symbol_info;
   }
@@ -362,16 +355,17 @@ let default_options ~root =
   {
     ai_mode = None;
     check_mode = false;
+    concatenate_prefix = None;
     config = [];
     custom_telemetry_data = [];
     dump_fanout = false;
     dynamic_view = false;
+    enable_ifc = [];
     from = "";
     gen_saved_ignore_type_errors = false;
     ignore_hh_version = false;
     saved_state_ignore_hhconfig = false;
     json_mode = false;
-    load_state_canary = false;
     log_inference_constraints = false;
     max_procs = None;
     no_load = true;
@@ -382,12 +376,12 @@ let default_options ~root =
     root = Path.make root;
     save_filename = None;
     save_with_spec = None;
+    save_64bit = None;
     save_naming_filename = None;
     should_detach = false;
     waiting_client = None;
     watchman_debug_logging = false;
     with_saved_state = None;
-    with_dep_graph_v2 = None;
     allow_non_opt_build = false;
     write_symbol_info = None;
   }
@@ -405,6 +399,8 @@ let ai_mode options = options.ai_mode
 
 let check_mode options = options.check_mode
 
+let concatenate_prefix options = options.concatenate_prefix
+
 let config options = options.config
 
 let custom_telemetry_data options = options.custom_telemetry_data
@@ -412,6 +408,8 @@ let custom_telemetry_data options = options.custom_telemetry_data
 let dump_fanout options = options.dump_fanout
 
 let dynamic_view options = options.dynamic_view
+
+let enable_ifc options = options.enable_ifc
 
 let from options = options.from
 
@@ -422,8 +420,6 @@ let ignore_hh_version options = options.ignore_hh_version
 let saved_state_ignore_hhconfig options = options.saved_state_ignore_hhconfig
 
 let json_mode options = options.json_mode
-
-let load_state_canary options = options.load_state_canary
 
 let log_inference_constraints options = options.log_inference_constraints
 
@@ -445,6 +441,8 @@ let save_filename options = options.save_filename
 
 let save_with_spec options = options.save_with_spec
 
+let save_64bit options = options.save_64bit
+
 let save_naming_filename options = options.save_naming_filename
 
 let should_detach options = options.should_detach
@@ -455,7 +453,10 @@ let watchman_debug_logging options = options.watchman_debug_logging
 
 let with_saved_state options = options.with_saved_state
 
-let with_dep_graph_v2 options = options.with_dep_graph_v2
+let is_using_precomputed_saved_state options =
+  match with_saved_state options with
+  | Some (Saved_state_target_info _) -> true
+  | None -> false
 
 let allow_non_opt_build options = options.allow_non_opt_build
 
@@ -465,23 +466,18 @@ let write_symbol_info options = options.write_symbol_info
 (* Setters *)
 (*****************************************************************************)
 
+let set_ai_mode options ai_mode = { options with ai_mode }
+
 let set_check_mode options check_mode = { options with check_mode }
 
 let set_gen_saved_ignore_type_errors options ignore_type_errors =
   { options with gen_saved_ignore_type_errors = ignore_type_errors }
 
+let set_max_procs options procs = { options with max_procs = Some procs }
+
 let set_no_load options is_no_load = { options with no_load = is_no_load }
 
 let set_config options config = { options with config }
-
-let set_saved_state_target options target =
-  match target with
-  | None -> options
-  | Some target ->
-    {
-      options with
-      with_saved_state = Some (Informant_induced_saved_state_target target);
-    }
 
 (****************************************************************************)
 (* Misc *)
@@ -490,16 +486,17 @@ let to_string
     {
       ai_mode;
       check_mode;
+      concatenate_prefix;
       config;
       custom_telemetry_data;
       dump_fanout;
       dynamic_view;
+      enable_ifc;
       from;
       gen_saved_ignore_type_errors;
       ignore_hh_version;
       saved_state_ignore_hhconfig;
       json_mode;
-      load_state_canary;
       log_inference_constraints;
       max_procs;
       no_load;
@@ -510,12 +507,12 @@ let to_string
       root;
       save_filename;
       save_with_spec;
+      save_64bit;
       save_naming_filename;
       should_detach;
       waiting_client;
       watchman_debug_logging;
       with_saved_state;
-      with_dep_graph_v2;
       allow_non_opt_build;
       write_symbol_info;
     } =
@@ -529,15 +526,15 @@ let to_string
     | None -> "<>"
     | Some _ -> "SavedStateTarget(...)"
   in
-  let dep_graph_v2_str =
-    match with_dep_graph_v2 with
-    | None -> "<>"
-    | Some x -> x
-  in
   let waiting_client_str =
     match waiting_client with
     | None -> "<>"
     | Some _ -> "WaitingClient(...)"
+  in
+  let concatenate_prefix_str =
+    match concatenate_prefix with
+    | None -> "<>"
+    | Some path -> path
   in
   let save_filename_str =
     match save_filename with
@@ -548,6 +545,11 @@ let to_string
     match save_with_spec with
     | None -> "<>"
     | Some _ -> "SaveStateSpec(...)"
+  in
+  let save_64bit_str =
+    match save_64bit with
+    | None -> "<>"
+    | Some path -> path
   in
   let save_naming_filename_str =
     match save_naming_filename with
@@ -572,10 +574,13 @@ let to_string
   let config_str =
     Printf.sprintf
       "[%s]"
-      ( String.concat ~sep:", "
+      (String.concat ~sep:", "
       @@ List.map
            ~f:(fun (key, value) -> Printf.sprintf "%s=%s" key value)
-           config )
+           config)
+  in
+  let enable_ifc_str =
+    Printf.sprintf "[%s]" (String.concat ~sep:"," enable_ifc)
   in
   let custom_telemetry_data_str =
     custom_telemetry_data
@@ -591,6 +596,9 @@ let to_string
     "check_mode: ";
     string_of_bool check_mode;
     ", ";
+    "concatenate_prefix: ";
+    concatenate_prefix_str;
+    ", ";
     "config: ";
     config_str;
     "custom_telemetry_data: ";
@@ -600,6 +608,9 @@ let to_string
     ", ";
     "dynamic_view: ";
     string_of_bool dynamic_view;
+    ", ";
+    "enable_ifc: ";
+    enable_ifc_str;
     ", ";
     "from: ";
     from;
@@ -615,9 +626,6 @@ let to_string
     ", ";
     "json_mode: ";
     string_of_bool json_mode;
-    ", ";
-    "load_state_canary: ";
-    string_of_bool load_state_canary;
     ", ";
     "log_inference_constraints: ";
     string_of_bool log_inference_constraints;
@@ -648,6 +656,9 @@ let to_string
     "save_with_spec: ";
     save_with_spec_str;
     ", ";
+    "save_64bit: ";
+    save_64bit_str;
+    ", ";
     "save_naming_filename: ";
     save_naming_filename_str;
     ", ";
@@ -662,9 +673,6 @@ let to_string
     ", ";
     "with_saved_state: ";
     saved_state_str;
-    ", ";
-    "with_dep_graph_v2: ";
-    dep_graph_v2_str;
     ", ";
     "allow_non_opt_build: ";
     string_of_bool allow_non_opt_build;

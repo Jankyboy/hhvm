@@ -19,11 +19,17 @@ let make_substitution class_type class_parameters =
 (* Accumulate requirements so that we can successfully check the bodies
  * of trait methods / check that classes satisfy these requirements *)
 let flatten_parent_class_reqs
-    env shallow_class (req_ancestors, req_ancestors_extends) parent_ty =
+    env
+    class_cache
+    shallow_class
+    (req_ancestors, req_ancestors_extends)
+    parent_ty =
   let (_, (parent_pos, parent_name), parent_params) =
     Decl_utils.unwrap_class_type parent_ty
   in
-  let parent_type = Decl_env.get_class_dep env parent_name in
+  let parent_type =
+    Decl_env.get_class_add_dep env parent_name ~cache:class_cache
+  in
   match parent_type with
   | None ->
     (* The class lives in PHP *)
@@ -34,7 +40,7 @@ let flatten_parent_class_reqs
       List.rev_map_append
         parent_type.dc_req_ancestors
         req_ancestors
-        (fun (_p, ty) ->
+        ~f:(fun (_p, ty) ->
           let ty = Inst.instantiate subst ty in
           (parent_pos, ty))
     in
@@ -52,9 +58,9 @@ let flatten_parent_class_reqs
       (req_ancestors, req_ancestors_extends)
     | Ast_defs.Cenum -> assert false)
 
-let declared_class_req env (requirements, req_extends) req_ty =
+let declared_class_req env class_cache (requirements, req_extends) req_ty =
   let (_, (req_pos, req_name), _) = Decl_utils.unwrap_class_type req_ty in
-  let req_type = Decl_env.get_class_dep env req_name in
+  let req_type = Decl_env.get_class_add_dep env req_name ~cache:class_cache in
   let req_extends = SSet.add req_name req_extends in
   (* since the req is declared on this class, we should
    * emphatically *not* substitute: a require extends Foo<T> is
@@ -91,14 +97,14 @@ let declared_class_req env (requirements, req_extends) req_ty =
 let naive_dedup req_extends =
   (* maps class names to type params *)
   let h = Caml.Hashtbl.create 0 in
-  List.rev_filter_map req_extends (fun (parent_pos, ty) ->
+  List.rev_filter_map req_extends ~f:(fun (parent_pos, ty) ->
       match get_node ty with
       | Tapply (name, hl) ->
-        let hl = List.map hl Decl_pos_utils.NormalizeSig.ty in
+        let hl = List.map hl ~f:Decl_pos_utils.NormalizeSig.ty in
         begin
           try
             let hl' = Caml.Hashtbl.find h name in
-            if not (List.equal hl hl' equal_decl_ty) then
+            if not (List.equal equal_decl_ty hl hl') then
               raise Exit
             else
               None
@@ -110,35 +116,35 @@ let naive_dedup req_extends =
         end
       | _ -> Some (parent_pos, ty))
 
-let get_class_requirements env shallow_class =
+let get_class_requirements env class_cache shallow_class =
   let req_ancestors_extends = SSet.empty in
   let acc = ([], req_ancestors_extends) in
   let acc =
     List.fold_left
-      ~f:(declared_class_req env)
+      ~f:(declared_class_req env class_cache)
       ~init:acc
       shallow_class.sc_req_extends
   in
   let acc =
     List.fold_left
-      ~f:(declared_class_req env)
+      ~f:(declared_class_req env class_cache)
       ~init:acc
       shallow_class.sc_req_implements
   in
   let acc =
     List.fold_left
-      ~f:(flatten_parent_class_reqs env shallow_class)
+      ~f:(flatten_parent_class_reqs env class_cache shallow_class)
       ~init:acc
       shallow_class.sc_uses
   in
   let acc =
     List.fold_left
-      ~f:(flatten_parent_class_reqs env shallow_class)
+      ~f:(flatten_parent_class_reqs env class_cache shallow_class)
       ~init:acc
-      ( if Ast_defs.(equal_class_kind shallow_class.sc_kind Cinterface) then
+      (if Ast_defs.(equal_class_kind shallow_class.sc_kind Cinterface) then
         shallow_class.sc_extends
       else
-        shallow_class.sc_implements )
+        shallow_class.sc_implements)
   in
   let (req_extends, req_ancestors_extends) = acc in
   let req_extends = naive_dedup req_extends in

@@ -2,13 +2,14 @@
 // Copyright 2004-present Facebook. All Rights Reserved.
 
 class Reified<reify T> {}
+interface I {}
 
 function f(Reified<Reified<
   Reified<int>
->> $r) {}
+>> $r) : void {}
 
-function g(): void {
-  $a = 3 as Reified<Reified<
+function g(I $i): void {
+  $a = $i as Reified<Reified<
     int
   >>;
 

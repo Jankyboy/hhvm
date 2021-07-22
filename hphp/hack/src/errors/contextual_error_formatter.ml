@@ -90,10 +90,10 @@ let format_substring_underline
     underline_padding
     (Tty.apply_color
        color
-       ( if is_first then
+       (if is_first then
          underline
        else
-         underline ^ " " ^ msg ))
+         underline ^ " " ^ msg))
 
 (* Format the line of code associated with this message, and the message itself. *)
 let format_message (msg : string) (pos : Pos.absolute) ~is_first ~col_width :
@@ -134,9 +134,9 @@ let col_widths (msgs : Pos.absolute Errors.message list) :
 (** Format the list of messages in a given error with context.
     The list may not be ordered, and multiple messages may occur on one line.
  *)
-let format_error (error : Pos.absolute Errors.error_) : string =
+let format_error (error : Errors.finalized_error) : string =
   (* Sort messages such that messages in the same file are together.
-    Does not reorder the files or messages within a file. *)
+     Does not reorder the files or messages within a file. *)
   let msgs =
     Errors.get_messages error
     |> Errors.combining_sort ~f:(fun msg ->
@@ -193,7 +193,7 @@ let format_error (error : Pos.absolute Errors.error_) : string =
   String.concat ~sep:"\n" (aux sorted_msgs None) ^ "\n"
 
 let to_string
-    ?(claim_color : Tty.raw_color option) (error : Pos.absolute Errors.error_) :
+    ?(claim_color : Tty.raw_color option) (error : Errors.finalized_error) :
     string =
   let error_code = Errors.get_code error in
   let msgl = Errors.to_list error in
@@ -210,10 +210,10 @@ let to_string
             (Tty.Bold color)
             (Errors.error_code_to_string error_code))
          (Tty.apply_color (Tty.Bold Tty.Default) msg)));
-  (try Buffer.add_string buf (format_error error)
-   with _ ->
-     Buffer.add_string
-       buf
-       "Error could not be pretty-printed. Please file a bug.");
+  (try Buffer.add_string buf (format_error error) with
+  | _ ->
+    Buffer.add_string
+      buf
+      "Error could not be pretty-printed. Please file a bug.");
   Buffer.add_string buf "\n";
   Buffer.contents buf

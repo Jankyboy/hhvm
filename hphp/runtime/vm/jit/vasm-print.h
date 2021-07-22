@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_VASM_PRINT_H_
-#define incl_HPHP_JIT_VASM_PRINT_H_
+#pragma once
 
 #include "hphp/runtime/vm/jit/vasm.h"
 #include "hphp/runtime/vm/jit/vasm-reg.h"
@@ -64,6 +63,7 @@ constexpr int kVasmHoistFbccsLevel = 4;
 constexpr int kVasmDCELevel = 4;
 constexpr int kVasmLowerLevel = 4;
 constexpr int kVasmUnreachableLevel = 6;
+constexpr int kVasmBlockCountLevel = 5;
 
 // Print the cfg digraph followed by a vasm code listing, if the trace level is
 // above `level'.
@@ -80,5 +80,3 @@ extern const char* area_names[];
 
 ///////////////////////////////////////////////////////////////////////////////
 }}
-
-#endif

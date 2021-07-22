@@ -15,8 +15,7 @@ open Hh_prelude
 open Symbol_builder_types
 
 let get_next_elem_id () =
-  let x = ref 500_000 in
-  (* Glean requires IDs to start with high numbers *)
+  let x = ref 1 in
   fun () ->
     let r = !x in
     x := !x + 1;
@@ -25,9 +24,9 @@ let get_next_elem_id () =
 let json_element_id = get_next_elem_id ()
 
 let get_type_from_hint ctx h =
-  let mode = FileInfo.Mdecl in
+  let mode = FileInfo.Mhhi in
   let decl_env = { mode; droot = None; ctx } in
-  Typing_print.full_decl ctx (Decl_hint.hint decl_env h)
+  Typing_print.full_decl (Decl_hint.hint decl_env h)
 
 (* Replace any codepoints that are not valid UTF-8 with
 the unrepresentable character. *)
@@ -46,11 +45,26 @@ let source_at_span source_text pos =
   let source_text = Full_fidelity_source_text.sub source_text st (fi - st) in
   check_utf8 source_text
 
+(* Values pulled from source code may have quotation marks;
+strip these when present, eg: "\"FOO\"" => "FOO" *)
+let strip_nested_quotes str =
+  let len = String.length str in
+  let firstc = str.[0] in
+  let lastc = str.[len - 1] in
+  if
+    len >= 2
+    && ((Char.equal '"' firstc && Char.equal '"' lastc)
+       || (Char.equal '\'' firstc && Char.equal '\'' lastc))
+  then
+    String.sub str ~pos:1 ~len:(len - 2)
+  else
+    str
+
 (* Convert ContainerName<TParam> to ContainerName *)
 let strip_tparams name =
   match String.index name '<' with
   | None -> name
-  | Some i -> String.sub name 0 i
+  | Some i -> String.sub name ~pos:0 ~len:i
 
 (* True if source text ends in a newline *)
 let ends_in_newline source_text =
@@ -88,23 +102,26 @@ let split_name (s : string) : (string * string) option =
   | None -> None
   | Some pos ->
     let name_start = pos + 1 in
-    let name = String.sub s name_start (String.length s - name_start) in
-    let parent_namespace = String.sub s 0 (name_start - 1) in
+    let name =
+      String.sub s ~pos:name_start ~len:(String.length s - name_start)
+    in
+    let parent_namespace = String.sub s ~pos:0 ~len:(name_start - 1) in
     if String.is_empty parent_namespace || String.is_empty name then
       None
     else
       Some (parent_namespace, name)
 
-(* Get the container name and predicate type for a given container kind. *)
-let container_decl_predicate container_type =
-  match container_type with
+(* Get the container name and predicate type for a given parent
+container kind. *)
+let parent_decl_predicate parent_container_type =
+  match parent_container_type with
   | ClassContainer -> ("class_", ClassDeclaration)
   | InterfaceContainer -> ("interface_", InterfaceDeclaration)
   | TraitContainer -> ("trait", TraitDeclaration)
 
-let get_container_kind clss =
+let get_parent_kind clss =
   match clss.c_kind with
-  | Cenum -> raise (Failure "Unexpected enum as container kind")
+  | Cenum -> raise (Failure "Unexpected enum as parent container kind")
   | Cinterface -> InterfaceContainer
   | Ctrait -> TraitContainer
   | _ -> ClassContainer
@@ -133,6 +150,8 @@ let init_progress =
       interfaceDefinition = [];
       methodDeclaration = [];
       methodDefinition = [];
+      methodOverrides = [];
+      namespaceDeclaration = [];
       propertyDeclaration = [];
       propertyDefinition = [];
       traitDeclaration = [];
@@ -140,6 +159,7 @@ let init_progress =
       typeConstDeclaration = [];
       typeConstDefinition = [];
       typedefDeclaration = [];
+      typedefDefinition = [];
     }
   in
   { resultJson = default_json; factIds = JMap.empty }
@@ -272,6 +292,16 @@ let update_json_data predicate json progress =
         progress.resultJson with
         methodDefinition = json :: progress.resultJson.methodDefinition;
       }
+    | MethodOverrides ->
+      {
+        progress.resultJson with
+        methodOverrides = json :: progress.resultJson.methodOverrides;
+      }
+    | NamespaceDeclaration ->
+      {
+        progress.resultJson with
+        namespaceDeclaration = json :: progress.resultJson.namespaceDeclaration;
+      }
     | PropertyDeclaration ->
       {
         progress.resultJson with
@@ -307,6 +337,11 @@ let update_json_data predicate json progress =
         progress.resultJson with
         typedefDeclaration = json :: progress.resultJson.typedefDeclaration;
       }
+    | TypedefDefinition ->
+      {
+        progress.resultJson with
+        typedefDefinition = json :: progress.resultJson.typedefDefinition;
+      }
   in
   { resultJson = json; factIds = progress.factIds }
 
@@ -320,14 +355,14 @@ let add_fact predicate json_key progress =
       {
         resultJson = progress.resultJson;
         factIds =
-          ( if should_cache predicate then
+          (if should_cache predicate then
             JMap.add
               json_key
               [(predicate, newFactId)]
               progress.factIds
               ~combine:List.append
           else
-            progress.factIds );
+            progress.factIds);
       }
     in
     (newFactId, true, progress)

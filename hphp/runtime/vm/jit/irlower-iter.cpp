@@ -197,19 +197,20 @@ Vptr iteratorPtr(IRLS& env, const IRInstruction* inst, const T* extra) {
   return fp[iterOffset(inst->marker(), extra->iterId)];
 }
 
-int32_t iteratorType(IterSpecialization specialization) {
+int32_t iteratorType(const IterTypeData& data) {
   auto const nextHelperIndex = [&]{
     using S = IterSpecialization;
-    switch (specialization.base_type) {
-      case S::Packed:
+    if (data.type.bespoke) {
+      if (!data.type.base_const) return IterNextIndex::Array;
+      if (data.layout.is_struct()) return IterNextIndex::StructDict;
+      return IterNextIndex::Array;
+    }
+    switch (data.type.base_type) {
       case S::Vec: {
-        return specialization.base_const && !specialization.output_key
-          ? IterNextIndex::ArrayPackedPointer
-          : IterNextIndex::ArrayPacked;
+        return IterNextIndex::ArrayPacked;
       }
-      case S::Mixed:
       case S::Dict: {
-        return specialization.base_const
+        return data.type.base_const
           ? IterNextIndex::ArrayMixedPointer
           : IterNextIndex::ArrayMixed;
       }
@@ -218,7 +219,7 @@ int32_t iteratorType(IterSpecialization specialization) {
   }();
 
   auto const type = IterImpl::packTypeFields(
-    IterImpl::TypeArray, nextHelperIndex, specialization);
+      nextHelperIndex, data.type, data.layout.toUint16());
   return safe_cast<int32_t>(type);
 }
 
@@ -227,10 +228,19 @@ int32_t iteratorType(IterSpecialization specialization) {
 void cgCheckIter(IRLS& env, const IRInstruction* inst) {
   static_assert(sizeof(IterSpecialization) == 1, "");
   auto const iter = iteratorPtr(env, inst, inst->extra<CheckIter>());
-  auto const type = inst->extra<CheckIter>()->type;
+  auto const data = inst->extra<CheckIter>();
+  auto const type = data->type;
   auto& v = vmain(env);
   auto const sf = v.makeReg();
-  v << cmpbim{type.as_byte, iter + IterImpl::specializationOffset(), sf};
+
+  // For bespoke specialized iterators, we have to check both the type byte
+  // and the ArrayLayout. For vanilla iterators, we can check the type alone.
+  if (type.bespoke) {
+    auto const full_type = iteratorType(*data);
+    v << cmplim{full_type, iter + IterImpl::typeOffset(), sf};
+  } else {
+    v << cmpbim{type.as_byte, iter + IterImpl::specializationOffset(), sf};
+  }
   v << jcc{CC_NE, sf, {label(env, inst->next()), label(env, inst->taken())}};
 }
 
@@ -265,9 +275,9 @@ void cgStIterBase(IRLS& env, const IRInstruction* inst) {
 
 void cgStIterType(IRLS& env, const IRInstruction* inst) {
   static_assert(IterImpl::typeSize() == 4, "");
-  auto const type = inst->extra<StIterType>()->type;
+  auto const type = iteratorType(*inst->extra<StIterType>());
   auto const iter = iteratorPtr(env, inst, inst->extra<StIterType>());
-  vmain(env) << storeli{iteratorType(type), iter + IterImpl::typeOffset()};
+  vmain(env) << storeli{type, iter + IterImpl::typeOffset()};
 }
 
 void cgStIterPos(IRLS& env, const IRInstruction* inst) {

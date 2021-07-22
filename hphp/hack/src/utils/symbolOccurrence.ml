@@ -12,21 +12,29 @@ type override_info = {
   method_name: string;
   is_static: bool;
 }
-[@@deriving ord]
+[@@deriving ord, eq]
+
+type class_id_type =
+  | ClassId
+  | Other
+[@@deriving ord, eq]
 
 type kind =
-  | Class
+  | Class of class_id_type
   | Record
   | Function
   | Method of string * string
   | LocalVar
   | Property of string * string
+  | XhpLiteralAttr of string * string
   | ClassConst of string * string
   | Typeconst of string * string
   | GConst
   (* For __Override occurrences, we track the associated method and class. *)
   | Attribute of override_info option
-[@@deriving ord]
+  (* enum class name, label name *)
+  | EnumClassLabel of string * string
+[@@deriving ord, eq]
 
 type 'a t = {
   name: string;
@@ -40,23 +48,27 @@ type 'a t = {
 let to_absolute x = { x with pos = Pos.to_absolute x.pos }
 
 let kind_to_string = function
-  | Class -> "type_id"
+  | Class _ -> "type_id"
   | Record -> "record"
   | Method _ -> "method"
   | Function -> "function"
   | LocalVar -> "local"
   | Property _ -> "property"
+  | XhpLiteralAttr _ -> "xhp_literal_attribute"
   | ClassConst _ -> "member_const"
   | Typeconst _ -> "typeconst"
   | GConst -> "global_const"
   | Attribute _ -> "attribute"
+  | EnumClassLabel _ -> "enum_class_label"
 
 let enclosing_class occurrence =
   match occurrence.type_ with
   | Method (c, _)
   | Property (c, _)
+  | XhpLiteralAttr (c, _)
   | ClassConst (c, _)
-  | Typeconst (c, _) ->
+  | Typeconst (c, _)
+  | EnumClassLabel (c, _) ->
     Some c
   | _ -> None
 
@@ -64,10 +76,9 @@ let get_class_name occurrence =
   match enclosing_class occurrence with
   | Some _ as res -> res
   | None ->
-    if occurrence.type_ = Class then
-      Some occurrence.name
-    else
-      None
+    (match occurrence.type_ with
+    | Class _ -> Some occurrence.name
+    | _ -> None)
 
 let is_constructor occurrence =
   match occurrence.type_ with
@@ -77,5 +88,10 @@ let is_constructor occurrence =
 
 let is_class occurrence =
   match occurrence.type_ with
-  | Class -> true
+  | Class _ -> true
+  | _ -> false
+
+let is_xhp_literal_attr occurrence =
+  match occurrence.type_ with
+  | XhpLiteralAttr _ -> true
   | _ -> false

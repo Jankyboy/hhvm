@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_BACKTRACE_H_
-#define incl_HPHP_BACKTRACE_H_
+#pragma once
 
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/base/resource-data.h"
@@ -23,7 +22,6 @@
 
 #include "hphp/util/low-ptr.h"
 
-#include <folly/Optional.h>
 #include <folly/small_vector.h>
 
 #include <cstdint>
@@ -71,7 +69,6 @@ struct CompactFrame final {
 struct CompactTraceData {
   Array extract() const;
   void insert(const ActRec* fp, int32_t prevPc);
-  uint64_t hash() const;
   const auto& frames() const { return m_frames; }
   auto size() const { return m_frames.size(); }
 
@@ -82,7 +79,6 @@ struct CompactTraceData {
 
  private:
   folly::small_vector<CompactFrame, 16> m_frames;
-  mutable uint64_t m_hash{0};
 };
 
 struct CompactTrace : SweepableResourceData {
@@ -338,6 +334,7 @@ struct BTFrame {
 };
 
 Array createBacktrace(const BacktraceArgs& backtraceArgs);
+Array createCrashBacktrace(BTFrame frame, jit::CTCA addr);
 void addBacktraceToStructLog(const Array& bt, StructuredLogEntry& cols);
 int64_t createBacktraceHash(bool consider_metadata);
 void fillCompactBacktrace(CompactTraceData* trace, bool skipTop);
@@ -366,6 +363,11 @@ BTFrame getARFromWH(
  */
 template<typename L>
 void walkStack(L func, bool skipTop = false);
+
+template<class L>
+void walkStackFrom(
+    L func, BTFrame initFrm, jit::CTCA ip, bool skipTop,
+    folly::small_vector<c_WaitableWaitHandle*, 64>& visitedWHs);
 
 namespace backtrace_detail {
 
@@ -433,5 +435,3 @@ backtrace_detail::from_ret_t<F> fromLeafWH(
 #define incl_HPHP_BACKTRACE_INL_H_
 #include "hphp/runtime/base/backtrace-inl.h"
 #undef incl_HPHP_BACKTRACE_INL_H_
-
-#endif // incl_HPHP_BACKTRACE_H_

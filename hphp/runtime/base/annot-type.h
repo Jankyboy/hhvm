@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_ANNOT_TYPE_H_
-#define incl_HPHP_ANNOT_TYPE_H_
+#pragma once
 
 #include "hphp/runtime/base/datatype.h"
 
@@ -44,12 +43,12 @@ enum class AnnotMetaType : uint8_t {
   Number = 5,
   ArrayKey = 6,
   This = 7,
-  VArrOrDArr = 8,
-  VecOrDict = 9,
-  ArrayLike = 10,
-  Nonnull = 11,
-  NoReturn = 12,
-  Nothing = 13,
+  VecOrDict = 8,
+  ArrayLike = 9,
+  Nonnull = 10,
+  NoReturn = 11,
+  Nothing = 12,
+  Classname = 13,
 };
 
 enum class AnnotType : uint16_t {
@@ -58,8 +57,6 @@ enum class AnnotType : uint16_t {
   Int      = (uint8_t)KindOfInt64    | (uint16_t)AnnotMetaType::Precise << 8,
   Float    = (uint8_t)KindOfDouble   | (uint16_t)AnnotMetaType::Precise << 8,
   String   = (uint8_t)KindOfString   | (uint16_t)AnnotMetaType::Precise << 8,
-  VArray   = (uint8_t)KindOfVArray   | (uint16_t)AnnotMetaType::Precise << 8,
-  DArray   = (uint8_t)KindOfDArray   | (uint16_t)AnnotMetaType::Precise << 8,
   Object   = (uint8_t)KindOfObject   | (uint16_t)AnnotMetaType::Precise << 8,
   Resource = (uint8_t)KindOfResource | (uint16_t)AnnotMetaType::Precise << 8,
   Dict     = (uint8_t)KindOfDict     | (uint16_t)AnnotMetaType::Precise << 8,
@@ -75,11 +72,11 @@ enum class AnnotType : uint16_t {
   Number   = (uint16_t)AnnotMetaType::Number << 8       | (uint8_t)KindOfUninit,
   ArrayKey = (uint16_t)AnnotMetaType::ArrayKey << 8     | (uint8_t)KindOfUninit,
   This     = (uint16_t)AnnotMetaType::This << 8         | (uint8_t)KindOfUninit,
-  VArrOrDArr = (uint16_t)AnnotMetaType::VArrOrDArr << 8 | (uint8_t)KindOfUninit,
   VecOrDict  = (uint16_t)AnnotMetaType::VecOrDict << 8  | (uint8_t)KindOfUninit,
   ArrayLike  = (uint16_t)AnnotMetaType::ArrayLike << 8  | (uint8_t)KindOfUninit,
   NoReturn   = (uint16_t)AnnotMetaType::NoReturn << 8   | (uint8_t)KindOfUninit,
-  Nothing    = (uint16_t)AnnotMetaType::Nothing << 8    | (uint8_t)KindOfUninit
+  Nothing    = (uint16_t)AnnotMetaType::Nothing << 8    | (uint8_t)KindOfUninit,
+  Classname  = (uint16_t)AnnotMetaType::Classname << 8  | (uint8_t)KindOfUninit
 };
 
 inline AnnotMetaType getAnnotMetaType(AnnotType at) {
@@ -122,8 +119,10 @@ enum class AnnotAction {
   CallableCheck,
   WarnClass,
   ConvertClass,
-  ClsMethCheck,
+  WarnLazyClass,
+  ConvertLazyClass,
   RecordCheck,
+  WarnClassname,
 };
 
 /*
@@ -162,6 +161,10 @@ enum class AnnotAction {
  * RecordCheck: 'at' and 'dt' are both records and the caller needs to check
  * if the record in the value matches annotation.
  *
+ * WarnClassname: 'at' is classname and 'dt' is either a Class or LazyClass
+ * and RuntimeOption::ClassnameNotices is on. The 'dt' is compatible with 'at'
+ * but raises a notice at runtime.
+ *
  */
 AnnotAction
 annotCompat(DataType dt, AnnotType at, const StringData* annotClsName);
@@ -169,5 +172,3 @@ annotCompat(DataType dt, AnnotType at, const StringData* annotClsName);
 ///////////////////////////////////////////////////////////////////////////////
 
 }
-
-#endif

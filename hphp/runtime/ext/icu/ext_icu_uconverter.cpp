@@ -39,7 +39,7 @@ static Class* UConverterClass = nullptr;
 
 static Class* getClass() {
   if (!UConverterClass) {
-    UConverterClass = Unit::lookupClass(s_UConverter.get());
+    UConverterClass = Class::lookup(s_UConverter.get());
     assertx(UConverterClass);
   }
   return UConverterClass;
@@ -108,7 +108,7 @@ static void ucnvToUCallback(ObjectData *objval,
   auto data = Native::data<IntlUConverter>(objval);
   String source(args->source, args->sourceLimit - args->source, CopyString);
   Variant ret = objval->o_invoke_few_args(
-    s_toUCallback, 4,
+    s_toUCallback, RuntimeCoeffects::fixme(), 4,
     reason, source, String(codeUnits, length, CopyString), *pErrorCode);
   if (ret.asCArrRef()[1].is(KindOfInt64)) {
     *pErrorCode = (UErrorCode)ret.asCArrRef()[1].toInt64();
@@ -161,7 +161,7 @@ static void ucnvFromUCallback(ObjectData *objval,
                               UErrorCode *pErrorCode) {
   if (MemoryManager::sweeping()) return;
   auto data = Native::data<IntlUConverter>(objval);
-  Array source = Array::CreateVArray();
+  Array source = Array::CreateVec();
   for(int i = 0; i < length; i++) {
     UChar32 c;
     U16_NEXT(codeUnits, i, length, c);
@@ -169,7 +169,7 @@ static void ucnvFromUCallback(ObjectData *objval,
   }
   Variant ret =
     objval->o_invoke_few_args(
-      s_fromUCallback, 4,
+      s_fromUCallback, RuntimeCoeffects::fixme(), 4,
       reason, source, (int64_t)codePoint, *pErrorCode);
   if (ret.asCArrRef()[1].is(KindOfInt64)) {
     *pErrorCode = (UErrorCode)ret.asCArrRef()[1].toInt64();
@@ -430,7 +430,7 @@ static Variant HHVM_STATIC_METHOD(UConverter, reasonText, int64_t reason) {
 
 static Array HHVM_STATIC_METHOD(UConverter, getAvailable) {
   int32_t i, count = ucnv_countAvailable();
-  VArrayInit ret(count);
+  VecInit ret(count);
 
   for(i = 0; i < count; ++i) {
     ret.append(ucnv_getAvailableName(i));
@@ -449,7 +449,7 @@ static Variant HHVM_STATIC_METHOD(UConverter, getAliases,
     return init_null();
   }
 
-  Array ret = Array::CreateVArray();
+  Array ret = Array::CreateVec();
   for(i = 0; i < count; ++i) {
     error = U_ZERO_ERROR;
     const char *alias = ucnv_getAlias(encoding.c_str(), i, &error);
@@ -464,7 +464,7 @@ static Variant HHVM_STATIC_METHOD(UConverter, getAliases,
 
 static Variant HHVM_STATIC_METHOD(UConverter, getStandards) {
   int16_t i, count = ucnv_countStandards();
-  Array ret = Array::CreateVArray();
+  Array ret = Array::CreateVec();
 
   for(i = 0; i < count; ++i) {
     UErrorCode error = U_ZERO_ERROR;

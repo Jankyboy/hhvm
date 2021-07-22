@@ -14,12 +14,10 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_DECREF_PROFILE_H_
-#define incl_HPHP_JIT_DECREF_PROFILE_H_
+#pragma once
 
 #include <folly/dynamic.h>
 #include <folly/Format.h>
-#include <folly/Optional.h>
 
 #include "hphp/runtime/vm/jit/ir-instruction.h"
 #include "hphp/runtime/vm/jit/target-profile.h"
@@ -148,5 +146,3 @@ inline TargetProfile<DecRefProfile> decRefProfile(const TransContext& context,
 ///////////////////////////////////////////////////////////////////////////////
 
 } }
-
-#endif

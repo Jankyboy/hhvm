@@ -7,79 +7,80 @@
  *
  *)
 
-open Hh_prelude
 open Shallow_decl_defs
 
+module Capacity = struct
+  let capacity = 1000
+end
+
+module Class = struct
+  type t = shallow_class
+
+  let prefix = Prefix.make ()
+
+  let description = "Decl_ShallowClass"
+end
+
 module Classes =
-  SharedMem.WithCache (SharedMem.ProfiledImmediate) (StringKey)
-    (struct
-      type t = shallow_class
+  SharedMem.WithCache (SharedMem.ProfiledImmediate) (StringKey) (Class)
+    (Capacity)
 
-      let prefix = Prefix.make ()
+module FilterCapacity = struct
+  (* Filters are typically small (on average < 40 bytes) so we can
+   * store more than we usually do in our cache *)
+  let capacity = 2000
+end
 
-      let description = "Decl_ShallowClass"
-    end)
-    (struct
-      let capacity = 1000
-    end)
+module Filter = struct
+  type t = BloomFilter.t
 
-let push_local_changes = Classes.LocalChanges.push_stack
+  let prefix = Prefix.make ()
 
-let pop_local_changes = Classes.LocalChanges.pop_stack
+  let description = "Decl_MemberFilter"
+end
 
-let class_naming_and_decl ctx c =
-  let c = Errors.ignore_ (fun () -> Naming.class_ ctx c) in
-  Shallow_decl.class_ ctx c
+module MemberFilters = struct
+  include
+    SharedMem.WithCache (SharedMem.ProfiledImmediate) (StringKey) (Filter)
+      (FilterCapacity)
 
-let shallow_decl_enabled (ctx : Provider_context.t) : bool =
-  TypecheckerOptions.shallow_class_decl (Provider_context.get_tcopt ctx)
+  let add
+      ({
+         sc_name = (_, cls_name);
+         sc_consts;
+         sc_typeconsts;
+         sc_props;
+         sc_sprops;
+         sc_constructor;
+         sc_static_methods;
+         sc_methods;
+         _;
+       } as cls) =
+    (* We add the name of all (type) constants, properties and methods in
+     * order to de-dupe names. This will ensure we have an accurate count
+     * when determining the capacity of the bloom filter we need. *)
+    let names = HashSet.create () in
+    let add_name = HashSet.add names in
+    List.iter (fun { scc_name = (_, n); _ } -> add_name n) sc_consts;
+    List.iter (fun { stc_name = (_, n); _ } -> add_name n) sc_typeconsts;
+    List.iter (fun { sp_name = (_, n); _ } -> add_name n) sc_props;
+    List.iter (fun { sp_name = (_, n); _ } -> add_name n) sc_sprops;
+    List.iter (fun { sm_name = (_, n); _ } -> add_name n) sc_static_methods;
+    List.iter (fun { sm_name = (_, n); _ } -> add_name n) sc_methods;
 
-let get_from_store ctx cid =
-  if shallow_decl_enabled ctx then
-    Classes.get cid
-  else
-    failwith "shallow_class_decl not enabled"
+    (* Constructors need to be handled specially. If a class doesn't define
+     * a constructor, but is marked final or consistent construct we will
+     * consider there to be a constructor present in the class *)
+    Option.iter (fun { sm_name = (_, n); _ } -> add_name n) sc_constructor;
+    (match Decl_utils.consistent_construct_kind cls with
+    | Typing_defs.Inconsistent -> ()
+    | Typing_defs.ConsistentConstruct
+    | Typing_defs.FinalClass ->
+      add_name Naming_special_names.Members.__construct);
 
-let add_to_store ctx cid c =
-  if shallow_decl_enabled ctx then
-    Classes.add cid c
-  else
-    failwith "shallow_class_decl not enabled"
-
-let class_decl_if_missing (ctx : Provider_context.t) (c : Nast.class_) =
-  let (_, cid) = c.Aast.c_name in
-  match get_from_store ctx cid with
-  | Some c -> c
-  | None ->
-    let c = class_naming_and_decl ctx c in
-    add_to_store ctx cid c;
-    c
-
-let err_not_found file name =
-  let err_str =
-    Printf.sprintf "%s not found in %s" name (Relative_path.to_absolute file)
-  in
-  raise (Decl_defs.Decl_not_found err_str)
-
-let declare_class_in_file ctx file name =
-  match Ast_provider.find_class_in_file ctx file name with
-  | Some cls -> class_decl_if_missing ctx cls
-  | None -> err_not_found file name
-
-let get ctx cid =
-  match get_from_store ctx cid with
-  | Some _ as c -> c
-  | None ->
-    (match Naming_provider.get_class_path ctx cid with
-    | None -> None
-    | Some filename -> Some (declare_class_in_file ctx filename cid))
-
-let get_batch = Classes.get_batch
-
-let get_old_batch = Classes.get_old_batch
-
-let oldify_batch = Classes.oldify_batch
-
-let remove_old_batch = Classes.remove_old_batch
-
-let remove_batch = Classes.remove_batch
+    let filter = BloomFilter.create ~capacity:(HashSet.length names) in
+    HashSet.iter names ~f:(fun name ->
+        let hashes = BloomFilter.hash name in
+        BloomFilter.add filter hashes);
+    add cls_name filter
+end

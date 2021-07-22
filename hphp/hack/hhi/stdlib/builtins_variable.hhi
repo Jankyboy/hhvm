@@ -9,36 +9,33 @@
  */
 
 namespace {
-<<__PHPStdLib, __Pure>>
-function is_bool($var): bool;
-<<__PHPStdLib, __Pure>>
-function is_int($var): bool;
-<<__Deprecated('Use is_int().'), __Pure>>
-function is_integer($var): bool;
-<<__Deprecated('Use is_int().'), __Pure>>
-function is_long($var): bool;
-<<__Deprecated('Use is_float().'), __Pure>>
-function is_double($var): bool;
-<<__PHPStdLib, __Pure>>
-function is_float($var): bool;
-<<__PHPStdLib, __Pure>>
-function is_numeric($var): bool;
-<<__Deprecated('Use is_float().'), __Pure>>
-function is_real($var): bool;
-<<__PHPStdLib, __Pure>>
-function is_string($var): bool;
-<<__Pure>>
-function is_scalar($var): bool;
-<<__Pure>>
-function is_object($var): bool;
-<<__PHPStdLib, __Pure>>
-function is_resource($var): bool;
-<<__Pure>>
-function is_null($var): bool;
-<<__PHPStdLib, __Pure>>
-function gettype($v);
-<<__PHPStdLib, __Pure>>
-function get_resource_type(resource $handle);
+<<__PHPStdLib>>
+function is_bool($var)[]: bool;
+<<__PHPStdLib>>
+function is_int($var)[]: bool;
+<<__Deprecated('Use is_int().')>>
+function is_integer($var)[]: bool;
+<<__Deprecated('Use is_int().')>>
+function is_long($var)[]: bool;
+<<__Deprecated('Use is_float().')>>
+function is_double($var)[]: bool;
+<<__PHPStdLib>>
+function is_float($var)[]: bool;
+<<__PHPStdLib>>
+function is_numeric($var)[]: bool;
+<<__Deprecated('Use is_float().')>>
+function is_real($var)[]: bool;
+<<__PHPStdLib>>
+function is_string($var)[]: bool;
+function is_scalar($var)[]: bool;
+function is_object($var)[]: bool;
+<<__PHPStdLib>>
+function is_resource($var)[]: bool;
+function is_null($var)[]: bool;
+<<__PHPStdLib>>
+function gettype($v)[];
+<<__PHPStdLib>>
+function get_resource_type(resource $handle)[];
 <<__PHPStdLib>>
 function print_r($expression, bool $ret = false);
 <<__PHPStdLib>>
@@ -47,36 +44,36 @@ function var_export($expression, bool $ret = false);
 function var_dump(<<__AcceptDisposable>> mixed $expression, mixed ...$rest);
 <<__PHPStdLib>>
 function debug_zval_dump(<<__AcceptDisposable>> $variable);
-<<__PHPStdLib, __Pure>>
-function serialize($value);
-<<__PHPStdLib, __Pure>>
-function unserialize(string $str, darray $options = darray[]);
+<<__PHPStdLib>>
+function serialize($value)[defaults]: string;
+<<__PHPStdLib>>
+function serialize_pure($value)[]: string;
+<<__PHPStdLib>>
+function unserialize(string $str, darray $options = darray[])[defaults];
+<<__PHPStdLib>>
+function unserialize_pure(string $str, darray $options = darray[])[];
 <<__PHPStdLib>>
 function import_request_variables(string $types, string $prefix = "");
 }
 
 namespace HH\Lib\_Private\Native {
-  <<__Pure, __AtMostRxAsArgs>>
   function first<Tv>(
-    <<__OnlyRxIfImpl(\HH\Rx\Traversable::class), __MaybeMutable>>
-    Container<Tv> $container,
-  ): ?Tv;
 
-  <<__Pure, __AtMostRxAsArgs>>
+    Container<Tv> $container,
+  )[]: ?Tv;
+
   function first_key<Tk as arraykey>(
-    <<__OnlyRxIfImpl(\HH\Rx\Traversable::class), __MaybeMutable>>
-    KeyedContainer<Tk, mixed> $container,
-  ): ?Tk;
 
-  <<__Pure, __AtMostRxAsArgs>>
+    KeyedContainer<Tk, mixed> $container,
+  )[]: ?Tk;
+
   function last<Tv>(
-    <<__OnlyRxIfImpl(\HH\Rx\Traversable::class), __MaybeMutable>>
-    Container<Tv> $container,
-  ): ?Tv;
 
-  <<__Pure, __AtMostRxAsArgs>>
+    Container<Tv> $container,
+  )[]: ?Tv;
+
   function last_key<Tk as arraykey>(
-    <<__OnlyRxIfImpl(\HH\Rx\Traversable::class), __MaybeMutable>>
+
     KeyedContainer<Tk, mixed> $container,
-  ): ?Tk;
+  )[]: ?Tk;
 }

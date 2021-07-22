@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_RUNTIME_ERROR_H_
-#define incl_HPHP_RUNTIME_ERROR_H_
+#pragma once
 
 #include <cstdarg>
 #include <string>
@@ -192,31 +191,9 @@ void raise_convert_rcls_meth_to_type(const char* typeName);
 
 void raise_hack_arr_compat_serialize_notice(const ArrayData*);
 
-void raise_hack_arr_compat_cast_marked_array_notice(const ArrayData*);
-
 void raise_hackarr_compat_is_operator(const char* source, const char* target);
 
 void raise_hackarr_compat_notice(const std::string& msg);
-
-
-enum class SerializationSite {
-  IsDict,
-  IsVec,
-  IsTuple,
-  IsShape,
-  IsArray,
-  FBSerialize,
-  FBCompactSerialize,
-  Gettype,
-  Serialize,
-  VarExport,
-  PrintR,
-  JsonEncode,
-  Count
-};
-
-void raise_array_serialization_notice(SerializationSite src,
-                                      const ArrayData* arr);
 
 [[noreturn]] void raise_use_of_specialized_array();
 
@@ -252,7 +229,7 @@ void raise_str_to_class_notice(const StringData* name);
  * class_meth compact notices.
  */
 void raise_clsmeth_compat_type_hint(
-  const Func* func, const std::string& displayName, folly::Optional<int> param);
+  const Func* func, const std::string& displayName, Optional<int> param);
 void raise_clsmeth_compat_type_hint_outparam_notice(
   const Func* func, const std::string& displayName, int paramNum);
 void raise_clsmeth_compat_type_hint_property_notice(
@@ -262,4 +239,3 @@ void raise_clsmeth_compat_type_hint_property_notice(
 ///////////////////////////////////////////////////////////////////////////////
 }
 
-#endif // incl_HPHP_RUNTIME_ERROR_H_

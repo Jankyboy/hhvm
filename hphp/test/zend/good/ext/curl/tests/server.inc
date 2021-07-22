@@ -11,7 +11,7 @@ function curl_cli_server_start() {
 
 	$php_executable = getenv('TEST_PHP_EXECUTABLE');
 	$doc_root = __DIR__;
-	$router = "responder/get.php";
+	$router = "responder/get.inc";
 
 	$descriptorspec = darray[
 		0 => STDIN,
@@ -24,7 +24,8 @@ function curl_cli_server_start() {
         $cmd .= " {$router}";
 		$handle = proc_open(addslashes($cmd), $descriptorspec, $pipes, $doc_root, NULL, darray["bypass_shell" => true,  "suppress_errors" => true]);
 	} else {
-		$cmd = "exec {$php_executable} -t {$doc_root} -n -S " . PHP_CURL_SERVER_ADDRESS;
+		$php_executable__str = (string)($php_executable);
+		$cmd = "exec {$php_executable__str} -t {$doc_root} -n -S " . (string)(PHP_CURL_SERVER_ADDRESS);
 		$cmd .= " {$router}";
 		$cmd .= " 2>/dev/null";
 

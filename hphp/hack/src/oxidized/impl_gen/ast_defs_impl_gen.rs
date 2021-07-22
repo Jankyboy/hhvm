@@ -3,10 +3,10 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the "hack" directory of this source tree.
 //
-// @generated SignedSource<<6c8858ff1bc09c6f97e38e69604bd553>>
+// @generated SignedSource<<597bfb31ca818b21f35b237f1bb7f863>>
 //
 // To regenerate this file, run:
-//   hphp/hack/src/oxidized/regen.sh
+//   hphp/hack/src/oxidized_regen.sh
 
 use crate::ast_defs::*;
 impl ShapeFieldName {
@@ -205,6 +205,14 @@ impl ParamKind {
         true
     }
 }
+impl ReadonlyKind {
+    pub fn mk_readonly() -> Self {
+        ReadonlyKind::Readonly
+    }
+    pub fn is_readonly(&self) -> bool {
+        true
+    }
+}
 impl OgNullFlavor {
     pub fn mk_ognullthrows() -> Self {
         OgNullFlavor::OGNullthrows
@@ -238,9 +246,6 @@ impl FunKind {
     pub fn mk_fasync_generator() -> Self {
         FunKind::FAsyncGenerator
     }
-    pub fn mk_fcoroutine() -> Self {
-        FunKind::FCoroutine
-    }
     pub fn is_fsync(&self) -> bool {
         match self {
             FunKind::FSync => true,
@@ -262,12 +267,6 @@ impl FunKind {
     pub fn is_fasync_generator(&self) -> bool {
         match self {
             FunKind::FAsyncGenerator => true,
-            _ => false,
-        }
-    }
-    pub fn is_fcoroutine(&self) -> bool {
-        match self {
-            FunKind::FCoroutine => true,
             _ => false,
         }
     }
@@ -305,9 +304,6 @@ impl Bop {
     }
     pub fn mk_barbar() -> Self {
         Bop::Barbar
-    }
-    pub fn mk_log_xor() -> Self {
-        Bop::LogXor
     }
     pub fn mk_lt() -> Self {
         Bop::Lt
@@ -414,12 +410,6 @@ impl Bop {
     pub fn is_barbar(&self) -> bool {
         match self {
             Bop::Barbar => true,
-            _ => false,
-        }
-    }
-    pub fn is_log_xor(&self) -> bool {
-        match self {
-            Bop::LogXor => true,
             _ => false,
         }
     }
@@ -606,6 +596,100 @@ impl Uop {
         match self {
             Uop::Usilence => true,
             _ => false,
+        }
+    }
+}
+impl Visibility {
+    pub fn mk_private() -> Self {
+        Visibility::Private
+    }
+    pub fn mk_public() -> Self {
+        Visibility::Public
+    }
+    pub fn mk_protected() -> Self {
+        Visibility::Protected
+    }
+    pub fn mk_internal() -> Self {
+        Visibility::Internal
+    }
+    pub fn is_private(&self) -> bool {
+        match self {
+            Visibility::Private => true,
+            _ => false,
+        }
+    }
+    pub fn is_public(&self) -> bool {
+        match self {
+            Visibility::Public => true,
+            _ => false,
+        }
+    }
+    pub fn is_protected(&self) -> bool {
+        match self {
+            Visibility::Protected => true,
+            _ => false,
+        }
+    }
+    pub fn is_internal(&self) -> bool {
+        match self {
+            Visibility::Internal => true,
+            _ => false,
+        }
+    }
+}
+impl XhpEnumValue {
+    pub fn mk_xevint(p0: isize) -> Self {
+        XhpEnumValue::XEVInt(p0)
+    }
+    pub fn mk_xevstring(p0: String) -> Self {
+        XhpEnumValue::XEVString(p0)
+    }
+    pub fn is_xevint(&self) -> bool {
+        match self {
+            XhpEnumValue::XEVInt(..) => true,
+            _ => false,
+        }
+    }
+    pub fn is_xevstring(&self) -> bool {
+        match self {
+            XhpEnumValue::XEVString(..) => true,
+            _ => false,
+        }
+    }
+    pub fn as_xevint(&self) -> Option<&isize> {
+        match self {
+            XhpEnumValue::XEVInt(p0) => Some(p0),
+            _ => None,
+        }
+    }
+    pub fn as_xevstring(&self) -> Option<&String> {
+        match self {
+            XhpEnumValue::XEVString(p0) => Some(p0),
+            _ => None,
+        }
+    }
+    pub fn as_xevint_mut(&mut self) -> Option<&mut isize> {
+        match self {
+            XhpEnumValue::XEVInt(p0) => Some(p0),
+            _ => None,
+        }
+    }
+    pub fn as_xevstring_mut(&mut self) -> Option<&mut String> {
+        match self {
+            XhpEnumValue::XEVString(p0) => Some(p0),
+            _ => None,
+        }
+    }
+    pub fn as_xevint_into(self) -> Option<isize> {
+        match self {
+            XhpEnumValue::XEVInt(p0) => Some(p0),
+            _ => None,
+        }
+    }
+    pub fn as_xevstring_into(self) -> Option<String> {
+        match self {
+            XhpEnumValue::XEVString(p0) => Some(p0),
+            _ => None,
         }
     }
 }

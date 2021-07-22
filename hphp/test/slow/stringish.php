@@ -8,6 +8,7 @@ function err($code, $msg) {
   return true;
 }
 
+<<__MockClass>> // to bypass sealing
 class CExplicit implements Stringish {
   public function __toString() {
     return __CLASS__;
@@ -132,7 +133,7 @@ function test_reflection() {
 
 <<__EntryPoint>>
 function main_stringish() {
-set_error_handler(fun('err'));
+set_error_handler(err<>);
 
 test_functionality();
 test_reflection();

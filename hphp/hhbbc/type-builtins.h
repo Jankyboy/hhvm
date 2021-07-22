@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HHBBC_TYPE_ARITH_BUILTINS_H_
-#define incl_HHBBC_TYPE_ARITH_BUILTINS_H_
+#pragma once
 
 #include "hphp/hhbbc/misc.h"
 
@@ -37,13 +36,6 @@ bool is_collection_method_returning_this(const php::Class* cls,
  */
 Type native_function_return_type(const php::Func* func);
 
-/*
- * Returns the type of the index-th inout value pushed by HNI function func.
- */
-Type native_function_out_type(const php::Func* func, uint32_t index);
-
 //////////////////////////////////////////////////////////////////////
 
 }}
-
-#endif

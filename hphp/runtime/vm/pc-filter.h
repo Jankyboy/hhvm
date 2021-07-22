@@ -15,8 +15,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_PC_FILTER_H_
-#define incl_HPHP_PC_FILTER_H_
+#pragma once
 
 #include "hphp/runtime/vm/func.h"
 
@@ -77,9 +76,9 @@ public:
 
   // Add/remove offsets, either individually or by range. By default allow all
   // opcodes.
-  void addRanges(const Unit* unit, const OffsetRangeVec& offsets,
+  void addRanges(const OffsetFuncRangeVec& offsets,
                  OpcodeFilter isOpcodeAllowed = [] (Op) { return true; });
-  void removeRanges(const Unit* unit, const OffsetRangeVec& offsets,
+  void removeRanges(const OffsetFuncRangeVec& offsets,
                     OpcodeFilter isOpcodeAllowed = [] (Op) { return true; });
   void removeOffset(const Func* func, Offset offset);
 
@@ -108,4 +107,3 @@ public:
 ///////////////////////////////////////////////////////////////////////////////
 }
 
-#endif // incl_HPHP_PC_FILTER_H_

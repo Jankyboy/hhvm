@@ -43,6 +43,7 @@ let rec flatten_longident = function
     | FLdot (id, strs) -> FLdot (id, str :: strs)
     | FLapply _ as id -> FLdot (id, [str]))
 
+(* [> `RustType of Rust_type.t | `Module of string ] = *)
 let to_string for_open id =
   let rec to_string id =
     match id with
@@ -59,20 +60,20 @@ let to_string for_open id =
       in
       (* HACK: The oxidized version of `ty` has no phase. *)
       let ty =
-        if ty = "LoclTy" then
+        if String.equal ty "LoclTy" then
           "Ty"
-        else if ty = "LoclPossiblyEnforcedTy" then
+        else if String.equal ty "LoclPossiblyEnforcedTy" then
           "PossiblyEnforcedTy"
         else if SSet.mem ty strip_decl_prefix then
-          String.chop_prefix_exn ty "Decl"
+          String.chop_prefix_exn ty ~prefix:"Decl"
         else
           ty
       in
-      let modules = List.map modules convert_module_name in
+      let modules = List.map modules ~f:convert_module_name in
       ty :: modules |> List.rev |> String.concat ~sep:"::"
     | FLdot (id, assoc_tys) ->
       let id = to_string id in
-      let assoc_tys = List.map assoc_tys convert_type_name in
+      let assoc_tys = List.map assoc_tys ~f:convert_type_name in
       assoc_tys |> List.rev |> List.cons id |> String.concat ~sep:"::"
     | FLapply (ftor :: args) ->
       let ftor = to_string ftor in

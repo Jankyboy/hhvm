@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_STRINGS_H_
-#define incl_HPHP_STRINGS_H_
+#pragma once
 
 namespace HPHP {
 namespace Strings {
@@ -27,7 +26,6 @@ constexpr char CONSTANT_ALREADY_DEFINED[] = "Constant %s already defined";
 constexpr char DIVISION_BY_ZERO[] =
   "Division by zero";
 constexpr char INTEGER_OVERFLOW[] = "Integer overflow";
-constexpr char UNDEFINED_VARIABLE[] = "Undefined variable: %s";
 constexpr char UNKNOWN_CLASS[] = "Class undefined: %s";
 constexpr char UNKNOWN_RECORD[] = "Record undefined: %s";
 constexpr char CANT_ACCESS_SELF[] =
@@ -89,9 +87,6 @@ constexpr char MULTIPLY_EXCLUDED[] =
 constexpr char REDECLARE_BUILTIN[] = "Cannot redeclare %s()";
 constexpr char HACKARR_COMPAT_ARR_HACK_ARR_CMP[] =
   "Comparing PHP array with Hack array";
-constexpr char HACKARR_COMPAT_VEC_IS_ARR[] = "is_array() called on vec";
-constexpr char HACKARR_COMPAT_DICT_IS_ARR[] = "is_array() called on dict";
-constexpr char HACKARR_COMPAT_KEYSET_IS_ARR[] = "is_array() called on keyset";
 constexpr char HACKARR_COMPAT_VARR_IS_VEC[] = "is_vec() called on varray";
 constexpr char HACKARR_COMPAT_DARR_IS_DICT[] = "is_dict() called on darray";
 constexpr char DATATYPE_SPECIALIZED_DVARR[] =
@@ -112,12 +107,11 @@ constexpr char RFUNC_NOT_SUPPORTED[] =
   "Reified functions not supported";
 constexpr char RCLS_METH_NOT_SUPPORTED[] =
   "Reified class method pointers no supported";
+constexpr char CLS_METH_NOT_SUPPORTED[] =
+  "Class method pointers no supported";
 
 constexpr char CLSMETH_COMPAT_IS_ARR[] = "is_array() called on clsmeth";
 constexpr char CLSMETH_COMPAT_IS_VEC[] = "is_vec() called on clsmeth";
-constexpr char CLSMETH_COMPAT_IS_VARR[] = "is_varray() called on clsmeth";
-constexpr char CLSMETH_COMPAT_IS_VEC_OR_VARR[] =
-  "is_vec_or_varray() called on clsmeth";
 constexpr char CLSMETH_COMPAT_IS_ANY_ARR[] = "is_any_array() called on clsmeth";
 constexpr char CLSMETH_COMPAT_IS_SHAPE[] = "is_shape() called on clsmeth";
 constexpr char CLSMETH_COMPAT_IS_TUPLE[] = "is_tuple() called on clsmeth";
@@ -131,12 +125,15 @@ constexpr char FUNC_TO_STRING[] = "Func to string conversion";
 constexpr char CLASS_TO_STRING_IMPLICIT[] =
   "Implicit Class to string conversion for type-hint";
 constexpr char CLASS_TO_STRING[] = "Class to string conversion";
+constexpr char CLASS_TO_CLASSNAME[] = "Class passed to classname type-hint";
 constexpr char ARRAY_MARK_LEGACY_VEC[] = "array_mark_legacy() called on vec";
 constexpr char ARRAY_MARK_LEGACY_DICT[] = "array_mark_legacy() called on dict";
 constexpr char NONEXHAUSTIVE_SWITCH[] =
   "The switch statement failed to match any of the cases";
+constexpr char INVALID_ARGUMENT_FOREACH[] =
+  "Invalid argument supplied for foreach()";
+constexpr char INVALID_REIFIED_COEFFECT_CLASSNAME[] =
+  "Reified generic used for coeffect rule does not refer to a class";
 
 } // namespace Strings
 } // namespace HPHP
-
-#endif // incl_HPHP_STRINGS_H_

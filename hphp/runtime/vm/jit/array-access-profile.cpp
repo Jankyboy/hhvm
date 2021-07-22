@@ -26,8 +26,6 @@
 
 #include "hphp/util/safe-cast.h"
 
-#include <folly/Optional.h>
-
 #include <algorithm>
 #include <cstring>
 #include <sstream>
@@ -38,10 +36,6 @@ namespace HPHP { namespace jit {
 
 namespace {
 
-bool isMixedOrDictKind(const ArrayData* ad) {
-  return ad->isMixedKind() || ad->isDictKind();
-}
-
 template<typename Arr>
 int32_t findStringKey(const Arr* ad, const StringData* sd) {
   // We can only optimize cases where the strings compare equal as pointers.
@@ -50,7 +44,7 @@ int32_t findStringKey(const Arr* ad, const StringData* sd) {
 }
 
 bool isSmallStaticArray(const ArrayData* ad) {
-  if (!isMixedOrDictKind(ad)) return false;
+  if (!ad->isVanillaDict()) return false;
   auto const arr = MixedArray::asMixed(ad);
   return arr->iterLimit() <= MixedArray::SmallSize &&
          arr->keyTypes().mustBeStaticStrs();
@@ -60,14 +54,41 @@ bool isSmallStaticArray(const ArrayData* ad) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
+static std::string actionString(ArrayAccessProfile::Action action) {
+  switch(action) {
+    case ArrayAccessProfile::Action::None : return "None";
+    case ArrayAccessProfile::Action::Cold : return "Cold";
+    case ArrayAccessProfile::Action::Exit : return "Exit";
+  }
+  not_reached();
+}
+
+std::string ArrayAccessProfile::Result::toString() const {
+  return folly::sformat("offset={}({}) empty={} missing={}",
+                        actionString(offset.first), offset.second,
+                        actionString(empty),
+                        actionString(missing));
+}
+
 std::string ArrayAccessProfile::toString() const {
   if (!m_init) return std::string("uninitialized");
+  uint64_t total = m_untracked;
+  for (auto const& line : m_hits) {
+    if (line.pos != -1) total += line.count;
+  }
+  if (total == 0) total = 1; // avoid div by 0
+  auto pct = [&] (uint32_t value) { return 100.0 * value / total; };
   std::ostringstream out;
   for (auto const& line : m_hits) {
-    out << folly::format("{}:{},", line.pos, line.count);
+    out << folly::format("{}:{}({:.1f}%),",
+                         line.pos, line.count, pct(line.count));
   }
-  out << folly::format("untracked:{},small:{},empty:{},missing:{}",
-                       m_untracked, m_small, m_empty, m_missing);
+  out << folly::format(
+    "untracked:{}({:.1f}%),small:{}({:.1f}%),"
+    "empty:{}({:.1f}%),missing:{}({:.1f}%)",
+    m_untracked, pct(m_untracked), m_small, pct(m_small),
+    m_empty, pct(m_empty), m_missing, pct(m_missing)
+  );
   return out.str();
 }
 
@@ -134,10 +155,7 @@ ArrayAccessProfile::Result ArrayAccessProfile::choose() const {
 bool ArrayAccessProfile::update(int32_t pos, uint32_t count) {
   if (!m_init) init();
 
-  if (!validPos(pos)) {
-    m_untracked += count;
-    return false;
-  }
+  if (!validPos(pos)) return false;
 
   for (auto i = 0; i < kNumTrackedSamples; ++i) {
     auto& line = m_hits[i];
@@ -153,7 +171,6 @@ bool ArrayAccessProfile::update(int32_t pos, uint32_t count) {
     }
   }
 
-  m_untracked += count;
   return false;
 }
 
@@ -162,10 +179,10 @@ void ArrayAccessProfile::update(const ArrayData* ad, int64_t i, bool cowCheck) {
   auto const h = hash_int64(i);
   auto const pos =
     cowCheck && ad->cowCheck() ? -1 :
-    isMixedOrDictKind(ad) ? MixedArray::asMixed(ad)->find(i, h) :
-    ad->isKeysetKind() ? SetArray::asSet(ad)->find(i, h) :
+    ad->isVanillaDict() ? MixedArray::asMixed(ad)->find(i, h) :
+    ad->isVanillaKeyset() ? SetArray::asSet(ad)->find(i, h) :
     -1;
-  update(pos, 1);
+  if (!update(pos, 1)) m_untracked++;
   if (isSmallStaticArray(ad)) m_small++;
   if (ad->size() == 0) m_empty++;
 }
@@ -177,10 +194,10 @@ void ArrayAccessProfile::update(const ArrayData* ad, const StringData* sd,
   // pointers (checked within findStringKey).
   auto const pos =
     cowCheck && ad->cowCheck() ? -1 :
-    isMixedOrDictKind(ad) ? findStringKey(MixedArray::asMixed(ad), sd) :
-    ad->isKeysetKind() ? findStringKey(SetArray::asSet(ad), sd) :
+    ad->isVanillaDict() ? findStringKey(MixedArray::asMixed(ad), sd) :
+    ad->isVanillaKeyset() ? findStringKey(SetArray::asSet(ad), sd) :
     -1;
-  update(pos, 1);
+  if (!update(pos, 1)) m_untracked++;
   if (isSmallStaticArray(ad)) m_small++;
   if (ad->size() == 0) m_empty++;
   if (ad->hasStrKeyTable() && !ad->missingKeySideTable().mayContain(sd)) {
@@ -200,7 +217,10 @@ void ArrayAccessProfile::reduce(ArrayAccessProfile& l,
     auto const& rline = r.m_hits[i];
     if (!validPos(rline.pos)) break;
 
-    // Update `l'.  If `l' can't record the update, save it to scratch.
+    // Update `l'.  If `l' can't record the update, save it to scratch.  If
+    // `update' fails to record, we don't increment m_untracked here. The
+    // entries that cannot be kept in the final tracked set due to capacity will
+    // be included in l.m_untracked below.
     if (!l.update(rline.pos, rline.count)) {
       scratch[n++] = rline;
     }
@@ -218,7 +238,7 @@ void ArrayAccessProfile::reduce(ArrayAccessProfile& l,
               kNumTrackedSamples * sizeof(Line));
   std::sort(&scratch[0], &scratch[n + kNumTrackedSamples],
             [] (Line a, Line b) { return a.count > b.count; });
-  std::memcpy(l.m_hits, scratch, kNumTrackedSamples);
+  std::memcpy(l.m_hits, scratch, kNumTrackedSamples * sizeof(Line));
 
   // Add the hits in the discarded tail to m_untracked.
   for (auto i = kNumTrackedSamples; i < n + kNumTrackedSamples; ++i) {

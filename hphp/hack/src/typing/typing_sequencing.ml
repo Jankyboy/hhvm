@@ -73,14 +73,14 @@ let use_local env id =
  * the "atomic" lvals that are being assigned to. *)
 let unpack_lvals e =
   let rec unpack acc = function
-    | (_, List es) -> List.fold_left ~f:unpack ~init:acc es
+    | (_, _, List es) -> List.fold_left ~f:unpack ~init:acc es
     | e -> e :: acc
   in
   List.rev (unpack [] e)
 
 let get_lvar = function
-  | (_, Lvar id) -> `Fst id
-  | e -> `Snd e
+  | (_, _, Lvar id) -> First id
+  | e -> Second e
 
 (* Pass that just collects all the variables used (and not just written to)
  * in fragments of code.
@@ -96,10 +96,10 @@ let used_variables_visitor =
     (* We have to handle expressions just enough to avoid counting
      * assignments as uses of variables.
      * (We do still count operator-assignments) *)
-    method! on_expr acc ((_, e_) as e) =
+    method! on_expr acc ((_, _, e_) as e) =
       match e_ with
       | Binop (Ast_defs.Eq None, e1, e2) ->
-        let (_, not_vars) = List.partition_map (unpack_lvals e1) get_lvar in
+        let (_, not_vars) = List.partition_map (unpack_lvals e1) ~f:get_lvar in
         let acc = List.fold_left ~f:this#on_expr ~init:acc not_vars in
         this#on_expr acc e2
       | _ -> parent#on_expr acc e
@@ -130,8 +130,8 @@ let sequence_visitor ~require_used used_vars =
   let check_unsequenced env1 env2 =
     let id_matches (_p1, x1) (_p2, x2) = Local_id.equal x1 x2 in
     let check_write_conflicts reads writes ((p, _) as id) =
-      let conflicting_reads = List.filter reads (id_matches id) in
-      let conflicting_writes = List.filter writes (id_matches id) in
+      let conflicting_reads = List.filter reads ~f:(id_matches id) in
+      let conflicting_writes = List.filter writes ~f:(id_matches id) in
       (* Ignore conflicts when writing to variables that are never read
        * in order to support the idiom where pointless variable
        * assignments are used as documentation. *)
@@ -139,7 +139,7 @@ let sequence_visitor ~require_used used_vars =
         if not require_used then
           conflicting_writes
         else
-          List.filter conflicting_writes (fun (_, x) ->
+          List.filter conflicting_writes ~f:(fun (_, x) ->
               Local_id.Set.mem x used_vars)
       in
       let cleanup = List.map ~f:fst in
@@ -151,11 +151,11 @@ let sequence_visitor ~require_used used_vars =
     (* reversing the lists makes things sorted more naturally in the output *)
     let (reads1, writes1) = (List.rev env1.used, List.rev env1.assigned) in
     let (reads2, writes2) = (List.rev env2.used, List.rev env2.assigned) in
-    List.iter writes1 (check_write_conflicts reads2 writes2);
+    List.iter writes1 ~f:(check_write_conflicts reads2 writes2);
 
     (* Only check writes2 for conflicts with the reads from env1,
      * since we've already checked for write/write conflicts. *)
-    List.iter writes2 (check_write_conflicts reads1 [])
+    List.iter writes2 ~f:(check_write_conflicts reads1 [])
   in
   let merge_unsequenced env env1 env2 =
     check_unsequenced env1 env2;
@@ -183,12 +183,12 @@ let sequence_visitor ~require_used used_vars =
       let env2 = this#on_expr tracking_env e2 in
       merge_unsequenced env env1 env2
 
-    method! on_expr env ((_, e_) as e) =
+    method! on_expr env ((_, _, e_) as e) =
       match e_ with
       | Lvar id -> use_local env id
       | Unop
           ( (Ast_defs.Uincr | Ast_defs.Udecr | Ast_defs.Upincr | Ast_defs.Updecr),
-            (_, Lvar id) ) ->
+            (_, _, Lvar id) ) ->
         assign_local env id
       (* Assignment. This is pretty hairy because of list(...)
        * destructuring and the treatment necessary to allow
@@ -197,14 +197,16 @@ let sequence_visitor ~require_used used_vars =
         (* Unpack any list(...) destructuring and separate out locals
          * we are assigning to from other lvals. *)
         let (lvars, lval_exprs) =
-          List.partition_map (unpack_lvals e1) get_lvar
+          List.partition_map (unpack_lvals e1) ~f:get_lvar
         in
         (* Build separate envs for the direct variable assignments and
          * for the other lvals assigned to. We treat all these lvals
          * as unsequenced. *)
-        let lvar_envs = List.map lvars (assign_local tracking_env) in
+        let lvar_envs = List.map lvars ~f:(assign_local tracking_env) in
         let lhs_var_env = merge_unsequenced_list lvar_envs in
-        let lval_expr_envs = List.map lval_exprs (this#on_expr tracking_env) in
+        let lval_expr_envs =
+          List.map lval_exprs ~f:(this#on_expr tracking_env)
+        in
         let lval_expr_env = merge_unsequenced_list lval_expr_envs in
         let rhs_env = this#on_expr tracking_env e2 in
         (* Our lhs local var writes only conflict with other *writes* on
@@ -231,7 +233,7 @@ let sequence_visitor ~require_used used_vars =
         parent#on_expr env e
       (* These operations have unsequenced subexpressions. *)
       | Binop (_, e1, e2)
-      | Obj_get (e1, e2, _)
+      | Obj_get (e1, e2, _, _)
       | Array_get (e1, Some e2) ->
         this#check_unsequenced_exprs env e1 e2
       | Efun (f, idl)
@@ -258,7 +260,7 @@ let sequence_visitor ~require_used used_vars =
         acc
       | Case (e, b) ->
         let env = this#on_expr tracking_env e in
-        List.iter env.assigned (fun (p, _) -> Errors.assign_during_case p);
+        List.iter env.assigned ~f:(fun (p, _) -> Errors.assign_during_case p);
         let acc = this#on_block acc b in
         acc
   end

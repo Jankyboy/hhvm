@@ -8,34 +8,39 @@
  *)
 
 open Hh_prelude
-open Hh_core
+open Common
 open Typing_defs
 module Env = Typing_env
 module MkType = Typing_make_type
 module Reason = Typing_reason
-module SM = Nast.ShapeMap
 module TySet = Typing_set
 module Utils = Typing_utils
 
 exception Nothing
 
 (** Computes the negation of a type when it is known, which is currently the case
-for null, nonnull, mixed, nothing, otherwise approximate up or down according to
+for null, nonnull, mixed, nothing, primitives, and classes.
+Otherwise approximate up or down according to
 `approx` parameter: If approx is `ApproxUp`, return mixed, else if it is `ApproxDown`,
 return nothing. *)
-let non env r ty ~approx =
+let negate_type env r ty ~approx =
   let (env, ty) = Env.expand_type env ty in
-  let non_ty =
+  let neg_ty =
     match get_node ty with
     | Tprim Aast.Tnull -> MkType.nonnull r
+    | Tprim tp -> MkType.neg r (Neg_prim tp)
+    | Tneg (Neg_prim tp) -> MkType.prim_type r tp
+    | Tneg (Neg_class (_, c)) when Typing_utils.class_has_no_params env c ->
+      MkType.class_type r c []
     | Tnonnull -> MkType.null r
+    | Tclass (c, Nonexact, _) -> MkType.neg r (Neg_class c)
     | _ ->
       if Utils.equal_approx approx Utils.ApproxUp then
         MkType.mixed r
       else
         MkType.nothing r
   in
-  (env, non_ty)
+  (env, neg_ty)
 
 (** Decompose types as union of "atomic" elements.
 In this context, "atomic" means: which can't be broken down in a union of smaller
@@ -78,6 +83,24 @@ let recompose_atomic env r tyl =
   let (nullable_r, dynamic_r, tyl) = traverse None None [] tyl in
   Utils.make_union env r tyl nullable_r dynamic_r
 
+(* Destructure an intersection into a list of its sub-types,
+   decending into sub-intersections.
+   *)
+let destruct_inter_list env tyl =
+  let orr r_opt r = Some (Option.value r_opt ~default:r) in
+  let rec dest_inter env ty tyl tyl_res r_inter =
+    let (env, ty) = Env.expand_type env ty in
+    match deref ty with
+    | (r, Tintersection tyl') ->
+      destruct_inter_list env (tyl' @ tyl) tyl_res (orr r_inter r)
+    | _ -> destruct_inter_list env tyl (ty :: tyl_res) r_inter
+  and destruct_inter_list env tyl tyl_res r_union =
+    match tyl with
+    | [] -> (env, (tyl_res, r_union))
+    | ty :: tyl -> dest_inter env ty tyl tyl_res r_union
+  in
+  destruct_inter_list env tyl [] None
+
 (** Number of '&' symbols in an intersection representation. E.g. for (A & B),
 returns 1, for A, returns 0. *)
 let number_of_inter_symbols env ty =
@@ -113,75 +136,99 @@ For the intersection of unions, attempt to simplify by using the distributivity
 of intersection over union. Uses the the `collapses` test function to make sure
 the resulting type is no greater in size than the trivial `Tintersection [ty1; ty2]`. *)
 let rec intersect env ~r ty1 ty2 =
-  let (env, ty1) = Env.expand_type env ty1 in
-  let (env, ty2) = Env.expand_type env ty2 in
-  if Utils.is_sub_type_for_union env ty1 ty2 then
+  if ty_equal ty1 ty2 then
     (env, ty1)
-  else if Utils.is_sub_type_for_union env ty2 ty1 then
-    (env, ty2)
   else
-    let (env, non_ty2) = non env Reason.none ty2 Utils.ApproxDown in
-    if Utils.is_sub_type_for_union env ty1 non_ty2 then
-      (env, MkType.nothing r)
-    else
-      let (env, non_ty1) = non env Reason.none ty1 Utils.ApproxDown in
-      if Utils.is_sub_type_for_union env ty2 non_ty1 then
-        (env, MkType.nothing r)
-      else
-        let (env, ty1) = decompose_atomic env ty1 in
-        let (env, ty2) = decompose_atomic env ty2 in
-        let (env, inter_ty) =
-          try
-            match (deref ty1, deref ty2) with
-            | ((_, Ttuple tyl1), (_, Ttuple tyl2))
-              when Int.equal (List.length tyl1) (List.length tyl2) ->
-              let (env, inter_tyl) =
-                List.map2_env env tyl1 tyl2 ~f:(intersect ~r)
-              in
-              (env, mk (r, Ttuple inter_tyl))
-            | ((_, Tshape (shape_kind1, fdm1)), (_, Tshape (shape_kind2, fdm2)))
-              ->
-              let (env, shape_kind, fdm) =
-                intersect_shapes env r (shape_kind1, fdm1) (shape_kind2, fdm2)
-              in
-              (env, mk (r, Tshape (shape_kind, fdm)))
-            | ((_, Tintersection tyl1), (_, Tintersection tyl2)) ->
-              intersect_lists env r tyl1 tyl2
-            | ((_, Tintersection tyl), _) -> intersect_lists env r [ty2] tyl
-            | (_, (_, Tintersection tyl)) -> intersect_lists env r [ty1] tyl
-            | ((r1, Tunion tyl1), (r2, Tunion tyl2)) ->
-              (* Factorize common types, for example
-                (A | B) & (A | C) = A | (B & C)
-              and
-                (A | B | C1 | D1) & (A | B | C2 | D2) = A | B | ((C1 | D1) & (C2 | D2))
-              *)
-              let tys1 = TySet.of_list tyl1 in
-              let tys2 = TySet.of_list tyl2 in
-              let common_tys = TySet.inter tys1 tys2 in
-              let tys1' = TySet.diff tys1 common_tys in
-              let tys2' = TySet.diff tys2 common_tys in
-              let tyl1' = TySet.elements tys1' in
-              let tyl2' = TySet.elements tys2' in
-              let common_tyl = TySet.elements common_tys in
-              let (env, not_common_tyl) =
-                intersect_unions env r (r1, tyl1') (r2, tyl2')
-              in
-              recompose_atomic env r (common_tyl @ not_common_tyl)
-            | ((r_union, Tunion tyl), ty)
-            | (ty, (r_union, Tunion tyl)) ->
-              let (env, inter_tyl) =
-                intersect_ty_union env r (mk ty) (r_union, tyl)
-              in
-              recompose_atomic env r inter_tyl
-            | _ -> make_intersection env r [ty1; ty2]
-          with Nothing -> (env, MkType.nothing r)
-        in
-        Typing_log.log_intersection ~level:2 env r ty1 ty2 ~inter_ty;
-        (env, inter_ty)
+    let (env, ty1) = Env.expand_type env ty1 in
+    let (env, ty2) = Env.expand_type env ty2 in
+    if Utils.is_sub_type_for_union ~coerce:None env ty1 ty2 then
+      (env, ty1)
+    else if Utils.is_sub_type_for_union ~coerce:None env ty2 ty1 then
+      (env, ty2)
+    else if Utils.is_type_disjoint env ty1 ty2 then (
+      let inter_ty = MkType.nothing r in
+      Typing_log.log_intersection ~level:2 env r ty1 ty2 ~inter_ty;
+      (env, inter_ty)
+    ) else
+      let (env, ty1) = decompose_atomic env ty1 in
+      let (env, ty2) = decompose_atomic env ty2 in
+      let (env, inter_ty) =
+        try
+          match (deref ty1, deref ty2) with
+          | ((_, Ttuple tyl1), (_, Ttuple tyl2))
+            when Int.equal (List.length tyl1) (List.length tyl2) ->
+            let (env, inter_tyl) =
+              List.map2_env env tyl1 tyl2 ~f:(intersect ~r)
+            in
+            (env, mk (r, Ttuple inter_tyl))
+          | ((_, Tshape (shape_kind1, fdm1)), (_, Tshape (shape_kind2, fdm2)))
+            ->
+            let (env, shape_kind, fdm) =
+              intersect_shapes env r (shape_kind1, fdm1) (shape_kind2, fdm2)
+            in
+            (env, mk (r, Tshape (shape_kind, fdm)))
+          | ((_, Tintersection tyl1), (_, Tintersection tyl2)) ->
+            intersect_lists env r tyl1 tyl2
+          | ((_, Tintersection tyl), _) -> intersect_lists env r [ty2] tyl
+          | (_, (_, Tintersection tyl)) -> intersect_lists env r [ty1] tyl
+          | ((r1, Tunion tyl1), (r2, Tunion tyl2)) ->
+            let (common_tyl, tyl1', tyl2') =
+              Typing_algebra.factorize_common_types tyl1 tyl2
+            in
+            let (env, not_common_tyl) =
+              intersect_unions env r (r1, tyl1') (r2, tyl2')
+            in
+            recompose_atomic env r (common_tyl @ not_common_tyl)
+          | ((r_union, Tunion tyl), ty)
+          | (ty, (r_union, Tunion tyl)) ->
+            let (env, inter_tyl) =
+              intersect_ty_union env r (mk ty) (r_union, tyl)
+            in
+            recompose_atomic env r inter_tyl
+          | ((_, Tprim Aast.Tnum), (_, Tprim Aast.Tarraykey))
+          | ((_, Tprim Aast.Tarraykey), (_, Tprim Aast.Tnum)) ->
+            (env, MkType.int r)
+          | ( (_, Tneg (Neg_prim (Aast.Tint | Aast.Tarraykey))),
+              (_, Tprim Aast.Tnum) )
+          | ( (_, Tprim Aast.Tnum),
+              (_, Tneg (Neg_prim (Aast.Tint | Aast.Tarraykey))) ) ->
+            (env, MkType.float r)
+          | ((_, Tneg (Neg_prim Aast.Tfloat)), (_, Tprim Aast.Tnum))
+          | ((_, Tprim Aast.Tnum), (_, Tneg (Neg_prim Aast.Tfloat))) ->
+            (env, MkType.int r)
+          | ((_, Tneg (Neg_prim Aast.Tstring)), ty_ak)
+          | (ty_ak, (_, Tneg (Neg_prim Aast.Tstring))) ->
+            if
+              (* Ocaml warns about ambiguous or-pattern variables under guard if this is in a when clause*)
+              Typing_utils.is_sub_type_for_union
+                env
+                (mk ty_ak)
+                (MkType.arraykey Typing_reason.Rnone)
+            then
+              intersect env ~r (mk ty_ak) (MkType.int r)
+            else
+              make_intersection env r [ty1; ty2]
+          | ((_, Tneg (Neg_prim (Aast.Tint | Aast.Tnum))), ty_ak)
+          | (ty_ak, (_, Tneg (Neg_prim (Aast.Tint | Aast.Tnum)))) ->
+            if
+              Typing_utils.is_sub_type_for_union
+                env
+                (mk ty_ak)
+                (MkType.arraykey Typing_reason.Rnone)
+            then
+              intersect env ~r (mk ty_ak) (MkType.string r)
+            else
+              make_intersection env r [ty1; ty2]
+          | _ -> make_intersection env r [ty1; ty2]
+        with
+        | Nothing -> (env, MkType.nothing r)
+      in
+      Typing_log.log_intersection ~level:2 env r ty1 ty2 ~inter_ty;
+      (env, inter_ty)
 
 and intersect_shapes env r (shape_kind1, fdm1) (shape_kind2, fdm2) =
   let (env, fdm) =
-    SM.merge_env env fdm1 fdm2 ~combine:(fun env _sfn sft1 sft2 ->
+    TShapeMap.merge_env env fdm1 fdm2 ~combine:(fun env _sfn sft1 sft2 ->
         match ((shape_kind1, sft1), (shape_kind2, sft2)) with
         | ((_, None), (_, None))
         | ((_, Some { sft_optional = true; _ }), (Closed_shape, None))
@@ -196,7 +243,7 @@ and intersect_shapes env r (shape_kind1, fdm1) (shape_kind2, fdm2) =
         | ( (_, Some { sft_optional = opt1; sft_ty = ty1 }),
             (_, Some { sft_optional = opt2; sft_ty = ty2 }) ) ->
           let opt = opt1 && opt2 in
-          let (env, ty) = intersect env r ty1 ty2 in
+          let (env, ty) = intersect env ~r ty1 ty2 in
           (env, Some { sft_optional = opt; sft_ty = ty }))
   in
   let shape_kind =
@@ -235,7 +282,7 @@ and intersect_ty_tyl env r ty tyl =
   intersect_ty_tyl env ty tyl []
 
 and try_intersect env r ty1 ty2 =
-  let (env, ty) = intersect env r ty1 ty2 in
+  let (env, ty) = intersect env ~r ty1 ty2 in
   let (env, ty) = Env.expand_type env ty in
   match get_node ty with
   | Tintersection _ -> (env, None)
@@ -243,8 +290,8 @@ and try_intersect env r ty1 ty2 =
 
 and intersect_unions env r (r1, tyl1) (r2, tyl2) =
   (* The order matters. (A | B | C) & (A | B) gets simplified to (A | B)
-  while (A | B) & (A | B | C) would become A | B | ((A | B) & C), so we
-  put the longest union first as a heuristic. *)
+     while (A | B) & (A | B | C) would become A | B | ((A | B) & C), so we
+     put the longest union first as a heuristic. *)
   let ((r1, tyl1), (r2, tyl2)) =
     if List.length tyl1 >= List.length tyl2 then
       ((r1, tyl1), (r2, tyl2))
@@ -264,7 +311,7 @@ the result would be
 *)
 and intersect_ty_union env r (ty1 : locl_ty) (r_union, tyl2) =
   let (env, inter_tyl) =
-    List.map_env env tyl2 ~f:(fun env ty2 -> intersect env r ty1 ty2)
+    List.map_env env tyl2 ~f:(fun env ty2 -> intersect env ~r ty1 ty2)
   in
   let zipped = List.zip_exn tyl2 inter_tyl in
   let (collapsed, not_collapsed) =
@@ -284,7 +331,7 @@ and intersect_ty_union env r (ty1 : locl_ty) (r_union, tyl2) =
 
 let intersect_list env r tyl =
   (* We need to match tyl here because we'd mess the reason if tyl was just
-  [mixed] *)
+     [mixed] *)
   match tyl with
   | [] -> (env, MkType.mixed r)
   | ty :: tyl -> List.fold_left_env env tyl ~init:ty ~f:(intersect ~r)
@@ -335,29 +382,29 @@ let intersect env ~r ty1 ty2 =
 
 let rec intersect_i env r ty1 lty2 =
   let ty2 = LoclType lty2 in
-  if Utils.is_sub_type_for_union_i env ty1 ty2 then
+  if Utils.is_sub_type_for_union_i ~coerce:None env ty1 ty2 then
     (env, ty1)
-  else if Utils.is_sub_type_for_union_i env ty2 ty1 then
+  else if Utils.is_sub_type_for_union_i ~coerce:None env ty2 ty1 then
     (env, ty2)
   else
     let (env, ty) =
       match ty1 with
       | LoclType lty1 ->
-        let (env, ty) = intersect env r lty1 lty2 in
+        let (env, ty) = intersect env ~r lty1 lty2 in
         (env, LoclType ty)
       | ConstraintType cty1 ->
         (match deref_constraint_type cty1 with
         | (r, TCintersection (lty1, cty1)) ->
-          let (env, lty) = intersect env r lty1 lty2 in
+          let (env, lty) = intersect env ~r lty1 lty2 in
           ( env,
             ConstraintType (mk_constraint_type (r, TCintersection (lty, cty1)))
           )
         | (r, TCunion (lty1, cty1)) ->
           (* Distribute intersection over union.
-          At the moment local types in TCunion can only be
-          unions or intersections involving only null and nonnull,
-          so applying distributivity allows for simplifying the types. *)
-          let (env, lty) = intersect env r lty1 lty2 in
+             At the moment local types in TCunion can only be
+             unions or intersections involving only null and nonnull,
+             so applying distributivity allows for simplifying the types. *)
+          let (env, lty) = intersect env ~r lty1 lty2 in
           let (env, ty) = intersect_i env r (ConstraintType cty1) lty2 in
           (match ty with
           | LoclType ty ->
@@ -375,6 +422,6 @@ let rec intersect_i env r ty1 lty2 =
     | LoclType _ -> (env, ty)
     | ConstraintType ty -> Utils.simplify_constraint_type env ty
 
-let () = Utils.non_ref := non
+let () = Utils.negate_type_ref := negate_type
 
 let () = Utils.simplify_intersections_ref := simplify_intersections

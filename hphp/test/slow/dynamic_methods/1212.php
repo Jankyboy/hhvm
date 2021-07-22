@@ -8,7 +8,7 @@ class z {
     $x = varray[1,2,3];
     array_map(varray['z', 'p'], $x);
   }
-  static function p($x) {
+  <<__DynamicallyCallable>> static function p($x) {
     var_dump($x);
   }
 }
@@ -16,7 +16,7 @@ class z {
 <<__EntryPoint>>
 function main_1212() {
 $x = varray[1,2,3];
-array_map(fun('t'), $x);
+array_map(t<>, $x);
 $m = new z();
 $m->q();
 }

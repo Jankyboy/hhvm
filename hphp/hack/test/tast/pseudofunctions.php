@@ -17,13 +17,6 @@ function test(C $c): void {
   isset($c);
   unset($c);
 
-  assert(true);
   invariant(true, 'foo');
   invariant_violation('foo');
-}
-
-<<__Rx>>
-function rx_test(): void {
-  $c = \HH\Rx\mutable(new C());
-  $c1 = \HH\Rx\freeze($c);
 }

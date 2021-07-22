@@ -13,21 +13,20 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_STATIC_STRING_TABLE_H_
-#define incl_HPHP_STATIC_STRING_TABLE_H_
+#pragma once
 
 #include <string>
 
 #include <folly/Range.h>
 
 #include "hphp/runtime/base/rds.h"
+#include "hphp/runtime/base/string-data.h"
 
 namespace HPHP {
 
 //////////////////////////////////////////////////////////////////////
 
 struct Array;
-struct StringData;
 struct String;
 struct TypedValue;
 
@@ -58,6 +57,11 @@ struct TypedValue;
 
 extern StringData** precomputed_chars;
 
+inline bool is_static_string(const StringData* s) {
+  if (!use_lowptr) return s->isStatic();
+  return (uint64_t)s < ((1ull << 32) - 1);
+}
+
 /*
  * Attempt to lookup a string (specified in various ways) in the
  * static string table.  If it's not there, create a new static string
@@ -69,6 +73,12 @@ StringData* makeStaticString(const std::string& str);
 StringData* makeStaticString(const String& str);
 StringData* makeStaticString(const char* str, size_t len);
 StringData* makeStaticString(const char* str);
+
+#define LAZY_STATIC_STRING(x) \
+  []{ \
+    static StaticString result(x); \
+    return result.get(); \
+  }()
 
 /*
  * Insert an already initialized static StringData into the static string table.
@@ -156,5 +166,3 @@ void refineStaticStringTableSize();
 //////////////////////////////////////////////////////////////////////
 
 }
-
-#endif

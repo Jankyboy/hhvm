@@ -61,8 +61,6 @@ TRACE_SET_MOD(irlower);
 void cgCheckVecBounds(IRLS& env, const IRInstruction* inst) {
   static_assert(ArrayData::sizeofSize() == 4, "");
 
-  // We may check packed array bounds on profiled arrays that we do not
-  // statically know have kPackedKind.
   assertx(inst->taken());
   auto arr = srcLoc(env, inst, 0).reg();
   auto idx = srcLoc(env, inst, 1).reg();
@@ -92,45 +90,62 @@ void cgCheckVecBounds(IRLS& env, const IRInstruction* inst) {
 
 namespace {
 
-ArrayData* setLegacyHelper(ArrayData* arr, bool set) {
-  if (arr->cowCheck()) {
-    auto ad = arr->copy();
-    arr->decRefCount();
-    ad->setLegacyArray(set);
-    return ad;
-  } else {
-    arr->setLegacyArray(set);
-    return arr;
-  }
+static ArrayData* markLegacyShallowHelper(ArrayData* ad, bool legacy) {
+  auto const tv = make_array_like_tv(ad);
+  auto const result = arrprov::markTvShallow(tv, legacy);
+  decRefArr(ad);
+  assertx(tvIsArrayLike(result));
+  return val(result).parr;
 }
 
-void setLegacyImpl(IRLS& env, const IRInstruction* inst, bool set) {
-  auto const args = argGroup(env, inst).ssa(0).imm(set);
+static ArrayData* markLegacyRecursiveHelper(ArrayData* ad, bool legacy) {
+  auto const tv = make_array_like_tv(ad);
+  auto const result = arrprov::markTvRecursively(tv, legacy);
+  decRefArr(ad);
+  assertx(tvIsArrayLike(result));
+  return val(result).parr;
+}
 
-  cgCallHelper(vmain(env),
-               env,
-               CallSpec::direct(setLegacyHelper),
-               callDest(env, inst),
-               SyncOptions::None,
-               args);
+void markLegacyShallow(IRLS& env, const IRInstruction* inst, bool legacy) {
+  auto const args = argGroup(env, inst).ssa(0).imm(legacy);
+  auto const target = CallSpec::direct(markLegacyShallowHelper);
+  cgCallHelper(vmain(env), env, target, callDest(env, inst),
+               SyncOptions::Sync, args);
+}
+
+void markLegacyRecursive(IRLS& env, const IRInstruction* inst, bool legacy) {
+  auto const args = argGroup(env, inst).ssa(0).imm(legacy);
+  auto const target = CallSpec::direct(markLegacyRecursiveHelper);
+  cgCallHelper(vmain(env), env, target, callDest(env, inst),
+               SyncOptions::Sync, args);
 }
 
 }
 
-void cgSetLegacyVec(IRLS& env, const IRInstruction* inst) {
-  setLegacyImpl(env, inst, true);
+void cgArrayMarkLegacyShallow(IRLS& env, const IRInstruction* inst) {
+  markLegacyShallow(env, inst, true);
 }
 
-void cgSetLegacyDict(IRLS& env, const IRInstruction* inst) {
-  setLegacyImpl(env, inst, true);
+void cgArrayMarkLegacyRecursive(IRLS& env, const IRInstruction* inst) {
+  markLegacyRecursive(env, inst, true);
 }
 
-void cgUnsetLegacyVec(IRLS& env, const IRInstruction* inst) {
-  setLegacyImpl(env, inst, false);
+void cgArrayUnmarkLegacyShallow(IRLS& env, const IRInstruction* inst) {
+  markLegacyShallow(env, inst, false);
 }
 
-void cgUnsetLegacyDict(IRLS& env, const IRInstruction* inst) {
-  setLegacyImpl(env, inst, false);
+void cgArrayUnmarkLegacyRecursive(IRLS& env, const IRInstruction* inst) {
+  markLegacyRecursive(env, inst, false);
+}
+
+void cgIsLegacyArrLike(IRLS& env, const IRInstruction* inst) {
+  auto const arr = srcLoc(env, inst, 0).reg();
+  auto const dst = dstLoc(env, inst, 0).reg();
+  auto& v = vmain(env);
+
+  auto const sf = v.makeReg();
+  v << testbim{ArrayData::kLegacyArray, arr[HeaderAuxOffset], sf};
+  v << cmovb{CC_E, sf, v.cns(1), v.cns(0), dst};
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -222,107 +237,20 @@ void cgAKExistsObj(IRLS& env, const IRInstruction* inst) {
 ///////////////////////////////////////////////////////////////////////////////
 // Array creation.
 
-void cgNewLoggingArray(IRLS& env, const IRInstruction* inst) {
-  auto const target = CallSpec::direct(
-    static_cast<ArrayData*(*)(ArrayData*)>(&bespoke::maybeMakeLoggingArray));
+void cgNewDictArray(IRLS& env, const IRInstruction* inst) {
+  auto const target = CallSpec::direct(MixedArray::MakeReserveDict);
   cgCallHelper(vmain(env), env, target, callDest(env, inst),
-               SyncOptions::Sync, argGroup(env, inst).ssa(0));
-}
-
-namespace {
-
-using MakeArrayFn = ArrayData*(uint32_t);
-
-folly::Optional<arrprov::Tag> getProvenanceTag(const IRInstruction* inst) {
-  if (!RO::EvalArrayProvenance) return folly::none;
-  if (inst->marker().func()->isProvenanceSkipFrame()) return folly::none;
-  return arrprov::tagFromSK(inst->marker().sk());
-}
-
-template <typename T, typename U>
-T convertAsBytes(U u) {
-  static_assert(std::is_trivially_copyable<T>::value);
-  static_assert(std::is_trivially_copyable<U>::value);
-  static_assert(sizeof(T) == sizeof(U));
-  T t;
-  std::memcpy(&t, &u, sizeof(T));
-  return t;
-}
-
-ArrayData* newTaggedDArray(uint32_t size, uint32_t tagImm) {
-  arrprov::TagOverride _(convertAsBytes<arrprov::Tag>(tagImm));
-  return MixedArray::MakeReserveDArray(size);
-}
-
-ArrayData* allocTaggedVArray(uint32_t size, uint32_t tagImm) {
-  arrprov::TagOverride _(convertAsBytes<arrprov::Tag>(tagImm));
-  return PackedArray::MakeUninitializedVArray(size);
-}
-
-void implNewTaggedDArray(IRLS& env, const IRInstruction* inst,
-                         arrprov::Tag tag) {
-  auto const tagImm = convertAsBytes<uint32_t>(tag);
-  cgCallHelper(vmain(env), env, CallSpec::direct(newTaggedDArray),
-               callDest(env, inst), SyncOptions::None,
-               argGroup(env, inst).ssa(0).imm(tagImm));
-}
-
-void implAllocTaggedVArray(IRLS& env, const IRInstruction* inst,
-                           arrprov::Tag tag) {
-  auto const extra = inst->extra<PackedArrayData>();
-  auto const tagImm = convertAsBytes<uint32_t>(tag);
-  cgCallHelper(vmain(env), env, CallSpec::direct(allocTaggedVArray),
-               callDest(env, inst), SyncOptions::None,
-               argGroup(env, inst).imm(extra->size).imm(tagImm));
-}
-
-void implNewArray(IRLS& env, const IRInstruction* inst, MakeArrayFn target) {
-  cgCallHelper(vmain(env), env, CallSpec::direct(target), callDest(env, inst),
                SyncOptions::None, argGroup(env, inst).ssa(0));
 }
 
-void implAllocArray(IRLS& env, const IRInstruction* inst, MakeArrayFn target) {
+void cgAllocVec(IRLS& env, const IRInstruction* inst) {
   auto const extra = inst->extra<PackedArrayData>();
-  cgCallHelper(vmain(env), env, CallSpec::direct(target), callDest(env, inst),
+  auto const target = CallSpec::direct(PackedArray::MakeUninitializedVec);
+  cgCallHelper(vmain(env), env, target, callDest(env, inst),
                SyncOptions::None, argGroup(env, inst).imm(extra->size));
 }
 
-}
-
-void cgNewDictArray(IRLS& env, const IRInstruction* inst) {
-  implNewArray(env, inst, MixedArray::MakeReserveDict);
-}
-void cgNewDArray(IRLS& env, const IRInstruction* inst) {
-  if (auto const tag = getProvenanceTag(inst)) {
-    return implNewTaggedDArray(env, inst, *tag);
-  }
-  implNewArray(env, inst, MixedArray::MakeReserveDArray);
-}
-
-void cgAllocVec(IRLS& env, const IRInstruction* inst) {
-  implAllocArray(env, inst, PackedArray::MakeUninitializedVec);
-}
-void cgAllocVArray(IRLS& env, const IRInstruction* inst) {
-  if (auto const tag = getProvenanceTag(inst)) {
-    return implAllocTaggedVArray(env, inst, *tag);
-  }
-  implAllocArray(env, inst, PackedArray::MakeUninitializedVArray);
-}
-
-namespace {
-
-ArrayData* newTaggedStructDArray(uint32_t size, const StringData* const* keys,
-                                 const TypedValue* values, uint32_t tagImm) {
-  arrprov::TagOverride _(convertAsBytes<arrprov::Tag>(tagImm));
-  return MixedArray::MakeStructDArray(size, keys, values);
-}
-
-void newStructImpl(
-  IRLS& env,
-  const IRInstruction* inst,
-  MixedArray* (*f)(uint32_t, const StringData* const*, const TypedValue*),
-  folly::Optional<arrprov::Tag> tag = folly::none
-) {
+void cgNewStructDict(IRLS& env, const IRInstruction* inst) {
   auto const sp = srcLoc(env, inst, 0).reg();
   auto const extra = inst->extra<NewStructData>();
   auto& v = vmain(env);
@@ -330,32 +258,13 @@ void newStructImpl(
   auto table = v.allocData<const StringData*>(extra->numKeys);
   memcpy(table, extra->keys, extra->numKeys * sizeof(*extra->keys));
 
-  auto const sync = SyncOptions::None;
-  auto args = argGroup(env, inst)
+  auto const target = CallSpec::direct(MixedArray::MakeStructDict);
+  auto const args = argGroup(env, inst)
     .imm(extra->numKeys)
     .dataPtr(table)
     .addr(sp, cellsToBytes(extra->offset.offset));
 
-  if (tag) {
-    assertx(inst->is(NewStructDArray));
-    args.imm(convertAsBytes<uint32_t>(*tag));
-    auto const target = CallSpec::direct(newTaggedStructDArray);
-    cgCallHelper(v, env, target, callDest(env, inst), sync, args);
-    return;
-  }
-
-  cgCallHelper(v, env, CallSpec::direct(f), callDest(env, inst), sync, args);
-}
-
-}
-
-void cgNewStructDArray(IRLS& env, const IRInstruction* inst) {
-  auto const tag = getProvenanceTag(inst);
-  newStructImpl(env, inst, MixedArray::MakeStructDArray, tag);
-}
-
-void cgNewStructDict(IRLS& env, const IRInstruction* inst) {
-  newStructImpl(env, inst, MixedArray::MakeStructDict);
+  cgCallHelper(v, env, target, callDest(env, inst), SyncOptions::None, args);
 }
 
 void cgNewKeysetArray(IRLS& env, const IRInstruction* inst) {
@@ -371,24 +280,9 @@ void cgNewKeysetArray(IRLS& env, const IRInstruction* inst) {
                callDest(env, inst), SyncOptions::Sync, args);
 }
 
-namespace {
-
-ArrayData* allocTaggedStructDArray(uint32_t size, const int32_t* hash,
-                                   uint32_t tagImm) {
-  arrprov::TagOverride _(convertAsBytes<arrprov::Tag>(tagImm));
-  return MixedArray::AllocStructDArray(size, hash);
-}
-
-template<typename ArrayInit>
-void allocStructImpl(
-  IRLS& env,
-  const IRInstruction* inst,
-  MixedArray* (*f)(uint32_t, const int32_t*),
-  folly::Optional<arrprov::Tag> tag = folly::none
-) {
-  arrprov::TagOverride ap_override{arrprov::tagFromSK(inst->marker().sk())};
+void cgAllocStructDict(IRLS& env, const IRInstruction* inst) {
   auto const extra = inst->extra<NewStructData>();
-  auto init = ArrayInit{extra->numKeys};
+  auto init = DictInit{extra->numKeys};
   for (auto i = 0; i < extra->numKeys; ++i) {
     init.set(extra->keys[i], make_tv<KindOfNull>());
   }
@@ -404,29 +298,10 @@ void allocStructImpl(
   auto table = v.allocData<HashTableEntry>(ad->hashSize());
   memcpy(table, ad->hashTab(), ad->hashSize() * sizeof(HashTableEntry));
 
-  auto const sync = SyncOptions::None;
-  auto args = argGroup(env, inst).imm(extra->numKeys).dataPtr(table);
+  auto const target = CallSpec::direct(MixedArray::AllocStructDict);
+  auto const args = argGroup(env, inst).imm(extra->numKeys).dataPtr(table);
 
-  if (tag) {
-    assertx(inst->is(AllocStructDArray));
-    args.imm(convertAsBytes<uint32_t>(*tag));
-    auto const target = CallSpec::direct(allocTaggedStructDArray);
-    cgCallHelper(v, env, target, callDest(env, inst), sync, args);
-    return;
-  }
-
-  cgCallHelper(v, env, CallSpec::direct(f), callDest(env, inst), sync, args);
-}
-
-}
-
-void cgAllocStructDArray(IRLS& env, const IRInstruction* inst) {
-  auto const tag = getProvenanceTag(inst);
-  allocStructImpl<DArrayInit>(env, inst, MixedArray::AllocStructDArray, tag);
-}
-
-void cgAllocStructDict(IRLS& env, const IRInstruction* inst) {
-  allocStructImpl<DictInit>(env, inst, MixedArray::AllocStructDict);
+  cgCallHelper(v, env, target, callDest(env, inst), SyncOptions::Sync, args);
 }
 
 void cgInitDictElem(IRLS& env, const IRInstruction* inst) {
@@ -448,10 +323,10 @@ void cgInitDictElem(IRLS& env, const IRInstruction* inst) {
 void cgInitVecElem(IRLS& env, const IRInstruction* inst) {
   auto const arr = srcLoc(env, inst, 0).reg();
   auto const index = inst->extra<InitVecElem>()->index;
-
-  auto const slot_off = PackedArray::entriesOffset() +
-                        index * sizeof(TypedValue);
-  storeTV(vmain(env), arr[slot_off], srcLoc(env, inst, 1), inst->src(1));
+  auto const type = inst->src(1)->type();
+  auto const offset = PackedArray::entryOffset(index);
+  storeTV(vmain(env), type, srcLoc(env, inst, 1),
+          arr[offset.type_offset], arr[offset.data_offset]);
 }
 
 void cgInitVecElemLoop(IRLS& env, const IRInstruction* inst) {
@@ -476,15 +351,33 @@ void cgInitVecElemLoop(IRLS& env, const IRInstruction* inst) {
       auto const i1 = in[0],  j1 = in[1];
       auto const i2 = out[0], j2 = out[1];
       auto const sf = v.makeReg();
-      auto const value = v.makeReg();
 
-      // Load the value from the stack and store into the array.  It's safe to
-      // copy all 16 bytes of the TV because packed arrays don't use m_aux.
-      v << loadups{sp[j1 * 8], value};
-      v << storeups{value, arr[i1 * 8] + PackedArray::entriesOffset()};
+      if constexpr (PackedArray::stores_typed_values) {
+        // Load the value from the stack and store into the array.  It's safe
+        // to copy all 16 bytes of the TV because PackedArrays don't use m_aux.
+        auto const value = v.makeReg();
+        v << loadups{sp[j1 * 8], value};
+        v << storeups{value, arr[i1 * 8] + PackedArray::entriesOffset()};
+        v << lea{i1[2], i2};
+      } else {
+        // See PackedBlock::LvalAt for an explanation of this math.
+        auto const x = v.makeReg();
+        auto const a = v.makeReg();
+        auto const b = v.makeReg();
+        v << andqi{-8, i1, x, v.makeReg()};
+        v << lea{arr[x  * 8] + PackedArray::entriesOffset(), a};
+        v << lea{arr[i1 * 8] + PackedArray::entriesOffset(), b};
+
+        auto const data = v.makeReg();
+        auto const type = v.makeReg();
+        v << load {sp[j1 * 8], data};
+        v << loadb{sp[j1 * 8] + 8, type};
+        v << store {data, b[x] + 8};
+        v << storeb{type, a[i1]};
+        v << lea{i1[1], i2};
+      }
 
       // Add 2 to the loop variable because we can only scale by at most 8.
-      v << lea{i1[2], i2};
       v << subqi{2, j1, j2, sf};
       return sf;
     },

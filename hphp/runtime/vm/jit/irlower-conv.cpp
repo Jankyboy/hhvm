@@ -88,13 +88,7 @@ void cgConvStrToBool(IRLS& env, const IRInstruction* inst) {
       // the string is equal to '0'.
       auto const dst = v.makeReg();
       auto const sf = v.makeReg();
-#ifdef NO_M_DATA
       v << cmpbim{'0', src[sizeof(StringData)], sf};
-#else
-      auto const sd = v.makeReg();
-      v << load{src[StringData::dataOff()], sd};
-      v << cmpbim{'0', sd[0], sf};
-#endif
       v << setcc{CC_NE, sf, dst};
       return dst;
     },
@@ -272,130 +266,11 @@ IMPL_OPCODE_CALL(ConvResToDbl);
 IMPL_OPCODE_CALL(ConvTVToDbl);
 
 ///////////////////////////////////////////////////////////////////////////////
-// ConvToVArray
-
-static ArrayData* convArrToVArrImpl(ArrayData* adIn) {
-  assertx(!RuntimeOption::EvalHackArrDVArrs);
-  assertx(adIn->isPHPArrayType());
-  auto a = adIn->toVArray(adIn->cowCheck());
-  assertx(a->isPackedKind());
-  assertx(a->isVArray());
-  if (a != adIn) decRefArr(adIn);
-  return a;
-}
-
-static ArrayData* convObjToVArrImpl(ObjectData* obj) {
-  assertx(!RuntimeOption::EvalHackArrDVArrs);
-  auto a = castObjToVArray(obj);
-  assertx(a->isPackedKind());
-  assertx(a->isVArray());
-  decRefObj(obj);
-  return a;
-}
-
-namespace {
-
-void convToVArrHelper(IRLS& env, const IRInstruction* inst,
-                      CallSpec call, bool sync) {
-  auto const args = argGroup(env, inst).ssa(0);
-  cgCallHelper(
-    vmain(env),
-    env,
-    call,
-    callDest(env, inst),
-    sync ? SyncOptions::Sync : SyncOptions::None,
-    args
-  );
-}
-
-}
-
-void cgConvObjToVArr(IRLS& env, const IRInstruction* inst) {
-  convToVArrHelper(env, inst, CallSpec::direct(convObjToVArrImpl), true);
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// ConvToDArray
-
-static ArrayData* convArrToDArrImpl(ArrayData* adIn) {
-  assertx(!RuntimeOption::EvalHackArrDVArrs);
-  assertx(adIn->isPHPArrayType());
-  auto a = adIn->toDArray(adIn->cowCheck());
-  assertx(a->isMixedKind());
-  assertx(a->isDArray());
-  if (a != adIn) decRefArr(adIn);
-  return a;
-}
-
-static ArrayData* convVecToDArrImpl(ArrayData* adIn) {
-  assertx(!RuntimeOption::EvalHackArrDVArrs);
-  assertx(adIn->isVecKind());
-  auto a = PackedArray::ToDArray(adIn, adIn->cowCheck());
-  assertx(a != adIn);
-  assertx(a->isMixedKind());
-  assertx(a->isDArray());
-  decRefArr(adIn);
-  return a;
-}
-
-static ArrayData* convDictToDArrImpl(ArrayData* adIn) {
-  assertx(!RuntimeOption::EvalHackArrDVArrs);
-  assertx(adIn->isDictKind());
-  auto a = MixedArray::ToDArray(adIn, adIn->cowCheck());
-  assertx(a->isMixedKind());
-  assertx(a->isDArray());
-  if (a != adIn) decRefArr(adIn);
-  return a;
-}
-
-static ArrayData* convKeysetToDArrImpl(ArrayData* adIn) {
-  assertx(!RuntimeOption::EvalHackArrDVArrs);
-  assertx(adIn->isKeysetKind());
-  auto a = SetArray::ToDArray(adIn, adIn->cowCheck());
-  assertx(a != adIn);
-  assertx(a->isMixedKind());
-  assertx(a->isDArray());
-  decRefArr(adIn);
-  return a;
-}
-
-static ArrayData* convObjToDArrImpl(ObjectData* obj) {
-  assertx(!RuntimeOption::EvalHackArrDVArrs);
-  auto a = castObjToDArray(obj);
-  assertx(a->isMixedKind());
-  assertx(a->isDArray());
-  decRefObj(obj);
-  return a;
-}
-
-namespace {
-
-void convToDArrHelper(IRLS& env, const IRInstruction* inst,
-                      CallSpec call, bool sync) {
-  auto const args = argGroup(env, inst).ssa(0);
-  cgCallHelper(
-    vmain(env),
-    env,
-    call,
-    callDest(env, inst),
-    sync ? SyncOptions::Sync : SyncOptions::None,
-    args
-  );
-}
-
-}
-
-void cgConvObjToDArr(IRLS& env, const IRInstruction* inst) {
-  convToDArrHelper(env, inst, CallSpec::direct(convObjToDArrImpl), true);
-}
-
-///////////////////////////////////////////////////////////////////////////////
 // ConvToStr
 
 IMPL_OPCODE_CALL(ConvIntToStr);
 IMPL_OPCODE_CALL(ConvDblToStr);
 IMPL_OPCODE_CALL(ConvObjToStr);
-IMPL_OPCODE_CALL(ConvResToStr);
 IMPL_OPCODE_CALL(ConvTVToStr);
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -406,15 +281,12 @@ IMPL_OPCODE_CALL(ConvClsMethToVArr);
 IMPL_OPCODE_CALL(ConvClsMethToDArr);
 
 IMPL_OPCODE_CALL(ConvArrLikeToVec);
-IMPL_OPCODE_CALL(ConvClsMethToVec);
 IMPL_OPCODE_CALL(ConvObjToVec);
 
 IMPL_OPCODE_CALL(ConvArrLikeToDict);
-IMPL_OPCODE_CALL(ConvClsMethToDict);
 IMPL_OPCODE_CALL(ConvObjToDict);
 
 IMPL_OPCODE_CALL(ConvArrLikeToKeyset);
-IMPL_OPCODE_CALL(ConvClsMethToKeyset);
 IMPL_OPCODE_CALL(ConvObjToKeyset);
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -446,10 +318,8 @@ void cgConvPtrToLval(IRLS& env, const IRInstruction* inst) {
   auto const dstLoc = irlower::dstLoc(env, inst, 0);
 
   v << copy{srcLoc.reg(), dstLoc.reg(tv_lval::val_idx)};
-  if (wide_tv_val) {
-    static_assert(TVOFF(m_data) == 0, "");
-    v << lea{srcLoc.reg()[TVOFF(m_type)], dstLoc.reg(tv_lval::type_idx)};
-  }
+  static_assert(TVOFF(m_data) == 0, "");
+  v << lea{srcLoc.reg()[TVOFF(m_type)], dstLoc.reg(tv_lval::type_idx)};
 }
 
 ///////////////////////////////////////////////////////////////////////////////

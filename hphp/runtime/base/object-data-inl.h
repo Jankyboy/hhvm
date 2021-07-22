@@ -19,6 +19,7 @@
 #endif
 
 #include "hphp/runtime/base/exceptions.h"
+#include "hphp/runtime/base/tv-conv-notice.h"
 #include "hphp/runtime/vm/reified-generics.h"
 #include "hphp/system/systemlib.h"
 
@@ -83,11 +84,13 @@ ALWAYS_INLINE ObjectData::Alloc ObjectData::allocMemoInit(Class* cls) {
   if (cls->hasMemoSlots()) {
     auto const objOff = objOffFromMemoNode(cls);
     new (NotNull{}, result.mem) MemoNode(objOff);
-    std::memset(
-      reinterpret_cast<char*>(result.mem) + sizeof(MemoNode),
-      0,
-      objOff - sizeof(MemoNode)
-    );
+    auto cur = reinterpret_cast<MemoSlot*>(
+        reinterpret_cast<char*>(result.mem) + sizeof(MemoNode));
+    auto end = reinterpret_cast<MemoSlot*>(
+        reinterpret_cast<char*>(result.mem) + objOff);
+    while (cur < end) {
+      (cur++)->init();
+    }
     result.mem = reinterpret_cast<char*>(result.mem) + objOff;
   }
   return result;
@@ -117,7 +120,8 @@ template <bool Unlocked>
 NEVER_INLINE ObjectData* ObjectData::newInstanceSlow(Class* cls) {
   assertx(cls);
   if (UNLIKELY(cls->attrs() &
-               (AttrAbstract | AttrInterface | AttrTrait | AttrEnum))) {
+               (AttrAbstract | AttrInterface | AttrTrait | AttrEnum |
+                AttrEnumClass))) {
     raiseAbstractClassError(cls);
   }
   if (cls->hasReifiedGenerics()) {
@@ -141,7 +145,7 @@ NEVER_INLINE ObjectData* ObjectData::newInstanceSlow(Class* cls) {
     assertx(obj->checkCount());
   }
   if (cls->hasReifiedParent()) {
-    obj->setReifiedGenerics(cls, ArrayData::CreateVArray());
+    obj->setReifiedGenerics(cls, ArrayData::CreateVec());
   }
   return obj;
 }
@@ -155,7 +159,8 @@ inline ObjectData* ObjectData::newInstance(Class* cls) {
     return newInstanceSlow<Unlocked>(cls);
   }
   if (UNLIKELY(cls->attrs() &
-               (AttrAbstract | AttrInterface | AttrTrait | AttrEnum))) {
+               (AttrAbstract | AttrInterface | AttrTrait | AttrEnum |
+                AttrEnumClass))) {
     raiseAbstractClassError(cls);
   }
   auto obj = ObjectData::newInstanceImpl<Unlocked>(
@@ -173,7 +178,8 @@ inline ObjectData* ObjectData::newInstanceReified(Class* cls,
                                                   ArrayData* reifiedTypes) {
   assertx(cls);
   if (UNLIKELY(cls->attrs() &
-               (AttrAbstract | AttrInterface | AttrTrait | AttrEnum))) {
+               (AttrAbstract | AttrInterface | AttrTrait | AttrEnum |
+                AttrEnumClass))) {
     raiseAbstractClassError(cls);
   }
   if (cls->hasReifiedGenerics()) {
@@ -197,14 +203,15 @@ inline ObjectData* ObjectData::newInstanceReified(Class* cls,
     return obj;
   }
   if (cls->hasReifiedParent()) {
-    obj->setReifiedGenerics(cls, ArrayData::CreateVArray());
+    obj->setReifiedGenerics(cls, ArrayData::CreateVec());
   }
   return obj;
 }
 
 inline ObjectData* ObjectData::newInstanceNoPropInit(Class* cls) {
   assertx(!(cls->attrs() &
-            (AttrAbstract | AttrInterface | AttrTrait | AttrEnum)));
+            (AttrAbstract | AttrInterface | AttrTrait | AttrEnum |
+             AttrEnumClass)));
   return ObjectData::newInstanceImpl<false>(
     cls,
     [&](void* mem, uint8_t sizeFlag) {
@@ -385,22 +392,6 @@ inline bool ObjectData::toBoolean() const {
     return toBooleanImpl();
   }
   return true;
-}
-
-inline int64_t ObjectData::toInt64() const {
-  if (!isCollection() && UNLIKELY(m_cls->rtAttribute(Class::CallToImpl))) {
-    return toInt64Impl();
-  }
-  raiseObjToIntNotice(classname_cstr());
-  return 1;
-}
-
-inline double ObjectData::toDouble() const {
-  if (!isCollection() && UNLIKELY(m_cls->rtAttribute(Class::CallToImpl))) {
-    return toDoubleImpl();
-  }
-  raiseObjToDoubleNotice(classname_cstr());
-  return 1;
 }
 
 inline const Func* ObjectData::methodNamed(const StringData* sd) const {

@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_OBJECT_H_
-#define incl_HPHP_OBJECT_H_
+#pragma once
 
 #include "hphp/runtime/base/object-data.h"
 #include "hphp/runtime/base/req-ptr.h"
@@ -25,9 +24,6 @@
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
-
-// Forward declare to avoid including tv-conversions.h and creating a cycle.
-ObjectData* tvCastToObjectData(TypedValue tv);
 
 /**
  * Object type wrapping around ObjectData to implement reference count.
@@ -200,11 +196,5 @@ ALWAYS_INLINE const Object& asCObjRef(tv_rval tv) {
   return reinterpret_cast<const Object&>(val(tv).pobj);
 }
 
-ALWAYS_INLINE Object toObject(tv_rval tv) {
-  if (tvIsObject(tv)) return Object{assert_not_null(val(tv).pobj)};
-  return Object::attach(tvCastToObjectData(*tv));
 }
 
-}
-
-#endif // incl_HPHP_OBJECT_H_

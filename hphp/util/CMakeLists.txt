@@ -38,14 +38,6 @@ add_custom_command(
 
 list(APPEND HEADER_SOURCES ${CMAKE_CURRENT_BINARY_DIR}/low-ptr-def.h)
 
-add_custom_command(
-  OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/wide-tv-val-def.h
-  COMMAND INSTALL_DIR=${CMAKE_CURRENT_BINARY_DIR} bash ${CMAKE_CURRENT_SOURCE_DIR}/../tools/generate-wide-tv-val.sh ignored --wide
-  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../tools/generate-wide-tv-val.sh
-)
-
-list(APPEND HEADER_SOURCES ${CMAKE_CURRENT_BINARY_DIR}/wide-tv-val-def.h)
-
 HHVM_PUBLIC_HEADERS(util ${HEADER_SOURCES})
 
 find_package(LibNuma)
@@ -68,7 +60,7 @@ if (ENABLE_COTIRE)
   cotire(hphp_util)
 endif()
 
-target_link_libraries(hphp_util brotli zstd)
+target_link_libraries(hphp_util brotli folly zstd)
 if (LIBNUMA_LIBRARIES)
   target_link_libraries(hphp_util ${LIBNUMA_LIBRARIES})
 endif()

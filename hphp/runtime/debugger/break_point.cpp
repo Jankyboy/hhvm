@@ -106,7 +106,7 @@ InterruptSite::InterruptSite(bool hardBreakPoint, const Variant& error)
     m_offset = m_func->offsetOf(pc);
     auto base = m_func->isGenerator()
       ? BaseGenerator::userBase(m_func)
-      : m_func->base();
+      : 0;
     if (m_offset == base) {
       m_funcEntry = true;
     }
@@ -139,7 +139,7 @@ void InterruptSite::Initialize(ActRec *fp) {
   auto const unit = m_func->unit();
   bail_on(!unit);
   m_file = String(StrNR{unit->filepath()});
-  if (unit->getSourceLoc(m_offset, m_sourceLoc)) {
+  if (m_func->getSourceLoc(m_offset, m_sourceLoc)) {
     m_line0 = m_sourceLoc.line0;
     m_char0 = m_sourceLoc.char0;
     m_line1 = m_sourceLoc.line1;
@@ -968,10 +968,10 @@ bool BreakPointInfo::MatchClass(const char *fcls, const std::string &bcls,
   }
 
   String sdBClsName(bcls);
-  Class* clsB = Unit::lookupClass(sdBClsName.get());
+  Class* clsB = Class::lookup(sdBClsName.get());
   if (!clsB) return false;
   String sdFClsName(fcls, CopyString);
-  Class* clsF = Unit::lookupClass(sdFClsName.get());
+  Class* clsF = Class::lookup(sdFClsName.get());
   if (clsB == clsF) return true;
   String sdFuncName(func, CopyString);
   Func* f = clsB->lookupMethod(sdFuncName.get());

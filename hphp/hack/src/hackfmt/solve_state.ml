@@ -123,10 +123,8 @@ let build_candidate_rules_and_update_rbm rbm lines rule_dependency_map =
   let candidate_rules =
     ISet.fold
       (fun id acc ->
-        ISet.union acc
-        @@
-        try ISet.of_list @@ IMap.find id deps
-        with Caml.Not_found -> ISet.empty)
+        let rules = Option.value ~default:[] (IMap.find_opt id deps) in
+        ISet.union acc @@ ISet.of_list rules)
       base_candidate_rules
       base_candidate_rules
   in
@@ -351,7 +349,7 @@ let compare_overlap s1 s2 =
 let __debug t =
   (* TODO: make a new rule strings string *)
   let rule_strings =
-    List.map (IMap.bindings t.rbm) (fun (k, v) ->
+    List.map (IMap.bindings t.rbm) ~f:(fun (k, v) ->
         string_of_int k ^ ": " ^ string_of_bool v)
   in
   let rule_count = string_of_int (Chunk_group.get_rule_count t.chunk_group) in

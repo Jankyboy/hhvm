@@ -11,6 +11,7 @@ open Aast
 open Hh_prelude
 open Typing_defs
 module Env = Tast_env
+module SN = Naming_special_names
 
 (* Requires id to be a property *)
 let check_static_const_prop tenv class_ (pos, id) =
@@ -25,9 +26,9 @@ let check_const_prop env tenv class_ (pos, id) cty =
       if get_ce_const ce then
         if
           not
-            ( Env.get_inside_constructor env
+            (Env.get_inside_constructor env
             && (* expensive call behind short circuiting && *)
-            Tast_env.is_sub_type env (Env.get_self_ty_exn env) cty )
+            Tast_env.is_sub_type env (Env.get_self_ty_exn env) cty)
         then
           Errors.mutating_const_property pos)
 
@@ -43,9 +44,9 @@ let check_prop env c pid cty_opt =
         | None ->
           check_static_const_prop (Env.tast_env_as_typing_env env) class_ pid)
 
-let rec check_expr env (_, e) =
+let rec check_expr env ((_, _, e) : Tast.expr) =
   match e with
-  | Class_get (((_, cty), _), CGstring pid) ->
+  | Class_get ((cty, _, _), CGstring pid, _) ->
     let (env, cty) = Env.expand_type env cty in
     begin
       match get_node cty with
@@ -66,7 +67,7 @@ let rec check_expr env (_, e) =
         Typing_set.iter check_class upper_bounds
       | _ -> ()
     end
-  | Obj_get (((_, cty), _), (_, Id id), _) ->
+  | Obj_get ((cty, _, _), (_, _, Id id), _, _) ->
     let (env, cty) = Env.expand_type env cty in
     begin
       match get_node cty with
@@ -78,16 +79,24 @@ let rec check_expr env (_, e) =
           | Tclass ((_, c), _, _) -> check_prop env c id (Some bound)
           | _ -> ()
         end
+      | Tgeneric (name, targs) ->
+        let upper_bounds = Env.get_upper_bounds env name targs in
+        let check_class bound =
+          match get_node bound with
+          | Tclass ((_, c), _, _) -> check_prop env c id (Some bound)
+          | _ -> ()
+        in
+        Typing_set.iter check_class upper_bounds
       | _ -> ()
     end
-  | Call ((_, Id (_, f)), _, el, None)
+  | Call ((_, _, Id (_, f)), _, el, None)
     when String.equal f SN.PseudoFunctions.unset ->
     let rec check_unset_exp e =
       match e with
-      | (_, Array_get (e, Some _)) -> check_unset_exp e
+      | (_, _, Array_get (e, Some _)) -> check_unset_exp e
       | _ -> check_expr (Env.set_val_kind env Typing_defs.Lval) e
     in
-    List.iter el check_unset_exp
+    List.iter el ~f:check_unset_exp
   | _ -> ()
 
 let handler =

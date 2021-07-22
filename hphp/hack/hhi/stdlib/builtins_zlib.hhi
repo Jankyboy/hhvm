@@ -18,14 +18,14 @@ const int FORCE_DEFLATE = 0;
 
 <<__PHPStdLib>>
 function gzclose(resource $zp);
-<<__PHPStdLib, __Pure>>
-function gzcompress(string $data, int $level = -1): mixed;
-<<__PHPStdLib, __Pure>>
-function gzdecode(string $data, int $length = PHP_INT_MAX): mixed;
-<<__PHPStdLib, __Pure>>
-function gzdeflate(string $data, int $level = -1): mixed;
-<<__PHPStdLib, __Pure>>
-function gzencode(string $data, int $level = -1): mixed;
+<<__PHPStdLib>>
+function gzcompress(string $data, int $level = -1)[]: mixed;
+<<__PHPStdLib>>
+function gzdecode(string $data, int $length = PHP_INT_MAX)[]: mixed;
+<<__PHPStdLib>>
+function gzdeflate(string $data, int $level = -1)[]: mixed;
+<<__PHPStdLib>>
+function gzencode(string $data, int $level = -1)[]: mixed;
 <<__PHPStdLib>>
 function gzeof(resource $zp);
 <<__PHPStdLib>>
@@ -36,8 +36,8 @@ function gzgetc(resource $zp);
 function gzgets(resource $zp, int $length = 1024);
 <<__PHPStdLib>>
 function gzgetss(resource $zp, int $length = 0, string $allowable_tags = "");
-<<__PHPStdLib, __Pure>>
-function gzinflate(string $data, int $length = 0): mixed;
+<<__PHPStdLib>>
+function gzinflate(string $data, int $length = 0)[]: mixed;
 <<__PHPStdLib>>
 function gzopen(string $filename, string $mode, int $use_include_path = 0);
 <<__PHPStdLib>>
@@ -56,19 +56,19 @@ function gztell(resource $zp);
 function gzuncompress(string $data, int $length = 0): mixed;
 <<__PHPStdLib>>
 function gzwrite(resource $zp, string $str, int $length = 0);
-<<__PHPStdLib, __Pure>>
-function nzcompress(string $uncompressed);
-<<__PHPStdLib, __Pure>>
-function nzuncompress(string $compressed);
+<<__PHPStdLib>>
+function nzcompress(string $uncompressed)[];
+<<__PHPStdLib>>
+function nzuncompress(string $compressed)[];
 <<__PHPStdLib>>
 function qlzcompress(string $data, int $level = 1);
 <<__PHPStdLib>>
 function qlzuncompress(string $data, int $level = 1): mixed;
 <<__PHPStdLib>>
 function readgzfile(string $filename, int $use_include_path = 0);
-<<__PHPStdLib, __Pure>>
-function zlib_decode(string $data, int $max_len = 0): mixed; // string or false
-<<__PHPStdLib, __Pure>>
-function zlib_encode(string $data, int $encoding, int $level = -1): mixed;
+<<__PHPStdLib>>
+function zlib_decode(string $data, int $max_len = 0)[]: mixed; // string or false
+<<__PHPStdLib>>
+function zlib_encode(string $data, int $encoding, int $level = -1)[]: mixed;
 <<__PHPStdLib>>
 function zlib_get_coding_type();

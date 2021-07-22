@@ -28,7 +28,7 @@ static bool matchFunctionName(std::string name, const Func* f) {
 }
 
 static void addBreakPointInUnit(BreakPointInfoPtr bp, Unit* unit) {
-  OffsetRangeVec offsets;
+  OffsetFuncRangeVec offsets;
   if (!unit->getOffsetRanges(bp->m_line1, offsets) || offsets.size() == 0) {
     bp->m_bindState = BreakPointInfo::KnownToBeInvalid;
     return;
@@ -38,8 +38,9 @@ static void addBreakPointInUnit(BreakPointInfoPtr bp, Unit* unit) {
       unit->filepath()->data(), bp->m_line1, unit);
 
   assertx(offsets.size() > 0);
-  auto bpOffset = offsets[0].base;
-  auto func = unit->getFunc(bpOffset);
+  assertx(offsets[0].second.size() > 0);
+  auto func = offsets[0].first;
+  auto bpOffset = offsets[0].second[0].base;
   phpAddBreakPoint(func, bpOffset);
 }
 
@@ -52,7 +53,7 @@ void proxySetBreakPoints(DebuggerProxy* proxy) {
     auto className = bp->getClass();
     if (!className.empty()) {
       auto clsName = makeStaticString(className);
-      auto cls = Unit::lookupClass(clsName);
+      auto cls = Class::lookup(clsName);
       if (cls == nullptr) continue;
       bp->m_bindState = BreakPointInfo::KnownToBeInvalid;
       size_t numFuncs = cls->numMethods();
@@ -95,10 +96,10 @@ void proxySetBreakPoints(DebuggerProxy* proxy) {
       continue;
     } else if (!exceptionClassName.empty()) {
       auto expClsName = makeStaticString(exceptionClassName);
-      auto cls = Unit::lookupClass(expClsName);
+      auto cls = Class::lookup(expClsName);
       if (cls != nullptr) {
         static auto baseClsName = makeStaticString("Exception");
-        auto baseCls = Unit::lookupClass(baseClsName);
+        auto baseCls = Class::lookup(baseClsName);
         if (baseCls != nullptr) {
           if (cls->classof(baseCls)) {
             bp->m_bindState = BreakPointInfo::KnownToBeValid;

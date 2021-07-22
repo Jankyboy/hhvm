@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_TYPE_ALIAS_EMITTER_H_
-#define incl_HPHP_TYPE_ALIAS_EMITTER_H_
+#pragma once
 
 #include "hphp/runtime/base/annot-type.h"
 #include "hphp/runtime/base/array-data.h"
@@ -48,6 +47,7 @@ struct TypeAliasEmitter {
   const StringData* name() const { return m_name; }
   const StringData* value() const { return m_value; }
   Attr attrs() const { return m_attrs; }
+  void setAttrs(Attr attrs) { m_attrs = attrs; }
   AnnotType type() const { return m_type; }
   bool nullable() const { return m_nullable; }
   UserAttributeMap userAttributes() const { return m_userAttributes; }
@@ -79,11 +79,9 @@ struct TypeAliasEmitter {
     int m_line1;
     bool m_nullable;  // null is allowed; for ?Foo aliases
     UserAttributeMap m_userAttributes;
-    Array m_typeStructure{ArrayData::CreateDArray(ARRPROV_HERE())};
+    Array m_typeStructure{ArrayData::CreateDict()};
     Id m_id;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif

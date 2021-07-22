@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_RUNTIME_OPTION_H_
-#define incl_HPHP_RUNTIME_OPTION_H_
+#pragma once
 
 #include <folly/dynamic.h>
 #include <folly/experimental/io/FsUtil.h>
@@ -32,9 +31,14 @@
 
 #include "hphp/runtime/base/config.h"
 #include "hphp/runtime/base/typed-value.h"
+#include "hphp/runtime/base/types.h"
+
 #include "hphp/util/compilation-flags.h"
-#include "hphp/util/hash-map.h"
 #include "hphp/util/functional.h"
+#include "hphp/util/hash-map.h"
+#include "hphp/util/sha1.h"
+
+#include "hphp/hack/src/parser/positioned_full_trivia_parser_ffi_types_fwd.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -49,6 +53,8 @@ struct Hdf;
 struct IniSettingMap;
 
 constexpr int kDefaultInitialStaticStringTableSize = 500000;
+
+using StringToIntMap = std::unordered_map<std::string, int>;
 
 enum class JitSerdesMode {
   // NB: if changing the encoding here, make sure to update isJitSerializing()
@@ -66,6 +72,12 @@ enum class JitSerdesMode {
   DeserializeAndExit    = 0x12,         // 10010
 };
 
+enum class RepoMode {
+  Closed    = 0,
+  ReadOnly  = 1,
+  ReadWrite = 2,
+};
+
 struct RepoOptions {
   RepoOptions(const RepoOptions&) = default;
   RepoOptions(RepoOptions&&) = default;
@@ -77,7 +89,6 @@ struct RepoOptions {
   N(StringMap,      AliasedNamespaces,                StringMap{})    \
   P(bool,           UVS,                              s_PHP7_master)  \
   P(bool,           LTRAssign,                        s_PHP7_master)  \
-  H(bool,           EnableCoroutines,                 true)           \
   H(bool,           Hacksperimental,                  false)          \
   H(bool,           DisableLvalAsAnExpression,        false)          \
   H(bool,           AllowNewAttributeSyntax,          false)          \
@@ -88,12 +99,18 @@ struct RepoOptions {
   H(bool,           DisallowFuncPtrsInConstants,      false)          \
   E(bool,           EmitInstMethPointers,             false)          \
   H(bool,           AllowUnstableFeatures,            false)          \
+  H(bool,           DisallowHashComments,             false)          \
   H(bool,           EnableXHPClassModifier,           true)           \
   H(bool,           DisableXHPElementMangling,        true)           \
   H(bool,           DisableArray,                     true)           \
   H(bool,           DisableArrayCast,                 true)           \
   H(bool,           DisableArrayTypehint,             true)           \
-  H(bool,           EnableFirstClassFunctionPointers, false)          \
+  H(bool,           EnableEnumClasses,                true)           \
+  H(bool,           DisallowFunAndClsMethPseudoFuncs, false)          \
+  H(bool,           DisallowDynamicMethCallerArgs,    false)          \
+  H(bool,           DisallowInstMeth,                 false)          \
+  H(bool,           EnableReadonlyEnforcement,        false)          \
+  H(bool,           EscapeBrace,                      false)          \
   /**/
 
   /**/
@@ -104,15 +121,35 @@ struct RepoOptions {
   /**/
 
   std::string path() const { return m_path; }
-  std::string cacheKeyRaw() const;
-  std::string cacheKeySha1() const;
+  SHA1 cacheKeySha1() const { return m_sha1; }
   std::string toJSON() const;
-  folly::dynamic toDynamic() const;
+  const folly::dynamic& toDynamic() const { return m_cachedDynamic; }
+  std::uint32_t getParserFlags() const;
+  std::uint32_t getCompilerFlags() const;
+  std::uint32_t getFactsFlags() const;
+  hackc_parse_positioned_full_trivia_environment getParserEnvironment() const;
+  std::string getAliasedNamespacesConfig() const;
   struct stat stat() const { return m_stat; }
   std::string autoloadQuery() const noexcept { return Query; }
   std::string trustedDBPath() const noexcept { return TrustedDBPath; }
 
-  bool operator==(const RepoOptions& o) const;
+  bool operator==(const RepoOptions& o) const {
+    // If we have hash collisions of unequal RepoOptions, we have
+    // bigger problems.
+    return m_sha1 == o.m_sha1;
+  }
+  bool operator!=(const RepoOptions& o) const { return !(*this == o); }
+
+  // Getters for the parser options we pass to HackC for extracting facts
+  bool allowNewAttributeSyntax() const noexcept {
+    return AllowNewAttributeSyntax;
+  }
+  bool enableXHPClassModifier() const noexcept {
+    return EnableXHPClassModifier;
+  }
+  bool disableXHPElementMangling() const noexcept {
+    return DisableXHPElementMangling;
+  }
 
   static const RepoOptions& defaults();
   static void setDefaults(const Hdf& hdf, const IniSettingMap& ini);
@@ -121,24 +158,30 @@ struct RepoOptions {
 
 private:
   RepoOptions() = default;
-  explicit RepoOptions(const char* file);
+  explicit RepoOptions(const char* str, const char* file);
 
   void filterNamespaces();
   void initDefaults(const Hdf& hdf, const IniSettingMap& ini);
+  void calcCacheKey();
+  void calcDynamic();
 
-#define N(t, n, ...) t n;
-#define P(t, n, ...) t n;
-#define H(t, n, ...) t n;
-#define E(t, n, ...) t n;
-PARSERFLAGS()
-AUTOLOADFLAGS()
-#undef N
-#undef P
-#undef H
-#undef E
+  #define N(t, n, ...) t n;
+  #define P(t, n, ...) t n;
+  #define H(t, n, ...) t n;
+  #define E(t, n, ...) t n;
+  PARSERFLAGS()
+  AUTOLOADFLAGS()
+  #undef N
+  #undef P
+  #undef H
+  #undef E
 
   std::string m_path;
   struct stat m_stat;
+
+  SHA1 m_sha1;
+
+  folly::dynamic m_cachedDynamic;
 
   static bool s_init;
   static RepoOptions s_defaults;
@@ -176,7 +219,7 @@ struct RuntimeOption {
     std::set<std::string>& xboxPasswords
   );
 
-  static folly::Optional<folly::fs::path> GetHomePath(
+  static Optional<folly::fs::path> GetHomePath(
     const folly::StringPiece user);
 
   static std::string GetDefaultUser();
@@ -219,8 +262,6 @@ struct RuntimeOption {
   static bool AllowRunAsRoot; // Allow running hhvm as root.
 
   static int  MaxSerializedStringSize;
-  static bool NoInfiniteRecursionDetection;
-  static bool AssertEmitted;
   static int64_t NoticeFrequency; // output 1 out of NoticeFrequency notices
   static int64_t WarningFrequency;
   static int RaiseDebuggingFrequency;
@@ -413,9 +454,6 @@ struct RuntimeOption {
 
   static int XboxServerThreadCount;
   static int XboxServerMaxQueueLength;
-  static int XboxServerPort;
-  static int XboxDefaultLocalTimeoutMilliSeconds;
-  static int XboxDefaultRemoteTimeoutSeconds;
   static int XboxServerInfoMaxRequest;
   static int XboxServerInfoDuration;
   static std::string XboxServerInfoReqInitFunc;
@@ -444,6 +482,9 @@ struct RuntimeOption {
 
   static bool AutoloadEnabled;
   static std::string AutoloadDBPath;
+  static std::string AutoloadDBPerms;
+  static std::string AutoloadDBGroup;
+  static bool AutoloadRethrowExceptions;
 
   static std::string FileCache;
   static std::string DefaultDocument;
@@ -491,6 +532,8 @@ struct RuntimeOption {
   static std::set<std::string> AdminPasswords;
   static std::set<std::string> HashedAdminPasswords;
 
+  static std::string AdminDumpPath;
+
   /*
    * Options related to reverse proxying. ProxyOriginRaw and ProxyPercentageRaw
    * may be mutated by background threads and should only be read or written
@@ -521,7 +564,6 @@ struct RuntimeOption {
   static int StackTraceTimeout;
   static std::string RemoteTraceOutputDir;
   static std::set<std::string, stdltistr> TraceFunctions;
-  static uint32_t TraceFuncId;
 
   static bool EnableStats;
   static bool EnableAPCStats;
@@ -582,7 +624,6 @@ struct RuntimeOption {
   static std::string EvalJitSerdesFile;
   static std::string ProfDataTag;
   static bool DumpPreciseProfData;
-  static bool EnableFirstClassFunctionPointers;
 
   // ENABLED (1) selects PHP7 behavior.
   static bool PHP7_NoHexNumerics;
@@ -609,16 +650,9 @@ struct RuntimeOption {
   // valid values are 0 => enabled (default)
   // 1 => warning, 2 => error
   static uint64_t DisableConstant;
-  // Disables PHP's assert() function
-  // valid values are 0 => enabled (default)
-  // 1 => warning, 2 => error
-  static uint64_t DisableAssert;
   // Disables non-top-level declarations
   // true => error, false => default behaviour
   static bool DisableNontoplevelDeclarations;
-  // Disables static closures
-  // true => error, false => default behaviour
-  static bool DisableStaticClosures;
   // Enables the class-level where constraints
   // true => allow the feature, false => disable the feature
   static bool EnableClassLevelWhereClauses;
@@ -682,6 +716,7 @@ struct RuntimeOption {
    *  2 - Code coverage enabled                                         \
    */                                                                   \
   F(uint32_t, EnableCodeCoverage,      0)                               \
+  F(bool, EnableFuncCoverage,          false)                           \
   /* Whether to use the embedded hackc binary */                        \
   F(bool, HackCompilerUseEmbedded,     facebook)                        \
   /* Whether to trust existing versions of the extracted compiler */    \
@@ -712,6 +747,10 @@ struct RuntimeOption {
   /* Whether the HackC compiler should inherit the compiler config of the
      HHVM process that launches it. */                                  \
   F(bool, HackCompilerInheritConfig,   true)                            \
+  /* Use compiler pool to get hhas from hh_single_compile process */    \
+  F(bool, HackCompilerUseCompilerPool, true)                            \
+  /* enable decls in compilation */                                     \
+  F(bool, EnableDecl, false)                                     \
   /* When using embedded data, extract it to the ExtractPath or the
    * ExtractFallback. */                                                \
   F(string, EmbeddedDataExtractPath,   "/var/run/hhvm_%{type}_%{buildid}") \
@@ -725,13 +764,7 @@ struct RuntimeOption {
   F(bool, HHBBCTestCompression,        false)                           \
   F(bool, EnablePerRepoOptions,        true)                            \
   F(bool, CachePerRepoOptionsPath,     true)                            \
-  /* ThrowOnNonExhaustiveSwitch
-   * Generates warnings when switch statements are non exhaustive.
-   *  0 - Nothing
-   *  1 - Raise Warning
-   * >1 - Throw Exception
-   */                                                                   \
-  F(uint32_t, ThrowOnNonExhaustiveSwitch, 1)                            \
+  F(bool, LogHackcMemStats,            false)                           \
   /*
     CheckPropTypeHints:
     0 - No checks or enforcement of property type hints.
@@ -781,7 +814,7 @@ struct RuntimeOption {
   F(uint32_t, ThreadTCColdBufferSize,  6 << 20)                         \
   F(uint32_t, ThreadTCFrozenBufferSize,4 << 20)                         \
   F(uint32_t, ThreadTCDataBufferSize,  256 << 10)                       \
-  F(uint32_t, JitTargetCacheSize,      64 << 20)                        \
+  F(uint32_t, RDSSize,                 64 << 20)                        \
   F(uint32_t, HHBCArenaChunkSize,      10 << 20)                        \
   F(bool, ProfileBC,                   false)                           \
   F(bool, ProfileHeapAcrossRequests,   false)                           \
@@ -792,14 +825,18 @@ struct RuntimeOption {
   F(bool, ProfileHWStructLog,          false)                           \
   F(int32_t, ProfileHWExportInterval,  30)                              \
   F(string, ReorderProps,              reorderPropsDefault())           \
+  F(bool, ReorderRDS,                  true)                            \
+  F(double, RDSReorderThreshold,       0.0005)                          \
   F(bool, JitAlwaysInterpOne,          false)                           \
   F(int32_t, JitNopInterval,           0)                               \
   F(uint32_t, JitMaxTranslations,      10)                              \
   F(uint32_t, JitMaxProfileTranslations, 30)                            \
+  F(uint32_t, JitTraceletLiveLocsLimit, 2000)                           \
+  F(uint32_t, JitTraceletEagerGuardsLimit, 0)                           \
   F(uint32_t, JitTraceletGuardsLimit,  5)                               \
   F(uint64_t, JitGlobalTranslationLimit, -1)                            \
   F(int64_t, JitMaxRequestTranslationTime, -1)                          \
-  F(uint32_t, JitMaxRegionInstrs,      1347)                            \
+  F(uint32_t, JitMaxRegionInstrs,      3000)                            \
   F(uint32_t, JitMaxLiveRegionInstrs,  50)                              \
   F(uint32_t, JitMaxAwaitAllUnroll,    8)                               \
   F(bool, JitProfileWarmupRequests,    false)                           \
@@ -808,14 +845,14 @@ struct RuntimeOption {
   F(uint32_t, JitResetProfCountersRequest, resetProfCountersDefault())  \
   F(uint32_t, JitRetranslateAllRequest, retranslateAllRequestDefault()) \
   F(uint32_t, JitRetranslateAllSeconds, retranslateAllSecondsDefault()) \
+  F(bool,     JitRerunRetranslateAll,  false)                           \
+  F(bool,     JitBuildOutliningHashes, false)                           \
   F(bool,     JitPGOLayoutSplitHotCold, pgoLayoutSplitHotColdDefault()) \
   F(bool,     JitPGOVasmBlockCounters, true)                            \
-  F(bool,     JitPGOVasmBlockCountersForceSaveSF, false)                \
-  F(bool,     JitPGOVasmBlockCountersForceSaveGP, false)                \
+  F(bool,     JitPGOVasmBlockCountersOptPrologue, true)                 \
   F(uint32_t, JitPGOVasmBlockCountersMaxOpMismatches, 12)               \
   F(uint32_t, JitPGOVasmBlockCountersMinEntryValue,                     \
                                        ServerExecutionMode() ? 200 : 0) \
-  F(bool,     JitPGOVasmBlockCountersSkipFixWeights, false)             \
   F(double,   JitPGOVasmBlockCountersHotWeightMultiplier, 0)            \
   F(bool, JitLayoutSeparateZeroWeightBlocks, false)                     \
   F(bool, JitLayoutPrologueSplitHotCold, layoutPrologueSplitHotColdDefault()) \
@@ -826,12 +863,15 @@ struct RuntimeOption {
   F(double,   JitLayoutColdThreshold,  0.0005)                          \
   F(int32_t,  JitLayoutMainFactor,     1000)                            \
   F(int32_t,  JitLayoutColdFactor,     5)                               \
+  F(bool,     JitLayoutExtTSP,         true)                            \
+  F(double,   JitLayoutMaxMergeRatio,  1000000)                         \
+  F(bool,     JitLayoutPruneCatchArcs, true)                            \
   F(bool,     JitAHotSizeRoundUp,      true)                            \
   F(uint32_t, GdbSyncChunks,           128)                             \
   F(bool, JitKeepDbgFiles,             false)                           \
   /* despite the unfortunate name, this enables function renaming and
    * interception in the interpreter as well as the jit, and also
-   * implies all functions may be used with fb_intercept */             \
+   * implies all functions may be used with fb_intercept2 */            \
   F(bool, JitEnableRenameFunction,     EvalJitEnableRenameFunction)     \
   F(bool, JitUseVtuneAPI,              false)                           \
   F(bool, TraceCommandLineRequest,     true)                            \
@@ -864,7 +904,7 @@ struct RuntimeOption {
   F(uint32_t, HHIRInliningMinVasmCostLimit, 10000)                      \
   F(uint32_t, HHIRInliningMaxVasmCostLimit, 40000)                      \
   F(uint32_t, HHIRAlwaysInlineVasmCostLimit, 4800)                      \
-  F(uint32_t, HHIRInliningMaxDepth,    1000)                            \
+  F(uint32_t, HHIRInliningMaxDepth,    5)                               \
   F(double,   HHIRInliningVasmCallerExp, .5)                            \
   F(double,   HHIRInliningVasmCalleeExp, .5)                            \
   F(double,   HHIRInliningDepthExp, 0)                                  \
@@ -872,10 +912,8 @@ struct RuntimeOption {
   F(uint32_t, HHIRInliningMaxReturnLocals, 40)                          \
   F(uint32_t, HHIRInliningMaxInitObjProps, 12)                          \
   F(bool,     HHIRInliningIgnoreHints, !debug)                          \
-  F(bool,     HHIRInliningUseStackedCost, true)                         \
+  F(bool,     HHIRInliningUseStackedCost, false)                        \
   F(bool,     HHIRInliningUseLayoutBlocks, false)                       \
-  F(bool, HHIRInlineFrameOpts,         true)                            \
-  F(bool, HHIRPartialInlineFrameOpts,  true)                            \
   F(bool, HHIRAlwaysInterpIgnoreHint,  !debug)                          \
   F(bool, HHIRGenerateAsserts,         false)                           \
   F(bool, HHIRDeadCodeElim,            true)                            \
@@ -883,11 +921,11 @@ struct RuntimeOption {
   F(bool, HHIRPredictionOpts,          true)                            \
   F(bool, HHIRMemoryOpts,              true)                            \
   F(bool, AssemblerFoldDefaultValues,  true)                            \
-  F(uint64_t, AssemblerMaxScalarSize,  1073741824) /* 1GB */            \
+  F(uint64_t, AssemblerMaxScalarSize,  2147483648) /* 2GB */            \
   F(uint32_t, HHIRLoadElimMaxIters,    10)                              \
   /* Temporarily only enable in debug builds so the optimizations get
    * tested */                                                          \
-  F(bool, HHIRLoadEnableTeardownOpts, debug)                            \
+  F(bool, HHIRLoadEnableTeardownOpts, false)                            \
   F(uint32_t, HHIRLoadStackTeardownMaxDecrefs, 8)                       \
   F(uint32_t, HHIRLoadThrowMaxDecrefs, 64)                              \
   F(bool, HHIRStorePRE,                true)                            \
@@ -895,6 +933,7 @@ struct RuntimeOption {
   /* How many elements to inline for packed- or mixed-array inits. */   \
   F(uint32_t, HHIRMaxInlineInitPackedElements, 8)                       \
   F(uint32_t, HHIRMaxInlineInitMixedElements,  4)                       \
+  F(uint32_t, HHIRMaxInlineInitStructElements, 8)                       \
   F(double, HHIROffsetArrayProfileThreshold, 0.85)                      \
   F(double, HHIRSmallArrayProfileThreshold, 0.8)                        \
   F(double, HHIRMissingArrayProfileThreshold, 0.8)                      \
@@ -905,8 +944,6 @@ struct RuntimeOption {
   F(bool, HHIREnablePreColoring,       true)                            \
   F(bool, HHIREnableCoalescing,        true)                            \
   F(bool, HHIRAllocSIMDRegs,           true)                            \
-  F(bool, HHIRStressSpill,             false)                           \
-  F(bool, JitStressTestLiveness,       false)                           \
   /* Region compiler flags */                                           \
   F(string,   JitRegionSelector,       regionSelectorDefault())         \
   F(bool,     JitPGO,                  pgoDefault())                    \
@@ -934,13 +971,12 @@ struct RuntimeOption {
   F(double,   JitPGOMinArcProbability, 0.0)                             \
   F(uint32_t, JitPGOMaxFuncSizeDupBody, 80)                             \
   F(uint32_t, JitPGORelaxPercent,      100)                             \
-  F(uint32_t, JitPGORelaxUncountedToGenPercent, 20)                     \
-  F(uint32_t, JitPGORelaxCountedToGenPercent, 75)                       \
   F(double,   JitPGOCalledFuncCheckThreshold, 50)                       \
   F(double,   JitPGOCalledFuncExitThreshold,  99.9)                     \
   F(bool,     JitPGODumpCallGraph,     false)                           \
   F(bool,     JitPGOOptCodeCallGraph,  true)                            \
   F(bool,     JitPGORacyProfiling,     false)                           \
+  F(bool,     JitPGOHFSortPlus,        false)                           \
   F(uint32_t, JitLiveThreshold,       ServerExecutionMode() ? 1000 : 0) \
   F(uint32_t, JitProfileThreshold,     ServerExecutionMode() ? 200 : 0) \
   F(uint32_t, JitSrcKeyThreshold,      0)                               \
@@ -964,6 +1000,7 @@ struct RuntimeOption {
   F(bool,     DumpCallTargets,         false)                           \
   F(bool,     DumpLayoutCFG,           false)                           \
   F(bool,     DumpVBC,                 false)                           \
+  F(bool,     DumpArrAccProf,          false)                           \
   F(bool, DumpAst,                     false)                           \
   F(bool, DumpTargetProfiles,          false)                           \
   F(bool, MapTgtCacheHuge,             false)                           \
@@ -984,6 +1021,7 @@ struct RuntimeOption {
   F(bool, JsonParserUseLocalArena,     true)                            \
   F(bool, XmlParserUseLocalArena,      true)                            \
   F(bool, LowStaticArrays,             true)                            \
+  F(bool, RecycleAProf,                true)                            \
   F(int64_t, HeapPurgeWindowSize,      5 * 1000000)                     \
   F(uint64_t, HeapPurgeThreshold,      128 * 1024 * 1024)               \
   /* GC Options: See heap-collect.cpp for more details */               \
@@ -996,6 +1034,8 @@ struct RuntimeOption {
   F(uint32_t, HeapAllocSampleRequests, 0)                               \
   F(uint32_t, HeapAllocSampleBytes,    256 * 1024)                      \
   F(uint32_t, SlabAllocAlign,          64)                              \
+  F(uint32_t, MemTrackStart,           3500)                            \
+  F(uint32_t, MemTrackEnd,             3700)                            \
   F(int64_t, GCMinTrigger,             64L<<20)                         \
   F(double, GCTriggerPct,              0.5)                             \
   F(bool, TwoPhaseGC,                  false)                           \
@@ -1018,6 +1058,7 @@ struct RuntimeOption {
   F(std::set<std::string>, JitSerdesDebugFunctions, {})                 \
   F(uint32_t, JitSerializeOptProfSeconds, ServerExecutionMode() ? 300 : 0)\
   F(uint32_t, JitSerializeOptProfRequests, 0)                           \
+  F(bool, JitSerializeOptProfRestart,  true)                            \
   F(int, SimpleJsonMaxLength,        2 << 20)                           \
   F(uint32_t, JitSampleRate,               0)                           \
   F(uint32_t, TraceServerRequestRate,      0)                           \
@@ -1079,60 +1120,57 @@ struct RuntimeOption {
    *     sample rate specified by EmitLoggingArraySampleRate. If the    \
    *     sample rate is 0, logging arrays are never constructed.        \
    *     Logging arrays are only created before RTA has begun. */       \
-  F(int32_t, BespokeArrayLikeMode, 0)                                   \
-  F(uint64_t, EmitLoggingArraySampleRate, 0)                            \
+  F(int32_t, BespokeArrayLikeMode, 2)                                   \
+  F(uint64_t, BespokeEscalationSampleRate, 0)                           \
+  F(uint64_t, EmitLoggingArraySampleRate, 17)                           \
   F(string, ExportLoggingArrayDataPath, "")                             \
-  /* Raise notices on various array operations which may present        \
-   * compatibility issues with Hack arrays.                             \
+  /* Should we use structs? If so, how big can they get? Due to how we  \
+   * represent structs, we can't make any with more than 255 keys. */   \
+  F(bool, EmitBespokeStructDicts, true)                                 \
+  F(uint8_t, BespokeStructDictMaxNumKeys, 245)                          \
+  F(double, BespokeStructDictKeyCoverageThreshold, 95.0)                \
+  F(uint8_t, BespokeStructDictMinKeys, 4)                               \
+  F(double, BespokeStructDictMaxSizeRatio, 256.0)                       \
+  /* What is the maximum number of keys to track in key order           \
+   * profiles? */                                                       \
+  F(uint64_t, BespokeMaxTrackedKeys, 245)                               \
+  F(bool, EmitAPCBespokeArrays, true)                                   \
+  /* Should we use monotypes? */                                        \
+  F(bool, EmitBespokeMonotypes, false)                                  \
+  /* Choice of layout selection algorithms:                             \
    *                                                                    \
-   * The various *Notices options independently control separate        \
-   * subsets of notices.  The Check* options are subordinate to the     \
-   * HackArrCompatNotices option, and control whether various runtime
-   * checks are made; they do not affect any optimizations. */          \
-  F(bool, HackArrCompatNotices, false)                                  \
-  F(bool, HackArrCompatCheckCompare, false)                             \
-  F(bool, HackArrCompatFBSerializeHackArraysNotices, false)             \
-  /* Raise notices on intish-cast (which may use an is_array check) */  \
-  F(bool, HackArrCompatIntishCastNotices, false)                        \
-  /* Raise notices when is_vec or is_dict  is called with a v/darray */ \
-  F(bool, HackArrCompatIsVecDictNotices, false)                         \
+   * 0 - Default layout selection algorithm based on profiling.         \
+   *     May use a mix of vanilla and bespoke array-likes.              \
+   * 1 - Specialize all sources and sinks on vanilla layouts.           \
+   * 2 - Specialize sources on vanilla, but sinks on top. */            \
+  F(int32_t, BespokeArraySpecializationMode, 0)                         \
+  /* We will use specialized layouts for a given array if they cover    \
+   * the given percent of operations logged during profiling.           \
+   *                                                                    \
+   * We can generate code for a bespoke sink in three ways:             \
+   *  1. We can do "top codegen" that handles any array layout.         \
+   *  2. We can specialize on a layout and fall back to top codegen.    \
+   *  3. We can specialize on a layout and side-exit on guard failure.  \
+   *                                                                    \
+   * We use a couple heuristics to choose between these options. If we  \
+   * see one layout that covers `SideExitThreshold` percent cases, and  \
+   * we saw at most `SideExitMaxSources` sources reach this sink, with  \
+   * at least `SideExitMinSampleCount` samples each, we'll side-exit.   \
+   *                                                                    \
+   * Else, if one layout covers `SpecializationThreshold` percent, we   \
+   * will specialize and fall back to top codegen. Otherwise, we'll do  \
+   * top codegen. */                                                    \
+  F(double, BespokeArraySourceSpecializationThreshold, 95.0)            \
+  F(double, BespokeArraySinkSpecializationThreshold,   95.0)            \
+  F(double, BespokeArraySinkSideExitThreshold, 95.0)                    \
+  F(uint64_t, BespokeArraySinkSideExitMaxSources, 64)                   \
+  F(uint64_t, BespokeArraySinkSideExitMinSampleCount, 4)                \
   F(bool, HackArrCompatSerializeNotices, false)                         \
-  /* Raise notices when fb_compact_*() would change behavior */         \
-  F(bool, HackArrCompatCompactSerializeNotices, false)                  \
-  /* Raise notices when we cast a marked dvarray to a vec or a marked   \
-   * darray to a dict (implicitly clearing the legacy mark). */         \
-  F(bool, HackArrCompatCastMarkedArrayNotices, false)                   \
-  /* When this flag is on, d/varray constructions are marked. */        \
-  F(bool, HackArrDVArrMark, false)                                      \
-  /* When this flag is on, var_dump outputs d/varrays. */               \
-  F(bool, HackArrDVArrVarDump, false)                                   \
-  /* This is the flag for "unification", meaning that darrays are       \
-   * replaced by dicts and varrays by vecs. */                          \
-  F(bool, HackArrDVArrs, false)                                         \
-  /* Raise a notice for `$dict is shape` and `$vec is tuple`. */        \
-  F(bool, HackArrIsShapeTupleNotices, false)                            \
-  /* Enable instrumentation and information in the repo for tracking    \
-   * the source of vecs and dicts whose vec/dict-ness is observed       \
-   * during program execution                                           \
-   *                                                                    \
-   * Latches to false at startup if either the repo we're loading in    \
-   * RepoAuthoritativeMode wasn't built with this flag or if the        \
-   * flag LogArrayProvenance is unset */                                \
-  F(bool, ArrayProvenance, false)                                       \
-  /* Log the source of dvarrays whose dvarray-ness is observed, e.g.    \
-   * through serialization. If this flag is off, we won't bother to     \
-   * track array provenance at runtime, because it isn't exposed.       \
-   *                                                                    \
-   * Code should just depend on ArrayProvenance alone - we'll set it    \
-   * based on this flag when loading a repo build. */                   \
-  F(bool, LogArrayProvenance, false)                                    \
-  /* Log only out out of this many array headers when serializing */    \
-  F(uint32_t, LogArrayProvenanceSampleRatio, 1000)                      \
-  /* Use dummy tags for enums with this many values, to avoid copies */ \
-  F(uint32_t, ArrayProvenanceLargeEnumLimit, 256)                       \
-  /* What fraction of array provenance diagnostics should be logged?    \
-   * Set to 0 to disable diagnostics entirely */                        \
-  F(uint32_t, LogArrayProvenanceDiagnosticsSampleRate, 0)               \
+  /* When this flag is on, var_export outputs d/varrays. */             \
+  F(bool, HackArrDVArrVarExport, false)                                 \
+  /* Raise a notice when the result of appending to a dict or darray    \
+   * is affected by removing keys from that array-like. */              \
+  F(bool, DictDArrayAppendNotices, true)                                \
   /* Warn if is expression are used with type aliases that cannot be    |
    * resolved */                                                        \
   F(bool, IsExprEnableUnresolvedWarning, false)                         \
@@ -1141,6 +1179,10 @@ struct RuntimeOption {
   /* Raise a notice if a Class type is passed to function that expects a
      string */                                                          \
   F(bool, ClassStringHintNotices, false)                                \
+  /* When this options is on, classname type-hints accepts classes */   \
+  F(bool, ClassPassesClassname, false)                                  \
+  /* Raise notice if a Class type is passed to a classname type-hint */ \
+  F(bool, ClassnameNotices, false)                                      \
   /*  Raise a notice if a ClsMeth type is passed to is_vec/is_array */  \
   F(bool, IsVecNotices, false)                                          \
   /*  Raise a notice if a ClsMeth type is passed to a function that
@@ -1152,44 +1194,64 @@ struct RuntimeOption {
   F(bool, NoticeOnImplicitInvokeToString, false)                        \
   F(bool, FatalOnConvertObjectToString, false)                          \
   F(bool, NoticeOnBuiltinDynamicCalls, false)                           \
-  F(bool, RxPretendIsEnabled, false)                                    \
   /* Raise warning when class pointers are used as strings. */          \
   F(bool, RaiseClassConversionWarning, false)                           \
-  F(bool, EmitClsMethPointers, false)                                   \
+  F(bool, EmitClsMethPointers, true)                                    \
+  F(bool, FoldLazyClassKeys, true)                                      \
   /* EmitClassPointers:
    * 0 => convert Foo::class to string "Foo"
    * 1 => convert Foo::class to class pointer
    * 2 => convert Foo::class to lazy class */                           \
   F(int32_t, EmitClassPointers, 0)                                      \
-  /* false to skip type refinement for ClsMeth type at HHBBC. */        \
-  F(bool, IsCompatibleClsMethType, false)                               \
-  /* Raise warning if a ClsMeth type is compared to other types. */     \
-  F(bool, RaiseClsMethComparisonWarning, false)                         \
-  /* Raise warning when ClsMethDataRef is used as varray/vec. */        \
-  F(bool, RaiseClsMethConversionWarning, false)                         \
+  /* When this flag is on, var_dump for
+   * classes and lazy classes outputs string(...). */                   \
+  F(bool, ClassAsStringVarDump, true)                                   \
+  /* When this flag is on, var_export for
+   * classes and lazy classes outputs a string. */                      \
+  F(bool, ClassAsStringVarExport, false)                                \
+  /* When this flag is on, gettype for
+   * classes and lazy classes outputs string. */                        \
+  F(bool, ClassAsStringGetType, true)                                   \
   /* Raise warning when strings are used as classes. */                 \
   F(bool, RaiseStrToClsConversionWarning, false)                        \
   F(bool, EmitMethCallerFuncPointers, false)                            \
   /* trigger E_USER_WARNING error when getClassName()/getMethodName()
    * is used on __SystemLib\MethCallerHelper */                         \
   F(bool, NoticeOnMethCallerHelperUse, false)                           \
+  /*                                                                    \
+   * Control dynamic calls to functions and dynamic constructs of       \
+   * classes which haven't opted into being called that way.            \
+   *                                                                    \
+   * 0 - Do nothing                                                     \
+   * 1 - Warn if meth_caller is apc serialized                          \
+   * 2 - Throw exception if meth_caller is apc serialized               \
+   */                                                                   \
+  F(int32_t, ForbidMethCallerAPCSerialize, 0)                           \
+  F(int32_t, ForbidMethCallerHelperSerialize, 0)                        \
+  /*                                                                    \
+   * When Eval.NoticeOnMethCallerHelperIsObject is set calling is_object\
+   * on instance of MethCallerHelper will raise notices.                \
+   *                                                                    \
+   * In Repo.Authoritative mode, Eval.NoticeOnMethCallerHelperIsObject  \
+   * can only be set if the repo was built with the option              \
+   * Eval.BuildMayNoticeOnMethCallerHelperIsObject set to true.         \
+   */                                                                   \
+  F(bool, BuildMayNoticeOnMethCallerHelperIsObject, false)              \
+  F(bool, NoticeOnMethCallerHelperIsObject, false)                      \
   F(bool, NoticeOnCollectionToBool, false)                              \
   F(bool, NoticeOnSimpleXMLBehavior, false)                             \
-  F(bool, ForbidDivisionByZero, true)                                   \
   /* Enables Hack records. */                                           \
   F(bool, HackRecords, false)                                           \
   /*                                                                    \
    * Control dynamic calls to functions and dynamic constructs of       \
    * classes which haven't opted into being called that way.            \
    *                                                                    \
-   * 0 - Nothing                                                        \
-   * 1 - Warn if target is not annotated or dynamic callsite is using   \
-   *     a raw string or array                                          \
-   *     (depending on ForbidDynamicCallsWithAttr setting)              \
-   * 2 - Throw exception if target is not annotated, and warn if        \
-   *     dynamic callsite is using a raw string or array                \
+   * 0 - Do nothing                                                     \
+   * 1 - Warn if target is not annotated                                \
+   * 2 - Throw exception if target is not annotated; warn if dynamic    \
+   *     callsite is using a raw string or array (depending on          \
+   *     ForbidDynamicCallsWithAttr setting)                            \
    * 3 - Throw exception                                                \
-   *                                                                    \
    */                                                                   \
   F(int32_t, ForbidDynamicCallsToFunc, 0)                               \
   F(int32_t, ForbidDynamicCallsToClsMeth, 0)                            \
@@ -1199,7 +1261,7 @@ struct RuntimeOption {
    * Keep logging dynamic calls according to options above even if      \
    * __DynamicallyCallable attribute is present at declaration.         \
    */                                                                   \
-  F(bool, ForbidDynamicCallsWithAttr, false)                            \
+  F(bool, ForbidDynamicCallsWithAttr, true)                             \
   /* Toggles logging for expressions of type $var::name() */            \
   F(bool, LogKnownMethodsAsDynamicCalls, true)                          \
   /*                                                                    \
@@ -1209,8 +1271,13 @@ struct RuntimeOption {
    * 2 - Throw exception                                                \
    */                                                                   \
   F(int32_t, ForbidUnserializeIncompleteClass, 0)                       \
-  F(int32_t, RxEnforceCalls, 0)                                         \
-  F(int32_t, PureEnforceCalls, 0)                                       \
+  /*                                                                    \
+   * Map from coeffect name to enforcement level                        \
+   * e.g. {'pure' => 2, 'rx' => 1}                                      \
+   */                                                                   \
+  F(StringToIntMap, CoeffectEnforcementLevels, {})                      \
+  F(uint32_t, CoeffectViolationWarningSampleRate, 1)                    \
+  F(uint32_t, ContextConstantWarningSampleRate, 1)                      \
   /*                                                                    \
    * 0 - Nothing                                                        \
    * 1 - Warn                                                           \
@@ -1218,7 +1285,6 @@ struct RuntimeOption {
    */                                                                   \
   F(int32_t, RxVerifyBody, 0)                                           \
   F(int32_t, PureVerifyBody, 0)                                         \
-  F(bool, RxIsEnabled, EvalRxPretendIsEnabled)                          \
   /*                                                                    \
    * Controls behavior on reflection to default value expressions       \
    * that throw during evaluation                                       \
@@ -1249,16 +1315,6 @@ struct RuntimeOption {
    | ARM   Options. |                                                   \
    *****************/                                                   \
   F(bool, JitArmLse, armLseDefault())                                   \
-  /******************                                                   \
-   | PPC64 Options. |                                                   \
-   *****************/                                                   \
-  /* Minimum immediate size to use TOC */                               \
-  F(uint16_t, PPC64MinTOCImmSize, 64)                                   \
-  /* Relocation features. Use with care on production */                \
-  /*  Allow a Far branch be converted to a Near branch. */              \
-  F(bool, PPC64RelocationShrinkFarBranches, false)                      \
-  /*  Remove nops from a Far branch. */                                 \
-  F(bool, PPC64RelocationRemoveFarBranchesNops, true)                   \
   /********************                                                 \
    | Profiling flags. |                                                 \
    ********************/                                                \
@@ -1281,6 +1337,9 @@ struct RuntimeOption {
   F(uint64_t, RecordFirstUnits, 0)                                      \
   /* More aggresively reuse already compiled units based on SHA1     */ \
   F(bool, CheckUnitSHA1, true)                                          \
+  F(bool, ReuseUnitsByHash, false)                                      \
+  /* Arbitrary string to force different unit-cache hashes */           \
+  F(std::string, UnitCacheBreaker, "")                                  \
   /* When dynamic_fun is called on a function not marked as
      __DynamicallyCallable:
 
@@ -1295,19 +1354,48 @@ struct RuntimeOption {
      1 - raise a warning
      2 - throw */                                                       \
   F(uint64_t, DynamicClsMethLevel, 1)                                   \
+  /* When dynamic_meth_caller is called on a static method or
+     a method not marked as __DynamicallyCallable:
+
+     0 - do nothing
+     1 - raise a warning
+     2 - throw */                                                       \
+  F(uint64_t, DynamicMethCallerLevel, 1)                                \
   F(bool, APCSerializeFuncs, true)                                      \
+  F(bool, APCSerializeClsMeth, true)                                    \
   /* When set:
    * - `is_array` becomes equivalent to `is_any_array` or
    *  `isTvArrayLike` instead of being a strict PHP array check.
    */                                                                   \
   F(bool, EnablePerFileCoverage, false)                                 \
-  /* Should we use the autoload map from the repo */                    \
-  F(bool, UseRepoAutoloadMap, true)                                     \
   F(bool, LogOnIsArrayFunction, false)                                  \
   /* Unit prefetching options */                                        \
   F(uint32_t, UnitPrefetcherMaxThreads, 0)                              \
   F(uint32_t, UnitPrefetcherMinThreads, 0)                              \
   F(uint32_t, UnitPrefetcherIdleThreadTimeoutSecs, 60)                  \
+  /* Delete any Unit not used in last N seconds */                      \
+  F(uint32_t, IdleUnitTimeoutSecs, 0)                                   \
+  /* Don't reap total Units below threshold */                          \
+  F(uint32_t, IdleUnitMinThreshold, 0)                                  \
+  /* 0 nothing, 1 notice, 2 error */                                    \
+  F(int32_t, NoticeOnCoerceForStrConcat, 0)                             \
+  /* 0 nothing, 1 notice, 2 error */                                    \
+  F(int32_t, NoticeOnCoerceForBitOp, 0)                                 \
+  /* 0 nothing, 1 notice, 2 error */                                    \
+  F(int32_t, NoticeOnCoerceForIncDec, 1)                                \
+  /* 0 nothing, 1 notice, 2 error */                                    \
+  F(int32_t, NoticeOnCoerceForMath, 0)                                  \
+  /* 0 nothing, 1 notice, 2 error */                                    \
+  F(int32_t, NoticeOnCoerceForCmp, 0)                                   \
+  /* 0 nothing, 1 notice, 2 error, 3 behaviour change */                \
+  F(int32_t, NoticeOnCoerceForEq, 0)                                    \
+  F(string, TaoMigrationOverride, std::string(""))                      \
+  F(string, SRRouteMigrationOverride, std::string(""))                  \
+  F(int32_t, SampleRequestTearing, 0)                                   \
+  F(bool, EnableAbstractContextConstants, true)                         \
+  F(bool, TypeconstAbstractDefaultReflectionIsAbstract, false)          \
+  F(bool, AbstractContextConstantUninitAccess, false)                   \
+  F(bool, TraitConstantInterfaceBehavior, false)                       \
   /* */
 
 private:
@@ -1327,8 +1415,17 @@ public:
   static std::string CodeCoverageOutputFile;
 
   // Repo (hhvm bytecode repository) options
-  static std::string RepoLocalMode;
+  static std::string RepoPath;
+  static int64_t RepoLocalReadaheadRate;
+  static bool RepoLocalReadaheadConcurrent;
+  static bool RepoLitstrLazyLoad;
+  static bool RepoDebugInfo;
+  static bool RepoAuthoritative;
+
+  // These are (functionally) unused
+  static RepoMode RepoLocalMode;
   static std::string RepoLocalPath;
+  static RepoMode RepoCentralMode;
   static std::string RepoCentralPath;
   static int32_t RepoCentralFileMode;
   static std::string RepoCentralFileUser;
@@ -1336,11 +1433,6 @@ public:
   static bool RepoAllowFallbackPath;
   static std::string RepoJournal;
   static bool RepoCommit;
-  static bool RepoDebugInfo;
-  static bool RepoAuthoritative;
-  static int64_t RepoLocalReadaheadRate;
-  static bool RepoLitstrLazyLoad;
-  static bool RepoLocalReadaheadConcurrent;
   static uint32_t RepoBusyTimeoutMS;
 
   // pprof/hhprof options
@@ -1376,10 +1468,6 @@ public:
   static bool DebuggerDisableIPv6;
   static std::string DebuggerServerIP;
   static int DebuggerServerPort;
-  static int DebuggerDefaultRpcPort;
-  static std::string DebuggerDefaultRpcAuth;
-  static std::string DebuggerRpcHostDomain;
-  static int DebuggerDefaultRpcTimeout;
   static std::string DebuggerDefaultSandboxPath;
   static std::string DebuggerStartupDocument;
   static int DebuggerSignalTimeout;
@@ -1398,13 +1486,11 @@ public:
   // SimpleXML options
   static bool SimpleXMLEmptyNamespaceMatchesAll;
 
-  // Cookie options
-  static bool AllowDuplicateCookies;
-
 #ifdef FACEBOOK
   // fb303 server
   static bool EnableFb303Server;
   static int Fb303ServerPort;
+  static std::string Fb303ServerIP;
   static int Fb303ServerThreadStackSizeMb;
   static int Fb303ServerWorkerThreads;
   static int Fb303ServerPoolThreads;
@@ -1438,7 +1524,7 @@ inline bool unitPrefetchingEnabled() {
   return RO::EvalUnitPrefetcherMaxThreads > 0;
 }
 
+uintptr_t lowArenaMinAddr();
+
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif // incl_HPHP_RUNTIME_OPTION_H_

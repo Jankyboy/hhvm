@@ -55,20 +55,15 @@ class type ['env] type_mapper_type =
       'env -> Reason.t -> dependent_type -> locl_ty -> 'env * locl_ty
 
     method on_tclass :
-      'env -> Reason.t -> Aast.sid -> exact -> locl_ty list -> 'env * locl_ty
+      'env -> Reason.t -> pos_id -> exact -> locl_ty list -> 'env * locl_ty
 
     method on_tobject : 'env -> Reason.t -> 'env * locl_ty
-
-    method on_tpu : 'env -> Reason.t -> locl_ty -> Aast.sid -> 'env * locl_ty
-
-    method on_tpu_type_access :
-      'env -> Reason.t -> Aast.sid -> Aast.sid -> 'env * locl_ty
 
     method on_tshape :
       'env ->
       Reason.t ->
       shape_kind ->
-      locl_phase shape_field_type Nast.ShapeMap.t ->
+      locl_phase shape_field_type TShapeMap.t ->
       'env * locl_ty
 
     method on_tvarray : 'env -> Reason.t -> locl_ty -> 'env * locl_ty
@@ -77,6 +72,13 @@ class type ['env] type_mapper_type =
 
     method on_tvarray_or_darray :
       'env -> Reason.t -> locl_ty -> locl_ty -> 'env * locl_ty
+
+    method on_tvec_or_dict :
+      'env -> Reason.t -> locl_ty -> locl_ty -> 'env * locl_ty
+
+    method on_taccess : 'env -> Reason.t -> locl_ty -> pos_id -> 'env * locl_ty
+
+    method on_neg_type : 'env -> Reason.t -> neg_type -> 'env * locl_ty
 
     method on_type : 'env -> locl_ty -> 'env * locl_ty
 
@@ -122,13 +124,6 @@ class ['env] shallow_type_mapper : ['env] type_mapper_type =
 
     method on_tobject env r = (env, mk (r, Tobject))
 
-    method on_tpu env r cls enum =
-      let (env, cls) = this#on_type env cls in
-      (env, mk (r, Tpu (cls, enum)))
-
-    method on_tpu_type_access env r member tyname =
-      (env, mk (r, Tpu_type_access (member, tyname)))
-
     method on_tshape env r shape_kind fdm =
       (env, mk (r, Tshape (shape_kind, fdm)))
 
@@ -138,6 +133,12 @@ class ['env] shallow_type_mapper : ['env] type_mapper_type =
 
     method on_tvarray_or_darray env r ty1 ty2 =
       (env, mk (r, Tvarray_or_darray (ty1, ty2)))
+
+    method on_tvec_or_dict env r ty1 ty2 = (env, mk (r, Tvec_or_dict (ty1, ty2)))
+
+    method on_taccess env r ty id = (env, mk (r, Taccess (ty, id)))
+
+    method on_neg_type env r p = (env, mk (r, Tneg p))
 
     method on_type env ty =
       let (r, ty) = deref ty in
@@ -158,14 +159,14 @@ class ['env] shallow_type_mapper : ['env] type_mapper_type =
       | Tclass (x, e, tyl) -> this#on_tclass env r x e tyl
       | Tdynamic -> this#on_tdynamic env r
       | Tobject -> this#on_tobject env r
-      | Tpu (base, enum) -> this#on_tpu env r base enum
-      | Tpu_type_access (member, tyname) ->
-        this#on_tpu_type_access env r member tyname
       | Tshape (shape_kind, fdm) -> this#on_tshape env r shape_kind fdm
       | Tvarray ty -> this#on_tvarray env r ty
       | Tdarray (ty1, ty2) -> this#on_tdarray env r ty1 ty2
       | Tvarray_or_darray (ty1, ty2) -> this#on_tvarray_or_darray env r ty1 ty2
+      | Tvec_or_dict (ty1, ty2) -> this#on_tvec_or_dict env r ty1 ty2
       | Tunapplied_alias name -> this#on_tunapplied_alias env r name
+      | Taccess (ty, id) -> this#on_taccess env r ty id
+      | Tneg ty -> this#on_neg_type env r ty
 
     method on_locl_ty_list env tyl = List.map_env env tyl ~f:this#on_type
   end
@@ -230,9 +231,9 @@ class virtual ['env] tvar_substituting_type_mapper =
           * ('env -> Reason.t -> int -> 'env * locl_ty)
           * ('env -> int -> locl_ty -> 'env) ->
           locl_ty ->
-          ( 'env
+          ('env
           * ('env -> Reason.t -> int -> 'env * locl_ty)
-          * ('env -> int -> locl_ty -> 'env) )
+          * ('env -> int -> locl_ty -> 'env))
           * locl_ty
   end
 
@@ -261,7 +262,7 @@ class ['env] deep_type_mapper =
         let (env, ty) = this#on_possibly_enforced_ty env param.fp_type in
         (env, { param with fp_type = ty })
       in
-      let (env, params) = List.map_env env ft.ft_params on_param in
+      let (env, params) = List.map_env env ft.ft_params ~f:on_param in
       let (env, ret) = this#on_possibly_enforced_ty env ft.ft_ret in
       let (env, arity) =
         match ft.ft_arity with
@@ -277,7 +278,7 @@ class ['env] deep_type_mapper =
           ) )
 
     method! on_tnewtype env r x tyl cstr =
-      let (env, tyl) = List.map_env env tyl this#on_type in
+      let (env, tyl) = List.map_env env tyl ~f:this#on_type in
       let (env, cstr) = this#on_type env cstr in
       (env, mk (r, Tnewtype (x, tyl, cstr)))
 

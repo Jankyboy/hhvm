@@ -44,19 +44,23 @@ val get_files_changed_since_baseline :
 
 val get_file_info : t -> Relative_path.t -> FileInfo.t option
 
+exception File_info_not_found
+
+(** Might raise {!File_info_not_found} *)
 val get_file_info_unsafe : t -> Relative_path.t -> FileInfo.t
 
 (** Look up the files declaring the symbols provided in the given set of
-dependency hashes. This may return an overestimate of the files, since
-dependency hashes are smaller than naming table hashes, and consequently
-can't uniquely identify entries in the naming table.
-
-Only works for backed naming tables. *)
-val get_dep_set_files : t -> Typing_deps.DepSet.t -> Relative_path.Set.t
+dependency hashes. Only works for backed naming tables, and 64bit dep_sets *)
+val get_64bit_dep_set_files :
+  t -> Typing_deps_mode.t -> Typing_deps.DepSet.t -> Relative_path.Set.t
 
 val has_file : t -> Relative_path.t -> bool
 
-val iter : t -> f:(Relative_path.t -> FileInfo.t -> unit) -> unit
+val iter :
+  ?warn_on_naming_costly_iter:bool ->
+  t ->
+  f:(Relative_path.t -> FileInfo.t -> unit) ->
+  unit
 
 val remove : t -> Relative_path.t -> t
 
@@ -73,11 +77,6 @@ val create : FileInfo.t Relative_path.Map.t -> t
 
 (* The common path for loading a save state from a SQLite database *)
 val load_from_sqlite : Provider_context.t -> string -> t
-
-(* This function is intended for incremental naming table saved state
-    creation. It does not update the reverse naming table, so it should not
-    be used when loading the naming table in type checking scenarios. *)
-val load_from_sqlite_for_batch_update : Provider_context.t -> string -> t
 
 (* This function is intended for applying naming changes relative
   to the source code version on which the naming table was first created.

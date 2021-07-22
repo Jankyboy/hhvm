@@ -71,6 +71,7 @@ void cgCall(IRLS& env, const IRInstruction* inst) {
   auto const sp = srcLoc(env, inst, 0).reg();
   auto const callee = srcLoc(env, inst, 2).reg();
   auto const ctx = srcLoc(env, inst, 3).reg();
+  auto const coeffects = srcLoc(env, inst, 4).reg();
   auto const extra = inst->extra<Call>();
   auto const numArgsInclUnpack = extra->numArgs + (extra->hasUnpack ? 1 : 0);
   auto const func = inst->src(2)->hasConstVal(TFunc)
@@ -80,6 +81,9 @@ void cgCall(IRLS& env, const IRInstruction* inst) {
   auto const skipRepack = extra->skipRepack || (
     func && !extra->hasUnpack && extra->numArgs <= func->numNonVariadicParams()
   );
+  auto const coeffectsVal = inst->src(4)->hasConstVal(TInt)
+    ? RuntimeCoeffects::fromValue(inst->src(4)->intVal())
+    : RuntimeCoeffects::none();
 
   auto& v = vmain(env);
 
@@ -88,10 +92,28 @@ void cgCall(IRLS& env, const IRInstruction* inst) {
     extra->dynamicCall,
     extra->asyncEagerReturn,
     extra->callOffset,
-    extra->genericsBitmap
+    extra->genericsBitmap,
+    coeffectsVal
   );
 
-  v << copy{v.cns(callFlags.value()), r_php_call_flags()};
+  if (!inst->src(4)->hasConstVal(TInt)) {
+    auto const coeffectsShifted = v.makeReg();
+    v << shlqi{
+      CallFlags::CoeffectsStart,
+      coeffects,
+      coeffectsShifted,
+      v.makeReg()
+    };
+    v << orq{
+      coeffectsShifted,
+      v.cns(callFlags.value()),
+      r_php_call_flags(),
+      v.makeReg()
+    };
+  } else {
+    v << copy{v.cns(callFlags.value()), r_php_call_flags()};
+  }
+
   v << copy{callee, r_php_call_func()};
   v << copy{v.cns(numArgsInclUnpack), r_php_call_num_args()};
 
@@ -147,10 +169,10 @@ void cgCall(IRLS& env, const IRInstruction* inst) {
   // The prologue is responsible for unwinding all inputs. We could have
   // optimized away Uninit stores for ActRec and inouts, so skip them as well.
   auto const marker = inst->marker();
-  auto const fixupBcOff = marker.fixupBcOff() - marker.fixupFunc()->base();
+  auto const fixupBcOff = marker.fixupBcOff();
   auto const fixupSpOff =
-    marker.spOff() - extra->numInputs() - kNumActRecCells - extra->numOut;
-  v << syncpoint{Fixup{fixupBcOff, fixupSpOff.offset}};
+    marker.bcSPOff() - extra->numInputs() - kNumActRecCells - extra->numOut;
+  v << syncpoint{Fixup::direct(fixupBcOff, fixupSpOff)};
   v << unwind{done, label(env, inst->taken())};
   v = done;
 
@@ -200,7 +222,7 @@ void cgCallBuiltin(IRLS& env, const IRInstruction* inst) {
     auto const sp = srcLoc(env, inst, 1).reg();
     auto const spOffset = cellsToBytes(extra->spOffset.offset);
     auto const& marker = inst->marker();
-    auto const pc = marker.fixupSk().unit()->entry() + marker.fixupBcOff();
+    auto const pc = marker.fixupSk().func()->entry() + marker.fixupBcOff();
 
     auto const synced_sp = v.makeReg();
     v << lea{sp[spOffset], synced_sp};
@@ -282,16 +304,12 @@ void cgCallBuiltin(IRLS& env, const IRInstruction* inst) {
         args.ssa(srcNum);
       } else {
         assertx(src->isA(TLvalToCell));
-        if (!wide_tv_val) {
-          args.ssa(srcNum);
-        } else {
-          auto const data = v.makeReg();
-          auto const type = v.makeReg();
-          auto const loc = srcLoc(env, inst, srcNum);
-          v << load{*loc.reg(tv_lval::val_idx), data};
-          v << loadb{*loc.reg(tv_lval::type_idx), type};
-          args.constPtrToTV(type, data);
-        }
+        auto const data = v.makeReg();
+        auto const type = v.makeReg();
+        auto const loc = srcLoc(env, inst, srcNum);
+        v << load{*loc.reg(tv_lval::val_idx), data};
+        v << loadb{*loc.reg(tv_lval::type_idx), type};
+        args.constPtrToTV(type, data);
       }
     }
   }
@@ -348,8 +366,6 @@ void cgCallBuiltin(IRLS& env, const IRInstruction* inst) {
   if (returnType <= TCell) {
     // The return type is Variant; fold KindOfUninit to KindOfNull.
     assertx(isBuiltinByRef(funcReturnType) && !isReqPtrRef(funcReturnType));
-    static_assert(KindOfUninit == static_cast<DataType>(0),
-                  "KindOfUninit must be 0 for test");
 
     v << load{rvmtl()[returnOffset + TVOFF(m_data)], tmpData};
 
@@ -359,9 +375,7 @@ void cgCallBuiltin(IRLS& env, const IRInstruction* inst) {
 
       auto const sf = v.makeReg();
       auto const nulltype = v.cns(KindOfNull);
-      static_assert(KindOfUninit == static_cast<DataType>(0),
-                    "Codegen assumes KindOfUninit == 0");
-      v << testb{rtype, rtype, sf};
+      v << cmpbi{static_cast<data_type_t>(KindOfUninit), rtype, sf};
       v << cmovb{CC_Z, sf, rtype, nulltype, tmpType};
     }
     return end(v);
@@ -428,6 +442,7 @@ void cgProfileCall(IRLS& env, const IRInstruction* inst) {
 
 void cgEnterPrologue(IRLS& env, const IRInstruction*) {
   vmain(env) << stublogue{false};
+  vmain(env) << recordbasenativesp{};
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -457,7 +472,7 @@ void cgCheckInOuts(IRLS& env, const IRInstruction* inst)  {
     } else {
       auto const shared = v.makeReg();
       v << load{func[Func::sharedOff()], shared};
-      v << load{shared[Func::sharedInOutBitPtrOff()], bitsPtr};
+      v << load{shared[Func::extSharedInOutBitPtrOff()], bitsPtr};
       bitsOff -= sizeof(uint64_t);
     }
 

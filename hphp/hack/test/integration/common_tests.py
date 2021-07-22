@@ -15,35 +15,6 @@ from typing import ClassVar, List, Mapping, Optional, Tuple
 
 from hh_paths import hackfmt, hh_client, hh_merge_deps, hh_server
 from test_case import TestCase, TestDriver
-from utils import Json, JsonObject
-
-
-class DebugSubscription(object):
-    """
-    Wraps `hh_client debug`.
-    """
-
-    # pyre-fixme[24]: Generic type `subprocess.Popen` expects 1 type parameter.
-    def __init__(self, proc: subprocess.Popen) -> None:
-        self.proc = proc
-        hello = self.read_msg()
-        assert hello["data"] == "hello"
-
-    # pyre-fixme[11]: Annotation `Json` is not defined as a type.
-    def read_msg(self) -> Json:
-        # pyre-fixme[16]: `Optional` has no attribute `readline`.
-        line = self.proc.stdout.readline()
-        return json.loads(line)
-
-    # pyre-fixme[11]: Annotation `JsonObject` is not defined as a type.
-    def get_incremental_logs(self) -> JsonObject:
-        msgs = {}
-        while True:
-            msg = self.read_msg()
-            if msg["type"] == "info" and msg["data"] == "incremental_done":
-                break
-            msgs[msg["name"]] = msg
-        return msgs
 
 
 class CommonTestDriver(TestDriver):
@@ -81,6 +52,7 @@ class CommonTestDriver(TestDriver):
             **{
                 "HH_TEST_MODE": "1",
                 "HH_TMPDIR": cls.hh_tmp_dir,
+                "HACKFMT_TEST_PATH": hackfmt,
                 "PATH": (
                     "%s:%s:%s:/bin:/usr/bin:/usr/local/bin"
                     % (hh_server_dir, hh_merge_deps_dir, cls.bin_dir)
@@ -97,7 +69,9 @@ class CommonTestDriver(TestDriver):
         shutil.rmtree(cls.bin_dir)
         shutil.rmtree(cls.hh_tmp_dir)
 
-    def write_load_config(self, use_saved_state: bool = False) -> None:
+    def write_load_config(
+        self, use_serverless_ide: bool = False, use_saved_state: bool = False
+    ) -> None:
         """
         Writes out a script that will print the list of changed files,
         and adds the path to that script to .hhconfig
@@ -118,7 +92,7 @@ class CommonTestDriver(TestDriver):
         saved_state_path: Optional[str] = None,
         args: Optional[List[str]] = None,
     ) -> None:
-        """ Start an hh_server. changed_files is ignored here (as it
+        """Start an hh_server. changed_files is ignored here (as it
         has no meaning) and is only exposed in this API for the derived
         classes.
         """
@@ -221,7 +195,7 @@ class CommonTestDriver(TestDriver):
                 hh_client,
                 "check",
                 "--retries",
-                "20",
+                "240",
                 "--error-format",
                 "raw",
                 self.repo_dir,
@@ -233,8 +207,7 @@ class CommonTestDriver(TestDriver):
     # Check to see if you can run hackfmt
     def run_hackfmt_check(self) -> bool:
         try:
-            #
-            (stdout_data, stderr_data, retcode) = self.proc_call(["hackfmt", "-help"])
+            (stdout_data, stderr_data, retcode) = self.proc_call([hackfmt, "-help"])
             return retcode == 0
         # If the file isn't found you will get this
         except FileNotFoundError:
@@ -292,10 +265,6 @@ class CommonTestDriver(TestDriver):
         self.check_cmd(expected_json, stdin, options + ["--json"])
         self.check_cmd(expected_output, stdin, options)
 
-    def subscribe_debug(self) -> DebugSubscription:
-        proc = self.proc_create([hh_client, "debug", self.repo_dir], env={})
-        return DebugSubscription(proc)
-
     def start_hh_loop_forever_assert_timeout(self) -> None:
         # create a file with 10 dependencies. Only "big" jobs, that use
         # workers can be interrupted at the moment.
@@ -321,7 +290,7 @@ class CommonTestDriver(TestDriver):
 
         self.check_cmd(["No errors!"])
 
-        # trigger rechecking of all 11 files, and make one of them loop
+        # trigger rechecking of all 11 file, and make one of them loop
         # until cancelled
         with open(os.path.join(self.repo_dir, "__hh_loop_forever_foo.php"), "w") as f:
             f.write(
@@ -503,15 +472,8 @@ class CommonTests(BarebonesTests):
         """
         self.test_driver.start_hh_server()
         self.test_driver.check_cmd(["No errors!"])
-        debug_sub = self.test_driver.subscribe_debug()
 
         os.remove(os.path.join(self.test_driver.repo_dir, "foo_2.php"))
-        msgs = debug_sub.get_incremental_logs()
-        self.assertEqual(msgs["to_redecl_phase1"]["files"], ["foo_2.php"])
-        self.assertEqual(msgs["to_redecl_phase2"]["files"], ["foo_2.php"])
-        self.assertEqual(
-            set(msgs["to_recheck"]["files"]), set(["foo_1.php", "foo_2.php"])
-        )
         self.test_driver.check_cmd(
             [
                 "{root}foo_1.php:4:20,20: Unbound name: `g` (a global function) (Naming[2049])"
@@ -979,7 +941,6 @@ class CommonTests(BarebonesTests):
                 "{root}foo_4.php:3:19,21: Name already bound: `Foo` (Naming[2012])",
                 "  {root}foo_3.php:7:15,17: Previous definition is here",
                 "{root}foo_5.php:6:28,29: No class variable `$y` in `Bar` (Typing[4090])",
-                "  {root}foo_4.php:4:31,32: Did you mean `$x` instead?",
                 "  {root}foo_5.php:3:19,21: Declaration of `Bar` is here",
             ]
         )
@@ -1024,7 +985,7 @@ class CommonTests(BarebonesTests):
         self.test_driver.start_hh_server(changed_files=["foo_4.php"])
 
         self.test_driver.check_cmd_and_json_cmd(
-            ["Rewrote 1 files."],
+            ["Rewrote 1 file."],
             [
                 '[{{"filename":"{root}foo_4.php","patches":[{{'
                 '"char_start":84,"char_end":85,"line":4,"col_start":33,'
@@ -1035,7 +996,7 @@ class CommonTests(BarebonesTests):
             options=["--refactor", "Method", "Bar::f", "Bar::wat"],
         )
         self.test_driver.check_cmd_and_json_cmd(
-            ["Rewrote 1 files."],
+            ["Rewrote 1 file."],
             [
                 '[{{"filename":"{root}foo_4.php","patches":[{{'
                 '"char_start":125,"char_end":126,"line":5,"col_start":33,'
@@ -1046,6 +1007,57 @@ class CommonTests(BarebonesTests):
             ],
             options=["--refactor", "Method", "Bar::g", "Bar::overrideMe"],
         )
+
+        with open(os.path.join(self.test_driver.repo_dir, "foo_4.php")) as f:
+            out = f.read()
+            self.assertEqual(
+                out,
+                """<?hh //partial
+
+            class Bar extends Foo {
+                public function wat() {}
+                public function overrideMe() {}
+            }
+
+            class Baz extends Bar {
+                public function overrideMe() {
+                    $this->wat();
+                }
+            }
+            """,
+            )
+
+    def test_refactor_classes(self) -> None:
+        with open(os.path.join(self.test_driver.repo_dir, "foo_4.php"), "w") as f:
+            f.write(
+                """<?hh //partial
+
+            class Bar extends Foo {
+                const int FOO = 42;
+
+                private static int $val = 0;
+
+                public function f() {}
+                public function g() {}
+                public static function h() {}
+                public static function i() {
+                    self::h();
+                    self::$val = 1;
+                    static::$val = 2;
+                    $x = self::FOO;
+                }
+            }
+
+            class Baz extends Bar {
+                public function g() {
+                    $this->f();
+                    parent::g();
+                }
+            }
+            """
+            )
+        self.test_driver.start_hh_server(changed_files=["foo_4.php"])
+
         self.test_driver.check_cmd_and_json_cmd(
             ["Rewrote 2 files."],
             [
@@ -1061,6 +1073,17 @@ class CommonTests(BarebonesTests):
             ],
             options=["--refactor", "Class", "Foo", "Qux"],
         )
+        self.test_driver.check_cmd_and_json_cmd(
+            ["Rewrote 1 file."],
+            [
+                '[{{"filename":"{root}foo_4.php","patches":[{{'
+                '"char_start":34,"char_end":37,"line":3,"col_start":19,'
+                '"col_end":21,"patch_type":"replace","replacement":"Quux"}},'
+                '{{"char_start":508,"char_end":511,"line":19,"col_start":31,'
+                '"col_end":33,"patch_type":"replace","replacement":"Quux"}}]}}]'
+            ],
+            options=["--refactor", "Class", "Bar", "Quux"],
+        )
 
         with open(os.path.join(self.test_driver.repo_dir, "foo_4.php")) as f:
             out = f.read()
@@ -1068,14 +1091,26 @@ class CommonTests(BarebonesTests):
                 out,
                 """<?hh //partial
 
-            class Bar extends Qux {
-                public function wat() {}
-                public function overrideMe() {}
+            class Quux extends Qux {
+                const int FOO = 42;
+
+                private static int $val = 0;
+
+                public function f() {}
+                public function g() {}
+                public static function h() {}
+                public static function i() {
+                    self::h();
+                    self::$val = 1;
+                    static::$val = 2;
+                    $x = self::FOO;
+                }
             }
 
-            class Baz extends Bar {
-                public function overrideMe() {
-                    $this->wat();
+            class Baz extends Quux {
+                public function g() {
+                    $this->f();
+                    parent::g();
                 }
             }
             """,
@@ -1116,7 +1151,7 @@ class CommonTests(BarebonesTests):
         self.test_driver.start_hh_server(changed_files=["foo_4.php"])
 
         self.test_driver.check_cmd_and_json_cmd(
-            ["Rewrote 1 files."],
+            ["Rewrote 1 file."],
             [
                 '[{{"filename":"{root}foo_4.php","patches":[{{'
                 '"char_start":132,"char_end":135,"line":8,"col_start":22,'
@@ -1186,7 +1221,7 @@ class CommonTests(BarebonesTests):
         self.test_driver.start_hh_server(changed_files=["foo_4.php"])
 
         self.test_driver.check_cmd_and_json_cmd(
-            ["Rewrote 1 files."],
+            ["Rewrote 1 file."],
             [
                 '[{{"filename":"{root}foo_4.php","patches":[{{'
                 '"char_start":36,"char_end":43,"line":3,"col_start":21,'
@@ -1199,7 +1234,7 @@ class CommonTests(BarebonesTests):
         )
 
         self.test_driver.check_cmd_and_json_cmd(
-            ["Rewrote 1 files."],
+            ["Rewrote 1 file."],
             [
                 '[{{"filename":"{root}foo_4.php","patches":[{{'
                 '"char_start":69,"char_end":73,"line":4,"col_start":18,'

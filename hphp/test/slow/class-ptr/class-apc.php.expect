@@ -1,6 +1,6 @@
-string(4) "main"
-varray(3) {
+class(main)
+vec(3) {
   int(1)
-  string(4) "main"
+  class(main)
   string(3) "foo"
 }

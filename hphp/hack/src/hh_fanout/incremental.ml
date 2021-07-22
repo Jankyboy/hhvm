@@ -7,7 +7,7 @@
  *)
 
 module Hh_bucket = Bucket
-open Core_kernel
+open Hh_prelude
 
 type client_id = Client_id of string
 
@@ -21,6 +21,7 @@ type client_config = {
   dep_table_saved_state_path: Path.t;
   dep_table_errors_saved_state_path: Path.t;
   naming_table_saved_state_path: Naming_sqlite.db_path;
+  deps_mode: Typing_deps_mode.t;
 }
 
 type typecheck_result = {
@@ -97,6 +98,12 @@ let make_cursor_id (id : int) (client_config : client_config) : cursor_id =
 let typecheck_and_get_deps_and_errors_job
     (ctx : Provider_context.t) _acc (paths : Relative_path.t list) :
     Errors.t * dep_graph_delta =
+  let deps_mode = Provider_context.get_deps_mode ctx in
+  begin
+    match deps_mode with
+    | Typing_deps_mode.SQLiteMode -> failwith "SQLiteMode not supported"
+    | _ -> ()
+  end;
   List.fold
     paths
     ~init:(Errors.empty, HashSet.create ())
@@ -108,8 +115,12 @@ let typecheck_and_get_deps_and_errors_job
         Typing_deps.add_dependency_callback
           "typecheck_and_get_deps_and_errors_job"
           (fun dependent dependency ->
-            let dependent = Typing_deps.Dep.make dependent in
-            let dependency = Typing_deps.Dep.make dependency in
+            let dependent =
+              Typing_deps.(Dep.make (hash_mode deps_mode) dependent)
+            in
+            let dependency =
+              Typing_deps.(Dep.make (hash_mode deps_mode) dependency)
+            in
             HashSet.add deps (dependent, dependency));
         let { Tast_provider.Compute_tast_and_errors.errors; _ } =
           Tast_provider.compute_tast_and_errors_unquarantined ~ctx ~entry
@@ -198,16 +209,12 @@ class cursor ~client_id ~cursor_state =
       in
       helper cursor_state
 
-    method private load_dep_table : unit =
-      let { dep_table_saved_state_path; ignore_hh_version; _ } =
-        self#get_client_config
-      in
-      let () =
-        SharedMem.load_dep_table_sqlite
-          (Path.to_string dep_table_saved_state_path)
-          ignore_hh_version
-      in
+    method get_deps_mode : Typing_deps_mode.t =
+      match self#get_client_config.deps_mode with
+      | Typing_deps_mode.SQLiteMode -> failwith "SQLiteMode not supported"
+      | deps_mode -> deps_mode
 
+    method private load_dep_table : unit =
       let rec helper cursor_state =
         match cursor_state with
         | Saved_state _ -> ()
@@ -215,7 +222,10 @@ class cursor ~client_id ~cursor_state =
         | Typecheck_result
             { previous; typecheck_result = { fanout_files_deps; _ } } ->
           HashSet.iter fanout_files_deps ~f:(fun (dependent, dependency) ->
-              Typing_deps.add_idep_directly_to_graph dependent dependency);
+              Typing_deps.add_idep_directly_to_graph
+                self#get_deps_mode
+                ~dependent
+                ~dependency);
           helper previous
       in
       helper cursor_state
@@ -225,8 +235,8 @@ class cursor ~client_id ~cursor_state =
         match cursor_state with
         | Typecheck_result _ ->
           (* Don't need to typecheck any previous cursors. The fanout of
-            the files that have changed before this typecheck have already
-            been processed. Stop recursion here. *)
+             the files that have changed before this typecheck have already
+             been processed. Stop recursion here. *)
           acc
         | Saved_state { dep_table_errors_saved_state_path; _ } ->
           let errors : SaveStateServiceTypes.saved_state_errors =
@@ -294,6 +304,7 @@ class cursor ~client_id ~cursor_state =
       let fanout_result =
         Calculate_fanout.go
           ~detail_level
+          ~deps_mode:self#get_deps_mode
           ~old_naming_table
           ~new_naming_table
           ~file_deltas:changed_files
@@ -313,7 +324,7 @@ class cursor ~client_id ~cursor_state =
         (errors, None)
       | (Saved_state _ | Saved_state_delta _) as current_cursor ->
         (* The global reverse naming table is updated by calling this
-        function. We can discard the forward naming table returned to us. *)
+           function. We can discard the forward naming table returned to us. *)
         let (_naming_table : Naming_table.t) = self#load_naming_table ctx in
 
         let files_to_typecheck = self#get_files_to_typecheck in
@@ -365,7 +376,7 @@ class state ~state_path ~persistent_state =
 
     method make_client_id (client_config : client_config) : client_id =
       let client_id = Client_id client_config.client_id in
-      Hashtbl.set persistent_state.clients client_id client_config;
+      Hashtbl.set persistent_state.clients ~key:client_id ~data:client_config;
       client_id
 
     method make_default_cursor (client_id : client_id) : (cursor, string) result
@@ -411,7 +422,10 @@ class state ~state_path ~persistent_state =
         make_cursor_id !(persistent_state.max_cursor_id) client_config
       in
       incr persistent_state.max_cursor_id;
-      Hashtbl.set persistent_state.cursors cursor_id (client_id, cursor);
+      Hashtbl.set
+        persistent_state.cursors
+        ~key:cursor_id
+        ~data:(client_id, cursor);
       save_state ~state_path ~persistent_state;
       cursor_id
   end
@@ -428,7 +442,7 @@ let init_state_dir (state_dir : Path.t) ~(populate_dir : Path.t -> unit) : unit
         | Disk.Rename_target_already_exists _
         | Disk.Rename_target_dir_not_empty _ ->
           (* Assume that the directory was initialized by another process
-          before us, so we don't need to do anything further. *)
+             before us, so we don't need to do anything further. *)
           ())
 
 let make_reference_implementation (state_dir : Path.t) : state =
@@ -450,13 +464,14 @@ let make_reference_implementation (state_dir : Path.t) : state =
         ~binary:true
         (Path.to_string state_path)
         ~f:(fun ic -> Marshal.from_channel ic)
-    with e ->
+    with
+    | e ->
       let e = Exception.wrap e in
       Hh_logger.warn
-        ( "HINT: An error occurred while loading hh_fanout state. "
+        ("HINT: An error occurred while loading hh_fanout state. "
         ^^ "If it is corrupted, "
         ^^ "try running `hh_fanout clean` to delete the state, "
-        ^^ "then try your query again." );
+        ^^ "then try your query again.");
       Exception.reraise e
   in
   let state = new state ~state_path ~persistent_state in

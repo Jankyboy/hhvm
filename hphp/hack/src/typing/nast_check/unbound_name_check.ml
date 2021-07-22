@@ -25,9 +25,6 @@ type env = {
   type_params: Aast.reify_kind SMap.t;
   (* Need some context to differentiate global consts and other Id's *)
   seen_names: Pos.t SMap.t;
-  (* Special context for pocket universes *)
-  pu_case_types: Aast.reify_kind SMap.t;
-  pu_member_types: Aast.sid list SMap.t;
   (* Contexts where typedefs are valid typenames *)
   class_id_allow_typedef: bool;
   hint_allow_typedef: bool;
@@ -42,19 +39,22 @@ let handle_unbound_name env (pos, name) kind =
     match env.mode with
     | FileInfo.Mstrict
     | FileInfo.Mpartial
-    | FileInfo.Mdecl ->
+    | FileInfo.Mhhi ->
       Errors.unbound_name pos name kind;
       (* In addition to reporting errors, we also add to the global dependency table *)
       let dep =
         match kind with
         | Errors.FunctionNamespace -> Typing_deps.Dep.Fun name
-        | Errors.TypeNamespace -> Typing_deps.Dep.Class name
+        | Errors.TypeNamespace -> Typing_deps.Dep.Type name
         | Errors.ConstantNamespace -> Typing_deps.Dep.GConst name
-        | Errors.TraitContext -> Typing_deps.Dep.Class name
-        | Errors.RecordContext -> Typing_deps.Dep.RecordDef name
-        | Errors.ClassContext -> Typing_deps.Dep.Class name
+        | Errors.TraitContext -> Typing_deps.Dep.Type name
+        | Errors.RecordContext -> Typing_deps.Dep.Type name
+        | Errors.ClassContext -> Typing_deps.Dep.Type name
       in
-      Typing_deps.add_idep env.droot dep
+      Typing_deps.add_idep
+        (Provider_context.get_deps_mode env.ctx)
+        env.droot
+        dep
 
 let has_canon_name env get_name get_pos (pos, name) =
   match get_name env.ctx name with
@@ -76,7 +76,7 @@ let check_fun_name env ((_, name) as id) =
   else if
     has_canon_name
       env
-      Naming_global.GEnv.fun_canon_name
+      Naming_provider.get_fun_canon_name
       Naming_global.GEnv.fun_pos
       id
   then
@@ -114,7 +114,7 @@ let check_type_name
         match Naming_provider.get_type_pos_and_kind env.ctx name with
         | Some (def_pos, Naming_types.TTypedef) when not allow_typedef ->
           let (full_pos, _) =
-            Naming_global.GEnv.get_full_pos env.ctx (def_pos, name)
+            Naming_global.GEnv.get_type_full_pos env.ctx (def_pos, name)
           in
           Errors.unexpected_typedef pos full_pos kind
         | Some _ -> ()
@@ -122,7 +122,7 @@ let check_type_name
           if
             has_canon_name
               env
-              Naming_global.GEnv.type_canon_name
+              Naming_provider.get_type_canon_name
               Naming_global.GEnv.type_pos
               id
           then
@@ -161,8 +161,6 @@ let handler ctx =
         ctx;
         type_params = SMap.empty;
         seen_names = SMap.empty;
-        pu_case_types = SMap.empty;
-        pu_member_types = SMap.empty;
         class_id_allow_typedef = false;
         hint_allow_typedef = true;
         hint_context = Errors.TypeNamespace;
@@ -172,7 +170,7 @@ let handler ctx =
       let new_env =
         {
           env with
-          droot = Typing_deps.Dep.Class (snd c.Aast.c_name);
+          droot = Typing_deps.Dep.Type (snd c.Aast.c_name);
           mode = c.Aast.c_mode;
           type_params = extend_type_params SMap.empty c.Aast.c_tparams;
         }
@@ -183,19 +181,20 @@ let handler ctx =
       let new_env =
         {
           env with
-          droot = Typing_deps.Dep.Class (snd td.Aast.t_name);
+          droot = Typing_deps.Dep.Type (snd td.Aast.t_name);
           mode = FileInfo.Mstrict;
           type_params = extend_type_params SMap.empty td.Aast.t_tparams;
         }
       in
       new_env
 
-    method! at_fun_ env f =
+    method! at_fun_def env fd =
+      let f = fd.Aast.fd_fun in
       let new_env =
         {
           env with
           droot = Typing_deps.Dep.Fun (snd f.Aast.f_name);
-          mode = f.Aast.f_mode;
+          mode = fd.Aast.fd_mode;
           type_params = extend_type_params env.type_params f.Aast.f_tparams;
         }
       in
@@ -223,41 +222,6 @@ let handler ctx =
         type_params = extend_type_params env.type_params m.Aast.m_tparams;
       }
 
-    method! at_pu_enum env pu_enum =
-      let pu_case_types =
-        List.fold_left
-          ~init:SMap.empty
-          ~f:(fun acc Aast.{ tp_name = (_, name); tp_reified = reified; _ } ->
-            SMap.add name reified acc)
-          pu_enum.Aast.pu_case_types
-      in
-      let pu_member_types =
-        List.fold_left
-          pu_enum.Aast.pu_members
-          ~init:SMap.empty
-          ~f:(fun acc Aast.{ pum_atom = (_, name); pum_types; _ } ->
-            let pum_type_param_names = List.map ~f:fst pum_types in
-            match SMap.find_opt name acc with
-            | None -> SMap.add name pum_type_param_names acc
-            | Some types ->
-              SMap.add name (List.append pum_type_param_names types) acc)
-      in
-      { env with pu_case_types; pu_member_types }
-
-    method! at_pu_case_value env _ =
-      { env with type_params = SMap.union env.type_params env.pu_case_types }
-
-    method! at_pu_member env pu_member =
-      let pu_name = snd pu_member.Aast.pum_atom in
-      let member_types = SMap.find pu_name env.pu_member_types in
-      let type_params =
-        List.fold_left
-          member_types
-          ~init:env.type_params
-          ~f:(fun acc type_param -> SMap.add (snd type_param) Aast.Erased acc)
-      in
-      { env with type_params }
-
     method! at_targ env _ = { env with hint_allow_typedef = true }
 
     method! at_class_hint env _ =
@@ -284,10 +248,10 @@ let handler ctx =
     method! at_xhp_attr_hint env _ = { env with hint_allow_typedef = false }
 
     (* Below are the methods where we check for unbound names *)
-    method! at_expr env e =
-      match snd e with
+    method! at_expr env (_, _, e) =
+      match e with
       | Aast.FunctionPointer (Aast.FP_id ((p, name) as id), _)
-      | Aast.Call ((_, Aast.Id ((p, name) as id)), _, _, _) ->
+      | Aast.Call ((_, _, Aast.Id ((p, name) as id)), _, _, _) ->
         let () = check_fun_name env id in
         { env with seen_names = SMap.add name p env.seen_names }
       | Aast.Id ((p, name) as id) ->
@@ -322,10 +286,22 @@ let handler ctx =
             id
         in
         env
-      | Aast.Class_const ((_, Aast.CI _), (_, s)) when String.equal s "class" ->
+      | Aast.Class_const ((_, _, Aast.CI _), (_, s)) when String.equal s "class"
+        ->
         { env with class_id_allow_typedef = true }
-      | Aast.Obj_get (_, (_, Aast.Id (p, name)), _) ->
+      | Aast.Obj_get (_, (_, _, Aast.Id (p, name)), _, _) ->
         { env with seen_names = SMap.add name p env.seen_names }
+      | Aast.EnumClassLabel (Some cname, _) ->
+        let allow_typedef = (* we might reconsider this ? *) false in
+        let () =
+          check_type_name
+            env
+            ~allow_typedef
+            ~allow_generics:false
+            ~kind:Errors.ClassContext
+            cname
+        in
+        env
       | _ -> env
 
     method! at_shape_field_name env sfn =
@@ -355,8 +331,8 @@ let handler ctx =
       in
       env
 
-    method! at_class_id env ci =
-      match snd ci with
+    method! at_class_id env (_, _, ci) =
+      match ci with
       | Aast.CI id ->
         let () =
           check_type_name

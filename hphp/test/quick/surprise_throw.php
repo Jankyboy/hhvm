@@ -1,6 +1,6 @@
 <?hh
 
-# bug #2088495
+// bug #2088495
 function asd($x, $y) {
   if ($x == 'exit' && $y == 'foo') {
     echo "yep\n";
@@ -10,10 +10,10 @@ function asd($x, $y) {
 }
 
 function foo() {
-  $x = new stdclass;
-  $y = new stdclass;
-  $z = new stdclass;
-  return new stdclass;
+  $x = new stdClass;
+  $y = new stdClass;
+  $z = new stdClass;
+  return new stdClass;
 }
 <<__EntryPoint>>
 function entrypoint_surprise_throw(): void {

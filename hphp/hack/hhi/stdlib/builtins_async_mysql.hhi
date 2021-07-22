@@ -61,7 +61,9 @@ class AsyncMysqlClient {
       string $user,
       string $password,
       int $timeout_micros = -1,
-      ?MySSLContextProvider $ssl_provider = null): Awaitable<AsyncMysqlConnection> { }
+      ?MySSLContextProvider $ssl_provider = null,
+      int $tcp_timeout_micros = 0,
+      string $sni_server_name = ""): Awaitable<AsyncMysqlConnection> { }
 
     static public function connectWithOpts(
       string $host,
@@ -87,7 +89,15 @@ class AsyncMysqlClient {
 
 class AsyncMysqlConnectionPool {
   public function __construct(darray $options) { }
-  public function connect(string $host, int $port, string $dbname, string $user, string $password, int $timeout_micros = -1, string $caller = ""): Awaitable<AsyncMysqlConnection> { }
+  public function connect(
+    string $host,
+    int $port,
+    string $dbname,
+    string $user,
+    string $password,
+    int $timeout_micros = -1,
+    string $caller = "",
+    int $tcp_timeout_micros = 0): Awaitable<AsyncMysqlConnection> { }
   public function connectWithOpts(
     string $host,
     int $port,
@@ -107,11 +117,16 @@ class MySSLContextProvider {
 
 class AsyncMysqlConnectionOptions {
   public function setConnectTimeout(int $timeout): void { }
+  public function setConnectTcpTimeout(int $timeout): void { }
   public function setConnectAttempts(int $attempts): void { }
   public function setTotalTimeout(int $timeout): void { }
   public function setQueryTimeout(int $timeout): void { }
   public function setConnectionAttributes(darray<string, string> $val): void { }
   public function setSSLOptionsProvider(?MySSLContextProvider $ssl_context): void { }
+  public function setSniServerName(string $sni_server_name) : void { }
+  public function enableResetConnBeforeClose() : void { }
+  public function enableDelayedResetConn() : void { }
+  public function enableChangeUser() : void { }
 }
 
 class AsyncMysqlClientStats {
@@ -185,6 +200,7 @@ class AsyncMysqlQueryResult extends AsyncMysqlResult {
   public function mapRows(): Vector<Map<string, ?string>> { }
   public function vectorRows(): Vector<KeyedContainer<int, ?string>> { }
   public function mapRowsTyped(): Vector<Map<string, mixed>> { }
+  public function dictRowsTyped(): vec<dict<string, mixed>> { }
   public function vectorRowsTyped(): Vector<KeyedContainer<int, mixed>> { }
  /* Can't put a return type for rowBlocks as it will ask that the type is
   * iterable because of the usage and then we can't have the AsyncMysqlRowBlock

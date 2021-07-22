@@ -27,7 +27,7 @@ namespace {
 //////////////////////////////////////////////////////////////////////
 
 template<typename Check, typename Ld>
-void checkTypeImpl(IRGS& env, Type type, Offset dest, Check check, Ld ld) {
+void checkTypeImpl(IRGS& env, Type type, SrcKey dest, Check check, Ld ld) {
   auto exit = env.irb->guardFailBlock();
   if (exit == nullptr) exit = makeExit(env, dest);
 
@@ -40,7 +40,7 @@ void checkTypeImpl(IRGS& env, Type type, Offset dest, Check check, Ld ld) {
   }
 }
 
-void checkTypeLocal(IRGS& env, uint32_t locId, Type type, Offset dest) {
+void checkTypeLocal(IRGS& env, uint32_t locId, Type type, SrcKey dest) {
   checkTypeImpl(env, type, dest,
     [&](Type test, Block* exit) {
       gen(env, CheckLoc, test, LocalId(locId), exit, fp(env));
@@ -52,7 +52,7 @@ void checkTypeLocal(IRGS& env, uint32_t locId, Type type, Offset dest) {
   );
 }
 
-void checkTypeStack(IRGS& env, BCSPRelOffset idx, Type type, Offset dest) {
+void checkTypeStack(IRGS& env, BCSPRelOffset idx, Type type, SrcKey dest) {
   auto const soff = IRSPRelOffsetData { offsetFromIRSP(env, idx) };
   checkTypeImpl(env, type, dest,
     [&](Type test, Block* exit) {
@@ -65,7 +65,7 @@ void checkTypeStack(IRGS& env, BCSPRelOffset idx, Type type, Offset dest) {
   );
 }
 
-void checkTypeMBase(IRGS& env, Type type, Offset dest) {
+void checkTypeMBase(IRGS& env, Type type, SrcKey dest) {
   auto const mbr = gen(env, LdMBase, TLvalToCell);
   checkTypeImpl(env, type, dest,
     [&](Type test, Block* exit) {
@@ -111,7 +111,7 @@ void assertTypeLocation(IRGS& env, const Location& loc, Type type) {
    }
 }
 
-void checkType(IRGS& env, const Location& loc, Type type, Offset dest) {
+void checkType(IRGS& env, const Location& loc, Type type, SrcKey dest) {
   assertx(type <= TCell);
 
   switch (loc.tag()) {
@@ -127,10 +127,21 @@ void checkType(IRGS& env, const Location& loc, Type type, Offset dest) {
   }
 }
 
-void predictType(IRGS& env, const Location& loc, Type type) {
-  FTRACE(1, "predictType {}: {}\n", show(loc), type);
-  assertx(type <= TCell);
-  env.irb->fs().refinePredictedType(loc, type);
+SSATmp* loadLocation(IRGS& env, const Location& loc) {
+  switch (loc.tag()) {
+    case LTag::Local:
+      return gen(env, LdLoc, TCell, LocalId(loc.localId()), fp(env));
+    case LTag::Stack: {
+      auto const soff = IRSPRelOffsetData {
+        offsetFromIRSP(env, loc.stackIdx()) };
+      return gen(env, LdStk, TCell, soff, sp(env));
+    }
+    case LTag::MBase: {
+      auto const mbr = gen(env, LdMBase, TLvalToCell);
+      return gen(env, LdMem, mbr->type().deref(), mbr);
+    }
+  }
+  not_reached();
 }
 
 //////////////////////////////////////////////////////////////////////

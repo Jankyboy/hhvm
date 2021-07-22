@@ -11,7 +11,7 @@
 (* Code relative to the client/server communication *)
 (*****************************************************************************)
 
-open Hh_core
+open Hh_prelude
 open DfindEnv
 
 type msg =
@@ -36,7 +36,9 @@ let (process_fsnotify_event : DfindEnv.t -> SSet.t -> Fsnotify.event -> SSet.t)
       SSet.union dirty (SMap.find path env.dirs)
     else
       let dir_content =
-        (try SMap.find wpath env.dirs with Not_found -> SSet.empty)
+        match SMap.find_opt wpath env.dirs with
+        | Some content -> content
+        | None -> SSet.empty
       in
       env.dirs <- SMap.add wpath (SSet.add path dir_content) env.dirs;
       dirty
@@ -47,8 +49,8 @@ let (process_fsnotify_event : DfindEnv.t -> SSet.t -> Fsnotify.event -> SSet.t)
   DfindAddFile.path env path;
 
   (* Add everything new we found in this directory
-    * (empty when it's a regular file)
-    *)
+     * (empty when it's a regular file)
+  *)
   let dirty = SSet.union env.new_files dirty in
   dirty
 
@@ -57,9 +59,9 @@ let run_daemon (scuba_table, roots) (ic, oc) =
   let t = Unix.gettimeofday () in
   let infd = Daemon.descr_of_in_channel ic in
   let outfd = Daemon.descr_of_out_channel oc in
-  let roots = List.map roots Path.to_string in
+  let roots = List.map roots ~f:Path.to_string in
   let env = DfindEnv.make roots in
-  List.iter roots (DfindAddFile.path env);
+  List.iter roots ~f:(DfindAddFile.path env);
   EventLogger.dfind_ready scuba_table t;
   Marshal_tools.to_fd_with_preamble outfd Ready |> ignore;
   ignore @@ Hh_logger.log_duration "Initialization" t;

@@ -61,12 +61,16 @@ namespace HPHP { namespace SystemLib {
   x(LazyKeyedIterableView)                      \
   x(CURLFile)                                   \
   x(__PHP_Incomplete_Class)                     \
-  x(APCIterator)                                \
-  x(DivisionByZeroException)
+  x(DivisionByZeroException)                    \
+  x(InvalidForeachArgumentException)            \
+  x(UndefinedPropertyException)                 \
+  x(UndefinedVariableException)                 \
+  x(TypecastException)
 
 #define SYSTEMLIB_HH_CLASSES(x) \
   x(Traversable)                \
   x(Iterator)                   \
+  x(SwitchableClass)            \
 /* */
 
 extern bool s_inited;
@@ -96,6 +100,8 @@ extern Class* s_AssertionErrorClass;
 extern Class* s_DivisionByZeroErrorClass;
 extern Class* s_ParseErrorClass;
 extern Class* s_TypeErrorClass;
+extern Class* s_MethCallerHelperClass;
+extern Class* s_DynMethCallerHelperClass;
 
 Object AllocStdClassObject();
 Object AllocPinitSentinel();
@@ -153,7 +159,10 @@ void throwSoapFaultObject(const Variant& code,
                           const Variant& detail = uninit_variant,
                           const Variant& name = uninit_variant,
                           const Variant& header = uninit_variant);
-
+[[noreturn]] void throwInvalidForeachArgumentExceptionObject();
+[[noreturn]] void throwUndefinedPropertyExceptionObject(const Variant& message);
+[[noreturn]] void throwUndefinedVariableExceptionObject(const Variant& message);
+[[noreturn]] void throwTypecastExceptionObject(const Variant& message);
 
 /**
  * Register a persistent unit to be re-merged (in non-repo mode)

@@ -14,12 +14,11 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_PREG_H_
-#define incl_HPHP_PREG_H_
+#pragma once
 
 #include "hphp/runtime/base/type-string.h"
 
-#include <folly/Optional.h>
+#include <folly/File.h>
 
 #include <cstdint>
 #include <cstddef>
@@ -29,7 +28,6 @@
 #define PREG_PATTERN_ORDER          1
 #define PREG_SET_ORDER              2
 #define PREG_OFFSET_CAPTURE         (1<<8)
-#define PREG_FB_HACK_ARRAYS         (1<<30)
 #define PREG_FB__PRIVATE__HSL_IMPL  (1<<29)
 
 #define PREG_SPLIT_NO_EMPTY         (1<<0)
@@ -46,7 +44,8 @@ enum {
   PHP_PCRE_BACKTRACK_LIMIT_ERROR,
   PHP_PCRE_RECURSION_LIMIT_ERROR,
   PHP_PCRE_BAD_UTF8_ERROR,
-  PHP_PCRE_BAD_UTF8_OFFSET_ERROR
+  PHP_PCRE_BAD_UTF8_OFFSET_ERROR,
+  PHP_PCRE_BAD_REGEX_ERROR
 };
 
 namespace HPHP {
@@ -55,16 +54,23 @@ namespace HPHP {
 struct Array;
 struct Variant;
 
+/*
+  * Optimization: If the pattern defines a literal substring,
+  * compare the strings directly (i.e. memcmp) instead of performing
+  * the full regular expression evaluation.
+  */
 struct pcre_literal_data {
   pcre_literal_data(const char* pattern, int coptions);
 
   bool isLiteral() const;
-  bool matches(const StringData* subject, int pos, int* offsets) const;
+  bool match_start() const { return options & PCRE_ANCHORED; }
+  bool match_end() const { return options & PCRE_DOLLAR_ENDONLY; }
+  bool case_insensitive() const { return options & PCRE_CASELESS; }
+  bool matches(const StringData* subject, int pos, int* offsets,
+               int extra_options) const;
 
-  folly::Optional<std::string> literal_str;
-  bool match_start{false};
-  bool match_end{false};
-  bool case_insensitive{false};
+  Optional<std::string> literal_str;
+  int options;
 };
 
 struct pcre_cache_entry {
@@ -107,14 +113,9 @@ void pcre_init();
 void pcre_reinit();
 
 /*
- * Clean up thread-local PCREs.
+ * Dump the contents of the PCRE cache to the given file.
  */
-void pcre_session_exit();
-
-/*
- * Dump the contents of the PCRE cache to filename.
- */
-void pcre_dump_cache(const std::string& filename);
+void pcre_dump_cache(folly::File& file);
 
 ///////////////////////////////////////////////////////////////////////////////
 // PHP API
@@ -125,7 +126,7 @@ Variant preg_match(const String& pattern, const String& subject,
                    Variant* matches = nullptr,
                    int flags = 0, int offset = 0);
 
-Variant preg_match(const StringData* pattern, const StringData* subject,
+Variant preg_match(StringData* pattern, const StringData* subject,
                    Variant* matches = nullptr,
                    int flags = 0, int offset = 0);
 
@@ -133,7 +134,7 @@ Variant preg_match_all(const String& pattern, const String& subject,
                        Variant* matches = nullptr,
                        int flags = 0, int offset = 0);
 
-Variant preg_match_all(const StringData* pattern, const StringData* subject,
+Variant preg_match_all(StringData* pattern, const StringData* subject,
                        Variant* matches = nullptr,
                        int flags = 0, int offset = 0);
 
@@ -150,11 +151,6 @@ int preg_replace_callback(Variant& result,
                           const Variant& callback,
                           const Variant& subject,
                           int limit = -1);
-int preg_filter(Variant& result,
-                const Variant& pattern,
-                const Variant& replacement,
-                const Variant& subject,
-                int limit = -1);
 
 Variant preg_split(const String& pattern,
                    const String& subject,
@@ -182,5 +178,3 @@ struct PregWithErrorGuard {
 ///////////////////////////////////////////////////////////////////////////////
 
 }
-
-#endif // incl_HPHP_PREG_H__

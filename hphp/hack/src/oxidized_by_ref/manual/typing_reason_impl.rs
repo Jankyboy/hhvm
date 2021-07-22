@@ -3,7 +3,6 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the "hack" directory of this source tree.
 
-use crate::ast_defs::Id;
 use crate::pos::Pos;
 use crate::typing_reason::*;
 
@@ -22,17 +21,23 @@ impl<'a> Reason<'a> {
         Reason::Rwitness(pos)
     }
 
-    pub fn instantiate(r1: &'a Reason<'a>, x: &'a str, r2: &'a Reason<'a>) -> Self {
-        Reason::Rinstantiate(r1, x, r2)
+    pub fn witness_from_decl(pos: &'a Pos<'a>) -> Self {
+        Reason::RwitnessFromDecl(pos)
+    }
+
+    pub fn instantiate(args: &'a (Reason<'a>, &'a str, Reason<'a>)) -> Self {
+        Reason::Rinstantiate(args)
     }
 
     pub fn pos(&self) -> Option<&'a Pos<'a>> {
-        use Reason::*;
+        use T_::*;
         match self {
             Rnone => None,
             Rwitness(p)
-            | Ridx(p, _)
+            | RwitnessFromDecl(p)
+            | Ridx((p, _))
             | RidxVector(p)
+            | RidxVectorFromDecl(p)
             | Rforeach(p)
             | Rasyncforeach(p)
             | Rarith(p)
@@ -45,7 +50,8 @@ impl<'a> Reason<'a> {
             | RbitwiseRet(p)
             | RnoReturn(p)
             | RnoReturnAsync(p)
-            | RretFunKind(p, _)
+            | RretFunKind((p, _))
+            | RretFunKindFromDecl((p, _))
             | Rhint(p)
             | Rthrow(p)
             | Rplaceholder(p)
@@ -54,53 +60,66 @@ impl<'a> Reason<'a> {
             | RyieldAsyncgen(p)
             | RyieldAsyncnull(p)
             | RyieldSend(p)
-            | Rformat(p, _, _)
-            | RclassClass(p, _)
+            | Rformat((p, _, _))
+            | RclassClass((p, _))
             | RunknownClass(p)
             | RvarParam(p)
-            | RunpackParam(p, _, _)
+            | RvarParamFromDecl(p)
+            | RunpackParam((p, _, _))
             | RinoutParam(p)
-            | Rtypeconst(Rnone, (p, _), _, _)
-            | RarrayFilter(p, _)
+            | Rtypeconst((Rnone, (p, _), _, _))
+            | RarrayFilter((p, _))
             | RnullsafeOp(p)
-            | RtconstNoCstr(Id(p, _))
-            | Rpredicated(p, _)
+            | RtconstNoCstr((p, _))
+            | Rpredicated((p, _))
             | Ris(p)
             | Ras(p)
             | RvarrayOrDarrayKey(p)
+            | RvecOrDictKey(p)
             | Rusing(p)
             | RdynamicProp(p)
             | RdynamicCall(p)
+            | RdynamicConstruct(p)
             | RidxDict(p)
-            | RmissingRequiredField(p, _)
-            | RmissingOptionalField(p, _)
-            | RunsetField(p, _)
+            | RsetElement(p)
+            | RmissingOptionalField((p, _))
+            | RunsetField((p, _))
             | Rregex(p)
-            | RimplicitUpperBound(p, _)
-            | RarithRetFloat(p, _, _)
-            | RarithRetNum(p, _, _)
+            | RimplicitUpperBound((p, _))
+            | RarithRetFloat((p, _, _))
+            | RarithRetNum((p, _, _))
             | RarithRetInt(p)
             | RbitwiseDynamic(p)
             | RincdecDynamic(p)
             | RtypeVariable(p)
-            | RtypeVariableGenerics(p, _, _)
+            | RtypeVariableGenerics((p, _, _))
+            | RglobalTypeVariableGenerics((p, _, _))
             | RsolveFail(p)
-            | RcstrOnGenerics(p, _)
-            | RlambdaParam(p, _)
-            | Rshape(p, _)
+            | RcstrOnGenerics((p, _))
+            | RlambdaParam((p, _))
+            | Rshape((p, _))
             | Renforceable(p)
             | Rdestructure(p)
             | RkeyValueCollectionKey(p)
             | RglobalClassProp(p)
             | RglobalFunParam(p)
-            | RglobalFunRet(p) => Some(p),
-            RlostInfo(_, r, _)
-            | Rinstantiate(_, _, r)
-            | Rtypeconst(r, _, _, _)
-            | RtypeAccess(r, _)
-            | RexprDepType(r, _, _)
-            | RcontravariantGeneric(r, _)
-            | RinvariantGeneric(r, _) => r.pos(),
+            | RglobalFunRet(p)
+            | Rsplice(p)
+            | RetBoolean(p)
+            | RdefaultCapability(p)
+            | RconcatOperand(p)
+            | RinterpOperand(p)
+            | RsupportDynamicType(p)
+            | RdynamicPartialEnforcement((p, _, _))
+            | RrigidTvarEscape((p, _, _, _)) => Some(p),
+            RlostInfo((_, r, _))
+            | Rinstantiate((_, _, r))
+            | Rtypeconst((r, _, _, _))
+            | RtypeAccess((r, _))
+            | RexprDepType((r, _, _))
+            | RcontravariantGeneric((r, _))
+            | RinvariantGeneric((r, _)) => r.pos(),
+            RdynamicCoercion(r) => r.pos(),
         }
     }
 }

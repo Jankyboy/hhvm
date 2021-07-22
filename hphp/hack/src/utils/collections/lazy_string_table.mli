@@ -45,10 +45,15 @@ type 'a t
     and {!mem} without traversing the entire sequence (i.e., the trivial
     implementation [fun _ -> false] for [is_canonical] is always correct, but
     will always force the cache to traverse the entire sequence on the first
-    lookup). *)
+    lookup).
+
+    A [get_single_seq] function should be supplied if there is a more efficient
+    method to answer a single get/mem query. This will be used up until to_list
+    is called*)
 val make :
   is_canonical:('a -> bool) ->
   merge:(earlier:'a -> later:'a -> 'a) ->
+  ?get_single_seq:(string -> 'a Sequence.t) ->
   (string * 'a) Sequence.t ->
   'a t
 
@@ -75,6 +80,5 @@ val get : 'a t -> string -> 'a option
     emitted any value for the given key. *)
 val mem : 'a t -> string -> bool
 
-(** Eagerly exhaust the input sequence, then return a sequence iterating over
-    all values stored in the cache, in undefined order. *)
-val to_seq : 'a t -> (string * 'a) Sequence.t
+(** Eagerly exhaust the input sequence, then return all values, in undefined order. *)
+val to_list : 'a t -> (string * 'a) list

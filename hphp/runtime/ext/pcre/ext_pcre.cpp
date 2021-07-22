@@ -180,13 +180,25 @@ Variant HHVM_FUNCTION(preg_replace_callback,
                            limit, &count, true, false);
 }
 
+Variant HHVM_FUNCTION(preg_replace_callback_with_error,
+                      const Variant& pattern,
+                      const Variant& callback,
+                      const Variant& subject,
+                      int limit,
+                      int64_t& count,
+                      Variant& error) {
+  PregWithErrorGuard guard(error);
+  return HHVM_FN(preg_replace_callback)(pattern, callback, subject,
+                                        limit, count);
+}
+
 static Variant preg_replace_callback_array_impl(
   const Variant& patterns_and_callbacks,
   const Array& subjects,
   int limit,
   int64_t& total_count) {
 
-  Array ret = Array::CreateDArray();
+  Array ret = Array::CreateDict();
   auto key = 0;
   total_count = 0;
   for (ArrayIter s_iter(subjects); s_iter; ++s_iter) {
@@ -239,12 +251,12 @@ Variant HHVM_FUNCTION(preg_replace_callback_array,
       raise_warning("Not a valid callback function %s",
                     iter.second().toString().data());
       return subject.isString() ? empty_string_variant()
-                                : Variant(empty_array());
+                                : Variant(empty_dict_array());
     }
   }
 
   if (subject.isString()) {
-    Array subject_arr = Array::CreateDArray();
+    Array subject_arr = Array::CreateDict();
     subject_arr.set(0, subject.toString());
     Variant ret = preg_replace_callback_array_impl(
       patterns_and_callbacks, subject_arr, limit, count
@@ -259,6 +271,17 @@ Variant HHVM_FUNCTION(preg_replace_callback_array,
     // No warning is given here, just return null
     return init_null();
   }
+}
+
+Variant HHVM_FUNCTION(preg_replace_callback_array_with_error,
+                      const Variant& patterns_and_callbacks,
+                      const Variant& subject,
+                      int limit,
+                      int64_t& count,
+                      Variant& error) {
+  PregWithErrorGuard guard(error);
+  return HHVM_FN(preg_replace_callback_array)(patterns_and_callbacks, subject,
+                                              limit, count);
 }
 
 Variant HHVM_FUNCTION(preg_filter, const Variant& pattern, const Variant& callback,
@@ -293,10 +316,6 @@ String HHVM_FUNCTION(preg_quote, const String& str,
   } else {
     return preg_quote(str, delimiter.toString());
   }
-}
-
-int64_t HHVM_FUNCTION(preg_last_error) {
-  return preg_last_error();
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -361,13 +380,12 @@ struct PcreExtension final : Extension {
     HHVM_RC_INT(PREG_RECURSION_LIMIT_ERROR, PHP_PCRE_RECURSION_LIMIT_ERROR);
     HHVM_RC_INT(PREG_BAD_UTF8_ERROR, PHP_PCRE_BAD_UTF8_ERROR);
     HHVM_RC_INT(PREG_BAD_UTF8_OFFSET_ERROR, PHP_PCRE_BAD_UTF8_OFFSET_ERROR);
+    HHVM_RC_INT(PREG_BAD_REGEX_ERROR, PHP_PCRE_BAD_REGEX_ERROR);
 
     HHVM_RC_INT_SAME(PREG_PATTERN_ORDER);
     HHVM_RC_INT_SAME(PREG_SET_ORDER);
     HHVM_RC_INT_SAME(PREG_OFFSET_CAPTURE);
-    HHVM_RC_INT_SAME(PREG_FB_HACK_ARRAYS);
     HHVM_RC_INT_SAME(PREG_FB__PRIVATE__HSL_IMPL);
-    HHVM_RC_INT(PREG_HACK_ARR, PREG_FB_HACK_ARRAYS); // legacy
 
     HHVM_RC_INT_SAME(PREG_SPLIT_NO_EMPTY);
     HHVM_RC_INT_SAME(PREG_SPLIT_DELIM_CAPTURE);
@@ -408,11 +426,12 @@ struct PcreExtension final : Extension {
     HHVM_FE(preg_replace_with_count);
     HHVM_FE(preg_replace_with_count_and_error);
     HHVM_FE(preg_replace_callback);
+    HHVM_FE(preg_replace_callback_with_error);
     HHVM_FE(preg_replace_callback_array);
+    HHVM_FE(preg_replace_callback_array_with_error);
     HHVM_FE(preg_split);
     HHVM_FE(preg_split_with_error);
     HHVM_FE(preg_quote);
-    HHVM_FE(preg_last_error);
     HHVM_FE(ereg_replace);
     HHVM_FE(eregi_replace);
     HHVM_FE(split);

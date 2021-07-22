@@ -15,8 +15,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EXT_SOAP_H_
-#define incl_HPHP_EXT_SOAP_H_
+#pragma once
 
 #include "hphp/runtime/ext/extension.h"
 #include "hphp/runtime/ext/soap/soap.h"
@@ -75,6 +74,9 @@ struct SoapClient {
   int                         m_proxy_port;
   String                      m_proxy_login;
   String                      m_proxy_password;
+  String                      m_proxy_ssl_cert_path;
+  String                      m_proxy_ssl_key_path;
+  String                      m_proxy_ssl_ca_bundle;
   int                         m_connection_timeout;
   int                         m_max_redirect;
   bool                        m_use11;
@@ -190,4 +192,3 @@ struct SoapHeader {
 ///////////////////////////////////////////////////////////////////////////////
 }
 
-#endif // incl_HPHP_EXT_SOAP_H_

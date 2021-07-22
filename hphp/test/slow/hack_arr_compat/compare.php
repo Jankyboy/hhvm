@@ -47,7 +47,7 @@ function do_compares($a, $b, $cmp) {
 
 <<__EntryPoint>>
 function main_compare() {
-  set_error_handler(fun('handler'));
+  set_error_handler(handler<>);
 
   $x1 = vec[
     varray[],
@@ -61,7 +61,7 @@ function main_compare() {
     123,
     4.567,
     'abc',
-    new stdclass,
+    new stdClass,
     imagecreate(1, 1),
     varray[1, varray[2, 5], varray[3, 4]],
     darray['a' => varray[], 'c' => varray[1, 2]],
@@ -78,20 +78,20 @@ function main_compare() {
 
   foreach ($x1 as $a) {
     foreach ($x2_non_hack_arrays as $b) {
-      do_compares($a, $b, fun('do_compare_non_any_array'));
-      do_compares($b, $a, fun('do_compare_non_any_array'));
+      do_compares($a, $b, do_compare_non_any_array<>);
+      do_compares($b, $a, do_compare_non_any_array<>);
     }
     foreach ($x2_hack_arrays as $b) {
-      do_compares($a, $b, fun('do_compare_hack_array'));
-      do_compares($b, $a, fun('do_compare_hack_array'));
+      do_compares($a, $b, do_compare_hack_array<>);
+      do_compares($b, $a, do_compare_hack_array<>);
     }
   }
 
-  do_compares(null, null, fun('do_compare_non_any_array'));
-  do_compares(true, false, fun('do_compare_non_any_array'));
-  do_compares(1, 2, fun('do_compare_non_any_array'));
+  do_compares(null, null, do_compare_non_any_array<>);
+  do_compares(true, false, do_compare_non_any_array<>);
+  do_compares(1, 2, do_compare_non_any_array<>);
 
-  do_compares(null, null, fun('do_compare_hack_array'));
-  do_compares(true, false, fun('do_compare_hack_array'));
-  do_compares(1, 2, fun('do_compare_hack_array'));
+  do_compares(null, null, do_compare_hack_array<>);
+  do_compares(true, false, do_compare_hack_array<>);
+  do_compares(1, 2, do_compare_hack_array<>);
 }

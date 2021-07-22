@@ -1380,8 +1380,7 @@ bool irrelevant_inst(const IRInstruction& inst) {
       if (inst.is(BeginInlining,
                   EndInlining,
                   InlineCall,
-                  InlineReturn,
-                  SyncReturnBC
+                  InlineReturn
                  )) {
         return true;
       }
@@ -1669,11 +1668,11 @@ void if_aset(Env& env, SSATmp* tmp, Fn fn) {
   fn(asetID);
 }
 
-folly::Optional<ASetID> lookup_aset(Env& env, SSATmp* tmp) {
+Optional<ASetID> lookup_aset(Env& env, SSATmp* tmp) {
   auto const asetID = env.asetMap[tmp];
   if (asetID != -1) return asetID;
   assertx(!tmp->type().maybe(TCounted));
-  return folly::none;
+  return std::nullopt;
 }
 
 void reduce_lower_bound(Env& /*env*/, RCState& state, uint32_t asetID) {
@@ -2090,8 +2089,7 @@ void analyze_mem_effects(Env& env,
       // refcounts, so we don't need to reduce lower bounds.
       auto const may_decref = !inst.is(BeginInlining,
                                        EndInlining,
-                                       InlineReturn,
-                                       SyncReturnBC
+                                       InlineReturn
                                       );
       if (may_decref && x.stores != AEmpty) {
         observe_unbalanced_decrefs(env, state, add_node);
@@ -3424,7 +3422,7 @@ void selectiveWeakenDecRefs(IRUnit& unit) {
 
   for (auto& block : blocks) {
     for (auto& inst : *block) {
-      if (inst.is(DecRef)) {
+      if (inst.is(DecRef, DecRefNZ)) {
         const auto& type = inst.src(0)->type();
         const auto profile = decRefProfile(unit.context(), &inst);
         if (profile.optimizing()) {
@@ -3436,7 +3434,7 @@ void selectiveWeakenDecRefs(IRUnit& unit) {
             : RuntimeOption::EvalJitPGODecRefNopDecPercentCOW;
           if (decrefdPct < decrefdPctLimit && !(type <= TCounted)) {
             inst.convertToNop();
-          } else {
+          } else if (inst.is(DecRef)) {
             const auto destroyPct = data.percent(data.destroyed());
             double destroyPctLimit = inst.src(0)->type() <= cowFree
               ? RuntimeOption::EvalJitPGODecRefNZReleasePercent

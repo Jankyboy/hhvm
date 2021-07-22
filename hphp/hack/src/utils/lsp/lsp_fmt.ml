@@ -7,7 +7,7 @@
  *
  *)
 
-open Hh_core
+open Hh_prelude
 open Lsp
 open Hh_json
 open Hh_json_helpers
@@ -20,8 +20,8 @@ let parse_id (json : json) : lsp_id =
   match json with
   | JSON_Number s ->
     begin
-      try NumberId (int_of_string s)
-      with Failure _ ->
+      try NumberId (int_of_string s) with
+      | Failure _ ->
         raise
           (Error.LspException
              {
@@ -103,7 +103,7 @@ let parse_location (j : json option) : Location.t =
     }
 
 let parse_range_opt (json : json option) : range option =
-  if json = None then
+  if Option.is_none json then
     None
   else
     Some (parse_range_exn json)
@@ -117,15 +117,15 @@ let parse_versionedTextDocumentIdentifier (json : json option) :
   VersionedTextDocumentIdentifier.
     {
       uri = Jget.string_exn json "uri" |> uri_of_string;
-      version = Jget.int_d json "version" 0;
+      version = Jget.int_d json "version" ~default:0;
     }
 
 let parse_textDocumentItem (json : json option) : TextDocumentItem.t =
   TextDocumentItem.
     {
       uri = Jget.string_exn json "uri" |> uri_of_string;
-      languageId = Jget.string_d json "languageId" "";
-      version = Jget.int_d json "version" 0;
+      languageId = Jget.string_d json "languageId" ~default:"";
+      version = Jget.int_d json "version" ~default:0;
       text = Jget.string_exn json "text";
     }
 
@@ -171,10 +171,13 @@ let print_textEdit (edit : TextEdit.t) : json =
     JSON_Object
       [("range", print_range edit.range); ("newText", JSON_String edit.newText)])
 
+let print_textEdits (r : TextEdit.t list) : json =
+  JSON_Array (List.map r ~f:print_textEdit)
+
 let print_workspaceEdit (r : WorkspaceEdit.t) : json =
   WorkspaceEdit.(
     let print_workspace_edit_changes (uri, text_edits) =
-      (uri, JSON_Array (List.map ~f:print_textEdit text_edits))
+      (uri, print_textEdits text_edits)
     in
     JSON_Object
       [
@@ -196,16 +199,16 @@ let print_command (command : Command.t) : json =
 let parse_command (json : json option) : Command.t =
   Command.
     {
-      title = Jget.string_d json "title" "";
-      command = Jget.string_d json "command" "";
+      title = Jget.string_d json "title" ~default:"";
+      command = Jget.string_d json "command" ~default:"";
       arguments = Jget.array_d json "arguments" ~default:[] |> List.filter_opt;
     }
 
 let parse_formattingOptions (json : json option) :
     DocumentFormatting.formattingOptions =
   {
-    DocumentFormatting.tabSize = Jget.int_d json "tabSize" 2;
-    insertSpaces = Jget.bool_d json "insertSpaces" true;
+    DocumentFormatting.tabSize = Jget.int_d json "tabSize" ~default:2;
+    insertSpaces = Jget.bool_d json "insertSpaces" ~default:true;
   }
 
 let print_symbolInformation (info : SymbolInformation.t) : json =
@@ -216,7 +219,7 @@ let print_symbolInformation (info : SymbolInformation.t) : json =
         ("name", Some (JSON_String info.name));
         ("kind", Some (print_symbol_kind info.kind));
         ("location", Some (print_location info.location));
-        ("containerName", Option.map info.containerName string_);
+        ("containerName", Option.map info.containerName ~f:string_);
       ])
 
 let parse_codeLens (json : json option) : CodeLens.t =
@@ -425,9 +428,9 @@ let print_diagnostic (diagnostic : PublishDiagnostics.diagnostic) : json =
     Jprint.object_opt
       [
         ("range", Some (print_range diagnostic.range));
-        ("severity", Option.map diagnostic.severity print_diagnosticSeverity);
+        ("severity", Option.map diagnostic.severity ~f:print_diagnosticSeverity);
         ("code", print_diagnosticCode diagnostic.code);
-        ("source", Option.map diagnostic.source string_);
+        ("source", Option.map diagnostic.source ~f:string_);
         ("message", Some (JSON_String diagnostic.message));
         ( "relatedInformation",
           Some
@@ -462,8 +465,8 @@ let parse_diagnostic (j : json option) : PublishDiagnostics.diagnostic =
       | Some (JSON_String s) -> StringCode s
       | Some (JSON_Number s) ->
         begin
-          try IntCode (int_of_string s)
-          with Failure _ ->
+          try IntCode (int_of_string s) with
+          | Failure _ ->
             raise
               (Error.LspException
                  {
@@ -570,9 +573,8 @@ let print_telemetryNotification
     (r : LogMessage.params) (extras : (string * Hh_json.json) list) : json =
   (* LSP allows "any" for the format of telemetry notifications. It's up to us! *)
   JSON_Object
-    ( ("type", int_ (MessageType.to_enum r.LogMessage.type_))
-    :: ("message", JSON_String r.LogMessage.message)
-    :: extras )
+    (("type", int_ (MessageType.to_enum r.LogMessage.type_))
+     :: ("message", JSON_String r.LogMessage.message) :: extras)
 
 (************************************************************************)
 
@@ -669,20 +671,26 @@ let parse_completionItem (params : json option) : CompletionItemResolve.params =
       | None -> None
       | c -> Some (parse_command c)
     in
+    let documentation =
+      match Jget.obj_opt params "documentation" with
+      | None -> None
+      | Some json -> Some (UnparsedDocumentation json)
+    in
     {
       label = Jget.string_exn params "label";
-      kind = Option.bind (Jget.int_opt params "kind") completionItemKind_of_enum;
+      kind =
+        Option.bind (Jget.int_opt params "kind") ~f:completionItemKind_of_enum;
       detail = Jget.string_opt params "detail";
       inlineDetail = Jget.string_opt params "inlineDetail";
       itemType = Jget.string_opt params "itemType";
-      documentation = None;
+      documentation;
       sortText = Jget.string_opt params "sortText";
       filterText = Jget.string_opt params "filterText";
       insertText = Jget.string_opt params "insertText";
       insertTextFormat =
         Option.bind
           (Jget.int_opt params "insertTextFormat")
-          insertTextFormat_of_enum;
+          ~f:insertTextFormat_of_enum;
       textEdits;
       command;
       data = Jget.obj_opt params "data";
@@ -699,35 +707,39 @@ let print_completionItem (item : Completion.completionItem) : json =
       [
         ("label", Some (JSON_String item.label));
         ( "kind",
-          Option.map item.kind (fun x -> int_ @@ completionItemKind_to_enum x)
-        );
-        ("detail", Option.map item.detail string_);
-        ("inlineDetail", Option.map item.inlineDetail string_);
-        ("itemType", Option.map item.itemType string_);
+          Option.map item.kind ~f:(fun x ->
+              int_ @@ completionItemKind_to_enum x) );
+        ("detail", Option.map item.detail ~f:string_);
+        ("inlineDetail", Option.map item.inlineDetail ~f:string_);
+        ("itemType", Option.map item.itemType ~f:string_);
         ( "documentation",
-          Option.map item.documentation ~f:(fun doc ->
-              JSON_Object
-                [
-                  ("kind", JSON_String "markdown");
-                  ( "value",
-                    JSON_String
-                      (String.trim
-                         (List.fold doc ~init:"" ~f:string_of_markedString)) );
-                ]) );
-        ("sortText", Option.map item.sortText string_);
-        ("filterText", Option.map item.filterText string_);
-        ("insertText", Option.map item.insertText string_);
+          match item.documentation with
+          | None -> None
+          | Some (UnparsedDocumentation json) -> Some json
+          | Some (MarkedStringsDocumentation doc) ->
+            Some
+              (JSON_Object
+                 [
+                   ("kind", JSON_String "markdown");
+                   ( "value",
+                     JSON_String
+                       (String.strip
+                          (List.fold doc ~init:"" ~f:string_of_markedString)) );
+                 ]) );
+        ("sortText", Option.map item.sortText ~f:string_);
+        ("filterText", Option.map item.filterText ~f:string_);
+        ("insertText", Option.map item.insertText ~f:string_);
         ( "insertTextFormat",
-          Option.map item.insertTextFormat (fun x ->
+          Option.map item.insertTextFormat ~f:(fun x ->
               int_ @@ insertTextFormat_to_enum x) );
-        ("textEdit", Option.map (List.hd item.textEdits) print_textEdit);
+        ("textEdit", Option.map (List.hd item.textEdits) ~f:print_textEdit);
         ( "additionalTextEdits",
           match List.tl item.textEdits with
           | None
           | Some [] ->
             None
-          | Some l -> Some (JSON_Array (List.map l ~f:print_textEdit)) );
-        ("command", Option.map item.command print_command);
+          | Some l -> Some (print_textEdits l) );
+        ("command", Option.map item.command ~f:print_command);
         ("data", item.data);
       ])
 
@@ -788,9 +800,9 @@ let parse_findReferences (params : json option) : FindReferences.params =
     context =
       {
         FindReferences.includeDeclaration =
-          Jget.bool_d context "includeDeclaration" true;
+          Jget.bool_d context "includeDeclaration" ~default:true;
         includeIndirectReferences =
-          Jget.bool_d context "includeIndirectReferences" false;
+          Jget.bool_d context "includeIndirectReferences" ~default:false;
       };
   }
 
@@ -851,7 +863,7 @@ let parse_documentFormatting (params : json option) : DocumentFormatting.params
   }
 
 let print_documentFormatting (r : DocumentFormatting.result) : json =
-  JSON_Array (List.map r ~f:print_textEdit)
+  print_textEdits r
 
 let parse_documentRangeFormatting (params : json option) :
     DocumentRangeFormatting.params =
@@ -863,7 +875,7 @@ let parse_documentRangeFormatting (params : json option) :
   }
 
 let print_documentRangeFormatting (r : DocumentRangeFormatting.result) : json =
-  JSON_Array (List.map r ~f:print_textEdit)
+  print_textEdits r
 
 let parse_documentOnTypeFormatting (params : json option) :
     DocumentOnTypeFormatting.params =
@@ -877,7 +889,18 @@ let parse_documentOnTypeFormatting (params : json option) :
 
 let print_documentOnTypeFormatting (r : DocumentOnTypeFormatting.result) : json
     =
-  JSON_Array (List.map r ~f:print_textEdit)
+  print_textEdits r
+
+let parse_willSaveWaitUntil (params : json option) : WillSaveWaitUntil.params =
+  let open WillSaveWaitUntil in
+  {
+    textDocument =
+      Jget.obj_exn params "textDocument" |> parse_textDocumentIdentifier;
+    reason =
+      Jget.int_exn params "reason"
+      |> textDocumentSaveReason_of_enum
+      |> Option.value ~default:Manual;
+  }
 
 (************************************************************************)
 
@@ -1159,8 +1182,7 @@ let print_error (e : Error.t) : json =
   in
   let entries =
     ("code", int_ (Error.code_to_enum e.Error.code))
-    :: ("message", string_ e.Error.message)
-    :: data
+    :: ("message", string_ e.Error.message) :: data
   in
   JSON_Object entries
 
@@ -1252,6 +1274,7 @@ let get_uri_opt (m : lsp_message) : Lsp.documentUri option =
   | RequestMessage (_, ShowMessageRequestRequest _)
   | RequestMessage (_, ShowStatusRequestFB _)
   | RequestMessage (_, RageRequestFB)
+  | RequestMessage (_, WillSaveWaitUntilRequest _)
   | NotificationMessage ExitNotification
   | NotificationMessage (CancelRequestNotification _)
   | NotificationMessage (LogMessageNotification _)
@@ -1296,6 +1319,7 @@ let request_name_to_string (request : lsp_request) : string =
   | HackTestStartServerRequestFB -> "$test/startHhServer"
   | HackTestStopServerRequestFB -> "$test/stopHhServer"
   | HackTestShutdownServerlessRequestFB -> "$test/shutdownServerlessIde"
+  | WillSaveWaitUntilRequest _ -> "textDocument/willSaveWaitUntil"
   | UnknownRequest (method_, _params) -> method_
 
 let result_name_to_string (result : lsp_result) : string =
@@ -1328,6 +1352,7 @@ let result_name_to_string (result : lsp_result) : string =
   | HackTestStopServerResultFB -> "$test/stopHhServer"
   | HackTestShutdownServerlessResultFB -> "$test/shutdownServerlessIde"
   | RegisterCapabilityRequestResult -> "client/registerCapability"
+  | WillSaveWaitUntilResult _ -> "textDocument/willSaveWaitUntil"
   | ErrorResult e -> "ERROR/" ^ e.Error.message
 
 let notification_name_to_string (notification : lsp_notification) : string =
@@ -1421,6 +1446,8 @@ let parse_lsp_request (method_ : string) (params : json option) : lsp_request =
   | "$test/startHhServer" -> HackTestStartServerRequestFB
   | "$test/stopHhServer" -> HackTestStopServerRequestFB
   | "$test/shutdownServerlessIde" -> HackTestShutdownServerlessRequestFB
+  | "textDocument/willSaveWaitUntil" ->
+    WillSaveWaitUntilRequest (parse_willSaveWaitUntil params)
   | "window/showMessageRequest"
   | "window/showStatus"
   | _ ->
@@ -1486,6 +1513,7 @@ let parse_lsp_result (request : lsp_request) (result : json) : lsp_result =
   | HackTestStartServerRequestFB
   | HackTestStopServerRequestFB
   | HackTestShutdownServerlessRequestFB
+  | WillSaveWaitUntilRequest _
   | UnknownRequest _ ->
     raise
       (Error.LspException
@@ -1555,6 +1583,7 @@ let print_lsp_request (id : lsp_id) (request : lsp_request) : json =
     | HackTestStartServerRequestFB
     | HackTestStopServerRequestFB
     | HackTestShutdownServerlessRequestFB
+    | WillSaveWaitUntilRequest _
     | UnknownRequest _ ->
       failwith ("Don't know how to print request " ^ method_)
   in
@@ -1599,6 +1628,7 @@ let print_lsp_response (id : lsp_id) (result : lsp_result) : json =
     | ShowStatusResultFB _
     | RegisterCapabilityRequestResult ->
       failwith ("Don't know how to print result " ^ method_)
+    | WillSaveWaitUntilResult r -> print_textEdits r
     | ErrorResult e -> print_error e
   in
   match result with

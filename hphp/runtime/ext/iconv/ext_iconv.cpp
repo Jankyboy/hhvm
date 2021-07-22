@@ -1741,7 +1741,7 @@ static Variant HHVM_FUNCTION(iconv_mime_decode_headers,
   Variant encoded = check_charset(charset);
   if (same(encoded, false)) return false;
   String enc = encoded.toString();
-  Array ret = Array::CreateDArray();
+  Array ret = Array::CreateDict();
   php_iconv_err_t err = PHP_ICONV_ERR_SUCCESS;
   const char *encoded_str = encoded_headers.data();
   int encoded_str_len = encoded_headers.size();
@@ -1786,7 +1786,7 @@ static Variant HHVM_FUNCTION(iconv_mime_decode_headers,
       if (ret.exists(header)) {
         Variant elem = ret[header];
         if (!elem.isArray()) {
-          ret.set(header, make_varray(elem, value));
+          ret.set(header, make_vec_array(elem, value));
         } else {
           elem.asArrRef().append(value);
           ret.set(header, elem);
@@ -1819,7 +1819,7 @@ const StaticString
 static Variant HHVM_FUNCTION(iconv_get_encoding,
     const String& type /* = "all" */) {
   if (type == s_all) {
-    return make_darray(
+    return make_dict_array(
       s_input_encoding,    ICONVG(input_encoding),
       s_output_encoding,   ICONVG(output_encoding),
       s_internal_encoding, ICONVG(internal_encoding)

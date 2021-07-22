@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_RUNTIME_VM_MINSTR_STATE_H_
-#define incl_HPHP_RUNTIME_VM_MINSTR_STATE_H_
+#pragma once
 
 #include "hphp/runtime/base/tv-val.h"
 #include "hphp/runtime/base/typed-value.h"
@@ -50,10 +49,13 @@ struct MInstrState {
 
   tv_lval base;
 
+  // In order to support modifying readonly value type arrays, we need a bit to
+  // determine whether the last prop access in a member chain is readonly and
+  // COW.
+  bool roProp;
+
   // type-scan driven scanner
   TYPE_SCAN_IGNORE_FIELD(base);
 };
 
 }
-
-#endif

@@ -150,6 +150,10 @@ static struct LdapExtension final : Extension {
 #endif
 
     loadSystemlib();
+    LDAP* link = nullptr;
+    if (ldap_create(&link) == LDAP_SUCCESS) {
+      ldap_unbind(link);
+    }
   }
 } s_ldap_extension;
 
@@ -366,7 +370,7 @@ static bool php_ldap_do_modify(const Resource& link, const String& dn, const Arr
   /* end additional , gerrit thomson */
 
   bool ret = false;
-  Array stringHolder;
+  Array stringHolder = Array::CreateVec();
   for (int i = 0; i < num_attribs; i++) {
     ldap_mods[i] = (LDAPMod*)malloc(sizeof(LDAPMod));
     ldap_mods[i]->mod_op = oper | LDAP_MOD_BVALUES;
@@ -502,7 +506,7 @@ static Variant php_ldap_do_search(const Variant& link, const Variant& base_dn,
   int num_attribs = arr_attributes.size();
   int old_sizelimit = -1, old_timelimit = -1, old_deref = -1;
   auto ldap_attrs = std::unique_ptr<char*[]>{new char*[num_attribs+1]};
-  Array stringHolder;
+  Array stringHolder = Array::CreateVec();
   char *ldap_base_dn = nullptr;
   char *ldap_filter = nullptr;
 
@@ -564,7 +568,7 @@ static Variant php_ldap_do_search(const Variant& link, const Variant& base_dn,
     req::vector<int> rcs;
     rcs.resize(nlinks);
 
-    Array ret = Array::CreateVArray();
+    Array ret = Array::CreateVec();
     ArrayIter iter(link.toArray());
     ArrayIter iterdn(base_dn.toArray());
     ArrayIter iterfilter(filter.toArray());
@@ -709,8 +713,8 @@ static void get_attributes(Array &ret, LDAP *ldap,
     Array tmp;
     tmp.set(s_count, num_values);
     for (int i = 0; i < num_values; i++) {
-      tmp.append(String(ldap_value[i]->bv_val, ldap_value[i]->bv_len,
-                        CopyString));
+      auto const val = ldap_value[i];
+      tmp.set(i, String(val->bv_val, val->bv_len, CopyString));
     }
     ldap_value_free_len(ldap_value);
 
@@ -784,7 +788,7 @@ Variant HHVM_FUNCTION(ldap_explode_dn,
   Array ret;
   ret.set(s_count, count);
   for (i = 0; i < count; i++) {
-    ret.append(String(ldap_value[i], CopyString));
+    ret.set(i, String(ldap_value[i], CopyString));
   }
 
   ldap_value_free(ldap_value);
@@ -1438,7 +1442,7 @@ bool HHVM_FUNCTION(ldap_set_option,
       ctrls = (LDAPControl**)malloc((1 + ncontrols) * sizeof(*ctrls));
       *ctrls = nullptr;
       ctrlp = ctrls;
-      Array stringHolder;
+      Array stringHolder = Array::CreateVec();
       for (ArrayIter iter(newval.toArray()); iter; ++iter) {
         Variant vctrlval = iter.second();
         if (!vctrlval.isArray()) {
@@ -1676,7 +1680,7 @@ Variant HHVM_FUNCTION(ldap_get_entries,
 
   num_entries = 0;
   while (ldap_result_entry != nullptr) {
-    Array tmp1 = Array::CreateDArray();
+    Array tmp1 = Array::CreateDict();
     get_attributes(tmp1, ldap, ldap_result_entry, true);
 
     char *dn = ldap_get_dn(ldap, ldap_result_entry);
@@ -1745,7 +1749,7 @@ Variant HHVM_FUNCTION(ldap_get_attributes,
     return false;
   }
 
-  Array ret = Array::CreateDArray();
+  Array ret = Array::CreateDict();
   get_attributes(ret, ld->link, entry->data, false);
   return ret;
 }
@@ -1869,7 +1873,7 @@ bool HHVM_FUNCTION(ldap_parse_reference,
     return false;
   }
 
-  referrals = Array::CreateVArray();
+  referrals = Array::CreateVec();
   if (lreferrals != nullptr) {
     refp = lreferrals;
     while (*refp) {
@@ -1911,7 +1915,7 @@ bool HHVM_FUNCTION(ldap_parse_result,
   errcode = lerrcode;
 
   /* Reverse -> fall through */
-  referrals = Array::CreateVArray();
+  referrals = Array::CreateVec();
   if (lreferrals != nullptr) {
     refp = lreferrals;
     while (*refp) {
@@ -1972,8 +1976,8 @@ Variant HHVM_FUNCTION(ldap_get_values_len,
   int num_values = ldap_count_values_len(ldap_value_len);
   Array ret;
   for (int i = 0; i < num_values; i++) {
-    ret.append(String(ldap_value_len[i]->bv_val, ldap_value_len[i]->bv_len,
-                      CopyString));
+    auto const val = ldap_value_len[i];
+    ret.set(i, String(val->bv_val, val->bv_len, CopyString));
   }
   ret.set(s_count, num_values);
   ldap_value_free_len(ldap_value_len);
@@ -2139,7 +2143,7 @@ String HHVM_FUNCTION(ldap_escape,
 
   char hex[] = "0123456789abcdef";
 
-  String result(3 * value.size(), ReserveString);
+  String result(3UL * value.size(), ReserveString);
   char *rdata = result.get()->mutableData(), *r = rdata;
 
   for (int i = 0; i < value.size(); i++) {

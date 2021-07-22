@@ -11,7 +11,7 @@ string(10) "string_val"
 
 -- Iteration 4 --
 
-Warning: mbregex compile err: invalid code point value in %s/mb_ereg_replace_variation1.php on line 83
+Warning: mbregex compile err: invalid code point value in %s/mb_ereg_replace_variation1.php on line %d
 bool(false)
 
 -- Iteration 5 --
@@ -19,7 +19,7 @@ string(10) "string_val"
 
 -- Iteration 6 --
 
-Warning: mbregex compile err: invalid code point value in %s/mb_ereg_replace_variation1.php on line 83
+Warning: mbregex compile err: invalid code point value in %s/mb_ereg_replace_variation1.php on line %d
 bool(false)
 
 -- Iteration 7 --
@@ -65,11 +65,9 @@ string(10) "string_val"
 string(10) "string_val"
 
 -- Iteration 21 --
-string(10) "string_val"
 
--- Iteration 22 --
-string(10) "string_val"
-
--- Iteration 23 --
-string(10) "string_val"
-Done
+Fatal error: Uncaught exception 'TypecastException' with message 'Object of class classA could not be converted to int' in %s/mb_ereg_replace_variation1.php:76
+Stack trace:
+#0 %s/mb_ereg_replace_variation1.php(76): mb_ereg_replace()
+#1 (): main()
+#2 {main}

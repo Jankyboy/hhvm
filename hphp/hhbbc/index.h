@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HHBBC_INDEX_H_
-#define incl_HHBBC_INDEX_H_
+#pragma once
 
 #include <memory>
 #include <tuple>
@@ -26,14 +25,16 @@
 #include <tbb/concurrent_hash_map.h>
 
 #include <folly/synchronization/Baton.h>
-#include <folly/Optional.h>
 #include <folly/Hash.h>
 
 #include "hphp/util/compact-vector.h"
 #include "hphp/util/either.h"
+#include "hphp/util/tribool.h"
+
 #include "hphp/runtime/base/repo-auth-type-array.h"
 #include "hphp/runtime/vm/type-constraint.h"
 
+#include "hphp/hhbbc/hhbbc.h"
 #include "hphp/hhbbc/misc.h"
 
 namespace HPHP { namespace HHBBC {
@@ -47,11 +48,14 @@ struct FuncAnalysisResult;
 struct Context;
 struct ContextHash;
 struct CallContext;
+struct PropertiesInfo;
+struct MethodsInfo;
 
-extern const Type TTop;
+extern const Type TCell;
 
 namespace php {
 struct Class;
+struct Prop;
 struct Record;
 struct Const;
 struct Func;
@@ -84,9 +88,8 @@ enum class Dep : uintptr_t {
   /* This dependency should trigger when the bad initial prop value bit for a
    * class changes */
   PropBadInitialValues = (1u << 3),
-  /* This dependency should trigger when a public static property with a
-   * particular name changes */
-  PublicSPropName = (1u << 4),
+  /* This dependency should trigger when a public static property changes */
+  PublicSProp = (1u << 4),
   /* This dependency means that we refused to do inline analysis on
    * this function due to inline analysis depth. The dependency will
    * trigger if the target function becomes effect-free, or gets a
@@ -98,13 +101,14 @@ enum class Dep : uintptr_t {
 /*
  * A DependencyContext encodes enough of the context to record a dependency - a
  * php::Func, if we're doing private property analysis and its a suitable class,
- * a php::Class, or a public static property with a particular name.
+ * a php::Class, or a public static property.
  */
 
 enum class DependencyContextType : uint16_t {
   Func,
   Class,
-  PropName
+  Prop,
+  FuncFamily
 };
 
 using DependencyContext = CompactTaggedPtr<const void, DependencyContextType>;
@@ -149,16 +153,78 @@ using ConstantMap = hphp_hash_map<SString, TypedValue>;
  * State of properties on a class.  Map from property name to its
  * Type.
  */
-template <typename T = Type>
+template <typename T = Type> // NB: The template param here is to
+                             // break a cyclic dependency on Type.
 struct PropStateElem {
   T ty;
   const TypeConstraint* tc = nullptr;
+  Attr attrs;
+  bool everModified;
 
   bool operator==(const PropStateElem<T>& o) const {
-    return ty == o.ty && tc == o.tc;
+    return
+      ty == o.ty &&
+      tc == o.tc &&
+      attrs == o.attrs &&
+      everModified == o.everModified;
   }
 };
 using PropState = std::map<LSString,PropStateElem<>>;
+
+/*
+ * The result of Index::lookup_static
+ */
+template <typename T = Type> // NB: The template parameter is here to
+                             // break a cyclic dependency on Type.
+struct PropLookupResult {
+  T ty; // The best known type of the property (TBottom if not found)
+  SString name; // The statically known name of the string, if any
+  TriBool found; // If the property was found
+  TriBool isConst; // If the property is AttrConst
+  TriBool readOnly; // If the property is AttrIsReadOnly
+  TriBool lateInit; // If the property is AttrLateInit
+  bool classInitMightRaise; // If class initialization during the
+                            // property access can raise (unlike the
+                            // others, this is only no or maybe).
+};
+
+template <typename T>
+inline PropLookupResult<T>& operator|=(PropLookupResult<T>& a,
+                                       const PropLookupResult<T>& b) {
+  assertx(a.name == b.name);
+  a.ty |= b.ty;
+  a.found |= b.found;
+  a.isConst |= b.isConst;
+  a.readOnly |= b.readOnly;
+  a.lateInit |= b.lateInit;
+  a.classInitMightRaise |= b.classInitMightRaise;
+  return a;
+}
+
+std::string show(const PropLookupResult<Type>&);
+
+/*
+ * The result of Index::merge_static_type
+ */
+template <typename T = Type> // NB: The template parameter is here to
+                             // break a cyclic dependency on Type
+struct PropMergeResult {
+  T adjusted; // The merged type, potentially adjusted according to
+              // the prop's type-constraint (it's the subtype of the
+              // merged type that would succeed).
+  TriBool throws; // Whether the mutation this merge represents
+                  // can throw.
+};
+
+template <typename T>
+inline PropMergeResult<T>& operator|=(PropMergeResult<T>& a,
+                                      const PropMergeResult<T>& b) {
+  a.adjusted |= b.adjusted;
+  a.throws |= b.throws;
+  return a;
+}
+
+std::string show(const PropMergeResult<Type>&);
 
 //////////////////////////////////////////////////////////////////////
 
@@ -282,15 +348,15 @@ struct Class {
 
   /*
    * Returns the Class that is the first common ancestor between 'this' and 'o'.
-   * If there is no common ancestor folly::none is returned
+   * If there is no common ancestor std::nullopt is returned
    */
-  folly::Optional<Class> commonAncestor(const Class& o) const;
+  Optional<Class> commonAncestor(const Class& o) const;
 
   /*
    * Returns the res::Class for this Class's parent if there is one,
    * or nullptr.
    */
-  folly::Optional<Class> parent() const;
+  Optional<Class> parent() const;
 
   /*
    * Returns true if we have a ClassInfo for this Class.
@@ -339,6 +405,13 @@ struct Record {
   bool mustBeSubtypeOf(const Record& o) const;
 
   /*
+   * Returns false if this record is definitely not going to be a subtype
+   * of `o' at runtime.  If this function returns true, this may
+   * still not be a subtype of `o' at runtime, it just may not be known.
+   */
+  bool maybeSubtypeOf(const Record& o) const;
+
+  /*
    * If this function return false, it is known that this record
    * is in no subtype relationship with the argument record 'o'.
    * Returns true if this record could be a subtype of `o' at runtime.
@@ -361,14 +434,14 @@ struct Record {
    * Returns the res::Record for this Record's parent if there is one,
    * or nullptr.
    */
-  folly::Optional<Record> parent() const;
+  Optional<Record> parent() const;
 
   /*
    * Returns the Record that is the first common ancestor between
    * 'this' and 'o'.
-   * If there is no common ancestor folly::none is returned
+   * If there is no common ancestor std::nullopt is returned
    */
-  folly::Optional<Record> commonAncestor(const Record&) const;
+  Optional<Record> commonAncestor(const Record&) const;
 
   /*
    * Returns true if we have a RecordInfo for this Record.
@@ -496,14 +569,6 @@ std::string show(const Class&);
  * "update" step in between whole program analysis rounds).
  */
 struct Index {
-
-  struct NonUniqueSymbolException : std::exception {
-    explicit NonUniqueSymbolException(std::string msg) : msg(msg) {}
-    const char* what() const noexcept override { return msg.c_str(); }
-  private:
-    std::string msg;
-  };
-
   /*
    * Create an Index for a php::Program.  Performs some initial
    * analysis of the program.
@@ -555,7 +620,7 @@ struct Index {
    * Throw away data structures that won't be needed after the emit
    * stage.
    */
-  void cleanup_post_emit();
+  void cleanup_post_emit(php::ProgramPtr program);
 
   /*
    * The Index contains a Builder for an ArrayTypeTable.
@@ -574,10 +639,10 @@ struct Index {
    * program point you care about (it could be non-hoistable, even
    * though it's unique, for example).
    *
-   * Returns folly::none if we can't prove the supplied name must be a
+   * Returns std::nullopt if we can't prove the supplied name must be a
    * record type.  (E.g. if there are type aliases.)
    */
-  folly::Optional<res::Record> resolve_record(SString name) const;
+  Optional<res::Record> resolve_record(SString name) const;
 
   /*
    * Find all the closures created inside the context of a given
@@ -613,16 +678,16 @@ struct Index {
    * program point you care about (it could be non-hoistable, even
    * though it's unique, for example).
    *
-   * Returns folly::none if we can't prove the supplied name must be a
+   * Returns std::nullopt if we can't prove the supplied name must be a
    * object type.  (E.g. if there are type aliases.)
    */
-  folly::Optional<res::Class> resolve_class(Context, SString name) const;
+  Optional<res::Class> resolve_class(Context, SString name) const;
 
   /*
    * Try to resolve self/parent types for the given context
    */
-  folly::Optional<res::Class> selfCls(const Context& ctx) const;
-  folly::Optional<res::Class> parentCls(const Context& ctx) const;
+  Optional<res::Class> selfCls(const Context& ctx) const;
+  Optional<res::Class> parentCls(const Context& ctx) const;
 
   template <typename T>
   struct ResolvedInfo {
@@ -673,10 +738,10 @@ struct Index {
   /*
    * Try to resolve a class constructor for the supplied class type.
    *
-   * Returns: folly::none if it can't at least figure out a func
+   * Returns: std::nullopt if it can't at least figure out a func
    * family for the call.
    */
-  folly::Optional<res::Func>
+  Optional<res::Func>
   resolve_ctor(Context, res::Class rcls, bool exact) const;
 
   /*
@@ -699,7 +764,7 @@ struct Index {
    * arbitrary unions, or intersection).
    */
   Type lookup_constraint(Context, const TypeConstraint&,
-                         const Type& t = TTop) const;
+                         const Type& t = TCell) const;
 
   /*
    * If this function returns true, it is safe to assume that Type t
@@ -747,7 +812,7 @@ struct Index {
 
   /*
    * If func is effect-free when called with args, and it returns a constant,
-   * return that constant; otherwise return TTop.
+   * return that constant; otherwise return TInitCell.
    */
   Type lookup_foldable_return_type(Context ctx,
                                    const php::Func* func,
@@ -757,7 +822,8 @@ struct Index {
    * Return the best known return type for a resolved function, in a
    * context insensitive way.  Returns TInitCell at worst.
    */
-  Type lookup_return_type(Context, res::Func, Dep dep = Dep::ReturnTy) const;
+  Type lookup_return_type(Context, MethodsInfo*, res::Func,
+                          Dep dep = Dep::ReturnTy) const;
 
   /*
    * Return the best known return type for a resolved function, given
@@ -767,20 +833,24 @@ struct Index {
    * order to interpret the callee with these argument types.
    */
   Type lookup_return_type(Context caller,
+                          MethodsInfo*,
                           const CompactVector<Type>& args,
                           const Type& context,
                           res::Func,
                           Dep dep = Dep::ReturnTy) const;
 
   /*
-   * Look up the return type for an unresolved function.  The
-   * interpreter should not use this routine---it's for stats or debug
-   * dumps.
+   * Look up raw return type information for an unresolved
+   * function. This is the best known return type, and the number of
+   * refinements done to that type.
+   *
+   * This function does not register a dependency on the return type
+   * information.
    *
    * Nothing may be writing to the index when this function is used,
    * but concurrent readers are allowed.
    */
-  Type lookup_return_type_raw(const php::Func*) const;
+  std::pair<Type, size_t> lookup_return_type_raw(const php::Func*) const;
 
   /*
    * Return the best known types of a closure's used variables (on
@@ -812,7 +882,7 @@ struct Index {
   /*
    * Returns the number of inout parameters expected by func (if known).
    */
-  folly::Optional<uint32_t> lookup_num_inout_params(Context, res::Func) const;
+  Optional<uint32_t> lookup_num_inout_params(Context, res::Func) const;
 
   /*
    * Returns the control-flow insensitive inferred private instance
@@ -848,39 +918,28 @@ struct Index {
    */
   PropState lookup_private_statics(const php::Class*,
                                    bool move = false) const;
+  PropState lookup_public_statics(const php::Class*) const;
 
   /*
-   * Lookup the best known type for a public static property, with a given
-   * class and name.
-   *
-   * This function will always return TInitCell before refine_public_statics has
-   * been called, or if the AnalyzePublicStatics option is off.
+   * Lookup metadata about the static property access `cls'::`name',
+   * in the current context `ctx'. The returned metadata not only
+   * includes the best known type of the property, but whether it is
+   * definitely found, and whether the access might raise for various
+   * reasons. This function is responsible for walking the class
+   * hierarchy to find the appropriate property while applying
+   * accessibility rules. This is intended to be the source of truth
+   * about static properties during analysis.
    */
-  Type lookup_public_static(Context ctx, const Type& cls,
-                            const Type& name) const;
-  Type lookup_public_static(Context ctx, const php::Class*,
-                            SString name) const;
+  PropLookupResult<> lookup_static(Context ctx,
+                                   const PropertiesInfo& privateProps,
+                                   const Type& cls,
+                                   const Type& name) const;
 
   /*
    * Lookup if initializing (which is a side-effect of several bytecodes) the
    * given class might raise.
    */
   bool lookup_class_init_might_raise(Context, res::Class) const;
-
-  /*
-   * Lookup if a public static property with the given class and name might be
-   * AttrLateInit.
-   */
-  bool lookup_public_static_maybe_late_init(const Type& cls,
-                                            const Type& name) const;
-
-  /*
-   * Returns whether a public static property is known to be immutable.  This
-   * is used to add AttrPersistent flags to static properties, and relies on
-   * AnalyzePublicStatics (without this flag it will always return false).
-   */
-  bool lookup_public_static_immutable(const php::Class*,
-                                      SString name) const;
 
   /*
    * Lookup the best known type for a public (non-static) property. Since we
@@ -919,10 +978,42 @@ struct Index {
   void use_class_dependencies(bool f);
 
   /*
+   * Merge the type `val' into the known type for static property
+   * `cls'::`name'. Depending on what we know about `cls' and `name',
+   * this might affect multiple properties. This function is
+   * responsible for walking the class hierarchy to find the
+   * appropriate property while applying accessibility
+   * rules. Mutations of AttrConst properties are ignored unless
+   * `ignoreConst' is set to true. If `checkUB' is true, upper-bound
+   * type constraints are consulted in addition to the normal type
+   * constraints.
+   *
+   * The result tells you the subtype of val that would be
+   * successfully set (according to the type constraints), and if the
+   * mutation would throw or not.
+   */
+  PropMergeResult<> merge_static_type(Context ctx,
+                                      PublicSPropMutations& publicMutations,
+                                      PropertiesInfo& privateProps,
+                                      const Type& cls,
+                                      const Type& name,
+                                      const Type& val,
+                                      bool checkUB = false,
+                                      bool ignoreConst = false,
+                                      bool mustBeReadOnly = false) const;
+
+  /*
    * Initialize the initial types for public static properties. This should be
    * done after rewriting initial property values, as that affects the types.
    */
   void init_public_static_prop_types();
+
+  /*
+   * Initialize the initial "may have bad initial value" bit for
+   * properties. By initially setting this before analysis, we save
+   * redundant re-analyzes.
+   */
+  void preinit_bad_initial_prop_values();
 
   /*
    * Refine the types of the class constants defined by an 86cinit,
@@ -1068,18 +1159,13 @@ struct Index {
   /*
    * Return true if the resolved function supports async eager return.
    */
-  folly::Optional<bool> supports_async_eager_return(res::Func rfunc) const;
+  Optional<bool> supports_async_eager_return(res::Func rfunc) const;
 
   /*
    * Return true if the function is effect free.
    */
   bool is_effect_free(res::Func rfunc) const;
   bool is_effect_free(const php::Func* func) const;
-
-  /*
-   * Return true if there are any interceptable functions
-   */
-  bool any_interceptable_functions() const;
 
   /*
    * Do any necessary fixups to a return type.
@@ -1132,7 +1218,7 @@ private:
   resolve_type_name_internal(SString name) const;
 
   template<typename T>
-  folly::Optional<T> resolve_type_impl(SString name) const;
+  Optional<T> resolve_type_impl(SString name) const;
 
 private:
   std::unique_ptr<IndexData> const m_data;
@@ -1144,21 +1230,6 @@ private:
  * Used for collecting all mutations of public static property types.
  */
 struct PublicSPropMutations {
-  /*
-   * This function must be called anywhere the interpreter does something that
-   * could change the type of public static properties named `name' on classes
-   * of type `cls' to `val'.
-   *
-   * Note that if cls and name are both too generic this object will have to
-   * give up all information it knows about any public static properties.
-   */
-  void merge(const Index& index, Context ctx, const Type& cls,
-             const Type& name, const Type& val, bool ignoreConst = false);
-  void merge(const Index& index, Context ctx, ClassInfo* cinfo,
-             const Type& name, const Type& val, bool ignoreConst = false);
-  void merge(const Index& index, Context ctx, const php::Class& cls,
-             const Type& name, const Type& val, bool ignoreConst = false);
-
 private:
   friend struct Index;
 
@@ -1183,10 +1254,14 @@ private:
     KnownMap m_known;
   };
   std::unique_ptr<Data> m_data;
+
+  Data& get();
+
+  void mergeKnown(const ClassInfo* ci, const php::Prop& prop, const Type& val);
+  void mergeUnknownClass(SString prop, const Type& val);
+  void mergeUnknown(Context);
 };
 
 //////////////////////////////////////////////////////////////////////
 
 }}
-
-#endif

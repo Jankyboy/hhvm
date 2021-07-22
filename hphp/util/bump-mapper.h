@@ -14,17 +14,21 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_UTIL_BUMP_MAPPER_H_
-#define incl_HPHP_UTIL_BUMP_MAPPER_H_
+#pragma once
 
 #include "hphp/util/address-range.h"
 #include "hphp/util/alloc-defs.h"
 #include "hphp/util/alloc.h"
+#include <functional>
 #include <utility>
 
 #if USE_JEMALLOC_EXTENT_HOOKS
 
-namespace HPHP { namespace alloc {
+namespace HPHP {
+
+extern bool g_useTHPUponHugeTLBFailure;
+
+namespace alloc {
 
 // Interface for all mappers. It also includes data about page limit (for huge
 // page mappers) and NUMA support.
@@ -161,7 +165,25 @@ struct BumpFileMapper : public RangeMapper {
   char m_dirName[TMPDIRMAXLEN]{};
 };
 
+
+// A mapper that is used when other mappers all fail. To avoid crashing, this
+// could allocate from some emergency buffer, and initiate a graceful shutdown.
+// The range passed in should be pre-mapped.
+struct BumpEmergencyMapper : public RangeMapper {
+ public:
+  using ExitFun = std::function<void()>;
+  template<typename... Args>
+  explicit BumpEmergencyMapper(ExitFun&& exitFn, Args&&... args)
+    : RangeMapper(std::forward<Args>(args)...)
+    , m_exit(exitFn) {}
+ protected:
+  Direction direction() const override { return Direction::LowToHigh; }
+  bool addMappingImpl() override;
+ protected:
+  // The exit function to call when we start using the emergency mapping.
+  ExitFun m_exit;
+};
+
 }}
 
-#endif
 #endif

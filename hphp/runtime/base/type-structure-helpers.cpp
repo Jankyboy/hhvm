@@ -19,7 +19,6 @@
 
 #include "hphp/runtime/base/array-data.h"
 #include "hphp/runtime/base/array-iterator.h"
-#include "hphp/runtime/base/array-provenance.h"
 #include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/base/enum-util.h"
 #include "hphp/runtime/base/tv-comparisons.h"
@@ -49,6 +48,7 @@ bool tvInstanceOfImpl(const TypedValue* tv, F lookupClass) {
     case KindOfResource:
     case KindOfRecord:
     case KindOfRFunc:
+    case KindOfClsMeth:
     case KindOfRClsMeth:
       return false;
 
@@ -89,11 +89,7 @@ bool tvInstanceOfImpl(const TypedValue* tv, F lookupClass) {
     case KindOfPersistentDict:
     case KindOfDict:
     case KindOfPersistentKeyset:
-    case KindOfKeyset:
-    case KindOfPersistentDArray:
-    case KindOfDArray:
-    case KindOfPersistentVArray:
-    case KindOfVArray: {
+    case KindOfKeyset: {
       auto const cls = lookupClass();
       return cls && interface_supports_arrlike(cls->name());
     }
@@ -102,18 +98,6 @@ bool tvInstanceOfImpl(const TypedValue* tv, F lookupClass) {
       auto const cls = lookupClass();
       return cls && tv->m_data.pobj->instanceof(cls);
     }
-
-    case KindOfClsMeth: {
-      auto const cls = lookupClass();
-      if (cls && interface_supports_arrlike(cls->name())) {
-        if (RO::EvalIsVecNotices) {
-          raise_notice("Implicit clsmeth to %s conversion",
-                       cls->name()->data());
-        }
-        return true;
-      }
-      return false;
-    }
   }
   not_reached();
 }
@@ -121,7 +105,7 @@ bool tvInstanceOfImpl(const TypedValue* tv, F lookupClass) {
 } // namespace
 
 bool tvInstanceOf(const TypedValue* tv, const NamedEntity* ne) {
-  return tvInstanceOfImpl(tv, [ne]() { return Unit::lookupClass(ne); });
+  return tvInstanceOfImpl(tv, [ne]() { return Class::lookup(ne); });
 }
 
 bool tvInstanceOf(const TypedValue* tv, const Class* cls) {
@@ -132,32 +116,32 @@ namespace {
 
 ALWAYS_INLINE
 bool shapeAllowsUnknownFields(const Array& ts) {
-  return
-    ts.exists(s_allows_unknown_fields) &&
-    ts[s_allows_unknown_fields].asBooleanVal();
+  auto const tv = ts.lookup(s_allows_unknown_fields);
+  return tv.is_init() && tv.val().num;
 }
 
 ALWAYS_INLINE
 bool isOptionalShapeField(const ArrayData* field) {
   auto const property = s_optional_shape_field.get();
-  return field->exists(property) && tvCastToBoolean(field->at(property));
+  auto const tv = field->get(property);
+  return tvToBool(tv);
 }
 
 ALWAYS_INLINE
 ArrayData* getShapeFieldElement(const TypedValue& v) {
-  assertx(tvIsHAMSafeDArray(&v));
+  assertx(tvIsDict(&v));
   auto const result = v.m_data.parr;
   auto const valueField = result->get(s_value.get());
   if (!valueField.is_init()) return result;
-  assertx(tvIsHAMSafeDArray(valueField));
+  assertx(tvIsDict(valueField));
   return valueField.val().parr;
 }
 
 ALWAYS_INLINE
-folly::Optional<ArrayData*> getGenericTypesOpt(const ArrayData* ts) {
+Optional<ArrayData*> getGenericTypesOpt(const ArrayData* ts) {
   auto const generics_field = ts->get(s_generic_types.get());
-  if (!generics_field.is_init()) return folly::none;
-  assertx(tvIsHAMSafeVArray(generics_field));
+  if (!generics_field.is_init()) return std::nullopt;
+  assertx(tvIsVec(generics_field));
   return generics_field.val().parr;
 }
 
@@ -217,7 +201,10 @@ bool typeStructureIsType(
     case TypeStructure::Kind::T_vec:
     case TypeStructure::Kind::T_keyset:
     case TypeStructure::Kind::T_vec_or_dict:
-    case TypeStructure::Kind::T_arraylike: {
+    case TypeStructure::Kind::T_darray:
+    case TypeStructure::Kind::T_varray:
+    case TypeStructure::Kind::T_varray_or_darray:
+    case TypeStructure::Kind::T_any_array: {
       if (is_ts_nullable(type)) {
         auto const inputT = get_ts_kind(input);
         return inputT == tsKind || inputT == TypeStructure::Kind::T_null;
@@ -285,19 +272,20 @@ bool typeStructureIsType(
       IterateKV(
         typeFields,
         [&](TypedValue k, TypedValue v) {
-          assertx(tvIsHAMSafeDArray(v));
+          assertx(tvIsDict(v));
           auto typeField = getShapeFieldElement(v);
-          if (!inputFields->exists(k)) {
+          auto const tv = inputFields->get(k);
+          if (!tv.is_init()) {
             result = false;
             return true; // short circuit
           }
-          if (isOptionalShapeField(v.m_data.parr) ^
-              isOptionalShapeField(inputFields->at(k).m_data.parr)) {
+          if (isOptionalShapeField(v.val().parr) ^
+              isOptionalShapeField(tv.val().parr)) {
             // either both needs to be optional or neither
             result = false;
             return true; // short circuit
           }
-          auto inputField = getShapeFieldElement(inputFields->at(k));
+          auto inputField = getShapeFieldElement(tv);
           // If this field is associated with the value, kill it
           // This is safe since we already checked this above
           auto cleanedInput = inputField->remove(s_optional_shape_field.get());
@@ -341,10 +329,6 @@ bool typeStructureIsType(
         ? typeStructureIsType(inputV, typeV, warn, strict)
         : inputV == typeV;
     }
-    case TypeStructure::Kind::T_array:
-    case TypeStructure::Kind::T_darray:
-    case TypeStructure::Kind::T_varray:
-    case TypeStructure::Kind::T_varray_or_darray:
     case TypeStructure::Kind::T_typeaccess:
     case TypeStructure::Kind::T_trait:
     case TypeStructure::Kind::T_reifiedtype:
@@ -367,8 +351,7 @@ bool typeStructureIsTypeList(
   std::vector<TypeParamInfo> tpinfo;
   bool found = false;
   if (!strict && clsname) {
-    auto const ne = NamedEntity::get(clsname);
-    if (auto const cls = Unit::lookupClass(ne)) {
+    if (auto const cls = Class::lookup(clsname)) {
       found = true;
       tpinfo = cls->getReifiedGenericsInfo().m_typeParamInfo;
       if (tpinfo.size() == 0) return true;
@@ -382,7 +365,7 @@ bool typeStructureIsTypeList(
     if (found && !tpinfo[i].m_isReified) continue;
     auto const inputElem = inputL->get(i);
     auto const typeElem = typeL->get(i);
-    assertx(tvIsHAMSafeDArray(inputElem) && tvIsHAMSafeDArray(typeElem));
+    assertx(tvIsDict(inputElem) && tvIsDict(typeElem));
     if (!typeStructureIsType(inputElem.val().parr, typeElem.val().parr,
                              warn, strict)) {
       if (warn || (found && (tpinfo[i].m_isWarn ||
@@ -411,7 +394,7 @@ bool checkReifiedGenericsMatch(
   // TODO(T31677864): Handle non KindOfObject types
   if (c1.m_type != KindOfObject) return true;
   auto const obj = c1.m_data.pobj;
-  auto const cls = Unit::lookupClass(ne);
+  auto const cls = Class::lookup(ne);
   assertx(cls);
   if (!cls->hasReifiedGenerics()) {
     if (!strict) return true;
@@ -430,7 +413,7 @@ bool checkReifiedGenericsMatch(
   for (size_t i = 0; i < size; ++i) {
     auto const objrg = obj_generics->get(i);
     auto const rg = generics->get(i);
-    assertx(tvIsHAMSafeDArray(objrg) && tvIsHAMSafeDArray(rg));
+    assertx(tvIsDict(objrg) && tvIsDict(rg));
     auto const tsvalue = rg.val().parr;
     if (get_ts_kind(tsvalue) == TypeStructure::Kind::T_typevar &&
         tsvalue->exists(s_name.get()) &&
@@ -456,8 +439,8 @@ bool checkReifiedGenericsMatch(
 } // namespace
 
 bool isTSAllWildcards(const ArrayData* ts) {
-  if (!ts->exists(s_generic_types.get())) return true;
-  auto const generics = ts->at(s_generic_types.get());
+  auto const generics = ts->get(s_generic_types.get());
+  if (!generics.is_init()) return true;
   assertx(isArrayLikeType(generics.m_type));
   auto allWildcard = true;
   IterateV(
@@ -561,9 +544,8 @@ bool checkTypeStructureMatchesTVImpl(
   auto const type = c1.m_type;
   auto const data = c1.m_data;
 
-  if (ts.exists(s_nullable) &&
-      ts[s_nullable].asBooleanVal() &&
-      isNullType(type)) {
+  auto const tv = ts.lookup(s_nullable);
+  if (isNullType(type) && tv.is_init() && tv.val().num) {
     return true;
   }
   assertx(ts.exists(s_kind));
@@ -588,10 +570,16 @@ bool checkTypeStructureMatchesTVImpl(
     case TypeStructure::Kind::T_num:
       return isIntType(type) || isDoubleType(type);
     case TypeStructure::Kind::T_arraykey:
+      if (isClassType(type) || isLazyClassType(type)) {
+        if (RO::EvalClassIsStringNotices) {
+          raise_notice("Class used in is_string");
+        }
+        return true;
+      }
       return isIntType(type) || isStringType(type);
 
     case TypeStructure::Kind::T_string:
-      if (isClassType(type)) {
+      if (isClassType(type) || isLazyClassType(type)) {
         if (RO::EvalClassIsStringNotices) {
           raise_notice("Class used in is_string");
         }
@@ -603,11 +591,14 @@ bool checkTypeStructureMatchesTVImpl(
       return isResourceType(type) &&
              !reinterpret_cast<const Resource*>(&data.pres)->isInvalid();
 
-    case TypeStructure::Kind::T_array:
     case TypeStructure::Kind::T_darray:
+      return isOrAsOp ? is_dict(&c1) : is_vec(&c1) || is_dict(&c1);
+
     case TypeStructure::Kind::T_varray:
+      return isOrAsOp ? is_vec(&c1) : is_vec(&c1) || is_dict(&c1);
+
     case TypeStructure::Kind::T_varray_or_darray:
-      return !isOrAsOp && is_php_array(&c1);
+      return is_vec(&c1) || is_dict(&c1);
 
     case TypeStructure::Kind::T_dict:
       return is_dict(&c1);
@@ -621,20 +612,14 @@ bool checkTypeStructureMatchesTVImpl(
     case TypeStructure::Kind::T_keyset:
       return is_keyset(&c1);
 
-    case TypeStructure::Kind::T_arraylike:
-      if (isClsMethType(type)) {
-        if (RuntimeOption::EvalIsVecNotices) {
-          raise_notice(Strings::CLSMETH_COMPAT_IS_ANY_ARR);
-        }
-        return true;
-      }
+    case TypeStructure::Kind::T_any_array:
       return isArrayLikeType(type);
 
     case TypeStructure::Kind::T_enum: {
       assertx(ts.exists(s_classname));
-      auto const cls = Unit::lookupClass(ts[s_classname].asStrRef().get());
+      auto const cls = Class::lookup(ts[s_classname].asStrRef().get());
       if (!isOrAsOp) {
-        if (auto const dt = cls ? cls->enumBaseTy() : folly::none) {
+        if (auto const dt = cls ? cls->enumBaseTy() : std::nullopt) {
           return equivDataTypes(*dt, type);
         }
         return isIntType(type) || isStringType(type);
@@ -656,52 +641,10 @@ bool checkTypeStructureMatchesTVImpl(
     }
 
     case TypeStructure::Kind::T_tuple: {
-      if (RO::EvalIsCompatibleClsMethType) {
-        if (isClsMethType(type)) {
-          if (RO::EvalIsVecNotices) {
-            raise_notice(Strings::CLSMETH_COMPAT_IS_TUPLE);
-          }
-          auto const arr = clsMethToVecHelper(data.pclsmeth);
-          return checkTypeStructureMatchesTVImpl<gen_error>(
-            ts,
-            make_array_like_tv(arr.get()),
-            givenType,
-            expectedType,
-            errorKey,
-            warn,
-            isOrAsOp
-          );
-        }
-      }
+      if (!isVecType(type)) return false;
+      if (!isOrAsOp) return true;
 
-      if (!isArrayLikeType(type)) return false;
-
-      /*
-       * There are two behaviors we're trying to deal with these notices:
-       *
-       *   1. The reified generic path for tuple checks allows darrays to pass
-       *      these checks. We want to restrict to only varrays. See isOrAsOp.
-       *
-       *   2. If any Hack array makes it to one of these check sites, we want
-       *      to lift the HAM observation behavior into an is_php_array call.
-       *
-       * The two behaviors interact; if we can complete item 1 early, then we
-       * can restrict logging for item 2 to vecs alone.
-       */
       auto const ad = data.parr;
-      auto const maybe_raise_notice = [&] (bool const result) {
-        if (!gen_error /* avoid double logging */ && result &&
-            RO::EvalHackArrIsShapeTupleNotices && !ad->isVArray()) {
-          auto const dt = getDataTypeString(ad->toDataType());
-          raise_hackarr_compat_notice(folly::sformat("{} is tuple", dt));
-        }
-        return result && (isArrayType(type) || RO::EvalHackArrDVArrs);
-      };
-
-      if (!isOrAsOp) return maybe_raise_notice(!isKeysetType(type));
-
-      if (!ad->isVArray() && !ad->isVecType()) return false;
-
       assertx(ts.exists(s_elem_types));
       auto const ts_arr = ts[s_elem_types].getArrayData();
       if (ad->size() != ts_arr->size()) {
@@ -709,7 +652,7 @@ bool checkTypeStructureMatchesTVImpl(
         return false;
       }
 
-      auto const is_tuple_like = [&] {
+      auto const matches_tuple = [&] {
         bool keys_match = true; // are keys contiguous and zero-indexed?
         bool vals_match = true; // do vals match the type structure types?
         int index = 0;
@@ -744,49 +687,14 @@ bool checkTypeStructureMatchesTVImpl(
         return vals_match;
       }();
 
-      return maybe_raise_notice(is_tuple_like);
+      return matches_tuple;
     }
 
     case TypeStructure::Kind::T_shape: {
-      if (!RO::EvalHackArrDVArrs && RO::EvalIsCompatibleClsMethType) {
-        if (isClsMethType(type)) {
-          if (RO::EvalIsVecNotices) {
-            raise_notice(Strings::CLSMETH_COMPAT_IS_SHAPE);
-          }
-          auto const arr = clsMethToVecHelper(data.pclsmeth);
-          return checkTypeStructureMatchesTVImpl<gen_error>(
-            ts,
-            make_array_like_tv(arr.get()),
-            givenType,
-            expectedType,
-            errorKey,
-            warn,
-            isOrAsOp
-          );
-        }
-      }
+      if (!isDictType(type)) return false;
+      if (!isOrAsOp) return true;
 
-      if (!isArrayLikeType(type)) return false;
-
-      /*
-       * By analogy with the tuple case (see above), we're trying to restrict
-       * reified generics to darrays, and also logging when a Hack array would
-       * haved passed one of these checks.
-       */
       auto const ad = data.parr;
-      auto const maybe_raise_notice = [&] (bool const result) {
-        if (!gen_error /* avoid double logging */ && result &&
-            RO::EvalHackArrIsShapeTupleNotices && !ad->isDArray()) {
-          auto const dt = getDataTypeString(ad->toDataType());
-          raise_hackarr_compat_notice(folly::sformat("{} is shape", dt));
-        }
-        return result && (isArrayType(type) || RO::EvalHackArrDVArrs);
-      };
-
-      if (!isOrAsOp) return maybe_raise_notice(!isKeysetType(type));
-
-      if (!ad->isDArray() && !ad->isDictType()) return false;
-
       assertx(ts.exists(s_fields));
       auto const ts_arr = ts[s_fields].getArrayData();
 
@@ -853,7 +761,7 @@ bool checkTypeStructureMatchesTVImpl(
         warn = false;
         return false;
       }
-      return maybe_raise_notice(!warn);
+      return !warn;
     }
 
     case TypeStructure::Kind::T_nothing:
@@ -932,7 +840,7 @@ bool errorOnIsAsExpressionInvalidTypesList(const ArrayData* tsFields,
       auto arr = v.m_data.parr;
       auto const value_field = arr->get(s_value.get());
       if (value_field.is_init()) {
-        assertx(tvIsHAMSafeDArray(value_field));
+        assertx(tvIsDict(value_field));
         arr = value_field.val().parr;
       }
       if (!errorOnIsAsExpressionInvalidTypes(ArrNR(arr), dryrun,
@@ -966,7 +874,10 @@ bool errorOnIsAsExpressionInvalidTypes(const Array& ts, bool dryrun,
     case TypeStructure::Kind::T_vec:
     case TypeStructure::Kind::T_keyset:
     case TypeStructure::Kind::T_vec_or_dict:
-    case TypeStructure::Kind::T_arraylike:
+    case TypeStructure::Kind::T_darray:
+    case TypeStructure::Kind::T_varray:
+    case TypeStructure::Kind::T_varray_or_darray:
+    case TypeStructure::Kind::T_any_array:
     case TypeStructure::Kind::T_null:
     case TypeStructure::Kind::T_void:
     case TypeStructure::Kind::T_nothing:
@@ -980,18 +891,12 @@ bool errorOnIsAsExpressionInvalidTypes(const Array& ts, bool dryrun,
       return false;
     case TypeStructure::Kind::T_enum:
     case TypeStructure::Kind::T_class:
-    case TypeStructure::Kind::T_interface:
-      if (ts.exists(s_generic_types)) {
-        auto genericsArr = ts[s_generic_types].getArrayData();
-        return errorOnIsAsExpressionInvalidTypesList(genericsArr, dryrun,
-                                                     true);
-      }
-      return false;
-    case TypeStructure::Kind::T_array:
-    case TypeStructure::Kind::T_darray:
-    case TypeStructure::Kind::T_varray:
-    case TypeStructure::Kind::T_varray_or_darray:
-      return err("an array");
+    case TypeStructure::Kind::T_interface: {
+      auto tv = ts.lookup(s_generic_types);
+      return tv.is_init() ?
+        errorOnIsAsExpressionInvalidTypesList(tv.val().parr, dryrun, true) :
+        false;
+    }
     case TypeStructure::Kind::T_fun:
       return err("a function");
     case TypeStructure::Kind::T_typevar:
@@ -1003,13 +908,13 @@ bool errorOnIsAsExpressionInvalidTypes(const Array& ts, bool dryrun,
       return err("incomplete type structures");
     case TypeStructure::Kind::T_tuple: {
       assertx(ts.exists(s_elem_types));
-      auto const elemsArr = ts[s_elem_types].getArrayData();
+      auto const elemsArr = ts.lookup(s_elem_types).val().parr;
       return errorOnIsAsExpressionInvalidTypesList(elemsArr, dryrun,
                                                    allowWildcard);
     }
     case TypeStructure::Kind::T_shape: {
       assertx(ts.exists(s_fields));
-      auto const tsFields = ts[s_fields].getArrayData();
+      auto const tsFields = ts.lookup(s_fields).val().parr;
       return errorOnIsAsExpressionInvalidTypesList(tsFields, dryrun,
                                                    allowWildcard);
     }
@@ -1025,7 +930,6 @@ bool typeStructureCouldBeNonStatic(const ArrayData* ts) {
   switch (get_ts_kind(ts)) {
     case TypeStructure::Kind::T_tuple:
     case TypeStructure::Kind::T_fun:
-    case TypeStructure::Kind::T_array:
     case TypeStructure::Kind::T_darray:
     case TypeStructure::Kind::T_varray:
     case TypeStructure::Kind::T_varray_or_darray:
@@ -1037,7 +941,7 @@ bool typeStructureCouldBeNonStatic(const ArrayData* ts) {
     case TypeStructure::Kind::T_vec:
     case TypeStructure::Kind::T_keyset:
     case TypeStructure::Kind::T_vec_or_dict:
-    case TypeStructure::Kind::T_arraylike:
+    case TypeStructure::Kind::T_any_array:
     case TypeStructure::Kind::T_typeaccess:
     case TypeStructure::Kind::T_reifiedtype:
       return true;
@@ -1091,11 +995,11 @@ Array resolveAndVerifyTypeStructure(
   bool suppress
 ) {
   assertx(!ts.empty());
-  assertx(ts.isHAMSafeDArray());
+  assertx(ts.isDict());
   auto const handleResolutionException = [&](auto const& errMsg) {
     if (!suppress || !IsOrAsOp) raise_error(errMsg);
     if (RuntimeOption::EvalIsExprEnableUnresolvedWarning) raise_warning(errMsg);
-    auto unresolved = Array::CreateDArray();
+    auto unresolved = Array::CreateDict();
     unresolved.set(
       s_kind,
       Variant(static_cast<uint8_t>(TypeStructure::Kind::T_unresolved))
@@ -1116,7 +1020,7 @@ Array resolveAndVerifyTypeStructure(
     resolved = handleResolutionException(errMsg);
   }
   assertx(!resolved.empty());
-  assertx(resolved.isHAMSafeDArray());
+  assertx(resolved.isDict());
   if (IsOrAsOp) errorOnIsAsExpressionInvalidTypes(resolved, false);
   return resolved;
 }
@@ -1156,7 +1060,7 @@ bool doesTypeStructureContainTUnresolved(const ArrayData* ts) {
         return true; // short circuit
       }
       if (!isArrayLikeType(type(v))) return false;
-      assertx(tvIsHAMSafeVArray(v) || tvIsHAMSafeDArray(v));
+      assertx(tvIsVec(v) || tvIsDict(v));
       result |= doesTypeStructureContainTUnresolved(v.m_data.parr);
       return result; // short circuit if true
     }

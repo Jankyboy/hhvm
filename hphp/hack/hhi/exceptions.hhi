@@ -21,18 +21,12 @@ interface Throwable {
   public function getMessage(): string;
   // Documented as 'int' in PHP docs, but not actually guaranteed;
   // subclasses (e.g. PDO) can do what they want.
-  <<__Pure, __MaybeMutable>>
-  public function getCode(): mixed;
-  <<__Pure, __MaybeMutable>>
-  public function getFile(): string;
-  <<__Pure, __MaybeMutable>>
-  public function getLine(): int;
-  <<__Pure, __MaybeMutable>>
-  public function getTrace(): Container<mixed>;
-  <<__Pure, __MaybeMutable>>
-  public function getTraceAsString(): string;
-  <<__Pure, __MaybeMutable>>
-  public function getPrevious(): ?Throwable;
+  public function getCode()[]: mixed;
+  public function getFile()[]: string;
+  public function getLine()[]: int;
+  public function getTrace()[]: Container<mixed>;
+  public function getTraceAsString()[]: string;
+  public function getPrevious()[]: ?Throwable;
   public function __toString(): string;
   public function toString(): string;
 }
@@ -44,26 +38,18 @@ class Error implements Throwable {
   protected int $line;
 
   /* Methods */
-  <<__Pure>>
   public function __construct (
     string $message = "",
     int $code = 0,
     ?Throwable $previous = null,
-  );
-  <<__Pure, __MaybeMutable>>
-  final public function getMessage(): string;
-  <<__Pure, __MaybeMutable>>
-  final public function getPrevious(): ?Throwable;
-  <<__Pure, __MaybeMutable>>
-  final public function getCode(): mixed;
-  <<__Pure, __MaybeMutable>>
-  final public function getFile(): string;
-  <<__Pure, __MaybeMutable>>
-  final public function getLine(): int;
-  <<__Pure, __MaybeMutable>>
-  final public function getTrace(): varray<mixed>;
-  <<__Pure, __MaybeMutable>>
-  final public function getTraceAsString(): string;
+  )[];
+  final public function getMessage()[]: string;
+  final public function getPrevious()[]: ?Throwable;
+  final public function getCode()[]: mixed;
+  final public function getFile()[]: string;
+  final public function getLine()[]: int;
+  final public function getTrace()[]: varray<mixed>;
+  final public function getTraceAsString()[]: string;
   public function __toString(): string;
   public function toString(): string;
   final private function __clone(): void;
@@ -81,31 +67,23 @@ class Exception implements Throwable {
   protected string $file;
   protected int $line;
   private varray<mixed> $trace;
-  protected mixed $userMetadata;
 
-  <<__Pure>>
   public function __construct (
     protected string $message = '',
     int $code = 0,
     protected ?Exception $previous = null,
-  );
-  <<__Pure, __OnlyRxIfImpl(HH\Rx\Exception::class), __MaybeMutable>>
+  )[];
+
+  // TODO(coeffects) How do we fix this?
   public function getMessage(): string;
-  <<__Pure, __MaybeMutable>>
-  final public function getPrevious(): ?Exception;
-  <<__Pure, __Mutable>>
-  public final function setPrevious(Exception $previous): void;
-  <<__Pure, __MaybeMutable>>
-  public function getCode(): int;
-  <<__Pure, __MaybeMutable>>
-  final public function getFile(): string;
-  <<__Pure, __MaybeMutable>>
-  final public function getLine(): int;
-  <<__Pure, __MaybeMutable>>
-  final public function getTrace(): varray<mixed>;
+  final public function getPrevious()[]: ?Exception;
+  public final function setPrevious(Exception $previous)[]: void;
+  public function getCode()[]: int;
+  final public function getFile()[]: string;
+  final public function getLine()[]: int;
+  final public function getTrace()[]: varray<mixed>;
   final protected function __prependTrace(Container<mixed> $trace): void;
-  <<__Pure, __MaybeMutable>>
-  final public function getTraceAsString(): string;
+  final public function getTraceAsString()[]: string;
   public function __toString(): string;
   public function toString(): string;
   final private function __clone(): void;
@@ -115,7 +93,6 @@ class Exception implements Throwable {
 }
 
 class ErrorException extends Exception {
-  <<__Pure>>
   public function __construct(
     $message = "",
     int $code = 0,
@@ -123,9 +100,8 @@ class ErrorException extends Exception {
     string $filename = '' /* __FILE__ */,
     int $lineno = 0 /* __LINE__ */,
     ?Exception $previous = null
-  );
-  <<__Pure, __MaybeMutable>>
-  public final function getSeverity(): int;
+  )[];
+  public final function getSeverity()[]: int;
 }
 
 class LogicException extends Exception {}
@@ -135,6 +111,12 @@ class DomainException extends LogicException {}
 class InvalidArgumentException extends LogicException {}
 class LengthException extends LogicException {}
 class OutOfRangeException extends LogicException {}
+final class InvalidCallbackArgumentException extends LogicException {}
+final class InvalidForeachArgumentException extends LogicException {}
+final class TypecastException extends LogicException {}
+final class UndefinedPropertyException extends LogicException {}
+final class UndefinedVariableException extends LogicException {}
+final class AccessPropertyOnNonObjectException extends LogicException {}
 
 class RuntimeException extends Exception {}
 class OutOfBoundsException extends RuntimeException {}

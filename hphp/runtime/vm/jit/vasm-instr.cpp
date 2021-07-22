@@ -38,17 +38,14 @@ bool isBlockEnd(const Vinstr& inst) {
     // service request-y things
     case Vinstr::bindjmp:
     case Vinstr::fallback:
-    case Vinstr::retransopt:
     // control flow
     case Vinstr::jcc:
-    case Vinstr::jcci:
     case Vinstr::jmp:
     case Vinstr::jmps:
     case Vinstr::jmpr:
     case Vinstr::jmpm:
     case Vinstr::jmpi:
     case Vinstr::phijmp:
-    case Vinstr::debugguardjmp:
     // terminal calls
     case Vinstr::tailcallstub:
     case Vinstr::tailcallstubr:
@@ -97,16 +94,16 @@ Width width(Vinstr::Opcode op) {
     case Vinstr::bindjmp:
     case Vinstr::bindjcc:
     case Vinstr::bindaddr:
+    case Vinstr::ldbindaddr:
+    case Vinstr::ldbindretaddr:
     case Vinstr::fallback:
     case Vinstr::fallbackcc:
-    case Vinstr::retransopt:
     // vasm intrinsics
     case Vinstr::conjure:
     case Vinstr::conjureuse:
     case Vinstr::copy:
     case Vinstr::copy2:
     case Vinstr::copyargs:
-    case Vinstr::debugguardjmp:
     case Vinstr::debugtrap:
     case Vinstr::fallthru:
     case Vinstr::ldimmb:
@@ -126,6 +123,7 @@ Width width(Vinstr::Opcode op) {
     case Vinstr::popframe:
     case Vinstr::recordstack:
     case Vinstr::recordbasenativesp:
+    case Vinstr::unrecordbasenativesp:
     case Vinstr::spill:
     case Vinstr::spillbi:
     case Vinstr::spillli:
@@ -234,12 +232,6 @@ Width width(Vinstr::Opcode op) {
     case Vinstr::fcvtzs:
     case Vinstr::mrs:
     case Vinstr::msr:
-    // ppc64 instructions
-    case Vinstr::fcmpo:
-    case Vinstr::fcmpu:
-    case Vinstr::fctidz:
-    case Vinstr::mflr:
-    case Vinstr::mtlr:
       return Width::AnyNF;
 
     case Vinstr::andb:
@@ -288,6 +280,8 @@ Width width(Vinstr::Opcode op) {
     case Vinstr::movw:
     case Vinstr::storew:
     case Vinstr::storewi:
+    case Vinstr::xorw:
+    case Vinstr::xorwi:
       return Width::Word;
 
     case Vinstr::addl:
@@ -337,6 +331,7 @@ Width width(Vinstr::Opcode op) {
     case Vinstr::decq:
     case Vinstr::decqm:
     case Vinstr::decqmlock:
+    case Vinstr::decqmlocknosf:
     case Vinstr::incq:
     case Vinstr::incqm:
     case Vinstr::imul:
@@ -357,6 +352,7 @@ Width width(Vinstr::Opcode op) {
     case Vinstr::shrqi:
     case Vinstr::subq:
     case Vinstr::subqi:
+    case Vinstr::subqim:
     case Vinstr::xorq:
     case Vinstr::xorqi:
     case Vinstr::cmpq:
@@ -377,6 +373,7 @@ Width width(Vinstr::Opcode op) {
     case Vinstr::loadqp:
     case Vinstr::loadqd:
     case Vinstr::loadzbq:
+    case Vinstr::loadzwq:
     case Vinstr::loadzlq:
     case Vinstr::loadsbq:
     case Vinstr::storeqi:
@@ -392,11 +389,53 @@ Width width(Vinstr::Opcode op) {
     case Vinstr::roundsd:
     case Vinstr::sqrtsd:
     case Vinstr::crc32q:
+    case Vinstr::prefetch:
       return Width::Quad;
 
     case Vinstr::loadups:
     case Vinstr::storeups:
       return Width::Octa;
+  }
+  not_reached();
+}
+
+bool instrHasIndirectFixup(const Vinstr& inst) {
+  switch (inst.op) {
+    case Vinstr::vcall:
+      return inst.vcall_.fixup.isIndirect();
+    case Vinstr::vinvoke:
+      return inst.vinvoke_.fixup.isIndirect();
+    case Vinstr::syncpoint:
+      return inst.syncpoint_.fix.isIndirect();
+    case Vinstr::callfaststub:
+      return inst.callfaststub_.fix.isIndirect();
+    default:
+      return false;
+  }
+  not_reached();
+}
+
+void updateIndirectFixupBySpill(Vinstr& inst, size_t spillSize) {
+  assertx(instrHasIndirectFixup(inst));
+  auto const update = [&](Fixup& f) {
+    assertx(f.isIndirect());
+    f.adjustRipOffset(spillSize);
+  };
+  switch (inst.op) {
+    case Vinstr::vcall:
+      update(inst.vcall_.fixup);
+      return;
+    case Vinstr::vinvoke:
+      update(inst.vinvoke_.fixup);
+      return;
+    case Vinstr::syncpoint:
+      update(inst.syncpoint_.fix);
+      return;
+    case Vinstr::callfaststub:
+      update(inst.callfaststub_.fix);
+      return;
+    default:
+      always_assert(false);
   }
   not_reached();
 }

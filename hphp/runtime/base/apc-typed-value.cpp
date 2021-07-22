@@ -15,13 +15,68 @@
 */
 #include "hphp/runtime/base/apc-typed-value.h"
 
-#include "hphp/runtime/base/bespoke-array.h"
-#include "hphp/runtime/base/mixed-array.h"
-#include "hphp/runtime/base/packed-array.h"
-#include "hphp/runtime/base/set-array.h"
+#include "hphp/runtime/base/apc-bespoke.h"
+#include "hphp/runtime/base/tv-uncounted.h"
 #include "hphp/runtime/ext/apc/ext_apc.h"
 
 namespace HPHP {
+
+//////////////////////////////////////////////////////////////////////
+
+struct HazardPointer {
+  StringData* raw;
+  TYPE_SCAN_IGNORE_ALL;
+};
+
+RDS_LOCAL(std::vector<HazardPointer>, s_hazard_pointers);
+
+void APCTypedValue::FreeHazardPointers() {
+  if (!UseHazardPointers()) return;
+  for (auto const hp : *s_hazard_pointers) {
+    DecRefUncountedString(hp.raw);
+  }
+  s_hazard_pointers->clear();
+}
+
+bool APCTypedValue::UseHazardPointers() {
+  return !use_lowptr && !apcExtension::UseUncounted;
+}
+
+//////////////////////////////////////////////////////////////////////
+
+APCTypedValue* APCTypedValue::ForArray(ArrayData* ad) {
+  assertx(!ad->isRefCounted());
+  auto const dt = ad->toPersistentDataType();
+  auto const result = initAPCBespoke(ad);
+  ad = result.ad;
+
+  // If we made an APCBespoke, it'll always be part of a joint allocation.
+  if (result.tv) {
+    auto const kind = ad->isStatic() ? APCKind::StaticBespoke
+                                     : APCKind::UncountedBespoke;
+    return new (result.tv) APCTypedValue(ad, kind, dt);
+  }
+
+  // We didn't make an APCBespoke. Just use a regular persistent array.
+  auto const kind = ad->isStatic() ? APCKind::StaticArray
+                                   : APCKind::UncountedArray;
+
+  // Check if the "co-allocate array and APCTypedValue" optimization hit.
+  // It hit if we a) made a new uncounted array and b) its flag is set.
+  if (ad->uncountedCowCheck() || !ad->hasApcTv()) {
+    return new APCTypedValue(ad, kind, dt);
+  }
+
+  auto const mem = reinterpret_cast<APCTypedValue*>(ad) - 1;
+  return new (mem) APCTypedValue(ad, kind, dt);
+}
+
+APCTypedValue::APCTypedValue(ArrayData* ad, APCKind kind, DataType dt)
+    : m_handle(kind, dt) {
+  assertx(!ad->isRefCounted());
+  m_data.arr.store(ad, std::memory_order_release);
+  assertx(checkInvariants());
+}
 
 APCTypedValue* APCTypedValue::tvUninit() {
   static APCTypedValue* value = new APCTypedValue(KindOfUninit);
@@ -52,46 +107,34 @@ bool APCTypedValue::checkInvariants() const {
     case APCKind::Int:
     case APCKind::Double: break;
     case APCKind::PersistentFunc: assertx(m_data.func->isPersistent()); break;
+    case APCKind::PersistentClass: assertx(m_data.cls->isPersistent()); break;
+    case APCKind::PersistentClsMeth:
+      assertx(m_data.pclsmeth->getCls()->isPersistent()); break;
     case APCKind::StaticString: assertx(m_data.str->isStatic()); break;
     case APCKind::UncountedString: assertx(m_data.str->isUncounted()); break;
+    case APCKind::LazyClass: assertx(m_data.str->isStatic()); break;
+
     case APCKind::StaticArray:
-      assertx(m_data.arr->isPHPArrayType());
-      assertx(m_data.arr->isStatic());
+    case APCKind::StaticBespoke: {
+      DEBUG_ONLY auto const ad = m_data.arr.load(std::memory_order_acquire);
+      assertx(ad->isStatic());
+      assertx(ad->toPersistentDataType() == m_handle.type());
       break;
-    case APCKind::StaticVec:
-      assertx(m_data.arr->isVecType());
-      assertx(m_data.arr->isStatic());
-      break;
-    case APCKind::StaticDict:
-      assertx(m_data.arr->isDictType());
-      assertx(m_data.arr->isStatic());
-      break;
-    case APCKind::StaticKeyset:
-      assertx(m_data.arr->isKeysetType());
-      assertx(m_data.arr->isStatic());
-      break;
+    }
+
     case APCKind::UncountedArray:
-      assertx(m_data.arr->isPHPArrayType());
-      assertx(m_data.arr->isUncounted());
+    case APCKind::UncountedBespoke: {
+      DEBUG_ONLY auto const ad = m_data.arr.load(std::memory_order_acquire);
+      assertx(ad->isUncounted());
+      assertx(ad->toPersistentDataType() == m_handle.type());
       break;
-    case APCKind::UncountedVec:
-      assertx(m_data.arr->isVecType());
-      assertx(m_data.arr->isUncounted());
-      break;
-    case APCKind::UncountedDict:
-      assertx(m_data.arr->isDictType());
-      assertx(m_data.arr->isUncounted());
-      break;
-    case APCKind::UncountedKeyset:
-      assertx(m_data.arr->isKeysetType());
-      assertx(m_data.arr->isUncounted());
-      break;
+    }
+
     case APCKind::FuncEntity:
+    case APCKind::ClassEntity:
+    case APCKind::ClsMeth:
     case APCKind::RFunc:
     case APCKind::RClsMeth:
-    case APCKind::SharedString:
-    case APCKind::SharedArray:
-    case APCKind::SharedPackedArray:
     case APCKind::SharedObject:
     case APCKind::SharedCollection:
     case APCKind::SharedVec:
@@ -99,11 +142,6 @@ bool APCTypedValue::checkInvariants() const {
     case APCKind::SharedDict:
     case APCKind::SharedLegacyDict:
     case APCKind::SharedKeyset:
-    case APCKind::SharedVArray:
-    case APCKind::SharedMarkedVArray:
-    case APCKind::SharedDArray:
-    case APCKind::SharedMarkedDArray:
-    case APCKind::SerializedArray:
     case APCKind::SerializedObject:
     case APCKind::SerializedVec:
     case APCKind::SerializedDict:
@@ -118,32 +156,60 @@ bool APCTypedValue::checkInvariants() const {
 
 void APCTypedValue::deleteUncounted() {
   assertx(m_handle.isUncounted());
-  auto kind = m_handle.kind();
-  assertx(kind == APCKind::UncountedString ||
-         kind == APCKind::UncountedArray ||
-         kind == APCKind::UncountedVec ||
-         kind == APCKind::UncountedDict ||
-         kind == APCKind::UncountedKeyset);
-
   static_assert(std::is_trivially_destructible<APCTypedValue>::value,
                 "APCTypedValue must be trivially destructible - "
                 "*Array::ReleaseUncounted() frees the memory without "
                 "destroying it");
 
-  if (kind == APCKind::UncountedString) {
-    StringData::ReleaseUncounted(m_data.str);
-  } else {
-    auto const arr = m_data.arr;
-    if (arr->hasVanillaPackedLayout()) PackedArray::ReleaseUncounted(arr);
-    else if (arr->hasVanillaMixedLayout()) MixedArray::ReleaseUncounted(arr);
-    else if (arr->isKeysetKind()) SetArray::ReleaseUncounted(arr);
-    else BespokeArray::ReleaseUncounted(arr);
-    if (arr == static_cast<void*>(this + 1)) {
-      return;  // *::ReleaseUncounted freed the joint allocation.
+  switch (m_handle.kind()) {
+    case APCKind::UncountedArray: {
+      auto const ad = m_data.arr.load(std::memory_order_acquire);
+      DecRefUncountedArray(ad);
+      if (ad != static_cast<void*>(this + 1)) {
+        delete this;
+      }
+      return;
     }
-  }
 
-  delete this;
+    case APCKind::UncountedBespoke:
+      freeAPCBespoke(this);
+      return;
+
+    case APCKind::UncountedString:
+      DecRefUncountedString(m_data.str);
+      delete this;
+      return;
+
+    default:
+      always_assert(false);
+  }
+}
+
+ArrayData* APCTypedValue::getArrayData() const {
+  assertx(checkInvariants());
+  return m_data.arr.load(std::memory_order_acquire);
+}
+
+void APCTypedValue::setArrayData(ArrayData* ad) {
+  m_data.arr.store(ad, std::memory_order_release);
+  assertx(checkInvariants());
+}
+
+TypedValue APCTypedValue::toTypedValue() const {
+  assertx(m_handle.isTypedValue());
+  TypedValue tv;
+  tv.m_type = m_handle.type();
+  auto const kind = m_handle.kind();
+  if (UseHazardPointers() && kind == APCKind::UncountedString) {
+    s_hazard_pointers->push_back({m_data.str});
+    m_data.str->uncountedIncRef();
+    tv.m_data.pstr = m_data.str;
+  } else if (kind == APCKind::UncountedBespoke) {
+    tv.m_data.parr = readAPCBespoke(this);
+  } else {
+    tv.m_data.num = m_data.num;
+  }
+  return tv;
 }
 
 //////////////////////////////////////////////////////////////////////

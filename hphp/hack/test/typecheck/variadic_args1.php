@@ -11,7 +11,7 @@ function test(): void {
 
 function f1<T>(T ...$args): void {
   foreach ($args as $arg) {
-    echo $arg;
+    $arg;
   }
   takes_container($args);
   takes_keyed_container($args);
@@ -28,9 +28,9 @@ function takes_container<T>(Container<T> $arg): ?T {
 
 function takes_keyed_container<Tk as arraykey,Tv>(KeyedContainer<Tk,Tv> $c): void {}
 
-function takes_vec_array<Tv>(array<Tv> $c): void {}
+function takes_vec_array<Tv>(varray<Tv> $c): void {}
 
-function takes_hash_array<Tk,Tv>(array<Tk,Tv> $c): void {}
+function takes_hash_array<Tk,Tv>(darray<Tk,Tv> $c): void {}
 
 //// partial.php
 <?hh // partial

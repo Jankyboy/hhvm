@@ -7,6 +7,9 @@
  *
  * *)
 
+module Option = Base.Option
+module Int = Base.Int
+module List = Base.List
 open Hh_json
 
 (************************************************************************)
@@ -56,20 +59,20 @@ module Jget = struct
     match s with
     | None -> None
     | Some s ->
-      (try Some (int_of_string s)
-       with Failure _ -> raise (Parse ("not an int: " ^ s)))
+      (try Some (Int.of_string s) with
+      | Failure _ -> raise (Parse ("not an int: " ^ s)))
 
   let float_string_opt (s : string option) : float option =
     match s with
     | None -> None
     | Some s ->
-      (try Some (float_of_string s)
-       with Failure _ -> raise (Parse ("not a float: " ^ s)))
+      (try Some (Float.of_string s) with
+      | Failure _ -> raise (Parse ("not a float: " ^ s)))
 
   let list_opt (l : 'a list option) : 'a option list option =
     match l with
     | None -> None
-    | Some x -> Some (List.map (fun a -> Some a) x)
+    | Some x -> Some (List.map ~f:(fun a -> Some a) x)
 
   (* Accessors which return None on absence *)
   let string_opt = get_opt Access.get_string
@@ -113,9 +116,13 @@ module Jget = struct
 
   let array_exn = get_exn array_opt
 
+  (** obj_exn lifts the result into the "json option" monad *)
   let obj_exn json key = Some (get_exn obj_opt json key)
 
-  (* obj_exn lifts the result into the "json option" monad *)
+  let string_array_exn json key =
+    array_exn json key
+    |> List.map ~f:(fun opt -> Option.value_exn opt)
+    |> List.map ~f:Hh_json.get_string_exn
 end
 
 module Jprint = struct
@@ -131,12 +138,14 @@ module Jprint = struct
     JSON_Object (filter keyvalues)
 
   (* Convenience function to convert string list to JSON_Array *)
-  let string_array (l : string list) : json = JSON_Array (List.map string_ l)
+  let string_array (l : string list) : json = JSON_Array (List.map ~f:string_ l)
 end
 
 (* Some ad-hoc JSON processing helpers. *)
 
 module AdhocJsonHelpers = struct
+  exception Not_found
+
   let try_get_val key json =
     let obj = Hh_json.get_object_exn json in
     Base.List.Assoc.find ~equal:String.equal obj key
@@ -170,7 +179,7 @@ module AdhocJsonHelpers = struct
     | (None, None) -> raise Not_found
 
   let strlist args =
-    Hh_json.JSON_Array (List.map (fun arg -> Hh_json.JSON_String arg) args)
+    Hh_json.JSON_Array (List.map ~f:(fun arg -> Hh_json.JSON_String arg) args)
 
   (* Useful for building an array like [ "suffix", [".txt", ".js", ".php" ]] *)
   let assoc_strlist name args =

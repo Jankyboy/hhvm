@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_RUNTIME_VM_BLOB_HELPER_H_
-#define incl_HPHP_RUNTIME_VM_BLOB_HELPER_H_
+#pragma once
 
 #include <algorithm>
 #include <cstdlib>
@@ -24,7 +23,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include <folly/Optional.h>
 #include <folly/Varint.h>
 
 #include "hphp/compiler/option.h"
@@ -33,11 +31,12 @@
 #include "hphp/runtime/base/tv-variant.h"
 #include "hphp/runtime/base/type-string.h"
 #include "hphp/runtime/base/variable-serializer.h"
+#include "hphp/runtime/vm/coeffects.h"
 #include "hphp/runtime/vm/litstr-table.h"
-#include "hphp/runtime/vm/repo.h"
 #include "hphp/runtime/vm/repo-global-data.h"
 
 #include "hphp/util/compact-vector.h"
+#include "hphp/util/optional.h"
 
 /*
  * This module contains helpers for serializing and deserializing
@@ -195,9 +194,8 @@ struct BlobEncoder {
 
   void encode(const std::string& s) {
     uint32_t sz = s.size();
-    encode(sz + 1);
-    if (!sz) { return; }
-
+    encode(sz);
+    if (!sz) return;
     const size_t start = m_blob.size();
     m_blob.resize(start + sz);
     std::copy(s.data(), s.data() + sz, &m_blob[start]);
@@ -214,8 +212,8 @@ struct BlobEncoder {
   void encode(const TypedValueAux& tv) = delete;
 
   template<class T>
-  void encode(const folly::Optional<T>& opt) {
-    const bool some = opt.hasValue();
+  void encode(const Optional<T>& opt) {
+    const bool some = opt.has_value();
     encode(some);
     if (some) encode(*opt);
   }
@@ -289,8 +287,30 @@ struct BlobEncoder {
     return *this;
   }
 
+  /*
+   * Record the size of the data emitted during f(), which
+   * BlobDecoder::skipSize or BlobDecoder::peekSize can later read.
+   */
+  template <typename F>
+  BlobEncoder& withSize(F f) {
+    uint64_t start = m_blob.size();
+    m_blob.resize(start + sizeof(uint64_t));
+    // The size is stored before the data, but we don't know it yet,
+    // so store 0 and then patch it afterwards (this means we have to
+    // used a fixed size encoding).
+    std::memset(&m_blob[start], 0, sizeof(uint64_t));
+    f();
+    uint64_t size = m_blob.size() - start;
+    assertx(size >= sizeof(uint64_t));
+    size -= sizeof(uint64_t);
+    std::copy((char*)&size, (char*)&size + sizeof(uint64_t), &m_blob[start]);
+    return *this;
+  }
+
   size_t size() const { return m_blob.size(); }
   const void* data() const { return &m_blob[0]; }
+
+  std::vector<char>&& take() { return std::move(m_blob); }
 
 private:
   template<class Cont>
@@ -317,8 +337,9 @@ struct BlobDecoder {
   static const bool deserializing = true;
 
   BlobDecoder(const void* vp, size_t sz, bool l)
-    : m_p(static_cast<const unsigned char*>(vp))
-    , m_last(m_p + sz)
+    : m_start{static_cast<const unsigned char*>(vp)}
+    , m_p{m_start}
+    , m_last{m_p + sz}
     , m_useGlobalIds{l}
   {}
 
@@ -332,6 +353,8 @@ struct BlobDecoder {
   size_t remaining() const {
     return m_p <= m_last ? (m_last - m_p) : 0;
   }
+
+  size_t advanced() const { return m_p - m_start; }
 
   // See encode() in BlobEncoder for why this only allows integral
   // types.
@@ -401,8 +424,20 @@ struct BlobDecoder {
   }
 
   void decode(std::string& s) {
-    String str(decodeString());
-    s = str.toCppString();
+    uint32_t sz;
+    decode(sz);
+    assertx(m_last - m_p >= sz);
+    s = std::string{m_p, m_p + sz};
+    m_p += sz;
+  }
+
+  size_t peekStdStringSize() {
+    auto const before = advanced();
+    uint32_t sz;
+    decode(sz);
+    auto const sizeBytes = advanced() - before;
+    m_p -= sizeBytes;
+    return sz + sizeBytes;
   }
 
   void decode(TypedValue& tv) {
@@ -420,12 +455,12 @@ struct BlobDecoder {
   void decode(TypedValueAux& tv) = delete;
 
   template<class T>
-  void decode(folly::Optional<T>& opt) {
+  void decode(Optional<T>& opt) {
     bool some;
     decode(some);
 
     if (!some) {
-      opt = folly::none;
+      opt = std::nullopt;
     } else {
       T value;
       decode(value);
@@ -518,6 +553,76 @@ struct BlobDecoder {
     return *this;
   }
 
+  /*
+   * Read a block of data (using f()) which is previously encoded with
+   * BlobEncoder::withSize.
+   */
+  template <typename F>
+  BlobDecoder& withSize(F f) {
+    // Since we're going to read the data anyways, we don't actually
+    // need the size, but we'll assert if it doesn't match what we
+    // decode.
+    assertx(remaining() >= sizeof(uint64_t));
+    uint64_t size;
+    std::copy(m_p, m_p + sizeof(uint64_t), (unsigned char*)&size);
+    advance(sizeof(uint64_t));
+    auto const DEBUG_ONLY before = remaining();
+    assertx(before >= size);
+    f();
+    assertx(before - remaining() == size);
+    return *this;
+  }
+
+  /*
+   * Skip over a block of data encoded with BlobEncoder::withSize.
+   */
+  BlobDecoder& skipWithSize() {
+    assertx(remaining() >= sizeof(uint64_t));
+    uint64_t size;
+    std::copy(m_p, m_p + sizeof(uint64_t), (unsigned char*)&size);
+    assertx(remaining() >= size + sizeof(uint64_t));
+    advance(sizeof(uint64_t) + size);
+    return *this;
+  }
+
+  /*
+   * Read the size encoded by BlobEncoder::withSize, without advancing
+   * the decoder state.
+   */
+  size_t peekSize() const {
+    assertx(remaining() >= sizeof(uint64_t));
+    uint64_t size;
+    std::copy(m_p, m_p + sizeof(uint64_t), (unsigned char*)&size);
+    return size + sizeof(uint64_t);
+  }
+
+  /*
+   * Skip over an encoded StringData*
+   */
+  BlobDecoder& skipString() {
+    uint32_t sz;
+    decode(sz);
+    if (sz < 2) return *this;
+    --sz;
+    assertx(remaining() >= sz);
+    advance(sz);
+    return *this;
+  }
+
+  /*
+   * Skip over an encoded std::string
+   */
+  BlobDecoder& skipStdString() {
+    uint32_t sz;
+    decode(sz);
+    if (sz < 1) return *this;
+    assertx(remaining() >= sz);
+    advance(sz);
+    return *this;
+  }
+
+  void setUseGlobalIds(bool b) { m_useGlobalIds = b; }
+
 private:
   String decodeString() {
     uint32_t sz;
@@ -536,6 +641,7 @@ private:
   }
 
 private:
+  const unsigned char* m_start;
   const unsigned char* m_p;
   const unsigned char* const m_last;
   bool m_useGlobalIds;
@@ -544,5 +650,3 @@ private:
 //////////////////////////////////////////////////////////////////////
 
 }
-
-#endif

@@ -8,68 +8,16 @@
  *)
 
 open Hh_prelude
-open Coverage_level
 open Coverage_level_defs
 open Option.Monad_infix
 open Reordered_argument_collections
 open String_utils
-module Tast = Aast
 
 module NamingTableStore = GlobalStorage.Make (struct
   type t = Naming_table.t
 end)
 
-let combine v1 v2 =
-  SMap.merge ~f:(fun _ cs1 cs2 -> Option.merge cs1 cs2 merge_and_sum) v1 v2
-
-class count_getter fixme_map =
-  object
-    inherit [level_stats SMap.t] Tast_visitor.reduce as super
-
-    method zero = SMap.empty
-
-    method plus = combine
-
-    method! on_expr env expr =
-      let acc = super#on_expr env expr in
-      let ((pos, ty), e) = expr in
-      let expr_kind_opt =
-        match e with
-        | Tast.Array_get _ -> Some "array_get"
-        | Tast.Call _ -> Some "call"
-        | Tast.Class_get _ -> Some "class_get"
-        | Tast.Class_const _ -> Some "class_const"
-        | Tast.Lvar _ -> Some "lvar"
-        | Tast.New _ -> Some "new"
-        | Tast.Obj_get _ -> Some "obj_get"
-        | _ -> None
-      in
-      match expr_kind_opt with
-      | None -> acc
-      | Some kind ->
-        let r = Typing_defs.get_reason ty in
-        let (_env, lvl) = level_of_type env fixme_map (pos, ty) in
-        let counter =
-          match SMap.find_opt acc kind with
-          | Some counter -> counter
-          | None -> empty_counter
-        in
-        SMap.add acc ~key:kind ~data:(incr_counter lvl (r, pos, counter))
-  end
-
-(* This should likely take in tasts made with type checker options that were
- * made permissive using TypecheckerOptions.make_permissive
- *)
-let accumulate_types ctx tast check =
-  let fixmes =
-    match Fixme_provider.get_hh_fixmes check with
-    | Some fixmes -> fixmes
-    | None ->
-      failwith
-        ("HH_FIXMEs not found for path " ^ Relative_path.to_absolute check)
-  in
-  let cg = new count_getter fixmes in
-  cg#go ctx tast
+open ServerCoverageMetricUtils
 
 (* Create a trie for a single key. More complicated tries can then be built from
  * path tries using merge_trie* functions *)
@@ -89,7 +37,7 @@ let rec merge_trie x y =
 and merge_trie_children x y =
   SMap.merge ~f:(fun _ x y -> merge_trie_opt x y) x y
 
-and merge_trie_opt x y = Option.merge x y merge_trie
+and merge_trie_opt x y = Option.merge x y ~f:merge_trie
 
 (* Convert a list of (file_name, map of counts) into a trie. Each
  * internal node of the trie has the sum of counts of all its child nodes. *)
@@ -115,7 +63,7 @@ let relativize root path =
     let root = root ^ Filename.dir_sep in
     if string_starts_with path root then
       let root_len = String.length root in
-      Some (String.sub path root_len (String.length path - root_len))
+      Some (String.sub path ~pos:root_len ~len:(String.length path - root_len))
     else
       None
 
@@ -124,7 +72,7 @@ let get_coverage root ctx neutral fnl =
   SharedMem.invalidate_caches ();
   let naming_table = NamingTableStore.load () in
   let file_counts =
-    List.rev_filter_map fnl (fun fn ->
+    List.rev_filter_map fnl ~f:(fun fn ->
         relativize root (Relative_path.to_absolute fn) >>= fun relativized_fn ->
         Naming_table.get_file_info naming_table fn >>= fun defs ->
         let (tast, _) = Typing_check_utils.type_file ctx fn defs in

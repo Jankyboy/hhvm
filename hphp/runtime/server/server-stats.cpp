@@ -438,7 +438,7 @@ Array ServerStats::EndNetworkProfile() {
   s_profile_network = false;
   Lock lock(s_lock, false);
 
-  Array ret = Array::CreateDArray();
+  Array ret = Array::CreateDict();
   for (unsigned int i = 0; i < s_loggers.size(); i++) {
     auto ss = s_loggers[i];
     Lock loggerLock(ss->m_lock, false);
@@ -446,7 +446,7 @@ Array ServerStats::EndNetworkProfile() {
     IOStatusMap& status = ss->m_ioProfiles;
     for (auto const& iter : status) {
       ret.set(String(iter.first),
-              make_darray(
+              make_dict_array(
                 s_ct, iter.second.count,
                 s_wt, iter.second.wall_time));
     }
@@ -627,10 +627,10 @@ void ServerStats::setThreadIOStatus(const char* name, const char* addr,
 
 Array ServerStats::getThreadIOStatuses() {
   IOStatusMap& status = m_threadStatus.m_ioStatuses;
-  DArrayInit ret(status.size());
+  DictInit ret(status.size());
   for (auto const& iter : status) {
     ret.set(String(iter.first),
-            make_darray(s_ct, iter.second.count,
+            make_dict_array(s_ct, iter.second.count,
                            s_wt, iter.second.wall_time));
   }
   status.clear();

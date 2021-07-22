@@ -65,7 +65,10 @@ let stringify m =
               So we do not add the `crate::` prefix when referring to an alias
               bound in the same file. *)
            let root_module = String.split m ~on:':' |> List.hd_exn in
-           if SSet.mem bound_aliases root_module || root_module = "crate" then
+           if
+             SSet.mem bound_aliases root_module
+             || String.equal root_module "crate"
+           then
              sprintf "pub use %s as %s;" m a
            else
              sprintf "pub use crate::%s as %s;" m a)
@@ -80,7 +83,7 @@ let stringify m =
   let ty_reexports =
     ty_reexports
     |> List.map ~f:(sprintf "pub use %s;")
-    |> List.dedup_and_sort ~compare
+    |> List.dedup_and_sort ~compare:String.compare
     |> String.concat ~sep:"\n"
   in
   let decls = decls |> List.rev_map ~f:snd |> String.concat ~sep:"\n\n" in

@@ -256,11 +256,8 @@ void cgCheckInit(IRLS& env, const IRInstruction* inst) {
   assertx(type != InvalidReg);
   auto& v = vmain(env);
 
-  static_assert(KindOfUninit == static_cast<DataType>(0),
-                "cgCheckInit assumes KindOfUninit == 0");
-
   auto const sf = v.makeReg();
-  v << testb{type, type, sf};
+  v << cmpbi{static_cast<data_type_t>(KindOfUninit), type, sf};
   v << jcc{CC_Z, sf, {label(env, inst->next()), label(env, inst->taken())}};
 }
 
@@ -315,7 +312,7 @@ void cgJmpSwitchDest(IRLS& env, const IRInstruction* inst) {
 
   auto const table = v.allocData<TCA>(extra->cases);
   for (int i = 0; i < extra->cases; i++) {
-    v << bindaddr{&table[i], extra->targets[i], extra->spOffBCFromFP};
+    v << bindaddr{&table[i], extra->targets[i], extra->spOffBCFromStackBase};
   }
 
   auto const t = v.makeReg();
@@ -327,7 +324,7 @@ void cgJmpSwitchDest(IRLS& env, const IRInstruction* inst) {
 
 namespace {
 
-using SSwitchMap = FixedStringMap<TCA,true>;
+using SSwitchMap = FixedStringMap<TCA>;
 
 TCA sswitchHelperFast(const StringData* val,
                       const SSwitchMap* table,
@@ -355,8 +352,13 @@ void cgLdSSwitchDestFast(IRLS& env, const IRInstruction* inst) {
   // memory, and we're putting bindaddrs in said heap memory.
   new (table) SSwitchMap(extra->numCases);
 
+  std::unordered_map<const StringData*,TCA> map;
   for (int64_t i = 0; i < extra->numCases; ++i) {
-    table->add(extra->cases[i].str, nullptr);
+    map[extra->cases[i].str] = nullptr;
+  }
+  table->addFrom(map.begin(), map.end());
+
+  for (int64_t i = 0; i < extra->numCases; ++i) {
     auto const addr = table->find(extra->cases[i].str);
 
     // The addresses we're passing to bindaddr{} here live in SSwitchMap's heap
@@ -425,7 +427,6 @@ void cgReqBindJmp(IRLS& env, const IRInstruction* inst) {
   v << bindjmp{
     extra->target,
     extra->invSPOff,
-    extra->trflags,
     cross_trace_args(inst->marker())
   };
 }
@@ -435,24 +436,29 @@ void cgReqRetranslate(IRLS& env, const IRInstruction* inst) {
   auto const extra  = inst->extra<ReqRetranslate>();
   auto& v = vmain(env);
 
-  maybe_syncsp(v, inst->marker(), srcLoc(env, inst, 0).reg(), extra->irSPOff);
+  maybe_syncsp(v, inst->marker(), srcLoc(env, inst, 0).reg(), extra->offset);
   v << fallback{
     destSK,
-    inst->marker().spOff(),
-    extra->trflags,
+    inst->marker().bcSPOff(),
     cross_trace_args(inst->marker())
   };
 }
 
 void cgReqRetranslateOpt(IRLS& env, const IRInstruction* inst) {
-  auto const extra = inst->extra<ReqRetranslateOpt>();
   auto& v = vmain(env);
-  maybe_syncsp(v, inst->marker(), srcLoc(env, inst, 0).reg(), extra->offset);
-  v << retransopt{
-    inst->marker().sk(),
-    inst->marker().spOff(),
-    cross_trace_args(inst->marker())
+  v << copy{v.cns(inst->marker().sk().offset()), rarg(0)};
+  v << copy{v.cns(inst->marker().bcSPOff().offset), rarg(1)};
+  v << jmpi{
+    tc::ustubs().handleRetranslateOpt,
+    leave_trace_regs() | arg_regs(2)
   };
+}
+
+void cgReqInterpBBNoTranslate(IRLS& env, const IRInstruction* inst) {
+  auto const extra = inst->extra<ReqInterpBBNoTranslate>();
+  auto& v = vmain(env);
+  maybe_syncsp(v, inst->marker(), srcLoc(env, inst, 0).reg(), extra->irSPOff);
+  emitInterpReqNoTranslate(v, extra->target, extra->invSPOff);
 }
 
 void cgLdBindAddr(IRLS& env, const IRInstruction* inst) {
@@ -461,9 +467,7 @@ void cgLdBindAddr(IRLS& env, const IRInstruction* inst) {
   auto& v = vmain(env);
 
   // Emit service request to smash address of SrcKey into 'addr'.
-  auto const addrPtr = v.allocData<TCA>();
-  v << bindaddr{addrPtr, extra->sk, extra->bcSPOff};
-  v << loadqd{reinterpret_cast<uint64_t*>(addrPtr), dst};
+  v << ldbindaddr{extra->sk, extra->bcSPOff, dst};
 }
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -1,41 +1,41 @@
-varray(2) {
-  darray(4) {
+vec(2) {
+  dict(4) {
     ["file"]=>
-    string(%d) "%s/exceptions.php"
+    string(%d) "%s/test/slow/dv_array/exceptions.php"
     ["line"]=>
     int(21)
     ["function"]=>
     string(10) "throws_exn"
     ["args"]=>
-    varray(0) {
+    vec(0) {
     }
   }
-  darray(2) {
+  dict(2) {
     ["function"]=>
     string(4) "main"
     ["args"]=>
-    varray(0) {
+    vec(0) {
     }
   }
 }
-varray(3) {
+vec(3) {
   string(8) "garbage!"
-  darray(4) {
+  dict(4) {
     ["file"]=>
-    string(%d) "%s/exceptions.php"
+    string(%d) "%s/test/slow/dv_array/exceptions.php"
     ["line"]=>
     int(26)
     ["function"]=>
     string(13) "throws_my_exn"
     ["args"]=>
-    varray(0) {
+    vec(0) {
     }
   }
-  darray(2) {
+  dict(2) {
     ["function"]=>
     string(4) "main"
     ["args"]=>
-    varray(0) {
+    vec(0) {
     }
   }
 }

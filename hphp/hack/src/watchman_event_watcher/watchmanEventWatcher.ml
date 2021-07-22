@@ -11,7 +11,7 @@
            ("Who watches the Watchmen?")
 ****************************************************)
 
-open Core_kernel
+open Hh_prelude
 
 (**
  * Watches a repo and logs state-leave and state-enter
@@ -90,7 +90,8 @@ type env = {
 }
 
 let ignore_unix_epipe f x =
-  (try f x with Unix.Unix_error (Unix.EPIPE, _, _) -> ())
+  try f x with
+  | Unix.Unix_error (Unix.EPIPE, _, _) -> ()
 
 (**
  * This allows the repo itself to turn on-or-off this Watchman Event
@@ -164,7 +165,8 @@ let process_changes changes env =
       let env = { env with update_state = Left } in
       let () = notify_waiting_clients env in
       env
-    | Watchman_pushed (State_enter (name, json)) when name = "hg.update" ->
+    | Watchman_pushed (State_enter (name, json))
+      when String.equal name "hg.update" ->
       Hh_logger.log "State_enter %s" name;
       let ( >>= ) = Option.( >>= ) in
       let ( >>| ) = Option.( >>| ) in
@@ -172,13 +174,14 @@ let process_changes changes env =
         ( json >>= Watchman_utils.rev_in_state_change >>| fun hg_rev ->
           Hh_logger.log "Revision: %s" hg_rev );
       { env with update_state = Entering }
-    | Watchman_pushed (State_enter (name, _json)) when name = "hg.transaction"
-      ->
+    | Watchman_pushed (State_enter (name, _json))
+      when String.equal name "hg.transaction" ->
       { env with transaction_state = Entering }
     | Watchman_pushed (State_enter (name, _json)) ->
       Hh_logger.log "Ignoring State_enter %s" name;
       env
-    | Watchman_pushed (State_leave (name, json)) when name = "hg.update" ->
+    | Watchman_pushed (State_leave (name, json))
+      when String.equal name "hg.update" ->
       Hh_logger.log "State_leave %s" name;
       let ( >>= ) = Option.( >>= ) in
       let ( >>| ) = Option.( >>| ) in
@@ -188,8 +191,8 @@ let process_changes changes env =
       let env = { env with update_state = Left } in
       let () = notify_waiting_clients env in
       env
-    | Watchman_pushed (State_leave (name, _json)) when name = "hg.transaction"
-      ->
+    | Watchman_pushed (State_leave (name, _json))
+      when String.equal name "hg.transaction" ->
       { env with transaction_state = Left }
     | Watchman_pushed (State_leave (name, _json)) ->
       Hh_logger.log "Ignoring State_leave %s" name;
@@ -218,7 +221,7 @@ let check_subscription env =
 
 let sleep_and_check ?(wait_time = 0.3) socket =
   let (ready_socket_l, _, _) = Unix.select [socket] [] [] wait_time in
-  ready_socket_l <> []
+  not (List.is_empty ready_socket_l)
 
 (** Batch accept all new client connections. Return the list of them. *)
 let get_new_clients socket =
@@ -231,7 +234,8 @@ let get_new_clients socket =
         try
           let (fd, _) = Unix.accept socket in
           fd :: acc
-        with Unix.Unix_error _ -> acc
+        with
+        | Unix.Unix_error _ -> acc
       in
       get_all_clients_nonblocking socket acc
   in
@@ -256,7 +260,8 @@ let process_client_ env client =
   env
 
 let process_client env client =
-  (try process_client_ env client with Unix.Unix_error _ -> env)
+  try process_client_ env client with
+  | Unix.Unix_error _ -> env
 
 let check_new_connections env =
   let new_clients = get_new_clients env.socket in
@@ -311,8 +316,8 @@ let init root =
         }
 
 let to_channel_no_exn oc data =
-  try Daemon.to_channel oc ~flush:true data
-  with e ->
+  try Daemon.to_channel oc ~flush:true data with
+  | e ->
     let stack = Printexc.get_backtrace () in
     Hh_logger.exc ~prefix:"Warning: writing to channel failed" ~stack e
 
@@ -322,8 +327,8 @@ let main root =
   match result with
   | Ok env ->
     begin
-      try serve env
-      with e ->
+      try serve env with
+      | e ->
         let raw_stack = Caml.Printexc.get_raw_backtrace () in
         let stack = Caml.Printexc.raw_backtrace_to_string raw_stack in
         let () =
@@ -340,7 +345,8 @@ let main root =
 
 let log_file root =
   let log_link = WatchmanEventWatcherConfig.log_link root in
-  (try Sys.rename log_link (log_link ^ ".old") with _ -> ());
+  (try Sys.rename log_link (log_link ^ ".old") with
+  | _ -> ());
   Sys_utils.make_link_of_timestamped log_link
 
 let daemon_main_ root oc =
@@ -359,7 +365,10 @@ let daemon_main_ root oc =
 
 let daemon_main root (_ic, oc) =
   Sys_utils.set_signal Sys.sigpipe Sys.Signal_ignore;
-  (try daemon_main_ root oc with e -> HackEventLogger.uncaught_exception e)
+  try daemon_main_ root oc with
+  | exn ->
+    let e = Exception.wrap exn in
+    HackEventLogger.watchman_uncaught_exception e
 
 (** Typechecker canont infer this type since the input channel
  * is never used so its phantom type is never ineferred. We annotate

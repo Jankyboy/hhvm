@@ -14,18 +14,17 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_TRANSL_TYPES_H_
-#define incl_HPHP_TRANSL_TYPES_H_
+#pragma once
 
 #include <vector>
-
-#include <folly/Optional.h>
 
 #include "hphp/runtime/base/types.h"
 
 #include "hphp/runtime/vm/jit/containers.h"
 
 #include "hphp/util/assertions.h"
+#include "hphp/util/compact-tagged-ptrs.h"
+#include "hphp/util/optional.h"
 #include "hphp/util/hash-set.h"
 
 namespace HPHP { namespace jit {
@@ -110,11 +109,11 @@ inline std::string show(TransKind k) {
   not_reached();
 }
 
-inline folly::Optional<TransKind> nameToTransKind(const std::string& str) {
+inline Optional<TransKind> nameToTransKind(const std::string& str) {
 #define DO(name) if (str == "Trans" #name) return TransKind::name;
   TRANS_KINDS
 #undef DO
-  return folly::none;
+  return std::nullopt;
 }
 
 inline bool isProfiling(TransKind k) {
@@ -152,21 +151,6 @@ inline bool isPrologue(TransKind k) {
   }
   always_assert(false);
 }
-
-/*
- * Compact flags which may be threaded through a service request to provide
- * hints or demands for retranslations.
- */
-struct TransFlags {
-  /* implicit */ TransFlags(uint64_t flags = 0) : packed(flags) {}
-
-  bool operator==(TransFlags o) const { return packed == o.packed; }
-  bool operator!=(TransFlags o) const { return packed != o.packed; }
-
-  uint64_t packed;
-};
-
-static_assert(sizeof(TransFlags) <= sizeof(uint64_t), "Too many TransFlags!");
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -232,12 +216,55 @@ inline std::string areaAsString(AreaIndex area) {
   always_assert(false);
 }
 
-inline folly::Optional<AreaIndex> nameToAreaIndex(const std::string name) {
+inline Optional<AreaIndex> nameToAreaIndex(const std::string name) {
   if (name == "Main") return AreaIndex::Main;
   if (name == "Cold") return AreaIndex::Cold;
   if (name == "Frozen") return AreaIndex::Frozen;
-  return folly::none;
+  return std::nullopt;
 }
+
+///////////////////////////////////////////////////////////////////////////////
+
+/*
+ * Encapsulates a TCA for a translation, or a "scope" for the failure
+ * to produce one. The scope is a bound for how long the failure is
+ * expected to persistent.
+ */
+struct TranslationResult {
+  enum class Scope : uint16_t {
+    Success,   // Have a TCA
+    Transient, // Transient failure. The next attempt might succeed.
+    Request,   // Attempts will fail until the next request at least.
+    Process    // Attempts will fail for the remainder of the process
+               // lifetime.
+  };
+
+  explicit TranslationResult(TCA tca)
+    : m_ptr{Scope::Success, tca} { assertx(tca); }
+  explicit TranslationResult(Scope s)
+    : m_ptr{s, nullptr} { assertx(s != Scope::Success); }
+
+  static TranslationResult failTransiently() {
+    return TranslationResult{Scope::Transient};
+  }
+  static TranslationResult failForProcess() {
+    return TranslationResult{Scope::Process};
+  }
+
+  TCA addr() const { return m_ptr.ptr(); }
+  Scope scope() const { return m_ptr.tag(); }
+
+  bool isRequestPersistentFailure() const {
+    auto const s = scope();
+    return s == Scope::Request || s == Scope::Process;
+  }
+  bool isProcessPersistentFailure() const {
+    return scope() == Scope::Process;
+  }
+
+private:
+  CompactTaggedPtr<unsigned char, Scope> m_ptr;
+};
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -285,5 +312,3 @@ inline std::string show(const Reason &r) {
 }
 
 }}
-
-#endif

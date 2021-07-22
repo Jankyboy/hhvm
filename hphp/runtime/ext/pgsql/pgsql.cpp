@@ -370,7 +370,7 @@ bool PGSQLResult::convertFieldRow(const Variant& row, const Variant& field,
     fn_name = "__internal_pgsql_func";
   }
 
-  if (field.isInitialized()) {
+  if (!field.isNull()) {
     actual_row = row.toInt64();
     actual_field = field;
   } else {
@@ -697,7 +697,7 @@ static Variant HHVM_FUNCTION(pg_connection_pool_stat) {
     return init_null();
   }
 
-  VArrayInit arr(pools.size());
+  VecInit arr(pools.size());
 
 
   for (auto pool : pools) {
@@ -705,7 +705,7 @@ static Variant HHVM_FUNCTION(pg_connection_pool_stat) {
 
     String poolName(pool->GetCleanedConnectionString().c_str(), CopyString);
 
-    poolArr = make_darray(
+    poolArr = make_dict_array(
       s_connection_string, poolName,
       s_sweeped_connections, pool->SweepedConnections(),
       s_opened_connections, pool->OpenedConnections(),
@@ -888,7 +888,7 @@ static Variant HHVM_FUNCTION(pg_version, const Resource& connection) {
     FAIL_RETURN;
   }
 
-  Array ret = Array::CreateDArray();
+  Array ret = Array::CreateDict();
 
   int proto_ver = pgsql->get().protocolVersion();
   if (proto_ver) {

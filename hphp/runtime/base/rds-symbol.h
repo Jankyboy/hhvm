@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_RDS_SYMBOL_H_
-#define incl_HPHP_RDS_SYMBOL_H_
+#pragma once
 
 #include "hphp/runtime/base/types.h"
 
@@ -133,8 +132,7 @@ struct Profile {
 /*
  * Static class properties in Mode::Local.
  */
-struct SPropCache { LowPtr<const Class> cls;
-                    Slot slot; };
+struct SPropCache { LowPtr<const Class> cls; Slot slot; };
 
 struct StaticMemoValue { FuncId funcId; };
 struct StaticMemoCache { FuncId funcId; };
@@ -172,9 +170,8 @@ std::string symbol_kind(const Symbol&);
 std::string symbol_rep(const Symbol&);
 bool symbol_eq(const Symbol&, const Symbol&);
 size_t symbol_hash(const Symbol&);
+size_t symbol_stable_hash(const Symbol&);
 
 ///////////////////////////////////////////////////////////////////////////////
 
 }}
-
-#endif

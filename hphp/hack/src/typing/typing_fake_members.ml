@@ -13,7 +13,7 @@ module Reason = Typing_reason
 module S = struct
   type t = Local_id.t * Reason.blame
 
-  let compare (lid1, _) (lid2, _) = compare lid1 lid2
+  let compare (lid1, _) (lid2, _) = Local_id.compare lid1 lid2
 end
 
 (* A set that treats blame as metadata *)
@@ -79,7 +79,7 @@ let sub ledger1 ledger2 =
 let is_valid ledger lid = BlameSet.member lid ledger.valid
 
 let is_invalid ledger lid =
-  Option.map (BlameSet.find_opt lid ledger.invalid) snd
+  Option.map (BlameSet.find_opt lid ledger.invalid) ~f:snd
 
 let conditionally_forget predicate (ledger : t) blame : t =
   let (to_invalidate, valid) = BlameSet.partition predicate ledger.valid in
@@ -127,7 +127,7 @@ let blame_as_log_value (Reason.Blame (p, blame_source)) =
 let as_log_value ledger =
   let log_blame_set_as_value set =
     Typing_log_value.make_map
-      (List.map (BlameSet.elements set) (fun (lid, blame_opt) ->
+      (List.map (BlameSet.elements set) ~f:(fun (lid, blame_opt) ->
            ( Typing_log_value.local_id_as_string lid,
              blame_as_log_value blame_opt )))
   in
@@ -145,8 +145,8 @@ let as_log_value ledger =
 let make_id obj_name member_name =
   let obj_name =
     match obj_name with
-    | (_, Aast.This) -> Typing_defs.this
-    | (_, Aast.Lvar (_, x)) -> x
+    | (_, _, Aast.This) -> Typing_defs.this
+    | (_, _, Aast.Lvar (_, x)) -> x
     | _ -> assert false
   in
   Local_id.make_unscoped (Local_id.to_string obj_name ^ "->" ^ member_name)

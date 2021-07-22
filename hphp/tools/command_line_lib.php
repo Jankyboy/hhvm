@@ -4,7 +4,7 @@
  */
 
 function error(string $message): void {
-  error_unsafe($message);
+  throw new Error($message);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -50,9 +50,9 @@ type OptionInfoMap = Map<string,OptionInfo>;
 type OptionMap     = Map<string,mixed>;
 
 function parse_options(OptionInfoMap $optmap): OptionMap {
-  $argv = new Vector($GLOBALS['argv']);
+  $argv = new Vector(HH\global_get('argv'));
   $result = parse_options_impl($optmap, $argv);
-  $GLOBALS['argv'] = varray($argv);
+  HH\global_set('argv', varray($argv));
   return $result;
 }
 
@@ -254,7 +254,7 @@ function display_help(string $message, OptionInfoMap $optmap): void {
     }
   }
 
-  $longest_col = max($first_cols->values()->map(fun('strlen')));
+  $longest_col = max($first_cols->values()->map(strlen<>));
 
   foreach ($first_cols as $long => $col) {
     $pad = str_repeat(' ', $longest_col - strlen($col) + 5);

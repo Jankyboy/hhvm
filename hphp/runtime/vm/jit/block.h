@@ -14,12 +14,9 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VM_BLOCK_H_
-#define incl_HPHP_VM_BLOCK_H_
+#pragma once
 
 #include <algorithm>
-
-#include <folly/Optional.h>
 
 #include "hphp/runtime/vm/jit/containers.h"
 #include "hphp/runtime/vm/jit/edge.h"
@@ -106,6 +103,10 @@ struct Block {
   // taken edge goes to a catch block.
   bool isExitNoThrow() const {
     return !empty() && back().isTerminal() && (!taken() || taken()->isCatch());
+  }
+
+  bool isUnreachable() const {
+    return !empty() && back().is(Unreachable);
   }
 
   // If its a catch block, the BeginCatch's marker
@@ -403,14 +404,12 @@ inline const char* blockHintName(Block::Hint hint) {
   not_reached();
 }
 
-inline folly::Optional<Block::Hint> nameToHint(const std::string& hintStr) {
+inline Optional<Block::Hint> nameToHint(const std::string& hintStr) {
   if (hintStr == "Unused")   return Block::Hint::Unused;
   if (hintStr == "Unlikely") return Block::Hint::Unlikely;
   if (hintStr == "Neither")  return Block::Hint::Neither;
   if (hintStr == "Likely")   return Block::Hint::Likely;
-  return folly::none;
+  return std::nullopt;
 }
 
 }}
-
-#endif

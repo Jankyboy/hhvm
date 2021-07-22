@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_TYPE_STRUCTURE_H
-#define incl_HPHP_TYPE_STRUCTURE_H
+#pragma once
 
 #include <cstdint>
 #include "hphp/runtime/base/req-vector.h"
@@ -46,7 +45,6 @@ enum class Kind : uint8_t {
   T_mixed = 9,
   T_tuple = 10,
   T_fun = 11,
-  T_array = 12,
   T_typevar = 13, // corresponds to user OF_GENERIC
   T_shape = 14,
 
@@ -67,7 +65,7 @@ enum class Kind : uint8_t {
   T_darray = 24,
   T_varray = 25,
   T_varray_or_darray = 26,
-  T_arraylike = 27,
+  T_any_array = 27,
 
   T_null = 28,
   T_nothing = 29,
@@ -105,7 +103,7 @@ String toString(const Array& arr, TSDisplayType type);
  * in the appropriate places to varrays. The reason we have to do that is a
  * consequence of how our serialization format for PHP arrays broke down:
  * we cannot distinguish between list-like darrays and varrays based on the
- * serialized data. Post HackArrDVArrs, it converts list-like dicts to vecs.
+ * serialized data. Converts list-like dicts to vecs.
  *
  * In summary, this function is tied closely to variable-unserializer formats.
  * If you think you need to use it for any other reason: THINK AGAIN. Think
@@ -153,6 +151,6 @@ Array resolvePartial(const Array& ts,
 
 }
 
-}
+std::string xhpNameFromTS(const Array& arr);
 
-#endif
+}

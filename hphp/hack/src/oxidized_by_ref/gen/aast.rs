@@ -3,14 +3,16 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the "hack" directory of this source tree.
 //
-// @generated SignedSource<<7d0c9e6093187f095b97cb69b0c6bc45>>
+// @generated SignedSource<<f9c2d56fab0506e84b3fd39b92402f6c>>
 //
 // To regenerate this file, run:
-//   hphp/hack/src/oxidized_by_ref/regen.sh
+//   hphp/hack/src/oxidized_regen.sh
 
 use arena_trait::TrivialDrop;
+use no_pos_hash::NoPosHash;
 use ocamlrep_derive::FromOcamlRepIn;
 use ocamlrep_derive::ToOcamlRep;
+use serde::Deserialize;
 use serde::Serialize;
 
 #[allow(unused_imports)]
@@ -20,659 +22,1355 @@ pub use aast_defs::*;
 pub use doc_comment::DocComment;
 
 /// Aast.program represents the top-level definitions in a Hack program.
-/// ex: Expression annotation type (when typechecking, the inferred dtype)
+/// ex: Expression annotation type (when typechecking, the inferred type)
 /// fb: Function body tag (e.g. has naming occurred)
 /// en: Environment (tracking state inside functions and classes)
-/// hi: Hint annotation (when typechecking it will be the localized type hint or the
-/// inferred missing type if the hint is missing)
-pub type Program<'a, Ex, Fb, En, Hi> = &'a [Def<'a, Ex, Fb, En, Hi>];
+pub type Program<'a, Ex, Fb, En> = [Def<'a, Ex, Fb, En>];
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Stmt<'a, Ex, Fb, En, Hi>(pub &'a Pos<'a>, pub Stmt_<'a, Ex, Fb, En, Hi>);
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for Stmt<'a, Ex, Fb, En, Hi>
-{
-}
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct Stmt<'a, Ex, Fb, En>(
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub &'a Pos<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub Stmt_<'a, Ex, Fb, En>,
+);
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop for Stmt<'a, Ex, Fb, En> {}
+arena_deserializer::impl_deserialize_in_arena!(Stmt<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
+    Copy,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum Stmt_<'a, Ex, Fb, En, Hi> {
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub enum Stmt_<'a, Ex, Fb, En> {
+    /// Marker for a switch statement that falls through.
+    ///
+    /// // FALLTHROUGH
     Fallthrough,
-    Expr(&'a Expr<'a, Ex, Fb, En, Hi>),
+    /// Standalone expression.
+    ///
+    /// 1 + 2;
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Expr(&'a Expr<'a, Ex, Fb, En>),
+    /// Break inside a loop or switch statement.
+    ///
+    /// break;
     Break,
+    /// Continue inside a loop or switch statement.
+    ///
+    /// continue;
     Continue,
-    Throw(&'a Expr<'a, Ex, Fb, En, Hi>),
-    Return(&'a Option<Expr<'a, Ex, Fb, En, Hi>>),
-    GotoLabel(&'a Pstring<'a>),
-    Goto(&'a Pstring<'a>),
+    /// Throw an exception.
+    ///
+    /// throw $foo;
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Throw(&'a Expr<'a, Ex, Fb, En>),
+    /// Return, with an optional value.
+    ///
+    /// return;
+    /// return $foo;
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Return(Option<&'a Expr<'a, Ex, Fb, En>>),
+    /// Yield break, terminating the current generator. This behaves like
+    /// return; but is more explicit, and ensures the function is treated
+    /// as a generator.
+    ///
+    /// yield break;
+    YieldBreak,
+    /// Concurrent block. All the await expressions are awaited at the
+    /// same time, similar to genva().
+    ///
+    /// We store the desugared form. In the below example, the list is:
+    /// [('__tmp$1', f()), (__tmp$2, g()), (None, h())]
+    /// and the block assigns the temporary variables back to the locals.
+    /// { $foo = __tmp$1; $bar = __tmp$2; }
+    ///
+    /// concurrent {
+    /// $foo = await f();
+    /// $bar = await g();
+    /// await h();
+    /// }
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     Awaitall(
         &'a (
-            &'a [(Option<Lid<'a>>, Expr<'a, Ex, Fb, En, Hi>)],
-            Block<'a, Ex, Fb, En, Hi>,
+            &'a [(Option<&'a Lid<'a>>, &'a Expr<'a, Ex, Fb, En>)],
+            &'a Block<'a, Ex, Fb, En>,
         ),
     ),
+    /// If statement.
+    ///
+    /// if ($foo) { ... } else { ... }
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     If(
         &'a (
-            Expr<'a, Ex, Fb, En, Hi>,
-            Block<'a, Ex, Fb, En, Hi>,
-            Block<'a, Ex, Fb, En, Hi>,
+            &'a Expr<'a, Ex, Fb, En>,
+            &'a Block<'a, Ex, Fb, En>,
+            &'a Block<'a, Ex, Fb, En>,
         ),
     ),
-    Do(&'a (Block<'a, Ex, Fb, En, Hi>, Expr<'a, Ex, Fb, En, Hi>)),
-    While(&'a (Expr<'a, Ex, Fb, En, Hi>, Block<'a, Ex, Fb, En, Hi>)),
-    Using(&'a UsingStmt<'a, Ex, Fb, En, Hi>),
+    /// Do-while loop.
+    ///
+    /// do {
+    /// bar();
+    /// } while($foo)
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Do(&'a (&'a Block<'a, Ex, Fb, En>, &'a Expr<'a, Ex, Fb, En>)),
+    /// While loop.
+    ///
+    /// while ($foo) {
+    /// bar();
+    /// }
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    While(&'a (&'a Expr<'a, Ex, Fb, En>, &'a Block<'a, Ex, Fb, En>)),
+    /// Initialize a value that is automatically disposed of.
+    ///
+    /// using $foo = bar(); // disposed at the end of the function
+    /// using ($foo = bar(), $baz = quux()) {} // disposed after the block
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Using(&'a UsingStmt<'a, Ex, Fb, En>),
+    /// For loop. The initializer and increment parts can include
+    /// multiple comma-separated statements. The termination condition is
+    /// optional.
+    ///
+    /// for ($i = 0; $i < 100; $i++) { ... }
+    /// for ($x = 0, $y = 0; ; $x++, $y++) { ... }
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     For(
         &'a (
-            Expr<'a, Ex, Fb, En, Hi>,
-            Expr<'a, Ex, Fb, En, Hi>,
-            Expr<'a, Ex, Fb, En, Hi>,
-            Block<'a, Ex, Fb, En, Hi>,
+            &'a [&'a Expr<'a, Ex, Fb, En>],
+            Option<&'a Expr<'a, Ex, Fb, En>>,
+            &'a [&'a Expr<'a, Ex, Fb, En>],
+            &'a Block<'a, Ex, Fb, En>,
         ),
     ),
-    Switch(&'a (Expr<'a, Ex, Fb, En, Hi>, &'a [Case<'a, Ex, Fb, En, Hi>])),
+    /// Switch statement.
+    ///
+    /// switch ($foo) {
+    /// case X:
+    /// bar();
+    /// break;
+    /// default:
+    /// baz();
+    /// break;
+    /// }
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Switch(&'a (&'a Expr<'a, Ex, Fb, En>, &'a [Case<'a, Ex, Fb, En>])),
+    /// For-each loop.
+    ///
+    /// foreach ($items as $item) { ... }
+    /// foreach ($items as $key => value) { ... }
+    /// foreach ($items await as $item) { ... } // AsyncIterator<_>
+    /// foreach ($items await as $key => value) { ... } // AsyncKeyedIterator<_>
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     Foreach(
         &'a (
-            Expr<'a, Ex, Fb, En, Hi>,
-            AsExpr<'a, Ex, Fb, En, Hi>,
-            Block<'a, Ex, Fb, En, Hi>,
+            &'a Expr<'a, Ex, Fb, En>,
+            AsExpr<'a, Ex, Fb, En>,
+            &'a Block<'a, Ex, Fb, En>,
         ),
     ),
+    /// Try statement, with catch blocks and a finally block.
+    ///
+    /// try {
+    /// foo();
+    /// } catch (SomeException $e) {
+    /// bar();
+    /// } finally {
+    /// baz();
+    /// }
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     Try(
         &'a (
-            Block<'a, Ex, Fb, En, Hi>,
-            &'a [Catch<'a, Ex, Fb, En, Hi>],
-            Block<'a, Ex, Fb, En, Hi>,
+            &'a Block<'a, Ex, Fb, En>,
+            &'a [&'a Catch<'a, Ex, Fb, En>],
+            &'a Block<'a, Ex, Fb, En>,
         ),
     ),
+    /// No-op, the empty statement.
+    ///
+    /// {}
+    /// while (true) ;
+    /// if ($foo) {} // the else is Noop here
     Noop,
-    Block(Block<'a, Ex, Fb, En, Hi>),
+    /// Block, a list of statements in curly braces.
+    ///
+    /// { $foo = 42; }
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Block(&'a Block<'a, Ex, Fb, En>),
+    /// The mode tag at the beginning of a file.
+    /// TODO: this really belongs in def.
+    ///
+    /// <?hh
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     Markup(&'a Pstring<'a>),
-    AssertEnv(&'a (oxidized::aast::EnvAnnot, LocalIdMap<'a, Ex>)),
+    /// Used in IFC to track type inference environments. Not user
+    /// denotable.
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    AssertEnv(
+        &'a (
+            oxidized::aast::EnvAnnot,
+            &'a LocalIdMap<'a, (&'a Pos<'a>, Ex)>,
+        ),
+    ),
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for Stmt_<'a, Ex, Fb, En, Hi>
-{
-}
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop for Stmt_<'a, Ex, Fb, En> {}
+arena_deserializer::impl_deserialize_in_arena!(Stmt_<'arena, Ex, Fb, En>);
 
 pub use oxidized::aast::EnvAnnot;
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct UsingStmt<'a, Ex, Fb, En, Hi> {
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct UsingStmt<'a, Ex, Fb, En> {
     pub is_block_scoped: bool,
     pub has_await: bool,
-    pub expr: Expr<'a, Ex, Fb, En, Hi>,
-    pub block: Block<'a, Ex, Fb, En, Hi>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub exprs: (&'a Pos<'a>, &'a [&'a Expr<'a, Ex, Fb, En>]),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub block: &'a Block<'a, Ex, Fb, En>,
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for UsingStmt<'a, Ex, Fb, En, Hi>
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for UsingStmt<'a, Ex, Fb, En>
 {
 }
+arena_deserializer::impl_deserialize_in_arena!(UsingStmt<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
+    Copy,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum AsExpr<'a, Ex, Fb, En, Hi> {
-    AsV(Expr<'a, Ex, Fb, En, Hi>),
-    AsKv(Expr<'a, Ex, Fb, En, Hi>, Expr<'a, Ex, Fb, En, Hi>),
-    AwaitAsV(&'a Pos<'a>, Expr<'a, Ex, Fb, En, Hi>),
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub enum AsExpr<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    AsV(&'a Expr<'a, Ex, Fb, En>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    AsKv(&'a (&'a Expr<'a, Ex, Fb, En>, &'a Expr<'a, Ex, Fb, En>)),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    AwaitAsV(&'a (&'a Pos<'a>, &'a Expr<'a, Ex, Fb, En>)),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     AwaitAsKv(
-        &'a Pos<'a>,
-        Expr<'a, Ex, Fb, En, Hi>,
-        Expr<'a, Ex, Fb, En, Hi>,
-    ),
-}
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for AsExpr<'a, Ex, Fb, En, Hi>
-{
-}
-
-pub type Block<'a, Ex, Fb, En, Hi> = &'a [Stmt<'a, Ex, Fb, En, Hi>];
-
-#[derive(
-    Clone,
-    Debug,
-    Eq,
-    FromOcamlRepIn,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToOcamlRep
-)]
-pub struct ClassId<'a, Ex, Fb, En, Hi>(pub Ex, pub ClassId_<'a, Ex, Fb, En, Hi>);
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for ClassId<'a, Ex, Fb, En, Hi>
-{
-}
-
-#[derive(
-    Clone,
-    Debug,
-    Eq,
-    FromOcamlRepIn,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToOcamlRep
-)]
-pub enum ClassId_<'a, Ex, Fb, En, Hi> {
-    CIparent,
-    CIself,
-    CIstatic,
-    CIexpr(Expr<'a, Ex, Fb, En, Hi>),
-    CI(Sid<'a>),
-}
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for ClassId_<'a, Ex, Fb, En, Hi>
-{
-}
-
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    FromOcamlRepIn,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToOcamlRep
-)]
-pub struct Expr<'a, Ex, Fb, En, Hi>(pub Ex, pub Expr_<'a, Ex, Fb, En, Hi>);
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for Expr<'a, Ex, Fb, En, Hi>
-{
-}
-
-#[derive(
-    Clone,
-    Debug,
-    Eq,
-    FromOcamlRepIn,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToOcamlRep
-)]
-pub enum CollectionTarg<'a, Hi> {
-    CollectionTV(Targ<'a, Hi>),
-    CollectionTKV(Targ<'a, Hi>, Targ<'a, Hi>),
-}
-impl<'a, Hi: TrivialDrop> TrivialDrop for CollectionTarg<'a, Hi> {}
-
-#[derive(
-    Clone,
-    Debug,
-    Eq,
-    FromOcamlRepIn,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToOcamlRep
-)]
-pub enum FunctionPtrId<'a, Ex, Fb, En, Hi> {
-    FPId(Sid<'a>),
-    FPClassConst(ClassId<'a, Ex, Fb, En, Hi>, Pstring<'a>),
-}
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for FunctionPtrId<'a, Ex, Fb, En, Hi>
-{
-}
-
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    FromOcamlRepIn,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToOcamlRep
-)]
-pub enum Expr_<'a, Ex, Fb, En, Hi> {
-    Darray(
         &'a (
-            Option<(Targ<'a, Hi>, Targ<'a, Hi>)>,
-            &'a [(Expr<'a, Ex, Fb, En, Hi>, Expr<'a, Ex, Fb, En, Hi>)],
+            &'a Pos<'a>,
+            &'a Expr<'a, Ex, Fb, En>,
+            &'a Expr<'a, Ex, Fb, En>,
         ),
     ),
-    Varray(&'a (Option<Targ<'a, Hi>>, &'a [Expr<'a, Ex, Fb, En, Hi>])),
-    Shape(&'a [(ast_defs::ShapeFieldName<'a>, Expr<'a, Ex, Fb, En, Hi>)]),
-    /// TODO: T38184446 Consolidate collections in AAST
+}
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop for AsExpr<'a, Ex, Fb, En> {}
+arena_deserializer::impl_deserialize_in_arena!(AsExpr<'arena, Ex, Fb, En>);
+
+pub type Block<'a, Ex, Fb, En> = [&'a Stmt<'a, Ex, Fb, En>];
+
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct ClassId<'a, Ex, Fb, En>(
+    #[serde(deserialize_with = "arena_deserializer::arena")] pub Ex,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub &'a Pos<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub ClassId_<'a, Ex, Fb, En>,
+);
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for ClassId<'a, Ex, Fb, En>
+{
+}
+arena_deserializer::impl_deserialize_in_arena!(ClassId<'arena, Ex, Fb, En>);
+
+/// Class ID, used in things like instantiation and static property access.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub enum ClassId_<'a, Ex, Fb, En> {
+    /// The class ID of the parent of the lexically scoped class.
+    ///
+    /// In a trait, it is the parent class ID of the using class.
+    ///
+    /// parent::some_meth()
+    /// parent::$prop = 1;
+    /// new parent();
+    CIparent,
+    /// The class ID of the lexically scoped class.
+    ///
+    /// In a trait, it is the class ID of the using class.
+    ///
+    /// self::some_meth()
+    /// self::$prop = 1;
+    /// new self();
+    CIself,
+    /// The class ID of the late static bound class.
+    ///
+    /// https://www.php.net/manual/en/language.oop5.late-static-bindings.php
+    ///
+    /// In a trait, it is the late static bound class ID of the using class.
+    ///
+    /// static::some_meth()
+    /// static::$prop = 1;
+    /// new static();
+    CIstatic,
+    /// Dynamic class name.
+    ///
+    /// TODO: Syntactically this can only be an Lvar/This/Lplacehodller.
+    /// We should use lid rather than expr.
+    ///
+    /// // Assume $d has type dynamic.
+    /// $d::some_meth();
+    /// $d::$prop = 1;
+    /// new $d();
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    CIexpr(&'a Expr<'a, Ex, Fb, En>),
+    /// Explicit class name. This is the common case.
+    ///
+    /// Foop::some_meth()
+    /// Foo::$prop = 1;
+    /// new Foo();
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    CI(&'a Sid<'a>),
+}
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for ClassId_<'a, Ex, Fb, En>
+{
+}
+arena_deserializer::impl_deserialize_in_arena!(ClassId_<'arena, Ex, Fb, En>);
+
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct Expr<'a, Ex, Fb, En>(
+    #[serde(deserialize_with = "arena_deserializer::arena")] pub Ex,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub &'a Pos<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub Expr_<'a, Ex, Fb, En>,
+);
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop for Expr<'a, Ex, Fb, En> {}
+arena_deserializer::impl_deserialize_in_arena!(Expr<'arena, Ex, Fb, En>);
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+#[serde(bound(deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>"))]
+pub enum CollectionTarg<'a, Ex> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    CollectionTV(&'a Targ<'a, Ex>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    CollectionTKV(&'a (&'a Targ<'a, Ex>, &'a Targ<'a, Ex>)),
+}
+impl<'a, Ex: TrivialDrop> TrivialDrop for CollectionTarg<'a, Ex> {}
+arena_deserializer::impl_deserialize_in_arena!(CollectionTarg<'arena, Ex>);
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub enum FunctionPtrId<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    FPId(&'a Sid<'a>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    FPClassConst(&'a (&'a ClassId<'a, Ex, Fb, En>, &'a Pstring<'a>)),
+}
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for FunctionPtrId<'a, Ex, Fb, En>
+{
+}
+arena_deserializer::impl_deserialize_in_arena!(FunctionPtrId<'arena, Ex, Fb, En>);
+
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct ExpressionTree<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub hint: &'a Hint<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub splices: &'a Block<'a, Ex, Fb, En>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub virtualized_expr: &'a Expr<'a, Ex, Fb, En>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub runtime_expr: &'a Expr<'a, Ex, Fb, En>,
+}
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for ExpressionTree<'a, Ex, Fb, En>
+{
+}
+arena_deserializer::impl_deserialize_in_arena!(ExpressionTree<'arena, Ex, Fb, En>);
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub enum Expr_<'a, Ex, Fb, En> {
+    /// darray literal.
+    ///
+    /// darray['x' => 0, 'y' => 1]
+    /// darray<string, int>['x' => 0, 'y' => 1]
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Darray(
+        &'a (
+            Option<&'a (&'a Targ<'a, Ex>, &'a Targ<'a, Ex>)>,
+            &'a [(&'a Expr<'a, Ex, Fb, En>, &'a Expr<'a, Ex, Fb, En>)],
+        ),
+    ),
+    /// varray literal.
+    ///
+    /// varray['hello', 'world']
+    /// varray<string>['hello', 'world']
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Varray(&'a (Option<&'a Targ<'a, Ex>>, &'a [&'a Expr<'a, Ex, Fb, En>])),
+    /// Shape literal.
+    ///
+    /// shape('x' => 1, 'y' => 2)
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Shape(&'a [(ast_defs::ShapeFieldName<'a>, &'a Expr<'a, Ex, Fb, En>)]),
+    /// Collection literal for indexable structures.
+    ///
+    /// Vector {1, 2}
+    /// ImmVector {}
+    /// Set<string> {'foo', 'bar'}
+    /// vec[1, 2]
+    /// keyset[]
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     ValCollection(
         &'a (
             oxidized::aast::VcKind,
-            Option<Targ<'a, Hi>>,
-            &'a [Expr<'a, Ex, Fb, En, Hi>],
+            Option<&'a Targ<'a, Ex>>,
+            &'a [&'a Expr<'a, Ex, Fb, En>],
         ),
     ),
-    /// TODO: T38184446 Consolidate collections in AAST
+    /// Collection literal for key-value structures.
+    ///
+    /// dict['x' => 1, 'y' => 2]
+    /// Map<int, string> {}
+    /// ImmMap {}
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     KeyValCollection(
         &'a (
             oxidized::aast::KvcKind,
-            Option<(Targ<'a, Hi>, Targ<'a, Hi>)>,
-            &'a [Field<'a, Ex, Fb, En, Hi>],
+            Option<&'a (&'a Targ<'a, Ex>, &'a Targ<'a, Ex>)>,
+            &'a [&'a Field<'a, Ex, Fb, En>],
         ),
     ),
+    /// Null literal.
+    ///
+    /// null
     Null,
+    /// The local variable representing the current class instance.
+    ///
+    /// $this
     This,
+    /// Boolean literal.
+    ///
+    /// true
     True,
+    /// Boolean literal.
+    ///
+    /// false
     False,
+    /// The empty expression.
+    ///
+    /// list(, $y) = vec[1, 2] // Omitted is the first expression inside list()
     Omitted,
+    /// An identifier. Used for method names and global constants.
+    ///
+    /// SOME_CONST
+    /// $x->foo() // id: "foo"
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     Id(&'a Sid<'a>),
+    /// Local variable.
+    ///
+    /// $foo
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     Lvar(&'a Lid<'a>),
+    /// The extra variable in a pipe expression.
+    ///
+    /// $$
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     Dollardollar(&'a Lid<'a>),
-    Clone(&'a Expr<'a, Ex, Fb, En, Hi>),
+    /// Clone expression.
+    ///
+    /// clone $foo
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Clone(&'a Expr<'a, Ex, Fb, En>),
+    /// Array indexing.
+    ///
+    /// $foo[]
+    /// $foo[$bar]
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    ArrayGet(&'a (&'a Expr<'a, Ex, Fb, En>, Option<&'a Expr<'a, Ex, Fb, En>>)),
+    /// Instance property or method access.  is_prop_call is always
+    /// false, except when inside a call is accessing a property.
+    ///
+    /// $foo->bar // (Obj_get false) property access
+    /// $foo->bar() // (Call (Obj_get false)) method call
+    /// ($foo->bar)() // (Call (Obj_get true)) call lambda stored in property
+    /// $foo?->bar // nullsafe access
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     ObjGet(
         &'a (
-            Expr<'a, Ex, Fb, En, Hi>,
-            Expr<'a, Ex, Fb, En, Hi>,
+            &'a Expr<'a, Ex, Fb, En>,
+            &'a Expr<'a, Ex, Fb, En>,
             oxidized::aast::OgNullFlavor,
+            bool,
         ),
     ),
-    ArrayGet(&'a (Expr<'a, Ex, Fb, En, Hi>, Option<Expr<'a, Ex, Fb, En, Hi>>)),
+    /// Static property access.
+    ///
+    /// Foo::$bar
+    /// $some_classname::$bar
+    /// Foo::${$bar} // only in partial mode
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     ClassGet(
         &'a (
-            ClassId<'a, Ex, Fb, En, Hi>,
-            ClassGetExpr<'a, Ex, Fb, En, Hi>,
+            &'a ClassId<'a, Ex, Fb, En>,
+            ClassGetExpr<'a, Ex, Fb, En>,
+            bool,
         ),
     ),
-    ClassConst(&'a (ClassId<'a, Ex, Fb, En, Hi>, Pstring<'a>)),
+    /// Class constant or static method call. As a standalone expression,
+    /// this is a class constant. Inside a Call node, this is a static
+    /// method call.
+    ///
+    /// This is not ambiguous, because constants are not allowed to
+    /// contain functions.
+    ///
+    /// Foo::some_const // Class_const
+    /// Foo::someStaticMeth() // Call (Class_const)
+    ///
+    /// This syntax is used for both static and instance methods when
+    /// calling the implementation on the superclass.
+    ///
+    /// parent::someStaticMeth()
+    /// parent::someInstanceMeth()
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    ClassConst(&'a (&'a ClassId<'a, Ex, Fb, En>, &'a Pstring<'a>)),
+    /// Function or method call.
+    ///
+    /// foo()
+    /// $x()
+    /// foo<int>(1, 2, ...$rest)
+    /// $x->foo()
+    ///
+    /// async { return 1; }
+    /// // lowered to:
+    /// (async () ==> { return 1; })()
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     Call(
         &'a (
-            Expr<'a, Ex, Fb, En, Hi>,
-            &'a [Targ<'a, Hi>],
-            &'a [Expr<'a, Ex, Fb, En, Hi>],
-            Option<Expr<'a, Ex, Fb, En, Hi>>,
+            &'a Expr<'a, Ex, Fb, En>,
+            &'a [&'a Targ<'a, Ex>],
+            &'a [&'a Expr<'a, Ex, Fb, En>],
+            Option<&'a Expr<'a, Ex, Fb, En>>,
         ),
     ),
-    FunctionPointer(&'a (FunctionPtrId<'a, Ex, Fb, En, Hi>, &'a [Targ<'a, Hi>])),
+    /// A reference to a function or method.
+    ///
+    /// foo_fun<>
+    /// FooCls::meth<int>
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    FunctionPointer(&'a (FunctionPtrId<'a, Ex, Fb, En>, &'a [&'a Targ<'a, Ex>])),
+    /// Integer literal.
+    ///
+    /// 42
+    /// 0123 // octal
+    /// 0xBEEF // hexadecimal
+    /// 0b11111111 // binary
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     Int(&'a str),
+    /// Float literal.
+    ///
+    /// 1.0
+    /// 1.2e3
+    /// 7E-10
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     Float(&'a str),
+    /// String literal.
+    ///
+    /// "foo"
+    /// 'foo'
+    ///
+    /// <<<DOC
+    /// foo
+    /// DOC
+    ///
+    /// <<<'DOC'
+    /// foo
+    /// DOC
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     String(&'a bstr::BStr),
-    String2(&'a [Expr<'a, Ex, Fb, En, Hi>]),
-    PrefixedString(&'a (&'a str, Expr<'a, Ex, Fb, En, Hi>)),
-    Yield(&'a Afield<'a, Ex, Fb, En, Hi>),
-    YieldBreak,
-    Await(&'a Expr<'a, Ex, Fb, En, Hi>),
-    Suspend(&'a Expr<'a, Ex, Fb, En, Hi>),
-    List(&'a [Expr<'a, Ex, Fb, En, Hi>]),
-    ExprList(&'a [Expr<'a, Ex, Fb, En, Hi>]),
-    Cast(&'a (Hint<'a>, Expr<'a, Ex, Fb, En, Hi>)),
-    Unop(&'a (oxidized::ast_defs::Uop, Expr<'a, Ex, Fb, En, Hi>)),
+    /// Interpolated string literal.
+    ///
+    /// "hello $foo $bar"
+    ///
+    /// <<<DOC
+    /// hello $foo $bar
+    /// DOC
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    String2(&'a [&'a Expr<'a, Ex, Fb, En>]),
+    /// Prefixed string literal. Only used for regular expressions.
+    ///
+    /// re"foo"
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    PrefixedString(&'a (&'a str, &'a Expr<'a, Ex, Fb, En>)),
+    /// Yield expression. The enclosing function should have an Iterator
+    /// return type.
+    ///
+    /// yield $foo // enclosing function returns an Iterator
+    /// yield $foo => $bar // enclosing function returns a KeyedIterator
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Yield(&'a Afield<'a, Ex, Fb, En>),
+    /// Await expression.
+    ///
+    /// await $foo
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Await(&'a Expr<'a, Ex, Fb, En>),
+    /// Readonly expression.
+    ///
+    /// readonly $foo
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    ReadonlyExpr(&'a Expr<'a, Ex, Fb, En>),
+    /// Tuple expression.
+    ///
+    /// tuple("a", 1, $foo)
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Tuple(&'a [&'a Expr<'a, Ex, Fb, En>]),
+    /// List expression, only used in destructuring. Allows any arbitrary
+    /// lvalue as a subexpression. May also nest.
+    ///
+    /// list($x, $y) = vec[1, 2];
+    /// list(, $y) = vec[1, 2]; // skipping items
+    /// list(list($x)) = vec[vec[1]]; // nesting
+    /// list($v[0], $x[], $y->foo) = $blah;
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    List(&'a [&'a Expr<'a, Ex, Fb, En>]),
+    /// Cast expression, converting a value to a different type. Only
+    /// primitive types are supported in the hint position.
+    ///
+    /// (int)$foo
+    /// (string)$foo
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Cast(&'a (&'a Hint<'a>, &'a Expr<'a, Ex, Fb, En>)),
+    /// Unary operator.
+    ///
+    /// !$foo
+    /// -$foo
+    /// +$foo
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Unop(&'a (oxidized::ast_defs::Uop, &'a Expr<'a, Ex, Fb, En>)),
+    /// Binary operator.
+    ///
+    /// $foo + $bar
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     Binop(
         &'a (
             ast_defs::Bop<'a>,
-            Expr<'a, Ex, Fb, En, Hi>,
-            Expr<'a, Ex, Fb, En, Hi>,
+            &'a Expr<'a, Ex, Fb, En>,
+            &'a Expr<'a, Ex, Fb, En>,
         ),
     ),
-    /// The lid is the ID of the $$ that is implicitly declared by this pipe.
-    Pipe(&'a (Lid<'a>, Expr<'a, Ex, Fb, En, Hi>, Expr<'a, Ex, Fb, En, Hi>)),
+    /// Pipe expression. The lid is the ID of the $$ that is implicitly
+    /// declared by this pipe.
+    ///
+    /// See also Dollardollar.
+    ///
+    /// $foo |> bar() // equivalent: bar($foo)
+    /// $foo |> bar(1, $$) // equivalent: bar(1, $foo)
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Pipe(
+        &'a (
+            &'a Lid<'a>,
+            &'a Expr<'a, Ex, Fb, En>,
+            &'a Expr<'a, Ex, Fb, En>,
+        ),
+    ),
+    /// Ternary operator, or elvis operator.
+    ///
+    /// $foo ? $bar : $baz // ternary
+    /// $foo ?: $baz // elvis
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     Eif(
         &'a (
-            Expr<'a, Ex, Fb, En, Hi>,
-            Option<Expr<'a, Ex, Fb, En, Hi>>,
-            Expr<'a, Ex, Fb, En, Hi>,
+            &'a Expr<'a, Ex, Fb, En>,
+            Option<&'a Expr<'a, Ex, Fb, En>>,
+            &'a Expr<'a, Ex, Fb, En>,
         ),
     ),
-    Is(&'a (Expr<'a, Ex, Fb, En, Hi>, Hint<'a>)),
-    As(&'a (Expr<'a, Ex, Fb, En, Hi>, Hint<'a>, bool)),
+    /// Is operator.
+    ///
+    /// $foo is SomeType
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Is(&'a (&'a Expr<'a, Ex, Fb, En>, &'a Hint<'a>)),
+    /// As operator.
+    ///
+    /// $foo as int
+    /// $foo ?as int
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    As(&'a (&'a Expr<'a, Ex, Fb, En>, &'a Hint<'a>, bool)),
+    /// Instantiation.
+    ///
+    /// new Foo(1, 2);
+    /// new Foo<int, T>();
+    /// new Foo('blah', ...$rest);
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     New(
         &'a (
-            ClassId<'a, Ex, Fb, En, Hi>,
-            &'a [Targ<'a, Hi>],
-            &'a [Expr<'a, Ex, Fb, En, Hi>],
-            Option<Expr<'a, Ex, Fb, En, Hi>>,
+            &'a ClassId<'a, Ex, Fb, En>,
+            &'a [&'a Targ<'a, Ex>],
+            &'a [&'a Expr<'a, Ex, Fb, En>],
+            Option<&'a Expr<'a, Ex, Fb, En>>,
             Ex,
         ),
     ),
+    /// Record literal.
+    ///
+    /// MyRecord['x' => $foo, 'y' => $bar]
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     Record(
         &'a (
             Sid<'a>,
-            &'a [(Expr<'a, Ex, Fb, En, Hi>, Expr<'a, Ex, Fb, En, Hi>)],
+            &'a [(&'a Expr<'a, Ex, Fb, En>, &'a Expr<'a, Ex, Fb, En>)],
         ),
     ),
-    Efun(&'a (Fun_<'a, Ex, Fb, En, Hi>, &'a [Lid<'a>])),
-    Lfun(&'a (Fun_<'a, Ex, Fb, En, Hi>, &'a [Lid<'a>])),
+    /// PHP-style lambda. Does not capture variables unless explicitly
+    /// specified.
+    ///
+    /// Mnemonic: 'expanded lambda', since we can desugar Lfun to Efun.
+    ///
+    /// function($x) { return $x; }
+    /// function(int $x): int { return $x; }
+    /// function($x) use ($y) { return $y; }
+    /// function($x): int use ($y, $z) { return $x + $y + $z; }
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Efun(&'a (&'a Fun_<'a, Ex, Fb, En>, &'a [&'a Lid<'a>])),
+    /// Hack lambda. Captures variables automatically.
+    ///
+    /// $x ==> $x
+    /// (int $x): int ==> $x + $other
+    /// ($x, $y) ==> { return $x + $y; }
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Lfun(&'a (&'a Fun_<'a, Ex, Fb, En>, &'a [&'a Lid<'a>])),
+    /// XHP expression. May contain interpolated expressions.
+    ///
+    /// <foo x="hello" y={$foo}>hello {$bar}</foo>
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     Xml(
         &'a (
             Sid<'a>,
-            &'a [XhpAttribute<'a, Ex, Fb, En, Hi>],
-            &'a [Expr<'a, Ex, Fb, En, Hi>],
+            &'a [XhpAttribute<'a, Ex, Fb, En>],
+            &'a [&'a Expr<'a, Ex, Fb, En>],
         ),
     ),
-    Callconv(&'a (oxidized::ast_defs::ParamKind, Expr<'a, Ex, Fb, En, Hi>)),
-    Import(&'a (oxidized::aast::ImportFlavor, Expr<'a, Ex, Fb, En, Hi>)),
-    /// TODO: T38184446 Consolidate collections in AAST
+    /// Explicit calling convention, used for inout. Inout supports any lvalue.
+    ///
+    /// TODO: This could be a flag on parameters in Call.
+    ///
+    /// foo(inout $x[0])
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Callconv(&'a (oxidized::ast_defs::ParamKind, &'a Expr<'a, Ex, Fb, En>)),
+    /// Include or require expression.
+    ///
+    /// require('foo.php')
+    /// require_once('foo.php')
+    /// include('foo.php')
+    /// include_once('foo.php')
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Import(&'a (oxidized::aast::ImportFlavor, &'a Expr<'a, Ex, Fb, En>)),
+    /// Collection literal.
+    ///
+    /// TODO: T38184446 this is redundant with ValCollection/KeyValCollection.
+    ///
+    /// Vector {}
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     Collection(
         &'a (
             Sid<'a>,
-            Option<CollectionTarg<'a, Hi>>,
-            &'a [Afield<'a, Ex, Fb, En, Hi>],
+            Option<CollectionTarg<'a, Ex>>,
+            &'a [Afield<'a, Ex, Fb, En>],
         ),
     ),
-    BracedExpr(&'a Expr<'a, Ex, Fb, En, Hi>),
-    ParenthesizedExpr(&'a Expr<'a, Ex, Fb, En, Hi>),
-    ExpressionTree(
-        &'a (
-            Hint<'a>,
-            Expr<'a, Ex, Fb, En, Hi>,
-            Option<Expr<'a, Ex, Fb, En, Hi>>,
-        ),
-    ),
+    /// Expression tree literal. Expression trees are not evaluated at
+    /// runtime, but desugared to an expression representing the code.
+    ///
+    /// Foo`1 + bar()`
+    /// Foo`$x ==> $x * ${$value}` // splicing $value
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    ExpressionTree(&'a ExpressionTree<'a, Ex, Fb, En>),
+    /// Placeholder local variable.
+    ///
+    /// $_
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     Lplaceholder(&'a Pos<'a>),
+    /// Global function reference.
+    ///
+    /// fun('foo')
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     FunId(&'a Sid<'a>),
-    MethodId(&'a (Expr<'a, Ex, Fb, En, Hi>, Pstring<'a>)),
-    /// meth_caller('Class name', 'method name')
-    MethodCaller(&'a (Sid<'a>, Pstring<'a>)),
-    SmethodId(&'a (ClassId<'a, Ex, Fb, En, Hi>, Pstring<'a>)),
+    /// Instance method reference on a specific instance.
+    ///
+    /// TODO: This is only created in naming, and ought to happen in
+    /// lowering or be removed. The emitter just sees a normal Call.
+    ///
+    /// inst_meth($f, 'some_meth') // equivalent: $f->some_meth<>
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    MethodId(&'a (&'a Expr<'a, Ex, Fb, En>, &'a Pstring<'a>)),
+    /// Instance method reference that can be called with an instance.
+    ///
+    /// meth_caller(FooClass::class, 'some_meth')
+    /// meth_caller('FooClass', 'some_meth')
+    ///
+    /// These examples are equivalent to:
+    ///
+    /// (FooClass $f, ...$args) ==> $f->some_meth(...$args)
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    MethodCaller(&'a (Sid<'a>, &'a Pstring<'a>)),
+    /// Static method reference.
+    ///
+    /// class_meth('FooClass', 'some_static_meth')
+    /// // equivalent: FooClass::some_static_meth<>
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    SmethodId(&'a (&'a ClassId<'a, Ex, Fb, En>, &'a Pstring<'a>)),
+    /// Pair literal.
+    ///
+    /// Pair {$foo, $bar}
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     Pair(
         &'a (
-            Option<(Targ<'a, Hi>, Targ<'a, Hi>)>,
-            Expr<'a, Ex, Fb, En, Hi>,
-            Expr<'a, Ex, Fb, En, Hi>,
+            Option<&'a (&'a Targ<'a, Ex>, &'a Targ<'a, Ex>)>,
+            &'a Expr<'a, Ex, Fb, En>,
+            &'a Expr<'a, Ex, Fb, En>,
         ),
     ),
-    Assert(&'a AssertExpr<'a, Ex, Fb, En, Hi>),
-    PUAtom(&'a str),
-    PUIdentifier(&'a (ClassId<'a, Ex, Fb, En, Hi>, Pstring<'a>, Pstring<'a>)),
-    ETSplice(&'a Expr<'a, Ex, Fb, En, Hi>),
-    Any,
+    /// Expression tree splice expression. Only valid inside an
+    /// expression tree literal (backticks).
+    ///
+    /// ${$foo}
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    ETSplice(&'a Expr<'a, Ex, Fb, En>),
+    /// Label used for enum classes.
+    ///
+    /// enum_name#label_name or #label_name
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    EnumClassLabel(&'a (Option<Sid<'a>>, &'a str)),
+    /// Annotation used to record failure in subtyping or coercion of an
+    /// expression and calls to [unsafe_cast] or [enforced_cast].
+    ///
+    /// The [hole_source] indicates whether this came from an
+    /// explicit call to [unsafe_cast] or [enforced_cast] or was
+    /// generated during typing.
+    ///
+    /// Given a call to [unsafe_cast]:
+    /// ```
+    ///          function f(int $x): void { /* ... */ }
+    ///
+    ///          function g(float $x): void {
+    ///             f(unsafe_cast<float,int>($x));
+    ///          }
+    /// ```
+    /// After typing, this is represented by the following TAST fragment
+    /// ```
+    ///          Call
+    ///            ( ( (..., function(int $x): void), Id (..., "\f"))
+    ///            , []
+    ///            , [ ( (..., int)
+    ///                , Hole
+    ///                    ( ((..., float), Lvar (..., $x))
+    ///                    , float
+    ///                    , int
+    ///                    , UnsafeCast
+    ///                    )
+    ///                )
+    ///              ]
+    ///            , None
+    ///            )
+    /// ```
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Hole(
+        &'a (
+            &'a Expr<'a, Ex, Fb, En>,
+            Ex,
+            Ex,
+            &'a oxidized::aast::HoleSource,
+        ),
+    ),
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for Expr_<'a, Ex, Fb, En, Hi>
-{
-}
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop for Expr_<'a, Ex, Fb, En> {}
+arena_deserializer::impl_deserialize_in_arena!(Expr_<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
+    Copy,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum ClassGetExpr<'a, Ex, Fb, En, Hi> {
-    CGstring(Pstring<'a>),
-    CGexpr(Expr<'a, Ex, Fb, En, Hi>),
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub enum ClassGetExpr<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    CGstring(&'a Pstring<'a>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    CGexpr(&'a Expr<'a, Ex, Fb, En>),
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for ClassGetExpr<'a, Ex, Fb, En, Hi>
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for ClassGetExpr<'a, Ex, Fb, En>
 {
 }
+arena_deserializer::impl_deserialize_in_arena!(ClassGetExpr<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
+    Copy,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum AssertExpr<'a, Ex, Fb, En, Hi> {
-    AEAssert(Expr<'a, Ex, Fb, En, Hi>),
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub enum Case<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Default(&'a (&'a Pos<'a>, &'a Block<'a, Ex, Fb, En>)),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Case(&'a (&'a Expr<'a, Ex, Fb, En>, &'a Block<'a, Ex, Fb, En>)),
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for AssertExpr<'a, Ex, Fb, En, Hi>
-{
-}
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop for Case<'a, Ex, Fb, En> {}
+arena_deserializer::impl_deserialize_in_arena!(Case<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum Case<'a, Ex, Fb, En, Hi> {
-    Default(&'a Pos<'a>, Block<'a, Ex, Fb, En, Hi>),
-    Case(Expr<'a, Ex, Fb, En, Hi>, Block<'a, Ex, Fb, En, Hi>),
-}
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for Case<'a, Ex, Fb, En, Hi>
-{
-}
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct Catch<'a, Ex, Fb, En>(
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub Sid<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub &'a Lid<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub &'a Block<'a, Ex, Fb, En>,
+);
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop for Catch<'a, Ex, Fb, En> {}
+arena_deserializer::impl_deserialize_in_arena!(Catch<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Catch<'a, Ex, Fb, En, Hi>(pub Sid<'a>, pub Lid<'a>, pub Block<'a, Ex, Fb, En, Hi>);
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for Catch<'a, Ex, Fb, En, Hi>
-{
-}
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct Field<'a, Ex, Fb, En>(
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub &'a Expr<'a, Ex, Fb, En>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub &'a Expr<'a, Ex, Fb, En>,
+);
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop for Field<'a, Ex, Fb, En> {}
+arena_deserializer::impl_deserialize_in_arena!(Field<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
+    Copy,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Field<'a, Ex, Fb, En, Hi>(pub Expr<'a, Ex, Fb, En, Hi>, pub Expr<'a, Ex, Fb, En, Hi>);
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for Field<'a, Ex, Fb, En, Hi>
-{
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub enum Afield<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    AFvalue(&'a Expr<'a, Ex, Fb, En>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    AFkvalue(&'a (&'a Expr<'a, Ex, Fb, En>, &'a Expr<'a, Ex, Fb, En>)),
 }
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop for Afield<'a, Ex, Fb, En> {}
+arena_deserializer::impl_deserialize_in_arena!(Afield<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum Afield<'a, Ex, Fb, En, Hi> {
-    AFvalue(Expr<'a, Ex, Fb, En, Hi>),
-    AFkvalue(Expr<'a, Ex, Fb, En, Hi>, Expr<'a, Ex, Fb, En, Hi>),
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct XhpSimple<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub name: &'a Pstring<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena")]
+    pub type_: Ex,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub expr: &'a Expr<'a, Ex, Fb, En>,
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for Afield<'a, Ex, Fb, En, Hi>
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for XhpSimple<'a, Ex, Fb, En>
 {
 }
+arena_deserializer::impl_deserialize_in_arena!(XhpSimple<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
+    Copy,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum XhpAttribute<'a, Ex, Fb, En, Hi> {
-    XhpSimple(Pstring<'a>, Expr<'a, Ex, Fb, En, Hi>),
-    XhpSpread(Expr<'a, Ex, Fb, En, Hi>),
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub enum XhpAttribute<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    XhpSimple(&'a XhpSimple<'a, Ex, Fb, En>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    XhpSpread(&'a Expr<'a, Ex, Fb, En>),
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for XhpAttribute<'a, Ex, Fb, En, Hi>
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for XhpAttribute<'a, Ex, Fb, En>
 {
 }
+arena_deserializer::impl_deserialize_in_arena!(XhpAttribute<'arena, Ex, Fb, En>);
 
 pub use oxidized::aast::IsVariadic;
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct FunParam<'a, Ex, Fb, En, Hi> {
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct FunParam<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena")]
     pub annotation: Ex,
-    pub type_hint: TypeHint<'a, Hi>,
-    pub is_variadic: oxidized::aast::IsVariadic,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub type_hint: &'a TypeHint<'a, Ex>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub is_variadic: &'a oxidized::aast::IsVariadic,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub pos: &'a Pos<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub name: &'a str,
-    pub expr: Option<Expr<'a, Ex, Fb, En, Hi>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub expr: Option<&'a Expr<'a, Ex, Fb, En>>,
+    pub readonly: Option<oxidized::ast_defs::ReadonlyKind>,
     pub callconv: Option<oxidized::ast_defs::ParamKind>,
-    pub user_attributes: &'a [UserAttribute<'a, Ex, Fb, En, Hi>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub user_attributes: &'a [&'a UserAttribute<'a, Ex, Fb, En>],
     pub visibility: Option<oxidized::aast::Visibility>,
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for FunParam<'a, Ex, Fb, En, Hi>
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for FunParam<'a, Ex, Fb, En>
 {
 }
+arena_deserializer::impl_deserialize_in_arena!(FunParam<'arena, Ex, Fb, En>);
 
-/// does function take varying number of args?
+/// Does this function/method take a variable number of arguments?
 #[derive(
     Clone,
+    Copy,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum FunVariadicity<'a, Ex, Fb, En, Hi> {
-    /// PHP5.6 ...$args finishes the func declaration
-    FVvariadicArg(&'a FunParam<'a, Ex, Fb, En, Hi>),
-    /// HH ... finishes the declaration; deprecate for ...$args?
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub enum FunVariadicity<'a, Ex, Fb, En> {
+    /// Named variadic argument.
+    ///
+    /// function foo(int ...$args): void {}
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    FVvariadicArg(&'a FunParam<'a, Ex, Fb, En>),
+    /// Unnamed variaidic argument. Partial mode only.
+    ///
+    /// function foo(...): void {}
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     FVellipsis(&'a Pos<'a>),
-    /// standard non variadic function
+    /// Function is not variadic, takes an exact number of arguments.
     FVnonVariadic,
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for FunVariadicity<'a, Ex, Fb, En, Hi>
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for FunVariadicity<'a, Ex, Fb, En>
 {
 }
+arena_deserializer::impl_deserialize_in_arena!(FunVariadicity<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Fun_<'a, Ex, Fb, En, Hi> {
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct Fun_<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub span: &'a Pos<'a>,
+    pub readonly_this: Option<oxidized::ast_defs::ReadonlyKind>,
+    #[serde(deserialize_with = "arena_deserializer::arena")]
     pub annotation: En,
-    pub mode: oxidized::file_info::Mode,
-    pub ret: TypeHint<'a, Hi>,
+    pub readonly_ret: Option<oxidized::ast_defs::ReadonlyKind>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub ret: &'a TypeHint<'a, Ex>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub name: Sid<'a>,
-    pub tparams: &'a [Tparam<'a, Ex, Fb, En, Hi>],
-    pub where_constraints: &'a [WhereConstraint<'a>],
-    pub variadic: FunVariadicity<'a, Ex, Fb, En, Hi>,
-    pub params: &'a [&'a FunParam<'a, Ex, Fb, En, Hi>],
-    pub cap: TypeHint<'a, Hi>,
-    pub unsafe_cap: TypeHint<'a, Hi>,
-    pub body: FuncBody<'a, Ex, Fb, En, Hi>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub tparams: &'a [&'a Tparam<'a, Ex, Fb, En>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub where_constraints: &'a [&'a WhereConstraintHint<'a>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub variadic: FunVariadicity<'a, Ex, Fb, En>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub params: &'a [&'a FunParam<'a, Ex, Fb, En>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub ctxs: Option<&'a Contexts<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub unsafe_ctxs: Option<&'a Contexts<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub body: &'a FuncBody<'a, Ex, Fb, En>,
     pub fun_kind: oxidized::ast_defs::FunKind,
-    pub user_attributes: &'a [UserAttribute<'a, Ex, Fb, En, Hi>],
-    pub file_attributes: &'a [FileAttribute<'a, Ex, Fb, En, Hi>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub user_attributes: &'a [&'a UserAttribute<'a, Ex, Fb, En>],
     /// true if this declaration has no body because it is an
     /// external function declaration (e.g. from an HHI file)
     pub external: bool,
-    pub namespace: Nsenv<'a>,
-    pub doc_comment: Option<DocComment<'a>>,
-    pub static_: bool,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub doc_comment: Option<&'a DocComment<'a>>,
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for Fun_<'a, Ex, Fb, En, Hi>
-{
-}
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop for Fun_<'a, Ex, Fb, En> {}
+arena_deserializer::impl_deserialize_in_arena!(Fun_<'arena, Ex, Fb, En>);
 
 /// Naming has two phases and the annotation helps to indicate the phase.
 /// In the first pass, it will perform naming on everything except for function
@@ -683,23 +1381,31 @@ impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> Tri
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct FuncBody<'a, Ex, Fb, En, Hi> {
-    pub ast: Block<'a, Ex, Fb, En, Hi>,
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct FuncBody<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub ast: &'a Block<'a, Ex, Fb, En>,
+    #[serde(deserialize_with = "arena_deserializer::arena")]
     pub annotation: Fb,
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for FuncBody<'a, Ex, Fb, En, Hi>
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for FuncBody<'a, Ex, Fb, En>
 {
 }
+arena_deserializer::impl_deserialize_in_arena!(FuncBody<'arena, Ex, Fb, En>);
 
 /// A type annotation is two things:
 /// - the localized hint, or if the hint is missing, the inferred type
@@ -707,114 +1413,152 @@ impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> Tri
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct TypeHint<'a, Hi>(pub Hi, pub TypeHint_<'a>);
-impl<'a, Hi: TrivialDrop> TrivialDrop for TypeHint<'a, Hi> {}
+#[serde(bound(deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>"))]
+pub struct TypeHint<'a, Ex>(
+    #[serde(deserialize_with = "arena_deserializer::arena")] pub Ex,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub &'a TypeHint_<'a>,
+);
+impl<'a, Ex: TrivialDrop> TrivialDrop for TypeHint<'a, Ex> {}
+arena_deserializer::impl_deserialize_in_arena!(TypeHint<'arena, Ex>);
 
 /// Explicit type argument to function, constructor, or collection literal.
-/// 'hi = unit in NAST
-/// 'hi = Typing_defs.(locl ty) in TAST,
+/// 'ex = unit in NAST
+/// 'ex = Typing_defs.(locl ty) in TAST,
 /// and is used to record inferred type arguments, with wildcard hint.
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Targ<'a, Hi>(pub Hi, pub Hint<'a>);
-impl<'a, Hi: TrivialDrop> TrivialDrop for Targ<'a, Hi> {}
+#[serde(bound(deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>"))]
+pub struct Targ<'a, Ex>(
+    #[serde(deserialize_with = "arena_deserializer::arena")] pub Ex,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub &'a Hint<'a>,
+);
+impl<'a, Ex: TrivialDrop> TrivialDrop for Targ<'a, Ex> {}
+arena_deserializer::impl_deserialize_in_arena!(Targ<'arena, Ex>);
 
-pub type TypeHint_<'a> = Option<Hint<'a>>;
+pub type TypeHint_<'a> = Option<&'a Hint<'a>>;
 
 #[derive(
     Clone,
-    Copy,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct UserAttribute<'a, Ex, Fb, En, Hi> {
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct UserAttribute<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub name: Sid<'a>,
     /// user attributes are restricted to scalar values
-    pub params: &'a [Expr<'a, Ex, Fb, En, Hi>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub params: &'a [&'a Expr<'a, Ex, Fb, En>],
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for UserAttribute<'a, Ex, Fb, En, Hi>
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for UserAttribute<'a, Ex, Fb, En>
 {
 }
+arena_deserializer::impl_deserialize_in_arena!(UserAttribute<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct FileAttribute<'a, Ex, Fb, En, Hi> {
-    pub user_attributes: &'a [UserAttribute<'a, Ex, Fb, En, Hi>],
-    pub namespace: Nsenv<'a>,
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct FileAttribute<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub user_attributes: &'a [&'a UserAttribute<'a, Ex, Fb, En>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub namespace: &'a Nsenv<'a>,
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for FileAttribute<'a, Ex, Fb, En, Hi>
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for FileAttribute<'a, Ex, Fb, En>
 {
 }
+arena_deserializer::impl_deserialize_in_arena!(FileAttribute<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Tparam<'a, Ex, Fb, En, Hi> {
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct Tparam<'a, Ex, Fb, En> {
     pub variance: oxidized::ast_defs::Variance,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub name: Sid<'a>,
-    pub parameters: &'a [Tparam<'a, Ex, Fb, En, Hi>],
-    pub constraints: &'a [(oxidized::ast_defs::ConstraintKind, Hint<'a>)],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub parameters: &'a [&'a Tparam<'a, Ex, Fb, En>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub constraints: &'a [(oxidized::ast_defs::ConstraintKind, &'a Hint<'a>)],
     pub reified: oxidized::aast::ReifyKind,
-    pub user_attributes: &'a [UserAttribute<'a, Ex, Fb, En, Hi>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub user_attributes: &'a [&'a UserAttribute<'a, Ex, Fb, En>],
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for Tparam<'a, Ex, Fb, En, Hi>
-{
-}
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop for Tparam<'a, Ex, Fb, En> {}
+arena_deserializer::impl_deserialize_in_arena!(Tparam<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -822,27 +1566,36 @@ impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> Tri
     ToOcamlRep
 )]
 pub struct UseAsAlias<'a>(
-    pub Option<Sid<'a>>,
-    pub Pstring<'a>,
-    pub Option<Sid<'a>>,
-    pub &'a [oxidized::aast::UseAsVisibility],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub Option<Sid<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub &'a Pstring<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub Option<Sid<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub  &'a [oxidized::aast::UseAsVisibility],
 );
 impl<'a> TrivialDrop for UseAsAlias<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(UseAsAlias<'arena>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct InsteadofAlias<'a>(pub Sid<'a>, pub Pstring<'a>, pub &'a [Sid<'a>]);
+pub struct InsteadofAlias<'a>(
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub Sid<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub &'a Pstring<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub &'a [Sid<'a>],
+);
 impl<'a> TrivialDrop for InsteadofAlias<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(InsteadofAlias<'arena>);
 
 pub use oxidized::aast::IsExtends;
 
@@ -851,54 +1604,87 @@ pub use oxidized::aast::EmitId;
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Class_<'a, Ex, Fb, En, Hi> {
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct Class_<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub span: &'a Pos<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena")]
     pub annotation: En,
     pub mode: oxidized::file_info::Mode,
     pub final_: bool,
     pub is_xhp: bool,
     pub has_xhp_keyword: bool,
     pub kind: oxidized::ast_defs::ClassKind,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub name: Sid<'a>,
     /// The type parameters of a class A<T> (T is the parameter)
-    pub tparams: &'a [Tparam<'a, Ex, Fb, En, Hi>],
-    pub extends: &'a [ClassHint<'a>],
-    pub uses: &'a [TraitHint<'a>],
-    pub use_as_alias: &'a [UseAsAlias<'a>],
-    pub insteadof_alias: &'a [InsteadofAlias<'a>],
-    pub xhp_attr_uses: &'a [XhpAttrHint<'a>],
-    pub xhp_category: Option<(&'a Pos<'a>, &'a [Pstring<'a>])>,
-    pub reqs: &'a [(ClassHint<'a>, oxidized::aast::IsExtends)],
-    pub implements: &'a [ClassHint<'a>],
-    pub where_constraints: &'a [WhereConstraint<'a>],
-    pub consts: &'a [ClassConst<'a, Ex, Fb, En, Hi>],
-    pub typeconsts: &'a [ClassTypeconst<'a, Ex, Fb, En, Hi>],
-    pub vars: &'a [ClassVar<'a, Ex, Fb, En, Hi>],
-    pub methods: &'a [Method_<'a, Ex, Fb, En, Hi>],
-    pub attributes: &'a [ClassAttr<'a, Ex, Fb, En, Hi>],
-    pub xhp_children: &'a [(&'a Pos<'a>, XhpChild<'a>)],
-    pub xhp_attrs: &'a [XhpAttr<'a, Ex, Fb, En, Hi>],
-    pub namespace: Nsenv<'a>,
-    pub user_attributes: &'a [UserAttribute<'a, Ex, Fb, En, Hi>],
-    pub file_attributes: &'a [FileAttribute<'a, Ex, Fb, En, Hi>],
-    pub enum_: Option<Enum_<'a>>,
-    pub pu_enums: &'a [PuEnum<'a, Ex, Fb, En, Hi>],
-    pub doc_comment: Option<DocComment<'a>>,
-    pub emit_id: Option<oxidized::aast::EmitId>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub tparams: &'a [&'a Tparam<'a, Ex, Fb, En>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub extends: &'a [&'a ClassHint<'a>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub uses: &'a [&'a TraitHint<'a>],
+    /// PHP feature not supported in hack but required
+    /// because we have runtime support.
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub use_as_alias: &'a [&'a UseAsAlias<'a>],
+    /// PHP feature not supported in hack but required
+    /// because we have runtime support.
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub insteadof_alias: &'a [&'a InsteadofAlias<'a>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub xhp_attr_uses: &'a [&'a XhpAttrHint<'a>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub xhp_category: Option<&'a (&'a Pos<'a>, &'a [&'a Pstring<'a>])>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub reqs: &'a [(&'a ClassHint<'a>, &'a oxidized::aast::IsExtends)],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub implements: &'a [&'a ClassHint<'a>],
+    pub support_dynamic_type: bool,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub where_constraints: &'a [&'a WhereConstraintHint<'a>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub consts: &'a [&'a ClassConst<'a, Ex, Fb, En>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub typeconsts: &'a [&'a ClassTypeconstDef<'a, Ex, Fb, En>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub vars: &'a [&'a ClassVar<'a, Ex, Fb, En>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub methods: &'a [&'a Method_<'a, Ex, Fb, En>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub attributes: &'a [ClassAttr<'a, Ex, Fb, En>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub xhp_children: &'a [(&'a Pos<'a>, &'a XhpChild<'a>)],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub xhp_attrs: &'a [&'a XhpAttr<'a, Ex, Fb, En>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub namespace: &'a Nsenv<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub user_attributes: &'a [&'a UserAttribute<'a, Ex, Fb, En>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub file_attributes: &'a [&'a FileAttribute<'a, Ex, Fb, En>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub enum_: Option<&'a Enum_<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub doc_comment: Option<&'a DocComment<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub emit_id: Option<&'a oxidized::aast::EmitId>,
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for Class_<'a, Ex, Fb, En, Hi>
-{
-}
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop for Class_<'a, Ex, Fb, En> {}
+arena_deserializer::impl_deserialize_in_arena!(Class_<'arena, Ex, Fb, En>);
 
 pub type ClassHint<'a> = Hint<'a>;
 
@@ -911,76 +1697,105 @@ pub use oxidized::aast::XhpAttrTag;
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct XhpAttr<'a, Ex, Fb, En, Hi>(
-    pub TypeHint<'a, Hi>,
-    pub ClassVar<'a, Ex, Fb, En, Hi>,
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct XhpAttr<'a, Ex, Fb, En>(
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub &'a TypeHint<'a, Ex>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub  &'a ClassVar<'a, Ex, Fb, En>,
     pub Option<oxidized::aast::XhpAttrTag>,
-    pub Option<(&'a Pos<'a>, &'a [Expr<'a, Ex, Fb, En, Hi>])>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub  Option<&'a (&'a Pos<'a>, &'a [&'a Expr<'a, Ex, Fb, En>])>,
 );
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for XhpAttr<'a, Ex, Fb, En, Hi>
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for XhpAttr<'a, Ex, Fb, En>
 {
 }
+arena_deserializer::impl_deserialize_in_arena!(XhpAttr<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
+    Copy,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum ClassAttr<'a, Ex, Fb, En, Hi> {
-    CAName(Sid<'a>),
-    CAField(CaField<'a, Ex, Fb, En, Hi>),
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub enum ClassAttr<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    CAName(&'a Sid<'a>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    CAField(&'a CaField<'a, Ex, Fb, En>),
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for ClassAttr<'a, Ex, Fb, En, Hi>
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for ClassAttr<'a, Ex, Fb, En>
 {
 }
+arena_deserializer::impl_deserialize_in_arena!(ClassAttr<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct CaField<'a, Ex, Fb, En, Hi> {
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct CaField<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub type_: CaType<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub id: Sid<'a>,
-    pub value: Option<Expr<'a, Ex, Fb, En, Hi>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub value: Option<&'a Expr<'a, Ex, Fb, En>>,
     pub required: bool,
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for CaField<'a, Ex, Fb, En, Hi>
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for CaField<'a, Ex, Fb, En>
 {
 }
+arena_deserializer::impl_deserialize_in_arena!(CaField<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
+    Copy,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -988,370 +1803,548 @@ impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> Tri
     ToOcamlRep
 )]
 pub enum CaType<'a> {
-    CAHint(Hint<'a>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    CAHint(&'a Hint<'a>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     CAEnum(&'a [&'a str]),
 }
 impl<'a> TrivialDrop for CaType<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(CaType<'arena>);
 
 #[derive(
     Clone,
+    Copy,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct ClassConst<'a, Ex, Fb, En, Hi> {
-    pub type_: Option<Hint<'a>>,
-    pub id: Sid<'a>,
-    /// expr = None indicates an abstract const
-    pub expr: Option<Expr<'a, Ex, Fb, En, Hi>>,
-    pub doc_comment: Option<DocComment<'a>>,
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub enum ClassConstKind<'a, Ex, Fb, En> {
+    /// CCAbstract represents the states
+    ///    abstract const int X;
+    ///    abstract const int Y = 4;
+    /// The expr option is a default value
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    CCAbstract(Option<&'a Expr<'a, Ex, Fb, En>>),
+    /// CCConcrete represents
+    ///    const int Z = 4;
+    /// The expr is the value of the constant. It is not optional
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    CCConcrete(&'a Expr<'a, Ex, Fb, En>),
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for ClassConst<'a, Ex, Fb, En, Hi>
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for ClassConstKind<'a, Ex, Fb, En>
 {
 }
+arena_deserializer::impl_deserialize_in_arena!(ClassConstKind<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum TypeconstAbstractKind<'a> {
-    TCAbstract(Option<Hint<'a>>),
-    TCPartiallyAbstract,
-    TCConcrete,
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct ClassConst<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub type_: Option<&'a Hint<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub id: Sid<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub kind: ClassConstKind<'a, Ex, Fb, En>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub doc_comment: Option<&'a DocComment<'a>>,
 }
-impl<'a> TrivialDrop for TypeconstAbstractKind<'a> {}
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for ClassConst<'a, Ex, Fb, En>
+{
+}
+arena_deserializer::impl_deserialize_in_arena!(ClassConst<'arena, Ex, Fb, En>);
 
-/// This represents a type const definition. If a type const is abstract then
-/// then the type hint acts as a constraint. Any concrete definition of the
-/// type const must satisfy the constraint.
-///
-/// If the type const is not abstract then a type must be specified.
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct ClassTypeconst<'a, Ex, Fb, En, Hi> {
-    pub abstract_: TypeconstAbstractKind<'a>,
+pub struct ClassAbstractTypeconst<'a> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub as_constraint: Option<&'a Hint<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub super_constraint: Option<&'a Hint<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub default: Option<&'a Hint<'a>>,
+}
+impl<'a> TrivialDrop for ClassAbstractTypeconst<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(ClassAbstractTypeconst<'arena>);
+
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub struct ClassConcreteTypeconst<'a> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub c_tc_type: &'a Hint<'a>,
+}
+impl<'a> TrivialDrop for ClassConcreteTypeconst<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(ClassConcreteTypeconst<'arena>);
+
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub struct ClassPartiallyAbstractTypeconst<'a> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub constraint: &'a Hint<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub type_: &'a Hint<'a>,
+}
+impl<'a> TrivialDrop for ClassPartiallyAbstractTypeconst<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(ClassPartiallyAbstractTypeconst<'arena>);
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub enum ClassTypeconst<'a> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    TCAbstract(&'a ClassAbstractTypeconst<'a>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    TCConcrete(&'a ClassConcreteTypeconst<'a>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    TCPartiallyAbstract(&'a ClassPartiallyAbstractTypeconst<'a>),
+}
+impl<'a> TrivialDrop for ClassTypeconst<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(ClassTypeconst<'arena>);
+
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct ClassTypeconstDef<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub user_attributes: &'a [&'a UserAttribute<'a, Ex, Fb, En>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub name: Sid<'a>,
-    pub constraint: Option<Hint<'a>>,
-    pub type_: Option<Hint<'a>>,
-    pub user_attributes: &'a [UserAttribute<'a, Ex, Fb, En, Hi>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub kind: ClassTypeconst<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub span: &'a Pos<'a>,
-    pub doc_comment: Option<DocComment<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub doc_comment: Option<&'a DocComment<'a>>,
+    pub is_ctx: bool,
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for ClassTypeconst<'a, Ex, Fb, En, Hi>
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for ClassTypeconstDef<'a, Ex, Fb, En>
 {
 }
-
-pub use oxidized::aast::XhpAttrInfo;
+arena_deserializer::impl_deserialize_in_arena!(ClassTypeconstDef<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct ClassVar<'a, Ex, Fb, En, Hi> {
+pub struct XhpAttrInfo<'a> {
+    pub tag: Option<oxidized::aast::XhpAttrTag>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub enum_values: &'a [ast_defs::XhpEnumValue<'a>],
+}
+impl<'a> TrivialDrop for XhpAttrInfo<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(XhpAttrInfo<'arena>);
+
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct ClassVar<'a, Ex, Fb, En> {
     pub final_: bool,
-    pub xhp_attr: Option<oxidized::aast::XhpAttrInfo>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub xhp_attr: Option<&'a XhpAttrInfo<'a>>,
     pub abstract_: bool,
+    pub readonly: bool,
     pub visibility: oxidized::aast::Visibility,
-    pub type_: TypeHint<'a, Hi>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub type_: &'a TypeHint<'a, Ex>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub id: Sid<'a>,
-    pub expr: Option<Expr<'a, Ex, Fb, En, Hi>>,
-    pub user_attributes: &'a [UserAttribute<'a, Ex, Fb, En, Hi>],
-    pub doc_comment: Option<DocComment<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub expr: Option<&'a Expr<'a, Ex, Fb, En>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub user_attributes: &'a [&'a UserAttribute<'a, Ex, Fb, En>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub doc_comment: Option<&'a DocComment<'a>>,
     pub is_promoted_variadic: bool,
     pub is_static: bool,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub span: &'a Pos<'a>,
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for ClassVar<'a, Ex, Fb, En, Hi>
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for ClassVar<'a, Ex, Fb, En>
 {
 }
+arena_deserializer::impl_deserialize_in_arena!(ClassVar<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Method_<'a, Ex, Fb, En, Hi> {
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct Method_<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub span: &'a Pos<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena")]
     pub annotation: En,
     pub final_: bool,
     pub abstract_: bool,
     pub static_: bool,
+    pub readonly_this: bool,
     pub visibility: oxidized::aast::Visibility,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub name: Sid<'a>,
-    pub tparams: &'a [Tparam<'a, Ex, Fb, En, Hi>],
-    pub where_constraints: &'a [WhereConstraint<'a>],
-    pub variadic: FunVariadicity<'a, Ex, Fb, En, Hi>,
-    pub params: &'a [&'a FunParam<'a, Ex, Fb, En, Hi>],
-    pub cap: TypeHint<'a, Hi>,
-    pub unsafe_cap: TypeHint<'a, Hi>,
-    pub body: FuncBody<'a, Ex, Fb, En, Hi>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub tparams: &'a [&'a Tparam<'a, Ex, Fb, En>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub where_constraints: &'a [&'a WhereConstraintHint<'a>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub variadic: FunVariadicity<'a, Ex, Fb, En>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub params: &'a [&'a FunParam<'a, Ex, Fb, En>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub ctxs: Option<&'a Contexts<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub unsafe_ctxs: Option<&'a Contexts<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub body: &'a FuncBody<'a, Ex, Fb, En>,
     pub fun_kind: oxidized::ast_defs::FunKind,
-    pub user_attributes: &'a [UserAttribute<'a, Ex, Fb, En, Hi>],
-    pub ret: TypeHint<'a, Hi>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub user_attributes: &'a [&'a UserAttribute<'a, Ex, Fb, En>],
+    pub readonly_ret: Option<oxidized::ast_defs::ReadonlyKind>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub ret: &'a TypeHint<'a, Ex>,
     /// true if this declaration has no body because it is an external method
     /// declaration (e.g. from an HHI file)
     pub external: bool,
-    pub doc_comment: Option<DocComment<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub doc_comment: Option<&'a DocComment<'a>>,
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for Method_<'a, Ex, Fb, En, Hi>
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for Method_<'a, Ex, Fb, En>
 {
 }
+arena_deserializer::impl_deserialize_in_arena!(Method_<'arena, Ex, Fb, En>);
 
 pub type Nsenv<'a> = namespace_env::Env<'a>;
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Typedef<'a, Ex, Fb, En, Hi> {
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct Typedef<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena")]
     pub annotation: En,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub name: Sid<'a>,
-    pub tparams: &'a [Tparam<'a, Ex, Fb, En, Hi>],
-    pub constraint: Option<Hint<'a>>,
-    pub kind: Hint<'a>,
-    pub user_attributes: &'a [UserAttribute<'a, Ex, Fb, En, Hi>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub tparams: &'a [&'a Tparam<'a, Ex, Fb, En>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub constraint: Option<&'a Hint<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub kind: &'a Hint<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub user_attributes: &'a [&'a UserAttribute<'a, Ex, Fb, En>],
     pub mode: oxidized::file_info::Mode,
     pub vis: oxidized::aast::TypedefVisibility,
-    pub namespace: Nsenv<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub namespace: &'a Nsenv<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub span: &'a Pos<'a>,
-    pub emit_id: Option<oxidized::aast::EmitId>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub emit_id: Option<&'a oxidized::aast::EmitId>,
+    pub is_ctx: bool,
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for Typedef<'a, Ex, Fb, En, Hi>
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for Typedef<'a, Ex, Fb, En>
 {
 }
+arena_deserializer::impl_deserialize_in_arena!(Typedef<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Gconst<'a, Ex, Fb, En, Hi> {
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct Gconst<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena")]
     pub annotation: En,
     pub mode: oxidized::file_info::Mode,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub name: Sid<'a>,
-    pub type_: Option<Hint<'a>>,
-    pub value: Expr<'a, Ex, Fb, En, Hi>,
-    pub namespace: Nsenv<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub type_: Option<&'a Hint<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub value: &'a Expr<'a, Ex, Fb, En>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub namespace: &'a Nsenv<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub span: &'a Pos<'a>,
-    pub emit_id: Option<oxidized::aast::EmitId>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub emit_id: Option<&'a oxidized::aast::EmitId>,
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for Gconst<'a, Ex, Fb, En, Hi>
-{
-}
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop for Gconst<'a, Ex, Fb, En> {}
+arena_deserializer::impl_deserialize_in_arena!(Gconst<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct RecordDef<'a, Ex, Fb, En, Hi> {
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct RecordDef<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena")]
     pub annotation: En,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub name: Sid<'a>,
-    pub extends: Option<RecordHint<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub extends: Option<&'a RecordHint<'a>>,
     pub abstract_: bool,
-    pub fields: &'a [(Sid<'a>, Hint<'a>, Option<Expr<'a, Ex, Fb, En, Hi>>)],
-    pub user_attributes: &'a [UserAttribute<'a, Ex, Fb, En, Hi>],
-    pub namespace: Nsenv<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub fields: &'a [(Sid<'a>, &'a Hint<'a>, Option<&'a Expr<'a, Ex, Fb, En>>)],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub user_attributes: &'a [&'a UserAttribute<'a, Ex, Fb, En>],
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub namespace: &'a Nsenv<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub span: &'a Pos<'a>,
-    pub doc_comment: Option<DocComment<'a>>,
-    pub emit_id: Option<oxidized::aast::EmitId>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub doc_comment: Option<&'a DocComment<'a>>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub emit_id: Option<&'a oxidized::aast::EmitId>,
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for RecordDef<'a, Ex, Fb, En, Hi>
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop
+    for RecordDef<'a, Ex, Fb, En>
 {
 }
+arena_deserializer::impl_deserialize_in_arena!(RecordDef<'arena, Ex, Fb, En>);
 
 pub type RecordHint<'a> = Hint<'a>;
 
-/// Pocket Universe Enumeration, e.g.
-///
-/// ```
-///   enum Foo { // pu_name
-///     // pu_case_types
-///     case type T0;
-///     case type T1;
-///
-///     // pu_case_values
-///     case ?T0 default_value;
-///     case T1 foo;
-///
-///     // pu_members
-///     :@A( // pum_atom
-///       // pum_types
-///       type T0 = string,
-///       type T1 = int,
-///
-///       // pum_exprs
-///       default_value = null,
-///       foo = 42,
-///     );
-///     :@B( ... )
-///     ...
-///   }
-/// ```
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct PuEnum<'a, Ex, Fb, En, Hi> {
-    pub annotation: En,
-    pub name: Sid<'a>,
-    pub user_attributes: &'a [UserAttribute<'a, Ex, Fb, En, Hi>],
-    pub is_final: bool,
-    pub case_types: &'a [Tparam<'a, Ex, Fb, En, Hi>],
-    pub case_values: &'a [PuCaseValue<'a>],
-    pub members: &'a [PuMember<'a, Ex, Fb, En, Hi>],
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub struct FunDef<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub namespace: &'a Nsenv<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub file_attributes: &'a [&'a FileAttribute<'a, Ex, Fb, En>],
+    pub mode: oxidized::file_info::Mode,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub fun: &'a Fun_<'a, Ex, Fb, En>,
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for PuEnum<'a, Ex, Fb, En, Hi>
-{
-}
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop for FunDef<'a, Ex, Fb, En> {}
+arena_deserializer::impl_deserialize_in_arena!(FunDef<'arena, Ex, Fb, En>);
 
 #[derive(
     Clone,
+    Copy,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct PuCaseValue<'a>(pub Sid<'a>, pub Hint<'a>);
-impl<'a> TrivialDrop for PuCaseValue<'a> {}
-
-#[derive(
-    Clone,
-    Debug,
-    Eq,
-    FromOcamlRepIn,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToOcamlRep
-)]
-pub struct PuMember<'a, Ex, Fb, En, Hi> {
-    pub atom: Sid<'a>,
-    pub types: &'a [(Sid<'a>, Hint<'a>)],
-    pub exprs: &'a [(Sid<'a>, Expr<'a, Ex, Fb, En, Hi>)],
-}
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for PuMember<'a, Ex, Fb, En, Hi>
-{
-}
-
-pub type FunDef<'a, Ex, Fb, En, Hi> = Fun_<'a, Ex, Fb, En, Hi>;
-
-#[derive(
-    Clone,
-    Debug,
-    Eq,
-    FromOcamlRepIn,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToOcamlRep
-)]
-pub enum Def<'a, Ex, Fb, En, Hi> {
-    Fun(&'a FunDef<'a, Ex, Fb, En, Hi>),
-    Class(&'a Class_<'a, Ex, Fb, En, Hi>),
-    RecordDef(&'a RecordDef<'a, Ex, Fb, En, Hi>),
-    Stmt(&'a Stmt<'a, Ex, Fb, En, Hi>),
-    Typedef(&'a Typedef<'a, Ex, Fb, En, Hi>),
-    Constant(&'a Gconst<'a, Ex, Fb, En, Hi>),
-    Namespace(&'a (Sid<'a>, Program<'a, Ex, Fb, En, Hi>)),
+#[serde(bound(
+    deserialize = "Ex: 'de + arena_deserializer::DeserializeInArena<'de>, Fb: 'de + arena_deserializer::DeserializeInArena<'de>, En: 'de + arena_deserializer::DeserializeInArena<'de>"
+))]
+pub enum Def<'a, Ex, Fb, En> {
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Fun(&'a FunDef<'a, Ex, Fb, En>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Class(&'a Class_<'a, Ex, Fb, En>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    RecordDef(&'a RecordDef<'a, Ex, Fb, En>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Stmt(&'a Stmt<'a, Ex, Fb, En>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Typedef(&'a Typedef<'a, Ex, Fb, En>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Constant(&'a Gconst<'a, Ex, Fb, En>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    Namespace(&'a (Sid<'a>, &'a Program<'a, Ex, Fb, En>)),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     NamespaceUse(&'a [(oxidized::aast::NsKind, Sid<'a>, Sid<'a>)]),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     SetNamespaceEnv(&'a Nsenv<'a>),
-    FileAttributes(&'a FileAttribute<'a, Ex, Fb, En, Hi>),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    FileAttributes(&'a FileAttribute<'a, Ex, Fb, En>),
 }
-impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop, Hi: TrivialDrop> TrivialDrop
-    for Def<'a, Ex, Fb, En, Hi>
-{
-}
+impl<'a, Ex: TrivialDrop, Fb: TrivialDrop, En: TrivialDrop> TrivialDrop for Def<'a, Ex, Fb, En> {}
+arena_deserializer::impl_deserialize_in_arena!(Def<'arena, Ex, Fb, En>);
 
 pub use oxidized::aast::NsKind;
 
-pub use oxidized::aast::ReifyKind;
+pub use oxidized::aast::HoleSource;
 
 pub use oxidized::aast::BreakContinueLevel;

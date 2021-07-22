@@ -26,6 +26,7 @@ namespace HPHP { namespace HHBBC {
 //////////////////////////////////////////////////////////////////////
 
 const StaticString s_reified_generics_var("0ReifiedGenerics");
+const StaticString s_coeffects_var("0Coeffects");
 
 //////////////////////////////////////////////////////////////////////
 
@@ -38,8 +39,8 @@ bool is_volatile_local(const php::Func* func, LocalId lid) {
   auto const& l = func->locals[lid];
   if (!l.name) return false;
 
-  return (RuntimeOption::EnableArgsInBacktraces &&
-          l.name->same(s_reified_generics_var.get())) ||
+  return l.name->same(s_reified_generics_var.get()) ||
+         l.name->same(s_coeffects_var.get()) ||
          l.name->same(s_86metadata.get());
 }
 
@@ -61,7 +62,7 @@ bool check_nargs_in_range(const php::Func* func, uint32_t nArgs) {
   return true;
 }
 
-int dyn_call_error_level(const php::Func* func)  {
+int dyn_call_error_level(const php::Func* func) {
   auto const def = [&] {
     if (!(func->attrs & AttrDynamicallyCallable) ||
         RuntimeOption::EvalForbidDynamicCallsWithAttr) {
@@ -78,6 +79,12 @@ int dyn_call_error_level(const php::Func* func)  {
 
   if (def > 0 && func->sampleDynamicCalls) return 1;
   return def;
+}
+
+bool has_coeffects_local(const php::Func* func) {
+  return !func->coeffectRules.empty() &&
+         !(func->coeffectRules.size() == 1 &&
+           func->coeffectRules[0].isGeneratorThis());
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -134,6 +141,40 @@ bool append_func(php::Func* dst, const php::Func& src) {
   }
   if (!ok) return false;
   copy_into(dst_func, src_func);
+  return true;
+}
+
+bool append_86cinit(php::Func* dst, const php::Func& src) {
+  if (src.numIters) return false;
+  if (src.locals.size() != 1 || dst->locals.size() != 1) return false;
+  if (src.exnNodes.size() || dst->exnNodes.size()) return false;
+
+  auto dst_func = php::WideFunc::mut(dst);
+  auto const src_func = php::WideFunc::cns(&src);
+
+  auto const& dst_switch_blk = dst_func.blocks()[0].mutate();
+  always_assert(dst_switch_blk->hhbcs.back().op == Op::SSwitch);
+  auto const& src_switch_blk = src_func.blocks()[0];
+  always_assert(src_switch_blk->hhbcs.back().op == Op::SSwitch);
+  auto& dst_cases = dst_switch_blk->hhbcs.back().SSwitch.targets;
+  dst_cases.pop_back();
+  dst_func.blocks().pop_back();
+  auto const delta = dst_cases.size();
+  auto const& src_cases = src_switch_blk->hhbcs.back().SSwitch.targets;
+
+  for (auto const& src_case : src_cases) {
+    dst_cases.push_back(std::make_pair(src_case.first, src_case.second + delta));
+    auto src_block = src_func.blocks()[src_case.second];
+    auto dst_block = src_block.mutate();
+    for (auto& bc : dst_block->hhbcs) {
+      // When merging functions (used for 86xints) we have to drop the srcLoc,
+      // because it might reference a different unit. Since these functions
+      // are generated, the srcLoc isn't that meaningful anyway.
+      bc.srcLoc = -1;
+    }
+    dst_func.blocks().push_back(std::move(src_block));
+  }
+
   return true;
 }
 

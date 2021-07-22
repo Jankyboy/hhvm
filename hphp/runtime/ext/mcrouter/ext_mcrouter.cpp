@@ -101,7 +101,7 @@ static void mcr_throwException(const std::string& message,
                                carbon::Result result = compatibility::mc_res_unknown,
                                const std::string& key = "") {
   if (!c_MCRouterException) {
-    c_MCRouterException = Unit::lookupClass(s_MCRouterException.get());
+    c_MCRouterException = Class::lookup(s_MCRouterException.get());
     assertx(c_MCRouterException);
   }
 
@@ -121,13 +121,13 @@ static void mcr_throwOptionException(
   const std::vector<mc::McrouterOptionError>& errors) {
   if (!c_MCRouterOptionException) {
     c_MCRouterOptionException =
-      Unit::lookupClass(s_MCRouterOptionException.get());
+      Class::lookup(s_MCRouterOptionException.get());
     assertx(c_MCRouterOptionException);
   }
 
-  VArrayInit errorArray(errors.size());
+  VecInit errorArray(errors.size());
   for (auto err : errors) {
-    auto e = make_darray(
+    auto e = make_dict_array(
       s_option, String(err.requestedName),
       s_value, String(err.requestedValue),
       s_error, String(err.errorMsg)
@@ -265,7 +265,7 @@ struct MCRouterResult : AsioExternalThreadEvent {
       m_stringResult.clear();
     } else if ((m_result.m_type == KindOfResource) && !m_result.m_data.pres) {
       // Deferred string value and cas, see below
-      Array ret = make_darray(
+      Array ret = make_dict_array(
         s_value,
           String(m_stringResult.c_str(), m_stringResult.size(), CopyString),
         s_cas, (int64_t)m_cas,

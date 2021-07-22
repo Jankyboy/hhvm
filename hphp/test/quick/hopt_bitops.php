@@ -2,11 +2,13 @@
 // Copyright 2004-2015 Facebook. All Rights Reserved.
 
 function foo($a, $b){
-  return $a & $b;
+  return (int)$a & (int)$b;
 }
 
 function test($a, $b) {
-  echo "test foo($a, $b)\n";
+  $a__str = (string)($a);
+  $b__str = (string)($b);
+  echo "test foo($a__str, $b__str)\n";
   for ($i = 0; $i < 20; $i++) {
     $x = foo($a, $b);
     echo $x;

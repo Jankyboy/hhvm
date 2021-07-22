@@ -17,6 +17,7 @@ open Typing_env_return_info
 module Dep = Typing_deps.Dep
 module Inf = Typing_inference_env
 module LID = Local_id
+module SN = Naming_special_names
 module SG = SN.Superglobals
 module LEnvC = Typing_per_cont_env
 module C = Typing_continuations
@@ -26,6 +27,10 @@ module ITySet = Internal_type_set
 module TPEnv = Type_parameter_env
 module KDefs = Typing_kinding_defs
 module TySet = Typing_set
+
+type class_or_typedef_result =
+  | ClassResult of Typing_classes_heap.Api.t
+  | TypedefResult of Typing_defs.typedef_type
 
 let show_env _ = "<env>"
 
@@ -38,7 +43,32 @@ let map_tcopt env ~f =
   let genv = { env.genv with tcopt } in
   { env with genv }
 
+let get_deps_mode env = Provider_context.get_deps_mode env.decl_env.Decl_env.ctx
+
 let get_ctx env = env.decl_env.Decl_env.ctx
+
+let get_file env = env.genv.file
+
+let get_current_decl env =
+  Option.map env.decl_env.Decl_env.droot ~f:Typing_deps.Dep.to_decl_reference
+
+let get_current_decl_and_file env : Pos_or_decl.ctx =
+  { Pos_or_decl.file = get_file env; decl = get_current_decl env }
+
+let fill_in_pos_filename_if_in_current_decl env pos =
+  Pos_or_decl.fill_in_filename_if_in_current_decl
+    ~current_decl_and_file:(get_current_decl_and_file env)
+    pos
+
+let unify_error_assert_primary_pos_in_current_decl env =
+  Errors.unify_error_assert_primary_pos_in_current_decl
+    ~current_decl_and_file:(get_current_decl_and_file env)
+
+let invalid_type_hint_assert_primary_pos_in_current_decl env =
+  Errors.invalid_type_hint_assert_primary_pos_in_current_decl
+    ~current_decl_and_file:(get_current_decl_and_file env)
+
+let get_tracing_info env = env.tracing_info
 
 let set_log_level env key log_level =
   { env with log_levels = SMap.add key log_level env.log_levels }
@@ -53,14 +83,14 @@ let set_env_log_function f = env_log_function := f
 let log_env_change_ :
     type res. string -> ?level:int -> env -> env * res -> env * res =
  fun name ?(level = 1) old_env (new_env, res) ->
-  ( if get_log_level new_env name >= 1 || get_log_level new_env "env" >= level
+  (if get_log_level new_env name >= 1 || get_log_level new_env "env" >= level
   then
     let pos =
       Option.value
         (Inf.get_current_pos_from_tyvar_stack old_env.inference_env)
         ~default:old_env.function_pos
     in
-    !env_log_function pos name old_env new_env );
+    !env_log_function pos name old_env new_env);
   (new_env, res)
 
 let log_env_change name ?(level = 1) old_env new_env =
@@ -94,18 +124,18 @@ let wrap_inference_env_call_env : env -> (Inf.t -> Inf.t) -> env =
 let expand_var env r v =
   wrap_inference_env_call env (fun env -> Inf.expand_var env r v)
 
-let fresh_type_reason ?variance env r =
+let fresh_type_reason ?variance env p r =
   log_env_change_ "fresh_type_reason" env
   @@ wrap_inference_env_call env (fun env ->
-         Inf.fresh_type_reason ?variance env r)
+         Inf.fresh_type_reason ?variance env p r)
 
 let fresh_type env p =
   log_env_change_ "fresh_type" env
   @@ wrap_inference_env_call env (fun env -> Inf.fresh_type env p)
 
-let fresh_invariant_type_var env p =
-  log_env_change_ "fresh_invariant_type_var" env
-  @@ wrap_inference_env_call env (fun env -> Inf.fresh_invariant_type_var env p)
+let fresh_type_invariant env p =
+  log_env_change_ "fresh_type_invariant" env
+  @@ wrap_inference_env_call env (fun env -> Inf.fresh_type_invariant env p)
 
 let new_global_tyvar env ?i r =
   log_env_change_ "new_global_tyvar" env
@@ -168,10 +198,10 @@ let simplify_occurrences env v =
       ISet.fold
         (fun v' (env, seen_tyvars) ->
           (* This type variable is now solved and does not contain any unsolved
-          type variable, so we can remove it from its occurrences. *)
+             type variable, so we can remove it from its occurrences. *)
           let env = make_tyvar_no_more_occur_in_tyvar env v ~no_more_in:v' in
           (* Only simplify when the type of v' does not contain any more
-          unsolved type variables. *)
+             unsolved type variables. *)
           if not @@ Inf.contains_unsolved_tyvars env.inference_env v' then
             simplify_type_of_var env v' ~seen_tyvars
           else
@@ -190,15 +220,15 @@ let simplify_occurrences env v =
       | None -> failwith "Can only simplify type of bounded variables"
       | Some ty ->
         (* Only simplify the type of variables which are bound directly to a
-      concrete type to preserve the variable aliasings and save some memory. *)
+           concrete type to preserve the variable aliasings and save some memory. *)
         let env =
           match get_node ty with
           | Tvar _ -> env
           | _ ->
             let (env, ty) = simplify_unions env ty in
             (* we only call this function when v does not recursively contain unsolved
-          type variables, so ty here should not contain unsolved type variables and
-          it is safe to simply bind it without reupdating the type var occurrences. *)
+               type variables, so ty here should not contain unsolved type variables and
+               it is safe to simply bind it without reupdating the type var occurrences. *)
             let env = bind env v ty in
             env
         in
@@ -283,16 +313,6 @@ let set_tyvar_type_const env var tconstid ty =
   wrap_inference_env_call_env env (fun env ->
       Inf.set_tyvar_type_const env var tconstid ty)
 
-let get_tyvar_pu_access env var =
-  wrap_inference_env_call_res env (fun env -> Inf.get_tyvar_pu_access env var)
-
-let get_tyvar_pu_accesses env var =
-  wrap_inference_env_call_res env (fun env -> Inf.get_tyvar_pu_accesses env var)
-
-let set_tyvar_pu_access env var name new_var =
-  wrap_inference_env_call_env env (fun env ->
-      Inf.set_tyvar_pu_access env var name new_var)
-
 let get_current_tyvars env =
   wrap_inference_env_call_res env Inf.get_current_tyvars
 
@@ -308,15 +328,15 @@ let wrap_ty_in_var env r ty =
   wrap_inference_env_call env (fun env -> Inf.wrap_ty_in_var env r ty)
 
 let get_shape_field_name = function
-  | Ast_defs.SFlit_int (_, s)
-  | Ast_defs.SFlit_str (_, s) ->
+  | Typing_defs.TSFlit_int (_, s)
+  | Typing_defs.TSFlit_str (_, s) ->
     s
-  | Ast_defs.SFclass_const ((_, s1), (_, s2)) -> s1 ^ "::" ^ s2
+  | Typing_defs.TSFclass_const ((_, s1), (_, s2)) -> s1 ^ "::" ^ s2
 
 let get_shape_field_name_pos = function
-  | Ast_defs.SFlit_int (p, _)
-  | Ast_defs.SFlit_str (p, _)
-  | Ast_defs.SFclass_const ((p, _), _) ->
+  | Typing_defs.TSFlit_int (p, _)
+  | Typing_defs.TSFlit_str (p, _)
+  | Typing_defs.TSFclass_const ((p, _), _) ->
     p
 
 let next_cont_opt env = LEnvC.get_cont_option C.Next env.lenv.per_cont_env
@@ -328,29 +348,29 @@ let get_tpenv env =
   | None -> TPEnv.empty
   | Some entry -> entry.Typing_per_cont_env.tpenv
 
-let get_global_tpenv env = env.global_tpenv
+let get_global_tpenv env = env.tpenv
 
 let get_pos_and_kind_of_generic env name =
   match TPEnv.get_with_pos name (get_tpenv env) with
   | Some r -> Some r
-  | None -> TPEnv.get_with_pos name env.global_tpenv
+  | None -> TPEnv.get_with_pos name env.tpenv
 
 let get_lower_bounds env name tyargs =
   let tpenv = get_tpenv env in
   let local = TPEnv.get_lower_bounds tpenv name tyargs in
-  let global = TPEnv.get_lower_bounds env.global_tpenv name tyargs in
+  let global = TPEnv.get_lower_bounds env.tpenv name tyargs in
   TySet.union local global
 
 let get_upper_bounds env name tyargs =
   let tpenv = get_tpenv env in
   let local = TPEnv.get_upper_bounds tpenv name tyargs in
-  let global = TPEnv.get_upper_bounds env.global_tpenv name tyargs in
+  let global = TPEnv.get_upper_bounds env.tpenv name tyargs in
   TySet.union local global
 
 let get_reified env name =
   let tpenv = get_tpenv env in
   let local = TPEnv.get_reified tpenv name in
-  let global = TPEnv.get_reified env.global_tpenv name in
+  let global = TPEnv.get_reified env.tpenv name in
   match (local, global) with
   | (Reified, _)
   | (_, Reified) ->
@@ -363,13 +383,19 @@ let get_reified env name =
 let get_enforceable env name =
   let tpenv = get_tpenv env in
   let local = TPEnv.get_enforceable tpenv name in
-  let global = TPEnv.get_enforceable env.global_tpenv name in
+  let global = TPEnv.get_enforceable env.tpenv name in
   local || global
 
 let get_newable env name =
   let tpenv = get_tpenv env in
   let local = TPEnv.get_newable tpenv name in
-  let global = TPEnv.get_newable env.global_tpenv name in
+  let global = TPEnv.get_newable env.tpenv name in
+  local || global
+
+let get_require_dynamic env name =
+  let tpenv = get_tpenv env in
+  let local = TPEnv.get_require_dynamic tpenv name in
+  let global = TPEnv.get_require_dynamic env.tpenv name in
   local || global
 
 (* Get bounds that are both an upper and lower of a given generic *)
@@ -391,23 +417,33 @@ let env_with_tpenv env tpenv =
       };
   }
 
-let env_with_global_tpenv env global_tpenv = { env with global_tpenv }
+let env_with_global_tpenv env tpenv = { env with tpenv }
 
 let add_upper_bound_global env name ty =
   let tpenv =
     let (env, ty) = expand_type env ty in
     match deref ty with
     | (r, Tgeneric (formal_super, [])) ->
-      TPEnv.add_lower_bound
-        env.global_tpenv
-        formal_super
-        (mk (r, Tgeneric (name, [])))
+      TPEnv.add_lower_bound env.tpenv formal_super (mk (r, Tgeneric (name, [])))
     | (_r, Tgeneric (_formal_super, _targs)) ->
       (* TODO(T70068435) Revisit this when implementing bounds on HK generic vars *)
-      env.global_tpenv
-    | _ -> env.global_tpenv
+      env.tpenv
+    | _ -> env.tpenv
   in
-  { env with global_tpenv = TPEnv.add_upper_bound tpenv name ty }
+  { env with tpenv = TPEnv.add_upper_bound tpenv name ty }
+
+let add_lower_bound_global env name ty =
+  let tpenv =
+    let (env, ty) = expand_type env ty in
+    match deref ty with
+    | (r, Tgeneric (formal_super, [])) ->
+      TPEnv.add_upper_bound env.tpenv formal_super (mk (r, Tgeneric (name, [])))
+    | (_r, Tgeneric (_formal_super, _targs)) ->
+      (* TODO(T70068435) Revisit this when implementing bounds on HK generic vars *)
+      env.tpenv
+    | _ -> env.tpenv
+  in
+  { env with tpenv = TPEnv.add_lower_bound tpenv name ty }
 
 (* Add a single new upper bound [ty] to generic parameter [name] in the local
  * type parameter environment of [env].
@@ -442,19 +478,16 @@ let is_generic_parameter env name =
   TPEnv.mem name (get_tpenv env) || SSet.mem name env.fresh_typarams
 
 let get_generic_parameters env =
-  TPEnv.get_names (TPEnv.union (get_tpenv env) env.global_tpenv)
+  TPEnv.get_tparam_names (TPEnv.union (get_tpenv env) env.tpenv)
 
-let get_tpenv_size env =
-  TPEnv.size (get_tpenv env) + TPEnv.size env.global_tpenv
+let get_tpenv_size env = TPEnv.size (get_tpenv env) + TPEnv.size env.tpenv
 
 let is_consistent env = TPEnv.is_consistent (get_tpenv env)
 
 let mark_inconsistent env =
   env_with_tpenv env (TPEnv.mark_inconsistent (get_tpenv env))
 
-(* Generate a fresh generic parameter with a specified prefix but distinct
- * from all generic parameters in the environment *)
-let add_fresh_generic_parameter_by_kind env prefix kind =
+let fresh_param_name env prefix : env * string =
   let rec iterate i =
     let name = Printf.sprintf "%s#%d" prefix i in
     if is_generic_parameter env name then
@@ -464,12 +497,18 @@ let add_fresh_generic_parameter_by_kind env prefix kind =
   in
   let name = iterate 1 in
   let env = { env with fresh_typarams = SSet.add name env.fresh_typarams } in
+  (env, name)
+
+(* Generate a fresh generic parameter with a specified prefix but distinct
+ * from all generic parameters in the environment *)
+let add_fresh_generic_parameter_by_kind env pos prefix kind =
+  let (env, name) = fresh_param_name env prefix in
   let env =
-    env_with_tpenv env (TPEnv.add ~def_pos:Pos.none name kind (get_tpenv env))
+    env_with_tpenv env (TPEnv.add ~def_pos:pos name kind (get_tpenv env))
   in
   (env, name)
 
-let add_fresh_generic_parameter env prefix ~reified ~enforceable ~newable =
+let add_fresh_generic_parameter env pos prefix ~reified ~enforceable ~newable =
   let kind =
     KDefs.
       {
@@ -478,10 +517,11 @@ let add_fresh_generic_parameter env prefix ~reified ~enforceable ~newable =
         reified;
         enforceable;
         newable;
+        require_dynamic = true;
         parameters = [];
       }
   in
-  add_fresh_generic_parameter_by_kind env prefix kind
+  add_fresh_generic_parameter_by_kind env pos prefix kind
 
 let is_fresh_generic_parameter name =
   String.contains name '#' && not (DependentKind.is_generic_dep_ty name)
@@ -523,6 +563,7 @@ let get_tpenv_tparams env =
               reified = _;
               enforceable = _;
               newable = _;
+              require_dynamic = _;
               (* FIXME what to do here? it seems dangerous to just traverse *)
               parameters = _;
             }
@@ -548,24 +589,26 @@ let reinitialize_locals env =
     env
     LEnvC.(initial_locals { empty_entry with tpenv = get_tpenv env })
 
-let initial_local tpenv local_reactive =
+let initial_local tpenv =
   {
     per_cont_env = LEnvC.(initial_locals { empty_entry with tpenv });
     local_using_vars = LID.Set.empty;
-    local_mutability = LID.Map.empty;
-    local_reactive;
   }
 
-let empty ?(mode = FileInfo.Mstrict) ctx file ~droot =
+let empty ?origin ?(mode = FileInfo.Mstrict) ctx file ~droot =
   {
     function_pos = Pos.none;
     fresh_typarams = SSet.empty;
-    lenv = initial_local TPEnv.empty Nonreactive;
+    lenv = initial_local TPEnv.empty;
     in_loop = false;
     in_try = false;
     in_case = false;
+    in_expr_tree = false;
     inside_constructor = false;
+    in_support_dynamic_type_method_check = false;
     decl_env = { mode; droot; ctx };
+    tracing_info =
+      Option.map origin ~f:(fun origin -> { Decl_counters.origin; file });
     genv =
       {
         tcopt = Provider_context.get_tcopt ctx;
@@ -573,11 +616,13 @@ let empty ?(mode = FileInfo.Mstrict) ctx file ~droot =
           {
             (* Actually should get set straight away anyway *)
             return_type =
-              { et_type = mk (Reason.Rnone, Tunion []); et_enforced = false };
+              {
+                et_type = mk (Reason.Rnone, Tunion []);
+                et_enforced = Unenforced;
+              };
             return_disposable = false;
-            return_mutable = false;
             return_explicit = false;
-            return_void_to_rx = false;
+            return_dynamically_callable = false;
           };
         params = LID.Map.empty;
         condition_types = SMap.empty;
@@ -586,19 +631,19 @@ let empty ?(mode = FileInfo.Mstrict) ctx file ~droot =
         val_kind = Other;
         parent = None;
         fun_kind = Ast_defs.FSync;
-        fun_mutable = None;
+        fun_is_ctor = false;
         file;
+        this_module = None;
+        this_internal = false;
       };
-    global_tpenv = TPEnv.empty;
+    tpenv = TPEnv.empty;
     log_levels = TypecheckerOptions.log_levels (Provider_context.get_tcopt ctx);
     inference_env = Inf.empty_inference_env;
     allow_wildcards = false;
     big_envs = ref [];
     pessimize = false;
+    fun_tast_info = None;
   }
-
-let set_env_reactive env reactive =
-  { env with lenv = { env.lenv with local_reactive = reactive } }
 
 let set_env_pessimize env =
   let pessimize_coefficient =
@@ -611,6 +656,9 @@ let set_env_pessimize env =
 
 let set_env_function_pos env function_pos = { env with function_pos }
 
+let set_fun_tast_info env fun_tast_info =
+  { env with fun_tast_info = Some fun_tast_info }
+
 let set_condition_type env n ty =
   {
     env with
@@ -620,58 +668,122 @@ let set_condition_type env n ty =
 
 let get_condition_type env n = SMap.find_opt n env.genv.condition_types
 
-(* Some form (strict/shallow/local) of reactivity *)
-let env_local_reactive env =
-  not (equal_reactivity (env_reactivity env) Nonreactive)
+let fun_is_constructor env = env.genv.fun_is_ctor
 
-let function_is_mutable env = env.genv.fun_mutable
+let set_fun_is_constructor env is_ctor =
+  { env with genv = { env.genv with fun_is_ctor = is_ctor } }
 
-let set_fun_mutable env mut =
-  { env with genv = { env.genv with fun_mutable = mut } }
-
-let error_if_reactive_context env f =
-  if env_local_reactive env && not (TypecheckerOptions.unsafe_rx env.genv.tcopt)
-  then
-    f ()
-
-let add_wclass env x =
-  let dep = Dep.Class x in
-  Option.iter env.decl_env.droot (fun root -> Typing_deps.add_idep root dep);
+let make_depend_on_class env class_name =
+  let dep = Dep.Type class_name in
+  Option.iter env.decl_env.droot ~f:(fun root ->
+      Typing_deps.add_idep (get_deps_mode env) root dep);
   ()
+
+let make_depend_on_constructor env class_name =
+  make_depend_on_class env class_name;
+  let dep = Dep.Cstr class_name in
+  Option.iter env.decl_env.droot ~f:(fun root ->
+      Typing_deps.add_idep (get_deps_mode env) root dep);
+  ()
+
+let make_depend_on_class_def env x cd =
+  match cd with
+  | Some cd when Pos_or_decl.is_hhi (Cls.pos cd) -> ()
+  | _ -> make_depend_on_class env x
 
 let print_size _kind _name obj =
   match obj with
   | None -> obj
   | Some _r ->
-    (*    Printf.printf
-      "%s %s: %d\n"
-      kind
-      name
-      (Obj.reachable_words (Obj.repr r) * (Sys.word_size / 8));*)
+    (* Printf.printf
+       "%s %s: %d\n"
+       kind
+       name
+       (Obj.reachable_words (Obj.repr r) * (Sys.word_size / 8));*)
     obj
 
 let get_typedef env x =
-  add_wclass env x;
-  print_size "type" x (Decl_provider.get_typedef (get_ctx env) x)
+  let res =
+    print_size
+      "type"
+      x
+      (Decl_provider.get_typedef
+         ?tracing_info:(get_tracing_info env)
+         (get_ctx env)
+         x)
+  in
+  match res with
+  | Some td when Pos_or_decl.is_hhi td.td_pos -> res
+  | _ ->
+    make_depend_on_class env x;
+    res
 
 let is_typedef env x =
   match Naming_provider.get_type_kind (get_ctx env) x with
   | Some Naming_types.TTypedef -> true
   | _ -> false
 
-let get_class env x =
-  add_wclass env x;
-  print_size "class" x (Decl_provider.get_class (get_ctx env) x)
+let is_typedef_visible env ?(expand_visible_newtype = true) td =
+  let { Typing_defs.td_vis; td_pos; _ } = td in
+  match td_vis with
+  | Aast.Opaque ->
+    expand_visible_newtype
+    && Relative_path.equal
+         (Pos.filename (Pos_or_decl.unsafe_to_raw_pos td_pos))
+         (get_file env)
+  | Aast.Transparent
+  (* Internal types are not opaque, but they may be inaccessible altogether *)
+  | Aast.Tinternal ->
+    true
+
+let get_class (env : env) (name : Decl_provider.type_key) : Cls.t option =
+  let res =
+    print_size
+      "class"
+      name
+      (Decl_provider.get_class
+         ?tracing_info:(get_tracing_info env)
+         (get_ctx env)
+         name)
+  in
+  make_depend_on_class_def env name res;
+  res
+
+let get_class_or_typedef env x =
+  if is_typedef env x then
+    match get_typedef env x with
+    | None -> None
+    | Some td -> Some (TypedefResult td)
+  else
+    match get_class env x with
+    | None -> None
+    | Some cd -> Some (ClassResult cd)
 
 let get_class_dep env x =
-  Decl_env.add_extends_dependency env.decl_env x;
-  get_class env x
+  let res = get_class env x in
+  match res with
+  | Some cd when Pos_or_decl.is_hhi (Cls.pos cd) -> res
+  | _ ->
+    Decl_env.add_extends_dependency env.decl_env x;
+    res
 
 let get_fun env x =
-  let dep = Typing_deps.Dep.Fun x in
-  Option.iter env.decl_env.Decl_env.droot (fun root ->
-      Typing_deps.add_idep root dep);
-  print_size "fun" x (Decl_provider.get_fun (get_ctx env) x)
+  let res =
+    print_size
+      "fun"
+      x
+      (Decl_provider.get_fun
+         ?tracing_info:(get_tracing_info env)
+         (get_ctx env)
+         x)
+  in
+  match res with
+  | Some fd when Pos_or_decl.is_hhi fd.fe_pos -> res
+  | _ ->
+    let dep = Typing_deps.Dep.Fun x in
+    Option.iter env.decl_env.Decl_env.droot ~f:(fun root ->
+        Typing_deps.add_idep (get_deps_mode env) root dep);
+    res
 
 let get_enum_constraint env x =
   match get_class env x with
@@ -681,59 +793,70 @@ let get_enum_constraint env x =
     | None -> None
     | Some e -> e.te_constraint)
 
-let env_with_mut env local_mutability =
-  { env with lenv = { env.lenv with local_mutability } }
-
-let get_env_mutability env = env.lenv.local_mutability
-
 let get_enum env x =
-  add_wclass env x;
-  match Decl_provider.get_class (get_ctx env) x with
+  match get_class env x with
   | Some tc when Option.is_some (Cls.enum_type tc) -> Some tc
   | _ -> None
 
-let is_enum env x = Option.is_some (get_enum env x)
+let is_enum env x =
+  match get_enum env x with
+  | Some cls ->
+    (match Cls.enum_type cls with
+    | Some enum_type -> not enum_type.te_enum_class
+    | None -> false (* we know this is impossible due to get_enum *))
+  | None -> false
+
+let is_enum_class env x =
+  match get_enum env x with
+  | Some cls ->
+    (match Cls.enum_type cls with
+    | Some enum_type -> enum_type.te_enum_class
+    | None -> false (* we know this is impossible due to get_enum *))
+  | None -> false
 
 let get_typeconst env class_ mid =
-  add_wclass env (Cls.name class_);
-  let dep = Dep.Const (Cls.name class_, mid) in
-  Option.iter env.decl_env.droot (fun root -> Typing_deps.add_idep root dep);
+  if not (Pos_or_decl.is_hhi (Cls.pos class_)) then begin
+    let dep = Dep.Const (Cls.name class_, mid) in
+    make_depend_on_class env (Cls.name class_);
+    Option.iter env.decl_env.droot ~f:(fun root ->
+        Typing_deps.add_idep (get_deps_mode env) root dep)
+  end;
   Cls.get_typeconst class_ mid
-
-let get_pu_enum env class_ mid =
-  add_wclass env (Cls.name class_);
-  let dep = Dep.Const (Cls.name class_, mid) in
-  Option.iter env.decl_env.droot (fun root -> Typing_deps.add_idep root dep);
-  Cls.get_pu_enum class_ mid
 
 (* Used to access class constants. *)
 let get_const env class_ mid =
-  add_wclass env (Cls.name class_);
-  let dep = Dep.Const (Cls.name class_, mid) in
-  Option.iter env.decl_env.droot (fun root -> Typing_deps.add_idep root dep);
+  if not (Pos_or_decl.is_hhi (Cls.pos class_)) then begin
+    let dep = Dep.Const (Cls.name class_, mid) in
+    make_depend_on_class env (Cls.name class_);
+    Option.iter env.decl_env.droot ~f:(fun root ->
+        Typing_deps.add_idep (get_deps_mode env) root dep)
+  end;
   Cls.get_const class_ mid
+
+let consts env class_ =
+  if not (Pos_or_decl.is_hhi (Cls.pos class_)) then
+    make_depend_on_class env (Cls.name class_);
+  Cls.consts class_
 
 (* Used to access "global constants". That is constants that were
  * introduced with "const X = ...;" at topelevel, or "define('X', ...);"
  *)
 let get_gconst env cst_name =
-  let dep = Dep.GConst cst_name in
-  Option.iter env.decl_env.droot (fun root -> Typing_deps.add_idep root dep);
-  Decl_provider.get_gconst (get_ctx env) cst_name
+  let res =
+    Decl_provider.get_gconst
+      ?tracing_info:(get_tracing_info env)
+      (get_ctx env)
+      cst_name
+  in
+  match res with
+  | Some cst when Pos_or_decl.is_hhi cst.cd_pos -> res
+  | _ ->
+    let dep = Dep.GConst cst_name in
+    Option.iter env.decl_env.droot ~f:(fun root ->
+        Typing_deps.add_idep (get_deps_mode env) root dep);
+    res
 
 let get_static_member is_method env class_ mid =
-  add_wclass env (Cls.name class_);
-  let add_dep x =
-    let dep =
-      if is_method then
-        Dep.SMethod (x, mid)
-      else
-        Dep.SProp (x, mid)
-    in
-    Option.iter env.decl_env.droot (fun root -> Typing_deps.add_idep root dep)
-  in
-  add_dep (Cls.name class_);
-
   (* The type of a member is stored separately in the heap. This means that
    * any user of the member also has a dependency on the class where the member
    * originated.
@@ -744,7 +867,22 @@ let get_static_member is_method env class_ mid =
     else
       Cls.get_sprop class_ mid
   in
-  Option.iter ce_opt (fun ce -> add_dep ce.ce_origin);
+  if not (Pos_or_decl.is_hhi (Cls.pos class_)) then begin
+    make_depend_on_class env (Cls.name class_);
+    let add_dep x =
+      let dep =
+        if is_method then
+          Dep.SMethod (x, mid)
+        else
+          Dep.SProp (x, mid)
+      in
+      Option.iter env.decl_env.droot ~f:(fun root ->
+          Typing_deps.add_idep (get_deps_mode env) root dep)
+    in
+    add_dep (Cls.name class_);
+    Option.iter ce_opt ~f:(fun ce -> add_dep ce.ce_origin)
+  end;
+
   ce_opt
 
 (* Given a list of things whose name we can extract with `f`, return
@@ -779,8 +917,7 @@ let suggest_static_member is_method class_ mid =
   in
   suggest_member members mid
 
-let get_member is_method env class_ mid =
-  add_wclass env (Cls.name class_);
+let get_member is_method env (class_ : Cls.t) mid =
   let add_dep x =
     let dep =
       if is_method then
@@ -788,7 +925,8 @@ let get_member is_method env class_ mid =
       else
         Dep.Prop (x, mid)
     in
-    Option.iter env.decl_env.droot (fun root -> Typing_deps.add_idep root dep)
+    Option.iter env.decl_env.droot ~f:(fun root ->
+        Typing_deps.add_idep (get_deps_mode env) root dep)
   in
   (* The type of a member is stored separately in the heap. This means that
    * any user of the member also has a dependency on the class where the member
@@ -800,7 +938,9 @@ let get_member is_method env class_ mid =
     else
       Cls.get_prop class_ mid
   in
-  Option.iter ce_opt (fun ce ->
+  if not (Pos_or_decl.is_hhi (Cls.pos class_)) then
+    make_depend_on_class env (Cls.name class_);
+  Option.iter ce_opt ~f:(fun ce ->
       add_dep (Cls.name class_);
       add_dep ce.ce_origin);
   ce_opt
@@ -816,14 +956,12 @@ let suggest_member is_method class_ mid =
   suggest_member members mid
 
 let get_construct env class_ =
-  add_wclass env (Cls.name class_);
-  let add_dep x =
-    let dep = Dep.Cstr x in
-    Option.iter env.decl_env.Decl_env.droot (fun root ->
-        Typing_deps.add_idep root dep)
-  in
-  add_dep (Cls.name class_);
-  Option.iter (fst (Cls.construct class_)) (fun ce -> add_dep ce.ce_origin);
+  if not (Pos_or_decl.is_hhi (Cls.pos class_)) then begin
+    make_depend_on_constructor env (Cls.name class_);
+    Option.iter
+      (fst (Cls.construct class_))
+      ~f:(fun ce -> make_depend_on_constructor env ce.ce_origin)
+  end;
   Cls.construct class_
 
 let get_return env = env.genv.return
@@ -852,16 +990,48 @@ let with_env env f =
   let env = set_return env ret in
   (env, result)
 
+let with_origin env origin f =
+  let ti1 = env.tracing_info in
+  let ti2 = Option.map ti1 ~f:(fun ti -> { ti with Decl_counters.origin }) in
+  let env = { env with tracing_info = ti2 } in
+  let (env, result) = f env in
+  let env = { env with tracing_info = ti1 } in
+  (env, result)
+
+let with_origin2 env origin f =
+  let ti1 = env.tracing_info in
+  let ti2 = Option.map ti1 ~f:(fun ti -> { ti with Decl_counters.origin }) in
+  let env = { env with tracing_info = ti2 } in
+  let (env, r1, r2) = f env in
+  let env = { env with tracing_info = ti1 } in
+  (env, r1, r2)
+
+let with_in_expr_tree env in_expr_tree f =
+  let old_in_expr_tree = env.in_expr_tree in
+  let env = { env with in_expr_tree } in
+  let (env, r1, r2) = f env in
+  let env = { env with in_expr_tree = old_in_expr_tree } in
+  (env, r1, r2)
+
+let is_in_expr_tree env = env.in_expr_tree
+
+let set_in_expr_tree env b = { env with in_expr_tree = b }
+
 let is_static env = env.genv.static
 
 let get_val_kind env = env.genv.val_kind
 
 let get_self_ty env = Option.map env.genv.self ~f:snd
 
-let get_self env =
+let get_self_class_type env =
   match get_self_ty env with
-  | Some self -> self
-  | None -> mk (Reason.none, Typing_defs.make_tany ())
+  | Some self ->
+    begin
+      match get_node self with
+      | Tclass (id, exact, tys) -> Some (id, exact, tys)
+      | _ -> None
+    end
+  | None -> None
 
 let get_self_id env = Option.map env.genv.self ~f:fst
 
@@ -879,12 +1049,18 @@ let get_parent_class env =
 
 let get_fn_kind env = env.genv.fun_kind
 
-let get_file env = env.genv.file
-
 let set_fn_kind env fn_type =
   let genv = env.genv in
   let genv = { genv with fun_kind = fn_type } in
   { env with genv }
+
+let set_module env m = { env with genv = { env.genv with this_module = m } }
+
+let get_module env = env.genv.this_module
+
+let set_internal env b = { env with genv = { env.genv with this_internal = b } }
+
+let get_internal env = env.genv.this_internal
 
 let set_self env self_id self_ty =
   let genv = env.genv in
@@ -915,7 +1091,7 @@ let get_mode env = env.decl_env.mode
 
 let is_strict env = FileInfo.is_strict (get_mode env)
 
-let is_decl env = FileInfo.(equal_mode (get_mode env) Mdecl)
+let is_hhi env = FileInfo.(equal_mode (get_mode env) Mhhi)
 
 let get_allow_solve_globals env =
   wrap_inference_env_call_res env Inf.get_allow_solve_globals
@@ -936,7 +1112,7 @@ let set_local_ env x ty =
  * that the local currently has, and an expression_id generated from
  * the last assignment to this local.
  *)
-let set_local env x new_type pos =
+let set_local ?(immutable = false) env x new_type pos =
   let new_type =
     match get_node new_type with
     | Tunion [ty] -> ty
@@ -949,6 +1125,12 @@ let set_local env x new_type pos =
       match LID.Map.find_opt x next_cont.LEnvC.local_types with
       | None -> Ident.tmp ()
       | Some (_, _, y) -> y
+    in
+    let expr_id =
+      if immutable then
+        LID.make_immutable expr_id
+      else
+        expr_id
     in
     let local = (new_type, pos, expr_id) in
     set_local_ env x local
@@ -966,34 +1148,15 @@ let set_using_var env x =
   }
 
 let unset_local env local =
-  let { per_cont_env; local_using_vars; local_mutability; local_reactive } =
-    env.lenv
-  in
+  let { per_cont_env; local_using_vars } = env.lenv in
   let per_cont_env =
     LEnvC.remove_from_cont C.Next local
     @@ LEnvC.remove_from_cont C.Catch local
     @@ per_cont_env
   in
   let local_using_vars = LID.Set.remove local local_using_vars in
-  let local_mutability = LID.Map.remove local local_mutability in
-  let env =
-    {
-      env with
-      lenv =
-        { per_cont_env; local_using_vars; local_mutability; local_reactive };
-    }
-  in
+  let env = { env with lenv = { per_cont_env; local_using_vars } } in
   env
-
-let add_mutable_var env local mutability_type =
-  env_with_mut env (LID.Map.add local mutability_type env.lenv.local_mutability)
-
-let local_is_mutable ~include_borrowed env id =
-  let module TME = Typing_mutability_env in
-  match LID.Map.find_opt id (get_env_mutability env) with
-  | Some (_, TME.Mutable) -> true
-  | Some (_, TME.Borrowed) -> include_borrowed
-  | _ -> false
 
 let tany env =
   let dynamic_view_enabled = TypecheckerOptions.dynamic_view (get_tcopt env) in
@@ -1001,8 +1164,6 @@ let tany env =
     Tdynamic
   else
     Typing_defs.make_tany ()
-
-let decl_tany = tany
 
 let get_local_in_ctx env ?error_if_undef_at_pos:p x ctx_opt =
   let not_found_is_ok x ctx =
@@ -1012,24 +1173,41 @@ let get_local_in_ctx env ?error_if_undef_at_pos:p x ctx_opt =
     || Fake.is_valid ctx.LEnvC.fake_members x
   in
   let error_if_pos_provided posopt ctx =
+    (* Is this local variable something the user could write, or an
+       internal variable used in desugaring? *)
+    let denotable_local (lid : LID.t) : bool =
+      (* Allow $foo or $_bar1 but not $#foo or $0bar. *)
+      let local_regexp = Str.regexp "^\\$[a-zA-z_][a-zA-Z0-9_]*$" in
+      Str.string_match local_regexp (LID.to_string lid) 0
+    in
+
     match posopt with
     | Some p ->
-      let in_rx_scope = env_local_reactive env in
       let lid = LID.to_string x in
       let suggest_most_similar lid =
-        let all_locals = LID.Map.elements ctx.LEnvC.local_types in
+        (* Ignore fake locals *)
+        let all_locals =
+          LID.Map.fold
+            (fun k v acc ->
+              if denotable_local k then
+                (k, v) :: acc
+              else
+                acc)
+            ctx.LEnvC.local_types
+            []
+        in
         let var_name (k, _) = LID.to_string k in
         match most_similar lid all_locals var_name with
         | Some (k, (_, pos, _)) -> Some (LID.to_string k, pos)
         | None -> None
       in
-      Errors.undefined ~in_rx_scope p lid (suggest_most_similar lid)
+      Errors.undefined p lid (suggest_most_similar lid)
     | None -> ()
   in
   match ctx_opt with
   | None ->
     (* If the continuation is absent, we are in dead code so the variable should
-    have type nothing. *)
+       have type nothing. *)
     Some (Typing_make_type.nothing Reason.Rnone, Pos.none, 0)
   | Some ctx ->
     let lcl = LID.Map.find_opt x ctx.LEnvC.local_types in
@@ -1091,6 +1269,7 @@ let set_local_expr_id env x new_eid =
       match LID.Map.find_opt x next_cont.LEnvC.local_types with
       | Some (type_, pos, eid)
         when not (Typing_local_types.equal_expression_id eid new_eid) ->
+        if LID.is_immutable eid then Errors.immutable_local pos;
         let local = (type_, pos, new_eid) in
         let per_cont_env = LEnvC.add_to_cont C.Next x local per_cont_env in
         let env = { env with lenv = { env.lenv with per_cont_env } } in
@@ -1184,8 +1363,8 @@ module FakeMembers = struct
 
   let is_valid env obj member_name =
     match obj with
-    | (_, This)
-    | (_, Lvar _) ->
+    | (_, _, This)
+    | (_, _, Lvar _) ->
       let fake_members = get_fake_members env in
       let id = Fake.make_id obj member_name in
       Fake.is_valid fake_members id
@@ -1205,8 +1384,8 @@ module FakeMembers = struct
 
   let check_instance_invalid env obj member_name ty =
     match obj with
-    | (_, This)
-    | (_, Lvar _) ->
+    | (_, _, This)
+    | (_, _, Lvar _) ->
       let fake_members = get_fake_members env in
       let fake_id = Fake.make_id obj member_name in
       begin
@@ -1234,24 +1413,24 @@ module FakeMembers = struct
 end
 
 (*****************************************************************************)
-(* Sets up/cleans up the environment when typing an anonymous function. *)
+(* Sets up/cleans up the environment when typing anonymous function / lambda *)
 (*****************************************************************************)
 
-let anon anon_lenv env f =
-  (* Setting up the environment. *)
+let closure env f =
+  (* Remember parts of the environment specific to the enclosing function
+     that will be overwritten when typing a lambda *)
   let old_lenv = env.lenv in
   let old_return = get_return env in
   let old_params = get_params env in
   let outer_fun_kind = get_fn_kind env in
-  let env = { env with lenv = anon_lenv } in
   (* Typing *)
-  let (env, tfun, result) = f env in
-  (* Cleaning up the environment. *)
+  let (env, ret) = f env in
+  (* Restore the environment fields that were clobbered *)
   let env = { env with lenv = old_lenv } in
   let env = set_params env old_params in
   let env = set_return env old_return in
   let env = set_fn_kind env outer_fun_kind in
-  (env, tfun, result)
+  (env, ret)
 
 let in_try env f =
   let old_in_try = env.in_try in
@@ -1270,12 +1449,10 @@ let save local_tpenv env =
   {
     Tast.tcopt = get_tcopt env;
     Tast.inference_env = env.inference_env;
-    Tast.tpenv = TPEnv.union local_tpenv env.global_tpenv;
-    Tast.reactivity = env_reactivity env;
-    Tast.local_mutability = get_env_mutability env;
-    Tast.fun_mutable = function_is_mutable env;
+    Tast.tpenv = TPEnv.union local_tpenv env.tpenv;
     Tast.condition_types = env.genv.condition_types;
     Tast.pessimize = env.pessimize;
+    Tast.fun_tast_info = env.fun_tast_info;
   }
 
 (* Compute the type variables appearing covariantly (positively)
@@ -1311,7 +1488,8 @@ and get_tyvars_i env (ty : internal_type) =
     | Terr
     | Tdynamic
     | Tobject
-    | Tprim _ ->
+    | Tprim _
+    | Tneg _ ->
       (env, ISet.empty, ISet.empty)
     | Toption ty -> get_tyvars env ty
     | Ttuple tyl
@@ -1319,7 +1497,7 @@ and get_tyvars_i env (ty : internal_type) =
     | Tintersection tyl ->
       List.fold_left tyl ~init:(env, ISet.empty, ISet.empty) ~f:get_tyvars_union
     | Tshape (_, m) ->
-      Nast.ShapeMap.fold
+      TShapeMap.fold
         (fun _ { sft_ty; _ } res -> get_tyvars_union res sft_ty)
         m
         (env, ISet.empty, ISet.empty)
@@ -1347,15 +1525,17 @@ and get_tyvars_i env (ty : internal_type) =
       else begin
         match get_typedef env name with
         | Some { td_tparams; _ } ->
-          let variancel = List.map td_tparams (fun t -> t.tp_variance) in
+          let variancel = List.map td_tparams ~f:(fun t -> t.tp_variance) in
           get_tyvars_variance_list (env, ISet.empty, ISet.empty) variancel tyl
         | None -> (env, ISet.empty, ISet.empty)
       end
     | Tdependent (_, ty) -> get_tyvars env ty
     | Tgeneric (_, tyl) ->
       (* TODO(T69931993) Once implementing variance support for HK types, query
-        tyvar env here for list of variances *)
-      let variancel = List.replicate (List.length tyl) Ast_defs.Invariant in
+         tyvar env here for list of variances *)
+      let variancel =
+        List.replicate ~num:(List.length tyl) Ast_defs.Invariant
+      in
       get_tyvars_variance_list (env, ISet.empty, ISet.empty) variancel tyl
     | Tclass ((_, cid), _, tyl) ->
       if List.is_empty tyl then
@@ -1363,7 +1543,9 @@ and get_tyvars_i env (ty : internal_type) =
       else begin
         match get_class env cid with
         | Some cls ->
-          let variancel = List.map (Cls.tparams cls) (fun t -> t.tp_variance) in
+          let variancel =
+            List.map (Cls.tparams cls) ~f:(fun t -> t.tp_variance)
+          in
           get_tyvars_variance_list (env, ISet.empty, ISet.empty) variancel tyl
         | None -> (env, ISet.empty, ISet.empty)
       end
@@ -1372,14 +1554,13 @@ and get_tyvars_i env (ty : internal_type) =
       let (env, positive1, negative1) = get_tyvars env ty1 in
       let (env, positive2, negative2) = get_tyvars env ty2 in
       (env, ISet.union positive1 positive2, ISet.union negative1 negative2)
+    | Tvec_or_dict (ty1, ty2)
     | Tvarray_or_darray (ty1, ty2) ->
       let (env, positive1, negative1) = get_tyvars env ty1 in
       let (env, positive2, negative2) = get_tyvars env ty2 in
       (env, ISet.union positive1 positive2, ISet.union negative1 negative2)
-    | Tpu (base, _) -> get_tyvars env base
-    | Tpu_type_access (_, _)
-    | Tunapplied_alias _ ->
-      (env, ISet.empty, ISet.empty))
+    | Tunapplied_alias _ -> (env, ISet.empty, ISet.empty)
+    | Taccess (ty, _ids) -> get_tyvars env ty)
   | ConstraintType ty ->
     (match deref_constraint_type ty with
     | (_, Tdestructure { d_required; d_optional; d_variadic; d_kind = _ }) ->

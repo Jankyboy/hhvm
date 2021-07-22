@@ -30,7 +30,6 @@
 open Hh_prelude
 open SearchServiceRunner
 open ServerEnv
-open ServerInitCommon
 open ServerInitTypes
 module SLC = ServerLocalConfig
 
@@ -39,7 +38,7 @@ let type_decl
     (env : ServerEnv.env)
     (fast : Naming_table.fast)
     (t : float) : ServerEnv.env * float =
-  ServerProgress.send_progress_to_monitor "evaluating type declarations";
+  ServerProgress.send_progress "evaluating type declarations";
   let bucket_size = genv.local_config.SLC.type_decl_bucket_size in
   let ctx = Provider_utils.ctx_from_server_env env in
   let errorl = Decl_service.go ~bucket_size ctx genv.workers fast in
@@ -51,15 +50,20 @@ let type_decl
   let env = { env with errorl = Errors.merge errorl env.errorl } in
   (env, t)
 
-let init (genv : ServerEnv.genv) (lazy_level : lazy_level) (env : ServerEnv.env)
-    : ServerEnv.env * float =
+let init
+    (genv : ServerEnv.genv)
+    (lazy_level : lazy_level)
+    (env : ServerEnv.env)
+    (profiling : CgroupProfiler.Profiling.t) : ServerEnv.env * float =
   let init_telemetry =
     Telemetry.create ()
     |> Telemetry.float_ ~key:"start_time" ~value:(Unix.gettimeofday ())
     |> Telemetry.string_ ~key:"reason" ~value:"eager_init"
   in
   (* We don't support a saved state for eager init. *)
-  let (get_next, t) = indexing genv in
+  let (get_next, t) =
+    ServerInitCommon.indexing ~profile_label:"eager.init.indexing" genv
+  in
   let lazy_parse =
     match lazy_level with
     | Parse -> true
@@ -67,12 +71,34 @@ let init (genv : ServerEnv.genv) (lazy_level : lazy_level) (env : ServerEnv.env)
   in
   (* Parsing entire repo, too many files to trace *)
   let trace = false in
-  let (env, t) = parsing ~lazy_parse genv env ~get_next t ~trace in
+  let (env, t) =
+    ServerInitCommon.parsing
+      ~lazy_parse
+      genv
+      env
+      ~get_next
+      t
+      ~trace
+      ~profile_label:"eager.init.parsing"
+      ~profiling
+  in
   if not (ServerArgs.check_mode genv.options) then
-    SearchServiceRunner.update_fileinfo_map env.naming_table SearchUtils.Init;
-
-  let t = update_files genv env.naming_table t in
-  let (env, t) = naming env t in
+    SearchServiceRunner.update_fileinfo_map
+      env.naming_table
+      ~source:SearchUtils.Init;
+  let ctx = Provider_utils.ctx_from_server_env env in
+  let t =
+    ServerInitCommon.update_files
+      genv
+      env.naming_table
+      ctx
+      t
+      ~profile_label:"eager.init.update"
+      ~profiling
+  in
+  let (env, t) =
+    ServerInitCommon.naming env t ~profile_label:"eager.init.naming" ~profiling
+  in
   let fast = Naming_table.to_fast env.naming_table in
   let failed_parsing = Errors.get_failed_files env.errorl Errors.Parsing in
   let fast =
@@ -88,4 +114,11 @@ let init (genv : ServerEnv.genv) (lazy_level : lazy_level) (env : ServerEnv.env)
   in
   (* Type-checking everything *)
   SharedMem.cleanup_sqlite ();
-  type_check genv env (Relative_path.Map.keys fast) init_telemetry t
+  ServerInitCommon.type_check
+    genv
+    env
+    (Relative_path.Map.keys fast)
+    init_telemetry
+    t
+    ~profile_label:"eager.init.type_check"
+    ~profiling

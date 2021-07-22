@@ -1,57 +1,63 @@
+=== IFC analysis results for basics.php
 Analyzing \binop:
 * pc: pc
 * This: None
 * Return: <ret>
-* Exception: \Exception<\Exception, lump>
+* Exception: \Exception<exn, exn_lump>
 * Params:
-  lvars: { $x -> <$x>; $y -> <$y> }
+  { $x -> <$x>; $y -> <$y> }
 * Final environment:
   Deps: {}
+  Constraints:
+    [5:3-17] $x < arith, lit < arith, arith < ret
   Locals:
-    lvars: { $x -> <$x>; $y -> <$y> }
-Constraints:
-  $x < ret
+    { $x -> <$x>; $y -> <$y> }
 
 Analyzing \assign0:
 * pc: pc
 * This: None
 * Return: <ret>
-* Exception: \Exception<\Exception, lump>
+* Exception: \Exception<exn, exn_lump>
 * Params:
-  lvars: { $arg -> <$arg> }
+  { $arg -> <$arg> }
 * Final environment:
   Deps: {}
+  Constraints:
+    [10:3-13] $arg < $x
+    [11:3-11] lit < $x'1
+    [12:3-13] $x'1 < ret
   Locals:
-    lvars: { $arg -> <$arg>; $x -> <$x'1> }
-Constraints:
-  [$arg < $x, PUBLIC < $x'1, $x'1 < ret]
+    { $arg -> <$arg>; $x -> <$x'1> }
 
 Analyzing \assign1:
 * pc: pc
 * This: None
 * Return: <ret>
-* Exception: \Exception<\Exception, lump>
+* Exception: \Exception<exn, exn_lump>
 * Params:
-  lvars: { $arg -> <$arg> }
+  { $arg -> <$arg> }
 * Final environment:
   Deps: {}
+  Constraints:
+    [17:3-13] $arg < $x
+    [18:3-16] $x < arith, lit < arith, arith < $x'1
+    [19:3-13] $x'1 < ret
   Locals:
-    lvars: { $arg -> <$arg>; $x -> <$x'1> }
-Constraints:
-  [$arg < $x, $x < $x'1, $x'1 < ret]
+    { $arg -> <$arg>; $x -> <$x'1> }
 
 Analyzing \condition:
 * pc: pc
 * This: None
 * Return: <ret>
-* Exception: \Exception<\Exception, lump>
+* Exception: \Exception<exn, exn_lump>
 * Params:
-  lvars: { $a0 -> <$a0>; $a1 -> <$a1>; $a2 -> <$a2> }
+  { $a0 -> <$a0>; $a1 -> <$a1>; $a2 -> <$a2> }
 * Final environment:
   Deps: {}
+  Constraints:
+    [24:7-14] $a2 < cmp, lit < cmp
+    [25:5-14] cmp < $x, $a0 < $x
+    [27:5-14] cmp < $x'1, $a1 < $x'1
+    [29:3-13] $x < $x'2, $x'1 < $x'2, $x'2 < ret
   Locals:
-    lvars: { $a0 -> <$a0>; $a1 -> <$a1>; $a2 -> <$a2>; $x -> <$x'2> }
-Constraints:
-  [$a0 < $x, $a2 < $x, $a1 < $x'1, $a2 < $x'1, $x < $x'2, $x'1 < $x'2,
-   $x'2 < ret]
-
+    { $a0 -> <$a0>; $a1 -> <$a1>; $a2 -> <$a2>; $x -> <$x'2> }

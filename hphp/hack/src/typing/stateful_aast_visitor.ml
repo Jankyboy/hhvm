@@ -18,7 +18,7 @@ class type virtual ['env] nast_visitor_with_state =
   object
     method virtual initial_state : 'env
 
-    method at_fun_ : 'env -> Nast.fun_ -> 'env
+    method at_fun_def : 'env -> Nast.fun_def -> 'env
 
     method at_class_ : 'env -> Nast.class_ -> 'env
 
@@ -37,12 +37,6 @@ class type virtual ['env] nast_visitor_with_state =
     method at_gconst : 'env -> Nast.gconst -> 'env
 
     method at_file_attribute : 'env -> Nast.file_attribute -> 'env
-
-    method at_pu_enum : 'env -> Nast.pu_enum -> 'env
-
-    method at_pu_member : 'env -> Nast.pu_member -> 'env
-
-    method at_pu_case_value : 'env -> Nast.pu_case_value -> 'env
 
     method at_shape_field_name : 'env -> Nast.shape_field_name -> 'env
 
@@ -68,7 +62,7 @@ class virtual ['env] default_nast_visitor_with_state :
   object
     method virtual initial_state : 'env
 
-    method at_fun_ env _ = env
+    method at_fun_def env _ = env
 
     method at_class_ env _ = env
 
@@ -87,12 +81,6 @@ class virtual ['env] default_nast_visitor_with_state :
     method at_gconst env _ = env
 
     method at_file_attribute env _ = env
-
-    method at_pu_enum env _ = env
-
-    method at_pu_member env _ = env
-
-    method at_pu_case_value env _ = env
 
     method at_shape_field_name env _ = env
 
@@ -122,7 +110,7 @@ let combine_visitors =
     object
       method initial_state = (visitor1#initial_state, visitor2#initial_state)
 
-      method at_fun_ = visit visitor1#at_fun_ visitor2#at_fun_
+      method at_fun_def = visit visitor1#at_fun_def visitor2#at_fun_def
 
       method at_class_ = visit visitor1#at_class_ visitor2#at_class_
 
@@ -142,13 +130,6 @@ let combine_visitors =
 
       method at_file_attribute =
         visit visitor1#at_file_attribute visitor2#at_file_attribute
-
-      method at_pu_enum = visit visitor1#at_pu_enum visitor2#at_pu_enum
-
-      method at_pu_member = visit visitor1#at_pu_member visitor2#at_pu_member
-
-      method at_pu_case_value =
-        visit visitor1#at_pu_case_value visitor2#at_pu_case_value
 
       method at_shape_field_name =
         visit visitor1#at_shape_field_name visitor2#at_shape_field_name
@@ -181,9 +162,9 @@ let checker (visitor : 'env nast_visitor_with_state) =
 
     method initial_state = visitor#initial_state
 
-    method! on_fun_ env f =
-      let env = visitor#at_fun_ env f in
-      super#on_fun_ env f
+    method! on_fun_def env f =
+      let env = visitor#at_fun_def env f in
+      super#on_fun_def env f
 
     method! on_class_ env c =
       let env = visitor#at_class_ env c in
@@ -220,18 +201,6 @@ let checker (visitor : 'env nast_visitor_with_state) =
     method! on_file_attribute env fa =
       let env = visitor#at_file_attribute env fa in
       super#on_file_attribute env fa
-
-    method! on_pu_enum env pu_enum =
-      let env = visitor#at_pu_enum env pu_enum in
-      super#on_pu_enum env pu_enum
-
-    method! on_pu_member env pu_member =
-      let env = visitor#at_pu_member env pu_member in
-      super#on_pu_member env pu_member
-
-    method! on_pu_case_value env pu_case_value =
-      let env = visitor#at_pu_case_value env pu_case_value in
-      super#on_pu_case_value env pu_case_value
 
     method! on_shape_field_name env sfn =
       let env = visitor#at_shape_field_name env sfn in

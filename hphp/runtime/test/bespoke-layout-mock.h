@@ -18,6 +18,7 @@
 #define HPHP_RUNTIME_TEST_BESPOKE_LAYOUT_MOCK_H_
 
 #include "hphp/runtime/base/bespoke/layout.h"
+#include "hphp/runtime/vm/jit/irgen.h"
 
 #include <folly/portability/GMock.h>
 
@@ -25,67 +26,57 @@ namespace HPHP{
 namespace bespoke {
 namespace testing {
 
-struct MockLayout : Layout {
-  MOCK_CONST_METHOD0(describe, std::string());
+std::atomic<uint16_t> s_num_abstract_layouts;
+std::atomic<uint16_t> s_num_concrete_layouts;
 
-  MOCK_CONST_METHOD1(heapSize, size_t(const ArrayData* ad));
-  MOCK_CONST_METHOD1(align, size_t(const ArrayData* ad));
-  MOCK_CONST_METHOD2(scan, void(const ArrayData* ad, type_scan::Scanner& scan));
-  MOCK_CONST_METHOD2(escalateToVanilla, ArrayData*(const ArrayData*, const char* reason));
+struct MockLayout : public Layout {
+  MockLayout(const std::string& description, LayoutSet&& parents,
+             LayoutIndex idx, bool concrete)
+    : Layout(idx, description, std::move(parents), nullptr)
+    , m_concrete(concrete)
+  {}
 
-  MOCK_CONST_METHOD2(convertToUncounted, void(ArrayData*, DataWalker::PointerMap* seen));
-  MOCK_CONST_METHOD1(releaseUncounted, void(ArrayData*));
-  MOCK_CONST_METHOD1(release, void(ArrayData*));
+  bool isConcrete() const override { return m_concrete; }
 
-  MOCK_CONST_METHOD1(isVectorData, bool(const ArrayData*));
-  MOCK_CONST_METHOD2(getInt, TypedValue(const ArrayData*, int64_t));
-  MOCK_CONST_METHOD2(getStr, TypedValue(const ArrayData*, const StringData*));
-  MOCK_CONST_METHOD2(getKey, TypedValue(const ArrayData*, ssize_t pos));
-  MOCK_CONST_METHOD2(getVal, TypedValue(const ArrayData*, ssize_t pos));
-  MOCK_CONST_METHOD2(getIntPos, ssize_t(const ArrayData*, int64_t));
-  MOCK_CONST_METHOD2(getStrPos, ssize_t(const ArrayData*, const StringData*));
-
-  MOCK_CONST_METHOD2(lvalInt, arr_lval(ArrayData* ad, int64_t k));
-  MOCK_CONST_METHOD2(lvalStr, arr_lval(ArrayData* ad, StringData* k));
-  MOCK_CONST_METHOD3(setInt, ArrayData*(ArrayData*, int64_t k, TypedValue v));
-  MOCK_CONST_METHOD3(setStr, ArrayData*(ArrayData*, StringData* k, TypedValue v));
-  MOCK_CONST_METHOD2(removeInt, ArrayData*(ArrayData*, int64_t));
-  MOCK_CONST_METHOD2(removeStr, ArrayData*(ArrayData*, const StringData*));
-
-  MOCK_CONST_METHOD1(iterBegin, ssize_t(const ArrayData*));
-  MOCK_CONST_METHOD1(iterLast, ssize_t(const ArrayData*));
-  MOCK_CONST_METHOD1(iterEnd, ssize_t(const ArrayData*));
-  MOCK_CONST_METHOD2(iterAdvance, ssize_t(const ArrayData*, ssize_t));
-  MOCK_CONST_METHOD2(iterRewind, ssize_t(const ArrayData*, ssize_t));
-
-  MOCK_CONST_METHOD2(append, ArrayData*(ArrayData*, TypedValue v));
-  MOCK_CONST_METHOD2(prepend, ArrayData*(ArrayData*, TypedValue v));
-  MOCK_CONST_METHOD2(merge, ArrayData*(ArrayData*, const ArrayData*));
-  MOCK_CONST_METHOD2(pop, ArrayData*(ArrayData*, Variant&));
-  MOCK_CONST_METHOD2(dequeue, ArrayData*(ArrayData*, Variant&));
-  MOCK_CONST_METHOD1(renumber, ArrayData*(ArrayData*));
-
-  MOCK_CONST_METHOD1(copy, ArrayData*(const ArrayData*));
-  MOCK_CONST_METHOD2(toVArray, ArrayData*(ArrayData*, bool copy));
-  MOCK_CONST_METHOD2(toDArray, ArrayData*(ArrayData*, bool copy));
-  MOCK_CONST_METHOD2(toVec, ArrayData*(ArrayData*, bool copy));
-  MOCK_CONST_METHOD2(toDict, ArrayData*(ArrayData*, bool copy));
-  MOCK_CONST_METHOD2(toKeyset, ArrayData*(ArrayData*, bool copy));
-
-  MOCK_CONST_METHOD2(setLegacyArrayInPlace, void(ArrayData*, bool legacy));
+private:
+  bool m_concrete;
 };
 
-inline Layout* makeDummyLayout(const std::string& name) {
-  auto ret = new MockLayout();
-  using ::testing::Return;
+inline Layout* makeDummyLayout(const std::string& name,
+                               std::vector<jit::ArrayLayout> parents,
+                               bool concrete = true) {
   using ::testing::Mock;
 
-  EXPECT_CALL(*ret, describe())
-    .WillRepeatedly(Return(name));
+  Layout::LayoutSet indices;
+  std::transform(
+    parents.cbegin(), parents.cend(),
+    std::inserter(indices, indices.end()),
+    [&](jit::ArrayLayout parent) {
+      always_assert(parent.bespoke());
+      return *parent.layoutIndex();
+    }
+  );
 
+  // In order to support type tests, we use a 1-hot encoding to encode leaf
+  // concrete layout indices. Abstract layout indices aren't constrained.
+  auto const index = [&]() -> LayoutIndex {
+    auto constexpr base = kLoggingLayoutByte << 8;
+    if (concrete) {
+      auto const index = s_num_concrete_layouts++;
+      return {safe_cast<uint16_t>(base + (1 << index))};
+    }
+    auto const index = s_num_abstract_layouts++;
+    return {safe_cast<uint16_t>(base + 0xff - index)};
+  }();
+
+  auto const ret = new MockLayout(name, std::move(indices), index, concrete);
   Mock::AllowLeak(ret);
-
   return ret;
+}
+
+inline Layout* makeDummyAbstractLayout(const std::string& name,
+                                       std::vector<jit::ArrayLayout> parents) {
+  return makeDummyLayout(name, parents, false);
 }
 
 

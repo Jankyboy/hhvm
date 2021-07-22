@@ -9,17 +9,22 @@
 module Types = struct
   type saved_state_target_info = {
     changes: Relative_path.t list;
+        [@printer Utils.pp_large_list Relative_path.pp]
     naming_changes: Relative_path.t list;
+        [@printer Utils.pp_large_list Relative_path.pp]
     corresponding_base_revision: string;
     deptable_fn: string;
+    deptable_is_64bit: bool;
     prechecked_changes: Relative_path.t list;
-    saved_state_fn: string;
+        [@printer Utils.pp_large_list Relative_path.pp]
+    naming_table_path: string;
   }
+  [@@deriving show]
 
   (* The idea of a file range necessarily means that the hypothetical list
-    of them is sorted in some way. It is valid to have None as either endpoint
-    because that simply makes it open-ended. For example, a range of files
-    { None - "/some/path" } includes all files with path less than /some/path *)
+     of them is sorted in some way. It is valid to have None as either endpoint
+     because that simply makes it open-ended. For example, a range of files
+     { None - "/some/path" } includes all files with path less than /some/path *)
   type files_to_check_range = {
     from_prefix_incl: Relative_path.t option;
     to_prefix_excl: Relative_path.t option;
@@ -52,4 +57,10 @@ module type S = sig
 
   val get_saved_state_spec :
     string option -> (saved_state_target_info option, string) result
+
+  val legacy_hot_decls_path_for_target_info : saved_state_target_info -> string
+
+  val shallow_hot_decls_path_for_target_info : saved_state_target_info -> string
+
+  val errors_path_for_target_info : saved_state_target_info -> string
 end

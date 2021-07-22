@@ -1,5 +1,4 @@
-#ifndef incl_HPHP_CURL_RESOURCE_H
-#define incl_HPHP_CURL_RESOURCE_H
+#pragma once
 
 #include "hphp/runtime/base/file.h"
 #include "hphp/runtime/base/req-optional.h"
@@ -110,6 +109,8 @@ struct CurlResource : SweepableResourceData {
   bool setStringListOption(long option, const Variant& value);
   static bool isNonCurlOption(long option);
   bool setNonCurlOption(long option, const Variant& value);
+  static bool isBlobOption(long option);
+  bool setBlobOption(long option, const String& value);
 
   void handle_exception();
   static size_t curl_read(char *data, size_t size, size_t nmemb, void *ctx);
@@ -154,4 +155,3 @@ struct CurlResource : SweepableResourceData {
 
 /////////////////////////////////////////////////////////////////////////////
 }
-#endif

@@ -53,15 +53,14 @@ let test_ImmQueue () =
     try
       ignore (ImmQueue.pop_unsafe queue);
       false
-    with ImmQueue.Empty -> true
+    with
+    | ImmQueue.Empty -> true
   in
   if not did_throw then failwith "expected an exception";
   let (x, _) = ImmQueue.pop queue in
   match x with
   | Some _ -> failwith "expected none"
   | None ->
-    ();
-
     let queue =
       ImmQueue.push (ImmQueue.push (ImmQueue.push ImmQueue.empty 1) 2) 3
     in

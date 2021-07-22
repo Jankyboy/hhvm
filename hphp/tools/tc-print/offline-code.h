@@ -20,8 +20,6 @@
 #include <string>
 #include <unordered_map>
 
-#include <folly/Optional.h>
-
 #include "hphp/runtime/vm/unit.h"
 #include "hphp/runtime/vm/jit/translator.h"
 
@@ -100,10 +98,15 @@ struct TCRangeInfo {
       return folly::sformat("{}", static_cast<void*>(x));
     };
 
+    auto const offset = [&]() -> folly::dynamic {
+      if (!sk) return dynamic();
+      return sk->printableOffset();
+    }();
+
     // TODO(T52857125) - maybe also include func and unit info?
     dynamic info = dynamic::object("start", formatTCA(start))
                                   ("end", formatTCA(end))
-                                  ("bc", bc ? *bc : dynamic())
+                                  ("bc", offset)
                                   ("sha1", sha1 ? sha1->toString() : dynamic())
                                   ("instrStr", instrStr ? *instrStr : dynamic())
                                   ("lineNum", lineNum ? *lineNum : dynamic())
@@ -127,9 +130,9 @@ struct TCRangeInfo {
    */
   std::pair<TCRangeInfo, TCRangeInfo> split(const TCA pos) const {
     always_assert(start <= pos && pos <= end);
-    auto const firstRange = TCRangeInfo{start, pos, bc, sha1, func, instrStr,
+    auto const firstRange = TCRangeInfo{start, pos, sk, sha1, func, instrStr,
                                         lineNum, unit, annotation};
-    auto const secondRange = TCRangeInfo{pos, end, bc, sha1, func, instrStr,
+    auto const secondRange = TCRangeInfo{pos, end, sk, sha1, func, instrStr,
                                          lineNum, unit, annotation};
     return std::pair<TCRangeInfo, TCRangeInfo>(firstRange, secondRange);
   }
@@ -137,15 +140,15 @@ struct TCRangeInfo {
   TCA start;
   TCA end;
 
-  folly::Optional<Offset> bc;
-  folly::Optional<SHA1> sha1;
+  Optional<SrcKey> sk;
+  Optional<SHA1> sha1;
 
-  folly::Optional<const Func*> func;
-  folly::Optional<std::string> instrStr;
-  folly::Optional<int> lineNum;
-  folly::Optional<const Unit*> unit;
+  Optional<const Func*> func;
+  Optional<std::string> instrStr;
+  Optional<int> lineNum;
+  Optional<const Unit*> unit;
 
-  folly::Optional<printir::TCRange> annotation;
+  Optional<printir::TCRange> annotation;
   std::vector<TCDisasmInfo> disasm;
 };
 
@@ -210,7 +213,7 @@ struct OfflineCode {
                            const std::vector<TransBCMapping>& bcMap,
                            const PerfEventsMap<TCA>& perfEvents,
                            bool hostOpcodes,
-                           folly::Optional<printir::Unit> = folly::none);
+                           Optional<printir::Unit> = std::nullopt);
 
   // Returns the fall-thru successor from 'a', if any
   TCA getTransJmpTargets(const TransRec *transRec,

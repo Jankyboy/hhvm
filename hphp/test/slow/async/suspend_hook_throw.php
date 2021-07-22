@@ -33,7 +33,7 @@ async function c() {
 function main_suspend_hook_throw() {
 $counter = 0;
 
-fb_setprofile('throw_one_time');
+fb_setprofile(throw_one_time<>);
 
 AsyncSuspendHookThrow::$z = a();
 $l = d();
@@ -44,6 +44,6 @@ HH\Asio\join($k);
 }
 
 abstract final class AsyncSuspendHookThrow {
-  public static $counter;
+  public static $counter = 0;
   public static $z;
 }

@@ -43,8 +43,6 @@ val load_state :
   ?local_changes:string list ->
   ?load_hhi_files:bool ->
   ?use_precheked_files:bool ->
-  ?disable_conservative_redecl:bool ->
-  ?predeclare_ide_deps:bool ->
   ?load_decls_from_saved_state:bool ->
   ?enable_naming_table_fallback:bool ->
   ?custom_config:ServerConfig.t ->
@@ -63,7 +61,8 @@ val run_loop_once :
 
 (* wrappers around run_loop_once for most common operations *)
 
-val subscribe_diagnostic : ?id:int -> ServerEnv.env -> ServerEnv.env
+val subscribe_diagnostic :
+  ?id:int -> ?error_limit:int -> ServerEnv.env -> ServerEnv.env
 
 val open_file : ServerEnv.env -> ?contents:string -> string -> ServerEnv.env
 
@@ -108,17 +107,19 @@ val status :
   ServerEnv.env ->
   ServerEnv.env * (ServerCommandTypes.Server_status.t, 'a) loop_outputs
 
-val full_check : ServerEnv.env -> ServerEnv.env * ('a, unit) loop_outputs
+val full_check_status : ServerEnv.env -> ServerEnv.env * ('a, unit) loop_outputs
 
 val start_initial_full_check : ServerEnv.env -> ServerEnv.env * int
 
 val prepend_root : string -> string
 
-val errors_to_string : Pos.absolute Errors.error_ list -> string
+val errors_to_string : Errors.finalized_error list -> string
+
+val print_telemetries : ServerEnv.env -> unit
 
 (* Helpers for asserting things *)
 
-val fail : string -> unit
+val fail : string -> 'noreturn
 
 val assertEqual : string -> string -> unit
 
@@ -142,7 +143,7 @@ val assert_diagnostics : ('a, 'b) loop_outputs -> string -> unit
 val assert_diagnostics_in : ('a, 'b) loop_outputs -> string -> string -> unit
 
 val get_diagnostics :
-  ('a, 'b) loop_outputs -> Pos.absolute Errors.error_ list SMap.t
+  ('a, 'b) loop_outputs -> Errors.finalized_error list SMap.t
 
 val assert_coverage_levels :
   ('a, Coverage_level_defs.result) loop_outputs -> string list -> unit
@@ -151,6 +152,9 @@ val assert_coverage_counts :
   ('a, ServerCoverageMetricTypes.result) loop_outputs -> string list -> unit
 
 val assert_autocomplete :
+  ('a, AutocompleteTypes.result) loop_outputs -> string list -> unit
+
+val assert_autocomplete_does_not_contain :
   ('a, AutocompleteTypes.result) loop_outputs -> string list -> unit
 
 val assert_ide_autocomplete :

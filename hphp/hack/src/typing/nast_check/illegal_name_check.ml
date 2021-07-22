@@ -37,7 +37,7 @@ let handler =
           error_if_is_named_class tc.c_tconst_name);
       List.iter c.c_consts ~f:(fun cc -> error_if_is_named_class cc.cc_id)
 
-    method! at_expr env (_, e) =
+    method! at_expr env (_, _, e) =
       match e with
       | Id (pos, const) ->
         let ck = env.class_kind in
@@ -56,7 +56,7 @@ let handler =
                   (Some Ast_defs.Ctrait))
         then
           Errors.illegal_TRAIT pos
-      | Class_const ((_, CIexpr (_, Id (_, "parent"))), (_, m_name))
+      | Class_const ((_, _, CIexpr (_, _, Id (_, "parent"))), (_, m_name))
         when Option.equal String.equal env.function_name (Some m_name) ->
         ()
       | Class_const (_, ((_, m_name) as mid))
@@ -64,7 +64,8 @@ let handler =
              && not (Option.equal String.equal env.function_name (Some m_name))
         ->
         Errors.magic mid
-      | Obj_get (_, (_, Id s), _) when is_magic s -> Errors.magic s
+      | Obj_get (_, (_, _, Id s), _, _) when is_magic s -> Errors.magic s
+      | Method_caller (_, meth) when is_magic meth -> Errors.magic meth
       | _ -> ()
 
     method! at_fun_ _ f =
@@ -83,4 +84,19 @@ let handler =
       match env.class_name with
       | Some _ -> ()
       | None -> assert false
+
+    method! at_contexts env (_pos, hl) =
+      if get_tcopt env |> TypecheckerOptions.strict_contexts then
+        hl
+        |> List.iter ~f:(function
+               | (p, Happly ((_, id), _)) ->
+                 let (ns, _) = Utils.split_ns_from_name id in
+                 if not @@ String.is_prefix ~prefix:SN.Coeffects.contexts ns
+                 then
+                   Errors.illegal_context p id
+               | (p, Hprim t) -> Errors.illegal_context p (Nast.show_tprim t)
+               | (p, Habstr (name, _)) ->
+                 (* TODO(coeffects) make this a parser error *)
+                 Errors.illegal_context p ("generic " ^ name)
+               | _ -> ())
   end

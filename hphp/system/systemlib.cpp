@@ -17,6 +17,7 @@
 #include "hphp/system/systemlib.h"
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/builtin-functions.h"
+#include "hphp/runtime/base/coeffects-config.h"
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/base/init-fini-node.h"
 #include "hphp/runtime/base/object-data.h"
@@ -26,7 +27,6 @@
 #include "hphp/runtime/base/types.h"
 #include "hphp/runtime/vm/class.h"
 #include "hphp/runtime/vm/unit.h"
-#include "hphp/runtime/vm/rx.h"
 
 #include <vector>
 
@@ -120,6 +120,8 @@ Class* s_AssertionErrorClass;
 Class* s_DivisionByZeroErrorClass;
 Class* s_ParseErrorClass;
 Class* s_TypeErrorClass;
+Class* s_MethCallerHelperClass;
+Class* s_DynMethCallerHelperClass;
 
 Object AllocStdClassObject() {
   return Object{s_stdclassClass};
@@ -190,6 +192,15 @@ Object AllocDivisionByZeroExceptionObject() {
                                      Strings::DIVISION_BY_ZERO);
 }
 
+Object AllocInvalidForeachArgumentExceptionObject() {
+  return createAndConstructThrowable(s_InvalidForeachArgumentExceptionClass,
+                                     Strings::INVALID_ARGUMENT_FOREACH);
+}
+
+Object AllocUndefinedPropertyExceptionObject(const Variant& message) {
+  return createAndConstructThrowable(s_UndefinedPropertyExceptionClass, message);
+}
+
 Object AllocSoapFaultObject(const Variant& code,
                                  const Variant& message,
                                  const Variant& actor /* = uninit_variant */,
@@ -198,23 +209,31 @@ Object AllocSoapFaultObject(const Variant& code,
                                  const Variant& header /* = uninit_variant */) {
   return createAndConstruct(
     s_SoapFaultClass,
-    make_varray(code, message, actor, detail, name, header)
+    make_vec_array(code, message, actor, detail, name, header)
   );
 }
 
 Object AllocLazyKVZipIterableObject(const Variant& mp) {
   return createAndConstruct(s_LazyKVZipIterableClass,
-                            make_varray(mp));
+                            make_vec_array(mp));
 }
 
 Object AllocLazyIterableViewObject(const Variant& iterable) {
   return createAndConstruct(s_LazyIterableViewClass,
-                            make_varray(iterable));
+                            make_vec_array(iterable));
 }
 
 Object AllocLazyKeyedIterableViewObject(const Variant& iterable) {
   return createAndConstruct(s_LazyKeyedIterableViewClass,
-                            make_varray(iterable));
+                            make_vec_array(iterable));
+}
+
+Object AllocUndefinedVariableExceptionObject(const Variant& message) {
+  return createAndConstructThrowable(s_UndefinedVariableExceptionClass, message);
+}
+
+Object AllocTypecastExceptionObject(const Variant& message) {
+  return createAndConstructThrowable(s_TypecastExceptionClass, message);
 }
 
 void throwExceptionObject(const Variant& message) {
@@ -288,6 +307,22 @@ void throwSoapFaultObject(const Variant& code,
                                     name, header)});
 }
 
+void throwInvalidForeachArgumentExceptionObject() {
+  throw_object(AllocInvalidForeachArgumentExceptionObject());
+}
+
+void throwUndefinedPropertyExceptionObject(const Variant& message) {
+  throw_object(AllocUndefinedPropertyExceptionObject(message));
+}
+
+void throwUndefinedVariableExceptionObject(const Variant& message) {
+  throw_object(AllocUndefinedVariableExceptionObject(message));
+}
+
+void throwTypecastExceptionObject(const Variant& message) {
+  throw_object(AllocTypecastExceptionObject(message));
+}
+
 #define ALLOC_OBJECT_STUB(name)                                         \
   Object Alloc##name##Object() {                                        \
     return Object{s_##name##Class};                                     \
@@ -324,10 +359,9 @@ namespace {
 Func* setupNullClsMethod(Func* f, Class* cls, StringData* name) {
   assertx(f && f->isPhpLeafFn());
   auto clone = f->clone(cls, name);
-  clone->setNewFuncId();
   clone->setAttrs(static_cast<Attr>(
-                    AttrPublic | AttrNoInjection | AttrDynamicallyCallable) |
-                    rxMakeAttr(RxLevel::Rx, false));
+                    AttrPublic | AttrNoInjection | AttrDynamicallyCallable));
+  clone->setRequiredCoeffects(RuntimeCoeffects::pure());
   return clone;
 }
 

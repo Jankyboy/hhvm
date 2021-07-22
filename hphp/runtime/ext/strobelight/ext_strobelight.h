@@ -15,10 +15,10 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EXT_STROBELIGHT_H_
-#define incl_HPHP_EXT_STROBELIGHT_H_
+#pragma once
 
 #include "hphp/runtime/ext/extension.h"
+#include "hphp/runtime/ext/xenon/ext_xenon.h"
 
 /*
                         Strobelight
@@ -46,11 +46,10 @@
 
   API ==================================================
 
-  The api for any user consists of 3 pieces
+  The api for any user consists of 2 pieces
 
   1) POSIX signals for triggering signal handlers, and requesting snapshots
-  2) a USDT in the signal handler for the signal mentioned in (1)
-  3) a USDT in event-hooks fired when hhvm is changing it's stack state
+  2) a USDT in event-hooks fired when hhvm is changing it's stack state
 
   1) The signals
 
@@ -77,12 +76,7 @@
       This should have very good time resolution and can be used to
       correlate perf events with HHVM stack traces closely.
 
-  2) The signal USDT (hhvm/hhvm_surprise)
-
-  This USDT passes no arguments and is used simply as a timing
-  mechanism for debugging the latency in hhvm's signal response time
-
-  3) The stack USDT (hhvm/hhvm_stack)
+  2) The stack USDT (hhvm/hhvm_stack)
 
   This USDT provides one argument: a pointer to a fixed-width
   representation of the hhvm stack at the time when the USDT was encountered.
@@ -118,13 +112,14 @@ struct Strobelight final {
   void operator=(const Strobelight&&) = delete;
 
   void init();
-  void log(c_WaitableWaitHandle* wh = nullptr) const;
+  void log(
+      Xenon::SampleType t,
+      c_WaitableWaitHandle* wh = nullptr) const;
   void surpriseAll();
+  static void shutdown();
 
  private:
   Strobelight() noexcept {};
 };
 
 }
-
-#endif // incl_HPHP_EXT_STROBELIGHT_H_

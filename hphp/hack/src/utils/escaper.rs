@@ -89,7 +89,6 @@ pub fn escape_char(c: u8) -> Option<Cow<'static, [u8]>> {
         b'\\' => Some((&b"\\\\"[..]).into()),
         b'"' => Some((&b"\\\""[..]).into()),
         b'$' => None,
-        b'?' => Some((&b"\\?"[..]).into()),
         c if is_lit_printable(c) => None,
         c => {
             let mut r = vec![];
@@ -202,7 +201,6 @@ fn parse_numeric_escape(trim_to_byte: bool, s: &[u8], base: u32) -> Result<u8, I
 pub enum LiteralKind {
     LiteralHeredoc,
     LiteralDoubleQuote,
-    LiteralBacktick,
     LiteralLongString,
 }
 
@@ -288,10 +286,6 @@ fn unescape_literal(
                 b'\\' => output.push(b'\\'),
                 b'?' if literal_kind == LiteralKind::LiteralLongString => output.push(b'\x3f'),
                 b'$' if literal_kind != LiteralKind::LiteralLongString => output.push(b'$'),
-                b'`' if literal_kind != LiteralKind::LiteralLongString => match literal_kind {
-                    LiteralKind::LiteralBacktick => output.push(b'`'),
-                    _ => output.extend_from_slice(b"\\`"),
-                },
                 b'\"' => match literal_kind {
                     LiteralKind::LiteralDoubleQuote | LiteralKind::LiteralLongString => {
                         output.push(b'\"')
@@ -359,20 +353,12 @@ pub fn unescape_double(s: &str) -> Result<BString, InvalidString> {
     unescape_literal_into_string(LiteralKind::LiteralDoubleQuote, s)
 }
 
-pub fn unescape_backtick(s: &str) -> Result<BString, InvalidString> {
-    unescape_literal_into_string(LiteralKind::LiteralBacktick, s)
-}
-
 pub fn unescape_heredoc(s: &str) -> Result<BString, InvalidString> {
     unescape_literal_into_string(LiteralKind::LiteralHeredoc, s)
 }
 
 pub fn unescape_double_in<'a>(s: &str, arena: &'a Bump) -> Result<&'a BStr, InvalidString> {
     unescape_literal_into_arena(LiteralKind::LiteralDoubleQuote, s, arena)
-}
-
-pub fn unescape_backtick_in<'a>(s: &str, arena: &'a Bump) -> Result<&'a BStr, InvalidString> {
-    unescape_literal_into_arena(LiteralKind::LiteralBacktick, s, arena)
 }
 
 pub fn unescape_heredoc_in<'a>(s: &str, arena: &'a Bump) -> Result<&'a BStr, InvalidString> {
@@ -548,7 +534,6 @@ mod tests {
         assert_eq!(unescape_nowdoc("").unwrap(), "");
         assert_eq!(unescape_long_string("").unwrap(), "");
         assert_eq!(unescape_double("").unwrap(), "");
-        assert_eq!(unescape_backtick("").unwrap(), "");
         assert_eq!(unescape_heredoc("").unwrap(), "");
 
         assert_eq!(
@@ -583,10 +568,6 @@ mod tests {
             unescape_double("\\141\\156\\143\\150\\157\\162").unwrap(),
             "anchor"
         );
-        assert_eq!(
-            unescape_backtick("\\a\\b\\n\\r\\t").unwrap(),
-            "\\a\\b\n\r\t".to_string()
-        );
         assert_eq!(unescape_long_string("\\xb1").unwrap(), B(&[177u8]));
 
         let euro = "\u{20AC}"; // as bytes [226, 130, 172]
@@ -594,7 +575,6 @@ mod tests {
             unescape_long_string(euro).unwrap(),
             B(&[226u8, 130u8, 172u8])
         );
-        assert_eq!(unescape_backtick("\\`").unwrap(), "`");
         assert_eq!(unescape_long_string("\\xb1").unwrap(), B(&[177u8]));
 
         let euro = "\u{20AC}"; // as bytes [226, 130, 172]
@@ -631,7 +611,7 @@ mod tests {
         assert_eq!(escape_char_(0), "\\000");
         assert_eq!(escape("house"), "house");
         assert_eq!(escape("\n"), "\\n");
-        assert_eq!(escape("red\n\t\r$?"), "red\\n\\t\\r$\\?");
+        assert_eq!(escape("red\n\t\r$?"), "red\\n\\t\\r$?");
         assert_eq!(is_oct(b'5'), true);
         assert_eq!(is_oct(b'a'), false);
     }

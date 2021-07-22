@@ -7,9 +7,13 @@
  *
  *)
 
+[@@@warning "-33"]
+
 open Hh_prelude
+
+[@@@warning "+33"]
+
 open Common
-open Aast
 open Typing_defs
 module Env = Typing_env
 module Reason = Typing_reason
@@ -21,12 +25,13 @@ let widen_for_refine_shape ~expr_pos field_name env ty =
   match deref ty with
   | (r, Tshape (shape_kind, fields)) ->
     begin
-      match ShapeMap.find_opt field_name fields with
+      match TShapeMap.find_opt field_name fields with
       | None ->
-        let (env, element_ty) = Env.fresh_invariant_type_var env expr_pos in
+        let (env, element_ty) = Env.fresh_type_invariant env expr_pos in
         let sft = { sft_optional = true; sft_ty = element_ty } in
         ( env,
-          Some (mk (r, Tshape (shape_kind, ShapeMap.add field_name sft fields)))
+          Some
+            (mk (r, Tshape (shape_kind, TShapeMap.add field_name sft fields)))
         )
       | Some _ -> (env, Some ty)
     end
@@ -40,7 +45,6 @@ let refine_shape field_name pos env shape =
       (widen_for_refine_shape ~expr_pos:pos field_name)
       pos
       shape
-      Errors.unify_error
   in
   let sft_ty =
     MakeType.mixed
@@ -50,9 +54,9 @@ let refine_shape field_name pos env shape =
   let sft = { sft_optional = false; sft_ty } in
   Typing_intersection.intersect
     env
-    (Reason.Rwitness pos)
+    ~r:(Reason.Rwitness pos)
     shape
-    (mk (Reason.Rnone, Tshape (Open_shape, ShapeMap.singleton field_name sft)))
+    (mk (Reason.Rnone, Tshape (Open_shape, TShapeMap.singleton field_name sft)))
 
 (*****************************************************************************)
 (* Remove a field from all the shapes found in a given type.
@@ -73,24 +77,26 @@ let rec shrink_shape pos field_name env shape =
       env
       pos
       shape
-      Errors.unify_error
   in
   match get_node shape with
   | Tshape (shape_kind, fields) ->
     let fields =
       match shape_kind with
-      | Closed_shape -> ShapeMap.remove field_name fields
+      | Closed_shape -> TShapeMap.remove field_name fields
       | Open_shape ->
         let printable_name = TUtils.get_printable_shape_field_name field_name in
         let nothing =
           MakeType.nothing (Reason.Runset_field (pos, printable_name))
         in
-        ShapeMap.add field_name { sft_ty = nothing; sft_optional = true } fields
+        TShapeMap.add
+          field_name
+          { sft_ty = nothing; sft_optional = true }
+          fields
     in
     let result = mk (Reason.Rwitness pos, Tshape (shape_kind, fields)) in
     (env, result)
   | Tunion tyl ->
-    let (env, tyl) = List.map_env env tyl (shrink_shape pos field_name) in
+    let (env, tyl) = List.map_env env tyl ~f:(shrink_shape pos field_name) in
     let result = mk (Reason.Rwitness pos, Tunion tyl) in
     (env, result)
   | _ -> (env, shape)
@@ -103,10 +109,11 @@ let rec shrink_shape pos field_name env shape =
  * elsewhere when typechecking the call to Shapes::idx. This allows for more
  * useful typechecking of incomplete code (code in the process of being
  * written). *)
-let shapes_idx_not_null env shape_ty (p, field) =
-  match TUtils.shape_field_name env (p, field) with
+let shapes_idx_not_null env shape_ty (ty, p, field) =
+  match TUtils.shape_field_name env (ty, p, field) with
   | None -> (env, shape_ty)
   | Some field ->
+    let field = TShapeField.of_ast Pos_or_decl.of_raw_pos field in
     let (env, shape_ty) =
       Typing_solver.expand_type_and_narrow
         ~description_of_expected:"a shape"
@@ -114,16 +121,17 @@ let shapes_idx_not_null env shape_ty (p, field) =
         (widen_for_refine_shape ~expr_pos:p field)
         p
         shape_ty
-        Errors.unify_error
     in
     let refine_type env shape_ty =
       let (env, shape_ty) = Env.expand_type env shape_ty in
       match deref shape_ty with
       | (r, Tshape (shape_kind, ftm)) ->
         let (env, field_type) =
-          match ShapeMap.find_opt field ftm with
+          match TShapeMap.find_opt field ftm with
           | Some { sft_ty; _ } ->
-            let (env, sft_ty) = Typing_solver.non_null env p sft_ty in
+            let (env, sft_ty) =
+              Typing_solver.non_null env (Pos_or_decl.of_raw_pos p) sft_ty
+            in
             (env, { sft_optional = false; sft_ty })
           | None ->
             ( env,
@@ -132,52 +140,24 @@ let shapes_idx_not_null env shape_ty (p, field) =
                 sft_ty = MakeType.nonnull (Reason.Rwitness p);
               } )
         in
-        let ftm = ShapeMap.add field field_type ftm in
+        let ftm = TShapeMap.add field field_type ftm in
         (env, mk (r, Tshape (shape_kind, ftm)))
       | _ ->
         (* This should be an error, but it is already raised when
-      typechecking the call to Shapes::idx *)
+           typechecking the call to Shapes::idx *)
         (env, shape_ty)
     in
     (match deref shape_ty with
     | (_, Tshape _) -> refine_type env shape_ty
     | (r, Tunion tyl) ->
-      let (env, tyl) = List.map_env env tyl refine_type in
+      let (env, tyl) = List.map_env env tyl ~f:refine_type in
       Typing_union.union_list env r tyl
     | _ -> (env, shape_ty))
 
 let make_idx_fake_super_shape shape_pos fun_name field_name field_ty =
   mk
     ( Reason.Rshape (shape_pos, fun_name),
-      Tshape (Open_shape, Nast.ShapeMap.singleton field_name field_ty) )
-
-(* Is a given field required in a given shape?
- *
- * sfn is a required field of shape t iff t is a subtype of
- * shape(sfn => mixed, ...) (or shape(sfn => nonnull, ...) if
- * disable_optional_and_unknonw_shape_fields is enabled, as
- * in that case an option-typed field is considered optional).
- *
- * Note that unlike doing a case analysis on the shape type,
- * expressing this check using subtyping successfully deals
- * with the cases where the shape is unresolved or is abstract
- * (e.g., hidden behind a newtype or given by a constrained
- * generic parameter or type constant).
- *)
-let is_shape_field_required env shape_pos fun_name field_name shape_ty =
-  let field_ty =
-    { sft_optional = false; sft_ty = MakeType.mixed Reason.Rnone }
-  in
-  let super_shape_ty =
-    make_idx_fake_super_shape shape_pos fun_name field_name field_ty
-  in
-  let (env, ty1) =
-    Typing_solver.expand_type_and_solve_eq env shape_ty Errors.unify_error
-  in
-  let (env, ty2) =
-    Typing_solver.expand_type_and_solve_eq env super_shape_ty Errors.unify_error
-  in
-  Typing_subtype.is_sub_type_for_coercion env ty1 ty2
+      Tshape (Open_shape, TShapeMap.singleton field_name field_ty) )
 
 (* Typing rules for Shapes::idx
  *
@@ -191,13 +171,21 @@ let is_shape_field_required env shape_pos fun_name field_name shape_ty =
  *     Shapes::idx(e1, sfn, e2) : t
  *
  *)
-let idx env ~expr_pos ~fun_pos ~shape_pos shape_ty field default =
+let idx
+    env
+    ~expr_pos
+    ~fun_pos
+    ~shape_pos
+    shape_ty
+    ((_, field_p, _) as field)
+    default =
   let (env, shape_ty) = Env.expand_type env shape_ty in
   let (env, res) = Env.fresh_type env expr_pos in
   let (env, res) =
     match TUtils.shape_field_name env field with
-    | None -> (env, TUtils.mk_tany env (fst field))
+    | None -> (env, TUtils.mk_tany env field_p)
     | Some field_name ->
+      let field_name = TShapeField.of_ast Pos_or_decl.of_raw_pos field_name in
       let fake_super_shape_ty =
         make_idx_fake_super_shape
           shape_pos
@@ -217,7 +205,7 @@ let idx env ~expr_pos ~fun_pos ~shape_pos shape_ty field default =
             Reason.URparam
             env
             shape_ty
-            { et_type = nullable_super_shape; et_enforced = false }
+            { et_type = nullable_super_shape; et_enforced = Unenforced }
             Errors.unify_error
         in
         TUtils.union env res (MakeType.null fun_pos)
@@ -228,7 +216,7 @@ let idx env ~expr_pos ~fun_pos ~shape_pos shape_ty field default =
             Reason.URparam
             env
             shape_ty
-            { et_type = nullable_super_shape; et_enforced = false }
+            { et_type = nullable_super_shape; et_enforced = Unenforced }
             Errors.unify_error
         in
         let env =
@@ -244,13 +232,14 @@ let idx env ~expr_pos ~fun_pos ~shape_pos shape_ty field default =
   in
   Typing_enforceability.make_locl_like_type env res
 
-let at env ~expr_pos ~shape_pos shape_ty field =
+let at env ~expr_pos ~shape_pos shape_ty ((_, field_p, _) as field) =
   let (env, shape_ty) = Env.expand_type env shape_ty in
   let (env, res) = Env.fresh_type env expr_pos in
   let (env, res) =
     match TUtils.shape_field_name env field with
-    | None -> (env, TUtils.mk_tany env (fst field))
+    | None -> (env, TUtils.mk_tany env field_p)
     | Some field_name ->
+      let field_name = TShapeField.of_ast Pos_or_decl.of_raw_pos field_name in
       let fake_super_shape_ty =
         make_idx_fake_super_shape
           shape_pos
@@ -264,17 +253,19 @@ let at env ~expr_pos ~shape_pos shape_ty field =
           Reason.URparam
           env
           shape_ty
-          { et_type = fake_super_shape_ty; et_enforced = false }
+          { et_type = fake_super_shape_ty; et_enforced = Unenforced }
           Errors.unify_error
       in
       (env, res)
   in
   Typing_enforceability.make_locl_like_type env res
 
-let remove_key p env shape_ty field =
+let remove_key p env shape_ty ((_, field_p, _) as field) =
   match TUtils.shape_field_name env field with
-  | None -> (env, TUtils.mk_tany env (fst field))
-  | Some field_name -> shrink_shape p field_name env shape_ty
+  | None -> (env, TUtils.mk_tany env field_p)
+  | Some field_name ->
+    let field_name = TShapeField.of_ast Pos_or_decl.of_raw_pos field_name in
+    shrink_shape p field_name env shape_ty
 
 let to_collection env shape_ty res return_type =
   let mapper =
@@ -288,29 +279,32 @@ let to_collection env shape_ty res return_type =
       method! on_tshape env r shape_kind fdm =
         match shape_kind with
         | Closed_shape ->
-          let keys = ShapeMap.keys fdm in
+          let keys = TShapeMap.keys fdm in
           let (env, keys) =
-            List.map_env env keys (fun env key ->
+            List.map_env env keys ~f:(fun env key ->
                 match key with
-                | Ast_defs.SFlit_int (p, _) ->
-                  (env, MakeType.int (Reason.Rwitness p))
-                | Ast_defs.SFlit_str (p, _) ->
-                  (env, MakeType.string (Reason.Rwitness p))
-                | Ast_defs.SFclass_const ((p, cid), (_, mid)) ->
+                | Typing_defs.TSFlit_int (p, _) ->
+                  (env, MakeType.int (Reason.Rwitness_from_decl p))
+                | Typing_defs.TSFlit_str (p, _) ->
+                  (env, MakeType.string (Reason.Rwitness_from_decl p))
+                | Typing_defs.TSFclass_const ((p, cid), (_, mid)) ->
                   begin
                     match Env.get_class env cid with
                     | Some class_ ->
                       begin
                         match Env.get_const env class_ mid with
                         | Some const ->
-                          Typing_phase.localize_with_self env const.cc_type
-                        | None -> (env, TUtils.mk_tany env p)
+                          Typing_phase.localize_no_subst
+                            env
+                            ~ignore_errors:true
+                            const.cc_type
+                        | None -> (env, TUtils.mk_tany_ env p)
                       end
-                    | None -> (env, TUtils.mk_tany env p)
+                    | None -> (env, TUtils.mk_tany_ env p)
                   end)
           in
           let (env, key) = Typing_union.union_list env r keys in
-          let values = ShapeMap.values fdm in
+          let values = TShapeMap.values fdm in
           let values = List.map ~f:(fun { sft_ty; _ } -> sft_ty) values in
           let (env, value) = Typing_union.union_list env r values in
           return_type env (get_reason res) key value
@@ -342,12 +336,11 @@ let to_array env pos shape_ty res =
       env
       pos
       shape_ty
-      Errors.unify_error
   in
   to_collection env shape_ty res (fun env r key value ->
       Typing_enforceability.make_locl_like_type
         env
-        (mk (r, Tdarray (key, value))))
+        (MakeType.darray r key value))
 
 let to_dict env pos shape_ty res =
   let (env, shape_ty) =
@@ -356,7 +349,6 @@ let to_dict env pos shape_ty res =
       env
       pos
       shape_ty
-      Errors.unify_error
   in
   to_collection env shape_ty res (fun env r key value ->
       Typing_enforceability.make_locl_like_type env (MakeType.dict r key value))

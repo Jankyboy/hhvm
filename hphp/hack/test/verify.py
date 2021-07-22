@@ -275,7 +275,6 @@ def run_test_program(
                 stderr=None if no_stderr else subprocess.STDOUT,
                 cwd=test_dir,
                 universal_newlines=True,
-                # pyre-ignore
                 input=test_case.input,
                 timeout=timeout,
                 errors="replace",
@@ -310,11 +309,17 @@ def filter_ocaml_stacktrace(text: str) -> str:
     return "\n".join(out)
 
 
-def filter_version_field(text: str) -> str:
-    """given a string, remove the part that looks like the schema version"""
-    assert isinstance(text, str)
+def filter_temp_hhi_path(text: str) -> str:
+    """The .hhi files are stored in a temporary directory whose name
+    changes every time. Normalise it.
+
+    /tmp/ASjh5RoWbb/builtins_fb.hhi -> /tmp/hhi_dir/builtins_fb.hhi
+
+    """
     return re.sub(
-        r'"version":"\d{4}-\d{2}-\d{2}-\d{4}"', r'"version":"sanitised"', text, count=1
+        r"/tmp/[^/]*/([a-zA-Z0-9_]+\.hhi)",
+        "/tmp/hhi_dir/\\1",
+        text,
     )
 
 
@@ -341,8 +346,8 @@ def check_result(
     output, or if a :default_expect_regex is provided,
     check that the output in :out contains the provided regex.
     """
-    expected = filter_version_field(strip_lines(test_case.expected))
-    normalized_out = filter_version_field(strip_lines(out))
+    expected = filter_temp_hhi_path(strip_lines(test_case.expected))
+    normalized_out = filter_temp_hhi_path(strip_lines(out))
     is_ok = (
         expected == normalized_out
         or (ignore_error_messages and compare_expected(expected, normalized_out))
@@ -350,6 +355,7 @@ def check_result(
         or (
             default_expect_regex is not None
             and re.search(default_expect_regex, normalized_out) is not None
+            and expected == ""
         )
     )
 
@@ -606,7 +612,6 @@ def run_tests(
 def run_idempotence_tests(
     results: List[Result],
     expected_extension: str,
-    fallback_expect_extension: Optional[str],
     out_extension: str,
     program: str,
     default_expect_regex: Optional[str],
@@ -654,7 +659,7 @@ def run_idempotence_tests(
             idempotence_failures,
             out_extension + out_extension,  # e.g., *.out.out
             expected_extension,
-            fallback_expect_extension,
+            None,
             no_copy=True,
         )
         sys.exit(1)  # this exit code fails the suite and lets Buck know
@@ -670,6 +675,13 @@ def get_flags_cache(args_flags: List[str]) -> Callable[[str], List[str]]:
         if args_flags is not None:
             flags = flags + args_flags
         return flags
+
+    return get_flags
+
+
+def get_flags_dummy(args_flags: List[str]) -> Callable[[str], List[str]]:
+    def get_flags(_: str) -> List[str]:
+        return args_flags
 
     return get_flags
 
@@ -732,6 +744,9 @@ if __name__ == "__main__":
         help="Set the FORCE_ERROR_COLOR environment variable, "
         "which causes the test output to retain terminal escape codes.",
     )
+    parser.add_argument(
+        "--no-hh-flags", action="store_true", help="Do not read HH_FLAGS files"
+    )
     parser.epilog = (
         "%s looks for a file named HH_FLAGS in the same directory"
         " as the test files it is executing. If found, the "
@@ -759,7 +774,9 @@ if __name__ == "__main__":
         raise Exception("Could not find any files to test in " + args.test_path)
 
     mode_flag: List[str] = [] if args.mode_flag is None else [args.mode_flag]
-    get_flags: Callable[[str], List[str]] = get_flags_cache(args.flags)
+    get_flags: Callable[[str], List[str]] = (
+        get_flags_dummy(args.flags) if args.no_hh_flags else get_flags_cache(args.flags)
+    )
 
     results: List[Result] = run_tests(
         files,
@@ -786,7 +803,6 @@ if __name__ == "__main__":
         run_idempotence_tests(
             successes,
             args.expect_extension,
-            args.fallback_expect_extension,
             args.out_extension,
             args.program,
             args.default_expect_regex,

@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_ALIAS_ANALYSIS_H_
-#define incl_HPHP_ALIAS_ANALYSIS_H_
+#pragma once
 
 #include <bitset>
 #include <string>
@@ -94,10 +93,10 @@ struct AliasAnalysis {
   LocationMap iter_expand_map;
 
   /*
-   * Short-hand to find an alias class in the locations map, or get folly::none
+   * Short-hand to find an alias class in the locations map, or get std::nullopt
    * if the alias class wasn't assigned an ALocMeta structure.
    */
-  folly::Optional<ALocMeta> find(AliasClass) const;
+  Optional<ALocMeta> find(AliasClass) const;
 
   /*
    * Several larger sets of locations, we have a set of all the ids assigned to
@@ -191,4 +190,3 @@ std::string show(ALocBits);
 
 }}
 
-#endif

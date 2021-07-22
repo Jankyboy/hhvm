@@ -28,7 +28,6 @@
 #include "hphp/runtime/base/stat-cache.h"
 #include "hphp/runtime/base/repo-autoload-map.h"
 #include "hphp/runtime/base/unit-cache.h"
-#include "hphp/runtime/vm/repo.h"
 #include "hphp/runtime/vm/repo-global-data.h"
 #include "hphp/runtime/vm/unit.h"
 #include "hphp/runtime/vm/unit-util.h"
@@ -41,6 +40,8 @@ namespace HPHP {
 IMPLEMENT_REQUEST_LOCAL(AutoloadHandler, AutoloadHandler::s_instance);
 
 static FactsFactory* s_mapFactory = nullptr;
+
+std::unique_ptr<RepoAutoloadMap> AutoloadHandler::s_repoAutoloadMap{};
 
 FactsFactory* FactsFactory::getInstance() {
   return s_mapFactory;
@@ -69,18 +70,19 @@ FactsStore* getFactsForRequest() {
     return nullptr;
   }
 
-  auto repoRoot = folly::fs::canonical(repoOptions->path()).parent_path();
 
-  auto* map = factory->getForRoot(repoRoot);
+  auto* map = factory->getForOptions(*repoOptions);
   if (!map) {
     return nullptr;
   }
 
   try {
+    tracing::Block _{"autoload-ensure-updated"};
     map->ensureUpdated();
     return map;
   } catch (const std::exception& e) {
-    Logger::Error(
+    auto repoRoot = folly::fs::canonical(repoOptions->path()).parent_path();
+    Logger::Info(
         "Failed to update native autoloader, not natively autoloading %s. %s\n",
         repoRoot.generic().c_str(),
         e.what());
@@ -96,7 +98,8 @@ void AutoloadHandler::requestInit() {
   assertx(!m_req_map);
   m_facts = getFactsForRequest();
   if (RuntimeOption::RepoAuthoritative) {
-    m_map = Repo::get().global().AutoloadMap.get();
+    m_map = s_repoAutoloadMap.get();
+    assertx(m_map);
   } else {
     m_map = m_facts;
   }
@@ -109,9 +112,7 @@ void AutoloadHandler::requestShutdown() {
 }
 
 bool AutoloadHandler::setMap(const Array& map, String root) {
-  assertx(!(RuntimeOption::RepoAuthoritative &&
-            RuntimeOption::EvalUseRepoAutoloadMap &&
-            Repo::get().global().AutoloadMap));
+  assertx(!RuntimeOption::RepoAuthoritative);
 
   m_req_map = req::make_unique<UserAutoloadMap>(
       UserAutoloadMap::fromFullMap(map, std::move(root)));
@@ -214,7 +215,7 @@ const StaticString
   s_file("file"),
   s_line("line");
 
-std::optional<String> AutoloadHandler::getFile(const String& clsName,
+Optional<String> AutoloadHandler::getFile(const String& clsName,
                                                AutoloadMap::KindOf kind) {
   assertx(m_map);
   // Always normalize name before autoloading
@@ -239,6 +240,12 @@ AutoloadHandler::loadFromMapImpl(const String& clsName,
   }
   bool ok = false;
   String fName = *file;
+  // Utility for logging errors in server mode.
+  auto log_err = [](char const* const msg) {
+    if (RuntimeOption::ServerMode) {
+      Logger::Error("Exception: AutoloadMap::loadFromMapImpl: %s", msg);
+    }
+  };
   try {
     VMRegAnchor _;
     bool initial;
@@ -249,23 +256,37 @@ AutoloadHandler::loadFromMapImpl(const String& clsName,
       if (initial) unit->merge();
       ok = true;
     }
-  } catch (ExitException&) {
+  } catch (ExitException& ee) {
     throw;
-  } catch (ResourceExceededException&) {
+  } catch (ResourceExceededException& ree) {
     throw;
   } catch (ExtendedException& ee) {
     auto fileAndLine = ee.getFileAndLine();
-    err = (fileAndLine.first.empty())
+    std::string msg =
+      (fileAndLine.first.empty())
       ? ee.getMessage()
       : folly::format("{} in {} on line {}",
                       ee.getMessage(), fileAndLine.first,
                       fileAndLine.second).str();
+    if (RuntimeOption::AutoloadRethrowExceptions) {
+      throw;
+    }
+    log_err(msg.c_str());
+    err = msg;
   } catch (Exception& e) {
-    err = e.getMessage();
+    auto msg = e.getMessage();
+    if (RuntimeOption::AutoloadRethrowExceptions) {
+      throw;
+    }
+    log_err(msg.c_str());
+    err = msg;
   } catch (Object& e) {
+    log_err(e.toString().c_str());
     err = e;
   } catch (...) {
-    err = String("Unknown Exception");
+    String msg = "Unknown exception";
+    log_err(msg.c_str());
+    err = msg;
   }
   if (ok && checkExists()) {
     return AutoloadMap::Result::Success;
@@ -298,6 +319,9 @@ AutoloadHandler::loadFromMap(const String& clsName,
 }
 
 bool AutoloadHandler::autoloadFunc(StringData* name) {
+  tracing::BlockNoTrace _{
+    (m_map && m_map->isNative()) ? "autoload-native" : "autoload"
+  };
   return m_map &&
     loadFromMap(String{name},
                 AutoloadMap::KindOf::Function,
@@ -305,6 +329,9 @@ bool AutoloadHandler::autoloadFunc(StringData* name) {
 }
 
 bool AutoloadHandler::autoloadConstant(StringData* name) {
+  tracing::BlockNoTrace _{
+    (m_map && m_map->isNative()) ? "autoload-native" : "autoload"
+  };
   return m_map &&
     loadFromMap(String{name},
                 AutoloadMap::KindOf::Constant,
@@ -312,6 +339,9 @@ bool AutoloadHandler::autoloadConstant(StringData* name) {
 }
 
 bool AutoloadHandler::autoloadType(const String& name) {
+  tracing::BlockNoTrace _{
+    (m_map && m_map->isNative()) ? "autoload-native" : "autoload"
+  };
   return m_map &&
     loadFromMap(name, AutoloadMap::KindOf::TypeAlias,
                 TypeExistsChecker(name)) != AutoloadMap::Result::Failure;
@@ -337,6 +367,9 @@ bool is_valid_class_name(folly::StringPiece className) {
 }
 
 bool AutoloadHandler::autoloadClass(const String& clsName) {
+  tracing::BlockNoTrace _{
+    (m_map && m_map->isNative()) ? "autoload-native" : "autoload"
+  };
   if (clsName.empty()) return false;
   const String& className = normalizeNS(clsName);
   // Verify class name before trying to load it
@@ -354,6 +387,9 @@ bool AutoloadHandler::autoloadClass(const String& clsName) {
 }
 
 bool AutoloadHandler::autoloadRecordDesc(const String& recName) {
+  tracing::BlockNoTrace _{
+    (m_map && m_map->isNative()) ? "autoload-native" : "autoload"
+  };
   if (recName.empty()) return false;
   return m_map &&
          loadFromMap(recName, AutoloadMap::KindOf::Type,
@@ -394,6 +430,10 @@ AutoloadHandler::loadFromMapPartial(const String& className,
 }
 
 bool AutoloadHandler::autoloadNamedType(const String& clsName) {
+  tracing::BlockNoTrace _{
+    (m_map && m_map->isNative()) ? "autoload-native" : "autoload"
+  };
+
   if (clsName.empty()) return false;
   const String& className = normalizeNS(clsName);
   if (!m_map) {
@@ -462,6 +502,12 @@ bool AutoloadHandler::autoloadNamedType(const String& clsName) {
 
     return false;
   }
+}
+
+void AutoloadHandler::setRepoAutoloadMap(std::unique_ptr<RepoAutoloadMap> map) {
+  assertx(RO::RepoAuthoritative);
+  assertx(!s_repoAutoloadMap);
+  s_repoAutoloadMap = std::move(map);
 }
 
 //////////////////////////////////////////////////////////////////////

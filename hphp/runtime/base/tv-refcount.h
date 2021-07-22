@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_TV_REFCOUNT_H_
-#define incl_HPHP_TV_REFCOUNT_H_
+#pragma once
 
 #include "hphp/runtime/base/array-data.h"
 #include "hphp/runtime/base/countable.h"
@@ -35,7 +34,9 @@ namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
 using RawDestructor = void(*)(void*);
-extern RawDestructor g_destructors[kDestrTableSize];
+using RawDestructors = std::array<RawDestructor, kDestrTableSize>;
+
+extern RawDestructors g_destructors;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -72,7 +73,7 @@ ALWAYS_INLINE RawDestructor destructorForType(DataType dt) {
   // x86 and ARM.
   assertx(isRefcountedType(dt));
   auto const elem_sz = int{sizeof(g_destructors[0])} / 2;
-  auto const table = reinterpret_cast<char*>(g_destructors) -
+  auto const table = reinterpret_cast<char*>(&g_destructors[0]) -
     kMinRefCountedDataType * elem_sz;
   auto const addr = table + static_cast<int64_t>(dt) * elem_sz;
   auto result = *reinterpret_cast<RawDestructor*>(addr);
@@ -85,6 +86,7 @@ ALWAYS_INLINE RawDestructor destructorForType(DataType dt) {
  *
  * @requires: isRefcountedType(type(tv))
  */
+NO_PROFILING
 ALWAYS_INLINE void tvDecRefCountable(TypedValue tv) {
   assertx(isRefcountedType(tv.m_type));
 
@@ -95,7 +97,8 @@ ALWAYS_INLINE void tvDecRefCountable(TypedValue tv) {
   }
 }
 
-template<typename T> ALWAYS_INLINE
+template<typename T>
+NO_PROFILING ALWAYS_INLINE
 enable_if_lval_t<T, void> tvDecRefCountable(T tv) {
   assertx(isRefcountedType(type(tv)));
 
@@ -187,12 +190,6 @@ enable_if_lval_t<T, void> tvDecRefRes(T tv) {
 }
 
 template<typename T> ALWAYS_INLINE
-enable_if_lval_t<T, void> tvDecRefClsMeth(T tv) {
-  assertx(isClsMethType(type(tv)));
-  decRefClsMeth(val(tv).pclsmeth);
-}
-
-template<typename T> ALWAYS_INLINE
 enable_if_lval_t<T, void> tvDecRefRClsMeth(T tv) {
   assertx(isRClsMethType(type(tv)));
   decRefRClsMeth(val(tv).prclsmeth);
@@ -243,4 +240,3 @@ ALWAYS_INLINE void tvIncRefGenUnsafe(TypedValue tv) {
 
 }
 
-#endif

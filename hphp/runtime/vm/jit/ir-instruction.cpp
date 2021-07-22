@@ -163,7 +163,7 @@ bool consumesRefImpl(const IRInstruction* inst, int srcNo) {
       return move != MustMove && srcNo == 3;
 
     case EnterTCUnwind:
-      return srcNo == 0;
+      return srcNo == 2;
 
     case RaiseTooManyArg:
       // RaiseTooManyArg decrefs the unpack arguments.
@@ -175,8 +175,14 @@ bool consumesRefImpl(const IRInstruction* inst, int srcNo) {
 
     case VecSet:
     case DictSet:
+    case BespokeSet:
       // Consumes the reference to its input array, and moves input value
       return move == Consume && (srcNo == 0 || srcNo == 2);
+
+    case BespokeAppend:
+      // Consumes the reference to its input array, and moves input value (both
+      // parameters).
+      return move == Consume;
 
     case MapSet:
     case VectorSet:
@@ -203,6 +209,7 @@ bool consumesRefImpl(const IRInstruction* inst, int srcNo) {
       return srcNo == 0;
 
     case InitVecElem:
+    case InitStructElem:
       return srcNo == 1;
 
     case InitVecElemLoop:
@@ -305,85 +312,78 @@ Type allocObjReturn(const IRInstruction* inst) {
   }
 }
 
-Type dictSetReturn(const IRInstruction* inst) {
-  assertx(inst->is(DictSet));
-  assertx(inst->src(0)->type().subtypeOfAny(TDict, TDArr));
-  return inst->src(0)->type().modified();
-}
-
-Type vecSetReturn(const IRInstruction* inst) {
-  assertx(inst->is(VecSet, AddNewElemVec));
-  assertx(inst->src(0)->type().subtypeOfAny(TVec, TVArr));
-  return inst->src(0)->type().modified();
-}
-
 /*
 * Analyze the type of return element (key or value) for different container.
 */
-Type vecFirstLastReturn(const IRInstruction* inst, bool first) {
-  assertx(inst->is(VecFirst, VecLast));
-  assertx(inst->src(0)->type().subtypeOfAny(TVArr, TVec));
-
-  auto elem = vecFirstLastType(inst->src(0)->type(), first, inst->ctx());
-  if (!elem.second) {
-    elem.first |= TInitNull;
-  }
-  if (inst->hasTypeParam()) {
-    elem.first &= inst->typeParam();
-  }
+Type arrFirstLastReturn(const IRInstruction* inst, bool first, bool isKey) {
+  auto elem = arrLikeFirstLastType(
+      inst->src(0)->type(), first, isKey, inst->ctx());
+  if (!elem.second) elem.first |= TInitNull;
   return elem.first;
 }
 
-Type dictFirstLastReturn(const IRInstruction* inst, bool first, bool isKey) {
-  assertx(inst->is(DictFirst, DictLast, DictFirstKey, DictLastKey));
-  assertx(inst->src(0)->type().subtypeOfAny(TDArr, TDict));
+Type bespokeElemLvalReturn(const IRInstruction* inst) {
+  assertx(inst->is(BespokeElem));
+  assertx(inst->src(0)->type() <= TLvalToArrLike);
+  assertx(inst->src(2)->hasConstVal(TBool));
 
-  auto elem = dictFirstLastType(inst->src(0)->type(), isKey, first);
-  if (!elem.second) {
-    elem.first |= TInitNull;
+  auto resultType = arrLikeElemType(
+      inst->src(0)->type().deref(), inst->src(1)->type(), inst->ctx());
+  auto const presentType = resultType.first;
+  if (inst->src(2)->boolVal()) {
+    return presentType.lval(Ptr::Elem);
+  } else {
+    auto const type = resultType.second ? presentType
+                                        : (presentType | TInitNull);
+    return type.lval(Ptr::Elem);
   }
-  if (inst->hasTypeParam()) {
-    elem.first &= inst->typeParam();
-  }
-  return elem.first;
 }
 
-Type keysetFirstLastReturn(const IRInstruction* inst, bool first) {
-  assertx(inst->is(KeysetFirst, KeysetLast));
-  assertx(inst->src(0)->isA(TKeyset));
+Type bespokeElemReturn(const IRInstruction* inst, bool present) {
+  assertx(inst->src(0)->type() <= TArrLike);
 
-  auto elem = keysetFirstLastType(inst->src(0)->type(), first);
-  if (!elem.second) {
-    elem.first |= TInitNull;
-  }
-  if (inst->hasTypeParam()) {
-    elem.first &= inst->typeParam();
-  }
-  return elem.first;
+  auto resultType = arrLikeElemType(
+      inst->src(0)->type(), inst->src(1)->type(), inst->ctx());
+
+  auto const knownPresent = [&] {
+    if (present || resultType.second) return true;
+    if (!inst->is(BespokeGet)) return false;
+    auto const keyState = inst->extra<BespokeGet>()->state;
+    return keyState == BespokeGetData::KeyState::Present;
+  }();
+
+  return knownPresent ? resultType.first : (resultType.first | TUninit);
+}
+
+Type bespokePosReturn(const IRInstruction* inst, bool isKey) {
+  assertx(inst->src(0)->type() <= TArrLike);
+
+  auto resultType = arrLikePosType(
+      inst->src(0)->type(), inst->src(1)->type(), isKey, inst->ctx());
+  return resultType;
 }
 
 Type vecElemReturn(const IRInstruction* inst) {
   assertx(inst->is(LdVecElem));
-  assertx(inst->src(0)->type().subtypeOfAny(TVec, TVArr));
+  assertx(inst->src(0)->isA(TVec));
   assertx(inst->src(1)->isA(TInt));
 
-  auto resultType =
-    vecElemType(inst->src(0)->type(), inst->src(1)->type(), inst->ctx()).first;
-  if (inst->hasTypeParam()) resultType &= inst->typeParam();
+  auto resultType = arrLikeElemType(
+      inst->src(0)->type(), inst->src(1)->type(), inst->ctx()).first;
   return resultType;
 }
 
 Type dictElemReturn(const IRInstruction* inst) {
   assertx(inst->is(DictGet, DictGetK, DictGetQuiet, DictIdx));
-  assertx(inst->src(0)->type().subtypeOfAny(TDict, TDArr));
+  assertx(inst->src(0)->isA(TDict));
   assertx(inst->src(1)->isA(TInt | TStr));
 
-  auto elem = dictElemType(inst->src(0)->type(), inst->src(1)->type());
+  auto elem =
+    arrLikeElemType(inst->src(0)->type(), inst->src(1)->type(), inst->ctx());
   if (!elem.second) {
     if (inst->is(DictGetQuiet)) elem.first |= TInitNull;
     if (inst->is(DictIdx)) elem.first |= inst->src(2)->type();
   }
-  if (inst->hasTypeParam()) elem.first &= inst->typeParam();
   return elem.first;
 }
 
@@ -392,12 +392,12 @@ Type keysetElemReturn(const IRInstruction* inst) {
   assertx(inst->src(0)->isA(TKeyset));
   assertx(inst->src(1)->isA(TInt | TStr));
 
-  auto elem = keysetElemType(inst->src(0)->type(), inst->src(1)->type());
+  auto elem =
+    arrLikeElemType(inst->src(0)->type(), inst->src(1)->type(), inst->ctx());
   if (!elem.second) {
     if (inst->is(KeysetGetQuiet)) elem.first |= TInitNull;
     if (inst->is(KeysetIdx)) elem.first |= inst->src(2)->type();
   }
-  if (inst->hasTypeParam()) elem.first &= inst->typeParam();
   return elem.first;
 }
 
@@ -420,7 +420,7 @@ Type newColReturn(const IRInstruction* inst) {
   assertx(inst->is(NewCol, NewPair, NewColFromArray));
   auto getColClassType = [&](CollectionType ct) -> Type {
     auto name = collections::typeToString(ct);
-    auto cls = Unit::lookupUniqueClassInContext(name, inst->ctx(), nullptr);
+    auto cls = Class::lookupUniqueInContext(name, inst->ctx(), nullptr);
     if (cls == nullptr) return TObj;
     return Type::ExactObj(cls);
   };
@@ -492,18 +492,20 @@ Type ptrToLvalReturn(const IRInstruction* inst) {
 // This definition makes sense by analogy to regular int* types in C: the type
 // of the end of the array is an int* even though its target is invalid.
 Type ptrIterReturn(const IRInstruction* inst) {
-  if (inst->is(AdvanceDictPtrIter, AdvanceVecPtrIter)) {
+  if (inst->is(AdvanceDictPtrIter)) {
     auto const ptr = inst->src(0)->type();
     assertx(ptr <= TPtrToElemCell);
     return ptr;
   }
-  assertx(inst->is(GetDictPtrIter, GetVecPtrIter));
+  assertx(inst->is(GetDictPtrIter));
   auto const arr = inst->src(0)->type();
   assertx(arr <= TArrLike);
   auto const value = [&]{
-    if (arr <= TArr)  return arrElemType(arr, TInt | TStr, inst->ctx()).first;
-    if (arr <= TVec)  return vecElemType(arr, TInt, inst->ctx()).first;
-    if (arr <= TDict) return dictElemType(arr, TInt | TStr).first;
+    if (arr <= TVec) {
+      return arrLikeElemType(arr, TInt, inst->ctx()).first;
+    } else if (arr <= TDict) {
+      return arrLikeElemType(arr, TInt | TStr, inst->ctx()).first;
+    }
     return TCell;
   }();
   return value.ptr(Ptr::Elem);
@@ -518,10 +520,58 @@ Type ptrIterValReturn(const IRInstruction* inst) {
 Type loggingArrLikeReturn(const IRInstruction* inst) {
   assertx(inst->is(NewLoggingArray));
   auto const arr = inst->src(0)->type();
+  auto const isStatic = inst->extra<NewLoggingArray>()->isStatic;
 
   assertx(arr <= TArrLike);
   assertx(arr.isKnownDataType());
-  return arr.unspecialize();
+  assertx(IMPLIES(isStatic, arr.hasConstVal()));
+  return isStatic ? arr.unspecialize() : arr.unspecialize().modified();
+}
+
+Type structDictReturn(const IRInstruction* inst) {
+  assertx(inst->is(AllocBespokeStructDict, NewBespokeStructDict));
+  auto const layout = inst->is(AllocBespokeStructDict)
+    ? inst->extra<AllocBespokeStructDict>()->layout
+    : inst->extra<NewBespokeStructDict>()->layout;
+  return TDict.narrowToLayout(layout);
+}
+
+Type arrLikeSetReturn(const IRInstruction* inst) {
+  assertx(inst->is(BespokeSet, StructDictSet));
+  auto const arr = inst->src(0)->type();
+  auto const key = inst->src(1)->type();
+  auto const val = inst->src(2)->type();
+
+  assertx(arr <= TArrLike);
+  assertx(arr.isKnownDataType());
+  assertx(key.subtypeOfAny(TInt, TStr));
+  auto const base = arr.modified() & TCounted;
+  auto const layout = arr.arrSpec().layout().setType(key, val);
+  return base.narrowToLayout(layout);
+}
+
+Type arrLikeAppendReturn(const IRInstruction* inst) {
+  assertx(inst->is(BespokeAppend));
+  auto const arr = inst->src(0)->type();
+  auto const val = inst->src(1)->type();
+
+  assertx(arr <= TArrLike);
+  assertx(arr.isKnownDataType());
+  auto const base = arr <= TKeyset
+    ? (arr | TCountedKeyset)
+    : (arr.modified() & TCounted);
+  auto const layout = arr.arrSpec().layout().appendType(val);
+  return base.narrowToLayout(layout);
+}
+
+// Is this instruction an array cast that always modifies the type of the
+// input array? Such casts are guaranteed to return vanilla arrays.
+bool isNontrivialArrayCast(const IRInstruction* inst) {
+  auto const& type = inst->src(0)->type();
+  if (inst->is(ConvArrLikeToVec))    return !type.maybe(TVec);
+  if (inst->is(ConvArrLikeToDict))   return !type.maybe(TDict);
+  if (inst->is(ConvArrLikeToKeyset)) return !type.maybe(TKeyset);
+  return false;
 }
 
 template <uint32_t...> struct IdxSeq {};
@@ -545,7 +595,9 @@ Type outputType(const IRInstruction* inst, int /*dstId*/) {
     if (!allowBespokeArrayLikes()) return t;
     if (inst->isLayoutPreserving()) {
       assertx(inst->src(0)->type() <= TArrLike);
-      return inst->src(0)->type().arrSpec().vanilla() ? t.narrowToVanilla() : t;
+      auto const vanilla = inst->src(0)->type().arrSpec().vanilla() ||
+                           isNontrivialArrayCast(inst);
+      return vanilla ? t.narrowToVanilla() : t;
     } else if (inst->isLayoutAgnostic()) {
       return t;
     } else {
@@ -558,8 +610,9 @@ Type outputType(const IRInstruction* inst, int /*dstId*/) {
 #define D(type)         return checkLayoutFlags(type);
 #define DofS(n)         return inst->src(n)->type();
 #define DRefineS(n)     return inst->src(n)->type() & inst->typeParam();
-#define DParamMayRelax(t) return inst->typeParam();
 #define DParam(t)       return inst->typeParam();
+#define DEscalateToVanilla return inst->src(0)->type().modified().\
+                               narrowToVanilla();
 #define DLdObjCls {                                                \
   if (auto spec = inst->src(0)->type().clsSpec()) {                \
     auto const cls = spec.cls();                                   \
@@ -568,25 +621,23 @@ Type outputType(const IRInstruction* inst, int /*dstId*/) {
   return TCls;                                                     \
 }
 #define DAllocObj       return allocObjReturn(inst);
+#define DBespokeElem          return bespokeElemReturn(inst, true);
+#define DBespokeElemUninit    return bespokeElemReturn(inst, false);
+#define DBespokePosKey        return bespokePosReturn(inst, true);
+#define DBespokePosVal        return bespokePosReturn(inst, false);
 #define DVecElem        return vecElemReturn(inst);
 #define DDictElem       return dictElemReturn(inst);
-#define DDictSet        return dictSetReturn(inst);
-#define DVecSet         return vecSetReturn(inst);
 #define DKeysetElem     return keysetElemReturn(inst);
 // Get the type of first or last element for different array type
-#define DVecFirstElem     return vecFirstLastReturn(inst, true);
-#define DVecLastElem      return vecFirstLastReturn(inst, false);
-#define DVecKey           return TInt | TInitNull;
-#define DDictFirstElem    return dictFirstLastReturn(inst, true, false);
-#define DDictLastElem     return dictFirstLastReturn(inst, false, false);
-#define DDictFirstKey     return dictFirstLastReturn(inst, true, true);
-#define DDictLastKey      return dictFirstLastReturn(inst, false, true);
-#define DKeysetFirstElem  return keysetFirstLastReturn(inst, true);
-#define DKeysetLastElem   return keysetFirstLastReturn(inst, false);
+#define DFirstElem        return arrFirstLastReturn(inst, true, false);
+#define DLastElem         return arrFirstLastReturn(inst, false, false);
+#define DFirstKey         return arrFirstLastReturn(inst, true, true);
+#define DLastKey          return arrFirstLastReturn(inst, false, true);
 #define DLoggingArrLike   return loggingArrLikeReturn(inst);
-#define DVArr return checkLayoutFlags(RO::EvalHackArrDVArrs ? TVec : TVArr);
-#define DDArr return checkLayoutFlags(RO::EvalHackArrDVArrs ? TDict : TDArr);
-#define DStaticDArr     return (TStaticDict | TStaticArr) & [&]{ DDArr }();
+#define DModified(n)      return inst->src(n)->type().modified();
+#define DArrLikeSet       return arrLikeSetReturn(inst);
+#define DArrLikeAppend    return arrLikeAppendReturn(inst);
+#define DStructDict     return structDictReturn(inst);
 #define DCol            return newColReturn(inst);
 #define DMulti          return TBottom;
 #define DSetElem        return setElemReturn(inst);
@@ -594,14 +645,12 @@ Type outputType(const IRInstruction* inst, int /*dstId*/) {
 #define DCall           return callReturn(inst);
 #define DGenIter        return genIterReturn(inst);
 #define DSubtract(n, t) return inst->src(n)->type() - t;
-#define DCns            return TUninit | TInitNull | TBool | \
-                               TInt | TDbl | TStr | TArr | \
-                               TVec | TDict | TKeyset | TRes;
 #define DUnion(...)     return unionReturn(inst, IdxSeq<__VA_ARGS__>{});
 #define DMemoKey        return memoKeyReturn(inst);
 #define DLvalOfPtr      return ptrToLvalReturn(inst);
 #define DPtrIter        return ptrIterReturn(inst);
 #define DPtrIterVal     return ptrIterValReturn(inst);
+#define DBespokeElemLval return bespokeElemLvalReturn(inst);
 
 #define O(name, dstinfo, srcinfo, flags) case name: dstinfo not_reached();
 
@@ -616,28 +665,24 @@ Type outputType(const IRInstruction* inst, int /*dstId*/) {
 #undef D
 #undef DofS
 #undef DRefineS
-#undef DParamMayRelax
 #undef DParam
+#undef DEscalateToVanilla
 #undef DLdObjCls
 #undef DAllocObj
+#undef DBespokeElem
+#undef DBespokeElemUninit
+#undef DBespokePosKey
+#undef DBespokePosVal
 #undef DVecElem
 #undef DDictElem
-#undef DDictSet
-#undef DVecSet
 #undef DKeysetElem
-#undef DVecFirstElem
-#undef DVecLastElem
 #undef DVecKey
-#undef DDictFirstElem
-#undef DDictLastElem
-#undef DDictFirstKey
-#undef DDictLastKey
-#undef DKeysetFirstElem
-#undef DKeysetLastElem
+#undef DFirstElem
+#undef DLastElem
+#undef DFirstKey
+#undef DLastKey
 #undef DLoggingArrLike
-#undef DVArr
-#undef DDArr
-#undef DStaticDArr
+#undef DStructDict
 #undef DCol
 #undef DMulti
 #undef DSetElem
@@ -645,12 +690,12 @@ Type outputType(const IRInstruction* inst, int /*dstId*/) {
 #undef DCall
 #undef DGenIter
 #undef DSubtract
-#undef DCns
 #undef DUnion
 #undef DMemoKey
 #undef DLvalOfPtr
 #undef DPtrIter
 #undef DPtrIterVal
+#undef DBespokeElemLval
 }
 
 }}

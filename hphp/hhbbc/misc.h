@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HHBBC_MISC_H_
-#define incl_HHBBC_MISC_H_
+#pragma once
 
 #include <chrono>
 #include <cassert>
@@ -67,6 +66,7 @@ constexpr const LocalId StackDupId = -2;
 constexpr const LocalId StackThisId = -3;
 constexpr const LocalId MaxLocalId = StackThisId - 1;
 
+using ClosureId = uint32_t;
 using IterId = uint32_t;
 using BlockId = uint32_t;
 constexpr const BlockId NoBlockId = -1;
@@ -163,4 +163,3 @@ private:
 
 }}
 
-#endif

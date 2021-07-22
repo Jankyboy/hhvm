@@ -117,7 +117,7 @@ Array HHVM_FUNCTION(get_meta_tags, const String& filename,
   preg_match_all("/<meta\\s+name=\"(.*?)\"\\s+content=\"(.*?)\".*?>/s",
                  f, &matches, PREG_SET_ORDER);
 
-  Array ret = Array::CreateDArray();
+  Array ret = Array::CreateDict();
   for (ArrayIter iter(matches.toArray()); iter; ++iter) {
     Array pair = iter.second().toArray();
     ret.set(normalize_variable_name(pair[1].toString()), pair[2]);
@@ -281,7 +281,7 @@ Variant HHVM_FUNCTION(parse_url, const String& url,
     return init_null();
   }
 
-  ArrayInit ret(resource.port ? 8 : 7, ArrayInit::Map{});
+  DictInit ret(resource.port ? 8 : 7);
   SET_COMPONENT(scheme);
   SET_COMPONENT(host);
   if (resource.port) {

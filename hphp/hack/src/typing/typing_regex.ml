@@ -10,7 +10,6 @@
 open Hh_prelude
 open Typing_defs
 open Aast
-open Ast_defs
 module Reason = Typing_reason
 module MakeType = Typing_make_type
 
@@ -28,7 +27,11 @@ let rec int_keys p top bottom acc_i =
   if top <= bottom then
     acc_i
   else
-    int_keys p (top - 1) bottom (SFlit_int (p, string_of_int top) :: acc_i)
+    int_keys
+      p
+      (top - 1)
+      bottom
+      (TSFlit_int (Pos_or_decl.of_raw_pos p, string_of_int top) :: acc_i)
 
 (* Assumes that names_numbers is sorted in DECREASING order of numbers *)
 let rec keys_aux p top names_numbers acc =
@@ -39,7 +42,8 @@ let rec keys_aux p top names_numbers acc =
       p
       (number - 1)
       t
-      (SFlit_str (p, name) :: (int_keys p top number [] @ acc))
+      (TSFlit_str (Pos_or_decl.of_raw_pos p, name)
+       :: (int_keys p top number [] @ acc))
 
 (*
  *  Any shape keys for our match type except 0. For re"Hel(\D)(?'o'\D)", this is
@@ -51,18 +55,18 @@ let keys p s ~flags =
   let pattern = Pcre.regexp s ~flags in
   (* For re"Hel(\D)(?'o'\D)", this is 2. *)
   let count =
-    try Pcre.capturecount pattern
-    with Pcre.Error (Pcre.InternalError s) -> internal_error s
+    try Pcre.capturecount pattern with
+    | Pcre.Error (Pcre.InternalError s) -> internal_error s
   in
   (* For re"Hel(\D)(?'o'\D)", this is ['o']. *)
   let names =
-    try Array.to_list (Pcre.names pattern)
-    with Pcre.Error (Pcre.InternalError s) -> internal_error s
+    try Array.to_list (Pcre.names pattern) with
+    | Pcre.Error (Pcre.InternalError s) -> internal_error s
   in
   (*  For re"Hel(\D)(?'o'\D)", this is [2] *)
   let numbers =
-    try List.map ~f:(Pcre.get_stringnumber pattern) names
-    with Invalid_argument s -> internal_error s
+    try List.map ~f:(Pcre.get_stringnumber pattern) names with
+    | Invalid_argument s -> internal_error s
   in
   let names_numbers = List.zip_exn names numbers in
   let names_numbers_sorted =
@@ -79,12 +83,14 @@ let type_match p s ~flags =
   let keys = keys p s ~flags in
   let shape_map =
     List.fold_left
-      ~f:(fun acc key -> ShapeMap.add key sft acc)
-      ~init:ShapeMap.empty
+      ~f:(fun acc key -> TShapeMap.add key sft acc)
+      ~init:TShapeMap.empty
       keys
   in
   (* Any Regex\Match will contain the entire matched substring at key 0 *)
-  let shape_map = ShapeMap.add (SFlit_int (p, "0")) sft shape_map in
+  let shape_map =
+    TShapeMap.add (TSFlit_int (Pos_or_decl.of_raw_pos p, "0")) sft shape_map
+  in
   mk (Reason.Rregex p, Tshape (Closed_shape, shape_map))
 
 let get_global_options s =
@@ -147,13 +153,13 @@ let check_and_strip_delimiters s =
     let first = s.[0] in
     if Str.string_match delimiter (String.make 1 first) 0 then
       let closed_delim = complement first in
-      let no_first_delim = String.sub s 1 (length - 1) in
+      let no_first_delim = String.sub s ~pos:1 ~len:(length - 1) in
       match String.rindex_from no_first_delim (length - 2) closed_delim with
       | Some i ->
         let flags =
-          get_global_options (String.sub s (i + 2) (length - i - 2))
+          get_global_options (String.sub s ~pos:(i + 2) ~len:(length - i - 2))
         in
-        let stripped_string = String.sub s 1 i in
+        let stripped_string = String.sub s ~pos:1 ~len:i in
         if not (Char.equal closed_delim first) then
           (check_balanced_delimiters stripped_string first, flags)
         else
@@ -162,7 +168,7 @@ let check_and_strip_delimiters s =
     else
       raise Missing_delimiter
 
-let type_pattern (p, e_) =
+let type_pattern (_, p, e_) =
   match e_ with
   | String s ->
     let (s, flags) = check_and_strip_delimiters s in

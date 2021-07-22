@@ -15,8 +15,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EXT_PREG_H_
-#define incl_HPHP_EXT_PREG_H_
+#pragma once
 
 #include "hphp/runtime/ext/extension.h"
 
@@ -46,7 +45,6 @@ Variant HHVM_FUNCTION(preg_split, const String& pattern, const String& subject,
                                   const Variant& limit, int flags = 0);
 String HHVM_FUNCTION(preg_quote, const String& str,
                                  const Variant& = null_string);
-int64_t HHVM_FUNCTION(preg_last_error);
 
 ///////////////////////////////////////////////////////////////////////////////
 // deprecating these
@@ -63,5 +61,3 @@ String HHVM_FUNCTION(sql_regcase, const String& str);
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif // incl_HPHP_EXT_PREG_H_

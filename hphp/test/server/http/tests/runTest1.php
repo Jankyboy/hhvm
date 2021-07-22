@@ -7,6 +7,9 @@ requestAll(varray[
   "test_status.php",
   "test_get.php?name=Foo",
   "test_get.php?name=Bar",
+  "apc_treadmill.php",
+  "apc_treadmill.php",
+  "apc_treadmill.php",
   "apc_apache_note.php",
   "apc_apache_note.php",
   "apc_apache_note.php",
@@ -36,5 +39,6 @@ requestAll(varray[
   ],
   "test_curl_multi_except.php",
   "test_pagelet.php",
+  "test_cookie2.php",
 ]);
 }

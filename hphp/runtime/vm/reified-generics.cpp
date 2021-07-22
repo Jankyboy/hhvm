@@ -61,7 +61,7 @@ ArrayData* getClsReifiedGenericsProp(Class* cls, ObjectData* obj) {
   assertx(slot != kInvalidSlot);
   auto index = cls->propSlotToIndex(slot);
   auto tv = obj->props()->at(index).tv();
-  assertx(tvIsHAMSafeVArray(tv));
+  assertx(tvIsVec(tv));
   return tv.m_data.parr;
 }
 
@@ -118,7 +118,7 @@ void checkReifiedGenericMismatchHelper(
   const StringData* name,
   const ArrayData* reified_generics
 ) {
-  auto const generics = info.m_typeParamInfo;
+  auto const& generics = info.m_typeParamInfo;
   auto const len = generics.size();
   if (len != reified_generics->size()) {
     if (reified_generics->size() == 0) {
@@ -178,10 +178,10 @@ void checkClassReifiedGenericMismatch(
   );
 }
 
-uint32_t getGenericsBitmap(const ArrayData* generics) {
+uint16_t getGenericsBitmap(const ArrayData* generics) {
   assertx(generics);
   if (generics->size() > 15) return 0;
-  auto bitmap = 1;
+  uint16_t bitmap = 1;
   IterateV(
     generics,
     [&](TypedValue v) {

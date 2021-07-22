@@ -4,14 +4,20 @@ open Procs_test_utils
 let pipe_path = ref ""
 
 let entry =
-  WorkerController.register_entry_point ~restore:(fun s ~(worker_id : int) ->
+  WorkerControllerEntryPoint.register ~restore:(fun s ~(worker_id : int) ->
       pipe_path := s;
       Hh_logger.set_id (Printf.sprintf "test_cancel_env %d" worker_id))
 
 let make_workers n =
   let handle = SharedMem.init ~num_workers:n SharedMem.default_config in
   let workers =
-    MultiWorker.make !pipe_path entry n GlobalConfig.gc_control handle
+    MultiWorker.make
+      ~longlived_workers:(not use_worker_clones)
+      ~saved_state:!pipe_path
+      ~entry
+      n
+      ~gc_control:GlobalConfig.gc_control
+      ~heap_handle:handle
   in
   workers
 
@@ -58,10 +64,10 @@ let do_work (acc : int) (jobs : int list) : int =
      after second ping (so all the workers beside 2 and 7 should finish) *)
   if job = 3 || job = 7 then (
     Unix.sleep
-      ( if job = 3 then
+      (if job = 3 then
         2
       else
-        4 );
+        4);
     let fd = Unix.openfile !pipe_path [Unix.O_WRONLY] 0o640 in
     let written = Unix.write fd (Bytes.of_string "!") 0 1 in
     assert (written = 1);

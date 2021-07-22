@@ -29,6 +29,14 @@
 #include "hphp/util/lock.h"
 #include "hphp/util/text-util.h"
 
+
+// The opaque "struct _ttinfo" moved into a private header file.
+#if TIMELIB_VERSION >= TIMELIB_MODERN
+extern "C" {
+#include <timelib_private.h>
+}
+#endif
+
 namespace HPHP {
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -116,18 +124,32 @@ const timelib_tzdb *TimeZone::GetDatabase() {
   return Database;
 }
 
+#if TIMELIB_VERSION >= TIMELIB_MODERN
+timelib_tzinfo* TimeZone::GetTimeZoneInfoRaw(const char* name,
+                                             const timelib_tzdb* db,
+                                             int* error_code)
+#else
 timelib_tzinfo* TimeZone::GetTimeZoneInfoRaw(char* name,
-                                             const timelib_tzdb* db) {
+                                             const timelib_tzdb* db)
+#endif
+{
   auto const it = s_tzCache->find(name);
   if (it != s_tzCache->end()) {
     return it->second;
   }
-
+#if TIMELIB_VERSION >= TIMELIB_MODERN
+  auto tzi = timelib_parse_tzfile(name, db, error_code);
+#else
   auto tzi = timelib_parse_tzfile(name, db);
+#endif
   if (!tzi) {
     char* tzid = timelib_timezone_id_from_abbr(name, -1, 0);
     if (tzid) {
+#if TIMELIB_VERSION >= TIMELIB_MODERN
+      tzi = timelib_parse_tzfile(tzid, db, error_code);
+#else
       tzi = timelib_parse_tzfile(tzid, db);
+#endif
     }
   }
 
@@ -153,7 +175,7 @@ bool TimeZone::IsValid(const char* name) {
 
 String TimeZone::CurrentName() {
   /* Checking configure timezone */
-  auto& tz = RID().getTimeZone();
+  auto& tz = RID().getTimezone();
   if (!tz.empty()) {
     return String(tz);
   }
@@ -163,7 +185,6 @@ String TimeZone::CurrentName() {
   if (env && *env && IsValid(env)) {
     return String(env, CopyString);
   }
-
   return String(s_guessed_timezone.m_tzid);
 }
 
@@ -192,7 +213,7 @@ bool TimeZone::SetCurrent(const char* name) {
     raise_notice("Timezone ID '%s' is invalid", name);
     return false;
   }
-  RID().setTimeZone(name);
+  RID().setTimezone(name);
   return true;
 }
 
@@ -213,7 +234,7 @@ Array TimeZone::GetAbbreviations() {
   Array ret;
   for (const timelib_tz_lookup_table *entry =
          timelib_timezone_abbreviations_list(); entry->name; entry++) {
-    DArrayInit element(3);
+    DictInit element(3);
     element.set(s_dst, (bool)entry->type);
     element.set(s_offset, entry->gmtoffset);
     if (entry->full_tz_name) {
@@ -222,11 +243,11 @@ Array TimeZone::GetAbbreviations() {
       element.set(s_timezone_id, uninit_null());
     }
     if (ret.isNull()) {
-      ret = Array::CreateDArray();
+      ret = Array::CreateDict();
     }
     String key{entry->name};
     if (!ret.exists(key)) {
-      ret.set(key, Array::CreateVArray());
+      ret.set(key, Array::CreateVec());
     }
     auto const lval = ret.lval(key);
     forceToArray(lval).append(element.toArray());
@@ -259,13 +280,21 @@ TimeZone::TimeZone(const String& name) {
    * - `GMT+0` is usually (tzdb-dependent) a ZONETYPE_ID
    * - `CET` quirk below
    */
-
+#if TIMELIB_VERSION >= TIMELIB_MODERN
+  const char* tzname = name.data();
+#else
   char* tzname = (char*) name.data();
+#endif
   // Try an ID lookup first, so that `CET` is interpreted as an ID, not an
   // abbreviation. It's valid as either. PHP 5.5+ considers it an abbreviation,
   // HHVM currently intentionally considers it an ID for backwards
   // compatibility (which matches PHP <= 5.4)
+#if TIMELIB_VERSION >= TIMELIB_MODERN
+  int error_code = TIMELIB_ERROR_NO_ERROR;
+  m_tzi = GetTimeZoneInfoRaw(tzname, GetDatabase(), &error_code);
+#else
   m_tzi = GetTimeZoneInfoRaw(tzname, GetDatabase());
+#endif
   if (m_tzi) {
     m_tztype = TIMELIB_ZONETYPE_ID;
     return;
@@ -285,7 +314,12 @@ TimeZone::TimeZone(const String& name) {
   m_tztype = dummy->zone_type;
   switch(dummy->zone_type) {
     case TIMELIB_ZONETYPE_ID: {
-      always_assert(false && TIMELIB_ZONETYPE_ID);
+      // It may seem this is redundant with the specially handled checks
+      // earlier in the function, but it is not.  `timelib_parse_zone` performs
+      // some amount of stripping before calling `GetTimeZoneInfoRaw`, so we
+      // hit this case when the stripping results in a valid timezone
+      // identifier.
+      m_tzi = dummy->tz_info;
       break;
     }
     case TIMELIB_ZONETYPE_OFFSET:
@@ -324,6 +358,17 @@ String TimeZone::name() const {
       return String(m_abbr, CopyString);
     case TIMELIB_ZONETYPE_OFFSET: {
       char buf[sizeof("+00:00")];
+
+#if TIMELIB_VERSION >= TIMELIB_MODERN
+      snprintf(
+        buf,
+        sizeof("+00:00"),
+        "%c%02d:%02d",
+        (m_offset < 0 ? '-' : '+'),
+        abs(m_offset / 3600) % 100, // % 100 to convince compiler we have 2 digits
+        abs((m_offset % 3600) / 60)
+      );
+#else
       snprintf(
         buf,
         sizeof("+00:00"),
@@ -332,6 +377,7 @@ String TimeZone::name() const {
         abs(m_offset / 60) % 100, // % 100 to convince compiler we have 2 digits
         abs(m_offset % 60)
       );
+#endif
       return String(buf, sizeof("+00:00") - 1, CopyString);
     }
   }
@@ -381,7 +427,7 @@ bool TimeZone::dst(int64_t timestamp) const {
 
 Array TimeZone::transitions(int64_t timestamp_begin, /* = k_PHP_INT_MIN */
                             int64_t timestamp_end /* = k_PHP_INT_MAX */) const {
-  Array ret = Array::CreateVArray();
+  Array ret = Array::CreateVec();
 
   if (m_tztype == TIMELIB_ZONETYPE_ABBR) {
     // PHP 5.5+ just returns `false` here, but we're probably depending on
@@ -403,8 +449,8 @@ Array TimeZone::transitions(int64_t timestamp_begin, /* = k_PHP_INT_MIN */
     return null_array;
   }
 
-  uint32_t timecnt;
-  timecnt = m_tzi->bit32.timecnt;
+  uint64_t timecnt;
+  timecnt = m_tzi->bit64.timecnt;
   uint32_t lastBefore = 0;
   for (uint32_t i = 0;
        i < timecnt && m_tzi->trans && m_tzi->trans[i] <= timestamp_begin;
@@ -422,7 +468,7 @@ Array TimeZone::transitions(int64_t timestamp_begin, /* = k_PHP_INT_MIN */
     int index = m_tzi->trans ? m_tzi->trans_idx[lastBefore] : 0;
     ttinfo &offset = m_tzi->type[index];
     const char *abbr = m_tzi->timezone_abbr + offset.abbr_idx;
-    ret.append(make_darray(
+    ret.append(make_dict_array(
       s_ts, timestamp_begin,
       s_time, dt->toString(DateTime::DateFormat::ISO8601),
       s_offset, offset.offset,
@@ -430,17 +476,18 @@ Array TimeZone::transitions(int64_t timestamp_begin, /* = k_PHP_INT_MIN */
       s_abbr, String(abbr, CopyString)
     ));
   }
+
   for (uint32_t i = lastBefore;
        i < timecnt && m_tzi->trans && m_tzi->trans[i] < timestamp_end;
        ++i) {
-    int timestamp = m_tzi->trans[i];
+    int64_t timestamp = m_tzi->trans[i];
     if (timestamp_begin <= timestamp) {
       int index = m_tzi->trans_idx[i];
       auto dt = req::make<DateTime>(timestamp, req::make<TimeZone>("UTC"));
       ttinfo &offset = m_tzi->type[index];
       const char *abbr = m_tzi->timezone_abbr + offset.abbr_idx;
 
-      ret.append(make_darray(
+      ret.append(make_dict_array(
         s_ts, timestamp,
         s_time, dt->toString(DateTime::DateFormat::ISO8601),
         s_offset, offset.offset,
@@ -457,7 +504,7 @@ Array TimeZone::transitions(int64_t timestamp_begin, /* = k_PHP_INT_MIN */
 
 Array TimeZone::getLocation() const {
   if (!m_tzi) return Array{};
-  DArrayInit ret(4);
+  DictInit ret(4);
 
   ret.set(s_country_code, String(m_tzi->location.country_code, CopyString));
   ret.set(s_latitude,     m_tzi->location.latitude);

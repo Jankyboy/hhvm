@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_ASSERTIONS_H_
-#define incl_HPHP_ASSERTIONS_H_
+#pragma once
 
 #include <cassert>
 #include <cstdio>
@@ -201,16 +200,5 @@ private:
 
 ///////////////////////////////////////////////////////////////////////////////
 
-/*
- * assert_not_null() exists to help the compiler along when we know that a
- * pointer can't be null, and knowing this results in better codegen.
- */
-template<typename T>
-T* assert_not_null(T* ptr) {
-  if (ptr == nullptr) not_reached();
-  return ptr;
 }
 
-}
-
-#endif

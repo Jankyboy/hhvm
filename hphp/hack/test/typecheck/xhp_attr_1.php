@@ -1,15 +1,13 @@
 <?hh // strict
-class :blah {}
+class :blah extends XHPTest {}
 class GenericClass<T> {}
 class SomeClass {
   public function bar(): float {
     return 3.14;
   }
 }
-class :foo {
+class :foo extends XHPTest {
   attribute
-    // Using array without type parameters is okay for now
-    array bar-baz = varray[],
     // Using GenericClass without type parameters is disallowed in strict mode
     /* HH_FIXME[4101] */
     GenericClass yo @required,

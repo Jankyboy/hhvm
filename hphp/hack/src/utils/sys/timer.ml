@@ -27,6 +27,9 @@
  * 4. When the Unix timer fires, we execute the current timer's callback and schedule the next timer
  *)
 
+open Base
+module Sys = Stdlib.Sys
+
 type t = int
 
 type timer = {
@@ -38,43 +41,46 @@ type timer = {
 module TimerKey = struct
   type t = timer
 
-  let compare a b = compare a.target_time b.target_time
+  let compare a b = Float.compare a.target_time b.target_time
 end
 
-(* Mutable priority queue with O(log(n)) pushes and pops *)
+(** Mutable priority queue, ordered by target time, with O(log(n)) pushes and pops *)
 module TimerQueue = PriorityQueue.Make (TimerKey)
 
 let next_id = ref 1
 
-let queue = TimerQueue.make_empty 8
+let queue : TimerQueue.t = TimerQueue.make_empty 8
 
-let current_timer = ref None
+let current_timer : timer option ref = ref None
 
-let cancelled = ref ISet.empty
+let cancelled : ISet.t ref = ref ISet.empty
 
-(* Get's the next timer. Any expired timers have their callbacks invoked *)
+(** Gets the next ongoing timer. Any expired timers have their callbacks invoked *)
 let rec get_next_timer ~exns =
   if TimerQueue.is_empty queue then
     (None, List.rev exns)
   else
     let timer = TimerQueue.pop queue in
     (* Skip cancelled timers *)
-    if ISet.mem timer.id !cancelled then
+    if ISet.mem timer.id !cancelled then begin
+      cancelled := ISet.remove timer.id !cancelled;
       get_next_timer ~exns
-    else
+    end else
       let interval = timer.target_time -. Unix.gettimeofday () in
-      if interval <= 0.0 then
+      if Float.(interval <= 0.0) then
         let exns =
           try
             timer.callback ();
             exns
-          with exn -> exn :: exns
+          with
+          | exn -> exn :: exns
         in
         get_next_timer ~exns
       else
         (Some timer, List.rev exns)
 
-(* Schedules an alarm for interval seconds *)
+(** [schedule_non_recurring interval] sets the Unix ITIMER_REAL interval timer
+    for [interval] seconds, which will deliver signal SIGALRM upon completion. *)
 let schedule_non_recurring interval =
   Unix.(
     let interval_timer =
@@ -88,16 +94,20 @@ let schedule_non_recurring interval =
 
 external reraise : exn -> 'a = "%reraise"
 
+(** Calls the callback of the current timer and schedule next timer if any. *)
 let rec ding_fries_are_done _ =
   let exns =
     try
       Option.iter !current_timer ~f:(fun timer -> timer.callback ());
       []
-    with exn -> [exn]
+    with
+    | exn -> [exn]
   in
   current_timer := None;
   schedule ~exns ()
 
+(** Pop timer queue to get the current timer and schedule its callback by setting the Unix
+    ITIMER_REAL interval timer and setting a signal handler for SIGALRM. *)
 and schedule ?(exns = []) () =
   (* Stop the current timer, if there is one, to avoid races *)
   schedule_non_recurring 0.0;
@@ -120,14 +130,14 @@ and schedule ?(exns = []) () =
   | exn :: _ -> reraise exn
   | _ -> ()
 
-(* Will invoke callback () after interval seconds *)
+(** Will invoke [callback ()] after [interval] seconds *)
 let set_timer ~interval ~callback =
   let target_time = Unix.gettimeofday () +. interval in
   let id = !next_id in
-  incr next_id;
+  Int.incr next_id;
   TimerQueue.push queue { target_time; callback; id };
   (match !current_timer with
-  | Some current_timer when target_time >= current_timer.target_time ->
+  | Some current_timer when Float.(target_time >= current_timer.target_time) ->
     (* There's currently a timer and the new timer will fire after it. As an optimization we can
        skip scheduling *)
     ()

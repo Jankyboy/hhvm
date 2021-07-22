@@ -20,8 +20,6 @@
 #include "hphp/runtime/vm/jit/translator.h"
 #include "hphp/util/eh-frame.h"
 
-#include <folly/Optional.h>
-
 #include <string>
 #include <vector>
 
@@ -172,15 +170,13 @@ struct DwarfInfo {
   FuncDB m_functions;
 
   const char *lookupFile(const Unit *unit);
-  void addLineEntries(TCRange range, const Func* func,
-                      PC instr, FunctionInfo* f);
+  void addLineEntries(TCRange range, int lineNumber, FunctionInfo* f);
   void transferFuncs(DwarfChunk* from, DwarfChunk* to);
   void compactChunks();
   DwarfChunk* addTracelet(TCRange range,
-                          folly::Optional<std::string> name,
+                          Optional<std::string> name,
                           const Func* func,
-                          PC instr,
-                          bool exit,
+                          int lineNumber,
                           bool inPrologue);
   void syncChunks();
 };

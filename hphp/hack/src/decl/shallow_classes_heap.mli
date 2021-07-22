@@ -7,43 +7,47 @@
  *
  *)
 
-(** [Shallow_classes_heap] provides a cache of shallow class declarations when
-    the local config option [shallow_class_decl] is enabled. When it is not
-    enabled, this module provides only [class_naming_and_decl], which converts
-    an AST to a shallow declaration, and other functions raise an exception. *)
+(** [Shallow_classes_heap] provides a cache of shallow class declarations. *)
 
 open Shallow_decl_defs
 
-(** Return the shallow declaration of the class with the given name if it is
-    present in the cache. Otherwise, compute it, store it in the cache, and
-    return it.
+module Capacity : sig
+  val capacity : int
+end
 
-    Raises [Failure] if [shallow_class_decl] is not enabled. *)
-val get : Provider_context.t -> string -> shallow_class option
+module Class : sig
+  type t = shallow_class
 
-(** Convert the given class AST to a shallow class declaration and return it. *)
-val class_naming_and_decl : Provider_context.t -> Nast.class_ -> shallow_class
+  val prefix : Prefix.t
 
-(** If a shallow declaration for the class with the given name is present in the
-    cache, return it. Otherwise, convert the given class AST to a shallow class
-    declaration, store it in the cache, and return it.
+  val description : string
+end
 
-    Raises [Failure] if [shallow_class_decl] is not enabled. *)
-val class_decl_if_missing : Provider_context.t -> Nast.class_ -> shallow_class
+module Classes :
+    module type of
+      SharedMem.WithCache (SharedMem.ProfiledImmediate) (StringKey) (Class)
+        (Capacity)
 
-val declare_class_in_file :
-  Provider_context.t -> Relative_path.t -> string -> shallow_class
+module FilterCapacity : sig
+  val capacity : int
+end
 
-val push_local_changes : unit -> unit
+module Filter : sig
+  type t = BloomFilter.t
 
-val pop_local_changes : unit -> unit
+  val prefix : Prefix.t
 
-val get_batch : SSet.t -> shallow_class option SMap.t
+  val description : string
+end
 
-val get_old_batch : SSet.t -> shallow_class option SMap.t
+module MemberFilters : sig
+  include module type of
+      SharedMem.WithCache (SharedMem.ProfiledImmediate) (StringKey) (Filter)
+        (FilterCapacity)
 
-val oldify_batch : SSet.t -> unit
-
-val remove_old_batch : SSet.t -> unit
-
-val remove_batch : SSet.t -> unit
+  (**
+   * Computes a Bloom Filter of the name of the members in the shallow class
+   * and stores it in shared memory, using the name of the resptive class as
+   * the key *)
+  val add : shallow_class -> unit
+end

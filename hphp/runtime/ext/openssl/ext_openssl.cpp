@@ -1025,7 +1025,7 @@ Variant HHVM_FUNCTION(openssl_csr_get_subject, const Variant& csr,
   if (!pcsr) return false;
 
   X509_NAME *subject = X509_REQ_get_subject_name(pcsr->csr());
-  Array ret = Array::CreateDArray();
+  Array ret = Array::CreateDict();
   add_assoc_name_entry(ret, nullptr, subject, use_shortnames);
   return ret;
 }
@@ -1398,7 +1398,7 @@ bool HHVM_FUNCTION(openssl_pkcs12_read, const String& pkcs12, Variant& certs,
     X509 *cert = nullptr;
     STACK_OF(X509) *ca = nullptr;
     if (PKCS12_parse(p12, pass.data(), &pkey, &cert, &ca)) {
-      Variant vcerts = Array::CreateDArray();
+      Variant vcerts = Array::CreateDict();
       SCOPE_EXIT {
         certs = vcerts;
       };
@@ -1804,23 +1804,9 @@ openssl_pkey_export_impl(const Variant& key, BIO *bio_out,
     }
     assertx(bio_out);
 
-    switch (EVP_PKEY_id(pkey)) {
-#ifdef HAVE_EVP_PKEY_EC
-      case EVP_PKEY_EC:
-        ret = PEM_write_bio_ECPrivateKey(bio_out, EVP_PKEY_get0_EC_KEY(pkey),
-                                         cipher,
-                                         (unsigned char *)passphrase.data(),
-                                         passphrase.size(),
-                                         nullptr,
-                                         nullptr);
-        break;
-#endif
-      default:
-        ret = PEM_write_bio_PrivateKey(bio_out, pkey, cipher,
-                                       (unsigned char *)passphrase.data(),
-                                       passphrase.size(), nullptr, nullptr);
-        break;
-    }
+    ret = PEM_write_bio_PrivateKey(bio_out, pkey, cipher,
+                                   (unsigned char *)passphrase.data(),
+                                   passphrase.size(), nullptr, nullptr);
   }
   php_openssl_dispose_config(&req);
   return ret;
@@ -1909,13 +1895,13 @@ Array HHVM_FUNCTION(openssl_pkey_get_details, const Resource& key) {
   char *pbio;
   unsigned int pbio_len = BIO_get_mem_data(out, &pbio);
 
-  auto ret = make_darray(
+  auto ret = make_dict_array(
     s_bits, EVP_PKEY_bits(pkey),
     s_key, String(pbio, pbio_len, CopyString)
   );
   long ktype = -1;
 
-  auto details = Array::CreateDArray();
+  auto details = Array::CreateDict();
   switch (EVP_PKEY_id(pkey)) {
   case EVP_PKEY_RSA:
   case EVP_PKEY_RSA2:
@@ -2297,7 +2283,7 @@ Variant HHVM_FUNCTION(openssl_seal, const String& data, Variant& sealed_data,
   if (len1 + len2 > 0) {
     sealed_data = s.setSize(len1 + len2);
 
-    auto ekeys = Array::CreateVArray();
+    auto ekeys = Array::CreateVec();
     for (i = 0; i < nkeys; i++) {
       eks[i][eksl[i]] = '\0';
       ekeys.append(String((char*)eks[i], eksl[i], AttachString));
@@ -2703,7 +2689,7 @@ Variant HHVM_FUNCTION(openssl_x509_parse, const Variant& x509cert,
   X509 *cert = ocert->m_cert;
   assertx(cert);
 
-  auto ret = Array::CreateDArray();
+  auto ret = Array::CreateDict();
   const auto sn = X509_get_subject_name(cert);
   if (sn) {
     ret.set(s_name, String(X509_NAME_oneline(sn, nullptr, 0), CopyString));
@@ -2752,7 +2738,7 @@ Variant HHVM_FUNCTION(openssl_x509_parse, const Variant& x509cert,
       int id = X509_PURPOSE_get_id(purp);
       char * pname = shortnames ? X509_PURPOSE_get0_sname(purp) :
         X509_PURPOSE_get0_name(purp);
-      auto subsub = make_varray(
+      auto subsub = make_vec_array(
         (bool)X509_check_purpose(cert, id, 0),
         (bool)X509_check_purpose(cert, id, 1),
         String(pname, CopyString)
@@ -2762,7 +2748,7 @@ Variant HHVM_FUNCTION(openssl_x509_parse, const Variant& x509cert,
     ret.set(s_purposes, subitem);
   }
   {
-    auto subitem = Array::CreateDArray();
+    auto subitem = Array::CreateDict();
     for (int i = 0; i < X509_get_ext_count(cert); i++) {
       int nid;
       X509_EXTENSION *extension = X509_get_ext(cert, i);
@@ -2940,7 +2926,7 @@ static bool php_openssl_validate_iv(
   }
 
   if (piv.size() < iv_required_len) {
-    raise_warning("IV passed is only %d bytes long, cipher "
+    raise_warning("IV passed is only %ld bytes long, cipher "
                   "expects an IV of precisely %d bytes, padding with \\0",
                   piv.size(), iv_required_len);
     memcpy(iv_new, piv.data(), piv.size());
@@ -2949,7 +2935,7 @@ static bool php_openssl_validate_iv(
     return true;
   }
 
-  raise_warning("IV passed is %d bytes long which is longer than the %d "
+  raise_warning("IV passed is %ld bytes long which is longer than the %d "
                 "expected by selected cipher, truncating", piv.size(),
                 iv_required_len);
   memcpy(iv_new, piv.data(), iv_required_len);
@@ -3331,7 +3317,7 @@ static void openssl_add_method(const OBJ_NAME *name, void *arg)
 }
 
 Array HHVM_FUNCTION(openssl_get_cipher_methods, bool aliases /* = false */) {
-  Array ret = Array::CreateVArray();
+  Array ret = Array::CreateVec();
   OBJ_NAME_do_all_sorted(OBJ_NAME_TYPE_CIPHER_METH,
     aliases ? openssl_add_method_or_alias: openssl_add_method,
     &ret);
@@ -3346,7 +3332,7 @@ Variant HHVM_FUNCTION(openssl_get_curve_names) {
     return false;
   }
 
-  VArrayInit ret(len);
+  VecInit ret(len);
   for (size_t i = 0; i < len; ++i) {
     auto const sname = OBJ_nid2sn(curves[i].nid);
     if (sname != nullptr) {
@@ -3361,7 +3347,7 @@ Variant HHVM_FUNCTION(openssl_get_curve_names) {
 }
 
 Array HHVM_FUNCTION(openssl_get_md_methods, bool aliases /* = false */) {
-  Array ret = Array::CreateVArray();
+  Array ret = Array::CreateVec();
   OBJ_NAME_do_all_sorted(OBJ_NAME_TYPE_MD_METH,
     aliases ? openssl_add_method_or_alias: openssl_add_method,
     &ret);

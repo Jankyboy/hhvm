@@ -13,7 +13,7 @@
  * as stripped down to just the basics as possible to make finding the root
  * cause of test failures easier. *)
 
-open Core_kernel
+open Hh_prelude
 
 module Types_pos_asserter = Asserter.Make_asserter (struct
   type t = FileInfo.pos * Naming_types.kind_of_type
@@ -24,7 +24,7 @@ module Types_pos_asserter = Asserter.Make_asserter (struct
       (FileInfo.show_pos pos)
       (Naming_types.kind_of_type_to_enum type_of_type)
 
-  let is_equal = ( = )
+  let is_equal = Poly.( = )
 end)
 
 module Pos_asserter = Asserter.Make_asserter (struct
@@ -32,7 +32,7 @@ module Pos_asserter = Asserter.Make_asserter (struct
 
   let to_string pos = Printf.sprintf "(%s)" (FileInfo.show_pos pos)
 
-  let is_equal = ( = )
+  let is_equal = FileInfo.equal_pos
 end)
 
 let files =
@@ -51,7 +51,7 @@ let files =
   |});
   ]
 
-let write_and_parse_test_files () =
+let write_and_parse_test_files ctx =
   let files =
     List.map files ~f:(fun (fn, contents) ->
         (Relative_path.from_root ~suffix:fn, contents))
@@ -63,6 +63,7 @@ let write_and_parse_test_files () =
       Disk.write_file ~file:(Path.to_string fn) ~contents);
   let (file_infos, errors, failed_parsing) =
     Parsing_service.go
+      ctx
       None
       Relative_path.Set.empty
       ~get_next:(MultiWorker.next None (List.map files ~f:fst))
@@ -72,12 +73,16 @@ let write_and_parse_test_files () =
   if not (Errors.is_empty errors) then (
     Errors.iter_error_list
       (fun e ->
-        List.iter (Errors.to_list e) ~f:(fun (pos, msg) ->
-            eprintf "%s: %s\n" (Pos.string (Pos.to_absolute pos)) msg))
+        List.iter (Errors.to_list_ e) ~f:(fun (pos, msg) ->
+            eprintf
+              "%s: %s\n"
+              (Pos.string
+                 (Pos.to_absolute @@ Pos_or_decl.unsafe_to_raw_pos pos))
+              msg))
       errors;
     failwith "Expected no errors from parsing."
   );
-  if failed_parsing <> Relative_path.Set.empty then
+  if not (Relative_path.Set.is_empty failed_parsing) then
     failwith "Expected all files to pass parsing.";
   Naming_table.create file_infos
 
@@ -97,6 +102,7 @@ let run_test f =
             shm_min_avail = 0;
             log_level = 0;
             sample_rate = 0.0;
+            compression = 0;
           }
       in
       let (_ : SharedMem.handle) = SharedMem.init config ~num_workers:0 in
@@ -104,9 +110,10 @@ let run_test f =
         Provider_context.empty_for_test
           ~popt:ParserOptions.default
           ~tcopt:TypecheckerOptions.default
+          ~deps_mode:Typing_deps_mode.SQLiteMode
       in
 
-      let unbacked_naming_table = write_and_parse_test_files () in
+      let unbacked_naming_table = write_and_parse_test_files ctx in
       let db_name = Path.to_string (Path.concat path "naming_table.sqlite") in
       let save_results = Naming_table.save unbacked_naming_table db_name in
       Asserter.Int_asserter.assert_equals
@@ -134,11 +141,16 @@ let test_dep_graph_blob () =
             recheck_id = None;
             profile_log = false;
             profile_type_check_duration_threshold = 0.0;
+            profile_type_check_memory_threshold_mb = 0;
             profile_type_check_twice = false;
+            profile_decling = Typing_service_types.DeclingOff;
           }
       in
       let ctx =
-        Provider_context.empty_for_test ~popt:ParserOptions.default ~tcopt:opts
+        Provider_context.empty_for_test
+          ~popt:ParserOptions.default
+          ~tcopt:opts
+          ~deps_mode:Typing_deps_mode.SQLiteMode
       in
 
       (* Check reentrancy *)
@@ -151,8 +163,10 @@ let test_dep_graph_blob () =
             (Telemetry.create ())
             dynamic_view_files
             [Relative_path.from_root ~suffix:"baz.php"]
-            memory_cap
-            check_info
+            ~memory_cap
+            ~longlived_workers:false
+            ~remote_execution:None
+            ~check_info
         in
 
         Asserter.Bool_asserter.assert_equals

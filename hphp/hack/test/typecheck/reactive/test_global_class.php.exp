@@ -1,2 +1,0 @@
-File "test_global_class.php", line 10, characters 8-26:
-Static property cannot be used in a reactive context. (Typing[4228])

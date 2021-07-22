@@ -9,35 +9,43 @@
 
 val find_class_in_file :
   ?full:bool ->
-  ?case_insensitive:bool ->
   Provider_context.t ->
   Relative_path.t ->
   string ->
   Nast.class_ option
 
+val find_iclass_in_file :
+  Provider_context.t -> Relative_path.t -> string -> Nast.class_ option
+
 val find_record_def_in_file :
   ?full:bool ->
-  ?case_insensitive:bool ->
   Provider_context.t ->
   Relative_path.t ->
   string ->
   Nast.record_def option
 
+val find_irecord_def_in_file :
+  Provider_context.t -> Relative_path.t -> string -> Nast.record_def option
+
 val find_fun_in_file :
   ?full:bool ->
-  ?case_insensitive:bool ->
   Provider_context.t ->
   Relative_path.t ->
   string ->
-  Nast.fun_ option
+  Nast.fun_def option
+
+val find_ifun_in_file :
+  Provider_context.t -> Relative_path.t -> string -> Nast.fun_def option
 
 val find_typedef_in_file :
   ?full:bool ->
-  ?case_insensitive:bool ->
   Provider_context.t ->
   Relative_path.t ->
   string ->
   Nast.typedef option
+
+val find_itypedef_in_file :
+  Provider_context.t -> Relative_path.t -> string -> Nast.typedef option
 
 val find_gconst_in_file :
   ?full:bool ->
@@ -49,12 +57,8 @@ val find_gconst_in_file :
 val get_ast :
   ?full:bool -> Provider_context.t -> Relative_path.t -> Nast.program
 
-val parse :
-  ParserOptions.t ->
-  full:bool ->
-  keep_errors:bool ->
-  source_text:Full_fidelity_source_text.t ->
-  Parser_return.t
+val get_ast_with_error :
+  ?full:bool -> Provider_context.t -> Relative_path.t -> Errors.t * Nast.program
 
 (** Compute the AST for the given [Provider_context.entry]. *)
 val compute_ast :
@@ -102,3 +106,7 @@ val provide_ast_hint : Relative_path.t -> Nast.program -> parse_type -> unit
 val remove_batch : Relative_path.Set.t -> unit
 
 val has_for_test : Relative_path.t -> bool
+
+val clear_parser_cache : unit -> unit
+
+val clear_local_cache : unit -> unit

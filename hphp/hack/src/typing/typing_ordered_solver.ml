@@ -193,8 +193,8 @@ end = struct
     let (m, rep2) = get_rep v2 m in
     set_rep rep1 rep2 m
 
-  (* Test equality of the mathematical object represented by the two given maps, 
-  i.e. modulo path compression and choice of the representative. *)
+  (* Test equality of the mathematical object represented by the two given maps,
+     i.e. modulo path compression and choice of the representative. *)
   let equal m1 m2 =
     let vars1 = IMap.keys m1 |> ISet.of_list in
     let vars2 = IMap.keys m2 |> ISet.of_list in
@@ -542,7 +542,7 @@ end = struct
     in
     let node_exists_in_graph
         (m2 : Equiv.t) (deps2 : graph) (rep1 : Rep.t) (n1 : node) =
-      let rep2 = get_rep (Rep.id rep1) m2 in
+      let rep2 = get_rep (Rep.id rep1) ~m:m2 in
       match RepMap.find_opt (Rep.id rep2) deps2 with
       | None -> false
       | Some n2 -> node_equal n1 n2 m2
@@ -685,7 +685,7 @@ let nonnull_and_var env v =
   let r = Reason.none in
   let tvar = mk (r, Tvar v) in
   let tnonnull = Typing_make_type.nonnull r in
-  let (env, ty) = Typing_intersection.intersect env r tnonnull tvar in
+  let (env, ty) = Typing_intersection.intersect env ~r tnonnull tvar in
   (env, LoclType ty)
 
 (** Traverse a type a get unsolved type variables appearing in it. *)
@@ -717,7 +717,7 @@ let rec prop_to_env_cc (acc : prop_to_env_acc) (prop : TL.subtype_prop) :
     prop_to_env_acc =
   match prop with
   | TL.IsSubtype (ty_sub, ty_super) -> is_sub_prop_to_env_cc acc ty_sub ty_super
-  | TL.Coerce (_ty_sub, _ty_super) ->
+  | TL.Coerce (_cd, _ty_sub, _ty_super) ->
     (* For global inference, for now, we don't do coercion. *)
     assert false
   | TL.Conj props -> conj_prop_to_env_cc acc props
@@ -888,18 +888,18 @@ let build_ccs (env : env) ~make_on_error : env * CC.t =
           ITySet.fold
             (fun ty_sub (env, cc, deps) ->
               (* Essentially, we break down unions in lower bounds and intersections
-                in upper bounds, which allows to easily see which
-                variables are in the same CCs and which CCs depend on
-                each other.
-                The advantage of using simplify_subtype here is that simplify_subtype is the unique source of
-                truth for how to break down unions in lower bounds and intersections in upper
-                bounds. E.g. (A & (B | C)) <: #1 could be broken down as [A & B, A & C] <: #1,
-                but if simplify_subtype does not break it down this way, then we don't either.
-                This way, we make sure all the edges in the
-                graph are consistent, i.e. if v has bound v', then v' has bound v.
-                Besides, in prop_to_env_cc below, we also make sure that for each bound of the form
-                #1 <: ?#2, we have the bound (nonnull & #1) <: #2
-                NB: these calls to subtype should be relatively cheap because they're all of the form X <: #n *)
+                 in upper bounds, which allows to easily see which
+                 variables are in the same CCs and which CCs depend on
+                 each other.
+                 The advantage of using simplify_subtype here is that simplify_subtype is the unique source of
+                 truth for how to break down unions in lower bounds and intersections in upper
+                 bounds. E.g. (A & (B | C)) <: #1 could be broken down as [A & B, A & C] <: #1,
+                 but if simplify_subtype does not break it down this way, then we don't either.
+                 This way, we make sure all the edges in the
+                 graph are consistent, i.e. if v has bound v', then v' has bound v.
+                 Besides, in prop_to_env_cc below, we also make sure that for each bound of the form
+                 #1 <: ?#2, we have the bound (nonnull & #1) <: #2
+                 NB: these calls to subtype should be relatively cheap because they're all of the form X <: #n *)
               let (env, prop) = subtype env ty_sub tvar ~on_error in
               let (env, cc, deps) = prop_to_env_cc (env, cc, deps) prop in
               (env, cc, deps))
@@ -1052,12 +1052,12 @@ let get_cc_variance env cc (rep : Rep.t) : env * variance =
   let env = ISet.fold (fun v env -> set_variance env v variance) vars env in
   (env, variance)
 
-(** Find a type within the constraints for v which is the smallest possible, 
+(** Find a type within the constraints for v which is the smallest possible,
     usually the union of lower bounds. *)
 let find_small_type env v =
   let bounds = Env.get_tyvar_lower_bounds env v in
   (* For now assert there are no constraint types in lower bounds. If it turns
-  out there are, we'll fix that. *)
+     out there are, we'll fix that. *)
   assert (ITySet.for_all is_locl_type bounds);
   let bounds = TySet.elements @@ Utils.filter_locl_types bounds in
   (* We don't care for reasons for global inference. *)
@@ -1083,9 +1083,9 @@ let rec solve_down v (env, cc, deps) ~make_on_error =
       ITySet.fold
         (fun ty_super (env, cc, deps) ->
           (* TODO: unclear if we need to handle type constants. Convert them to constraint types?
-            or at least `make_all_type_const_equal` should also return a prop. Also if
-            this needs to be done, there is CC dependencies between this cc and
-            the cc of vars in type constants of this var. *)
+             or at least `make_all_type_const_equal` should also return a prop. Also if
+             this needs to be done, there is CC dependencies between this cc and
+             the cc of vars in type constants of this var. *)
           let (env, prop) =
             subtype env (LoclType ty) ty_super ~on_error:(make_on_error v)
           in
@@ -1096,7 +1096,7 @@ let rec solve_down v (env, cc, deps) ~make_on_error =
     in
     (env, cc, deps)
 
-(** Find a type within the constraints for v which is the largest possible, 
+(** Find a type within the constraints for v which is the largest possible,
     usually the intersection of upper bounds. *)
 let find_large_type env v =
   let bounds = Env.get_tyvar_upper_bounds env v in
@@ -1176,7 +1176,7 @@ let solve_ccs (env, cc) ~make_on_error =
   in
   let (env, _cc) = solve_unblocked env cc (CC.get_all_unblocked_ccs cc) in
   (* TODO: deal with remaining unsolved CCs.
-    Those should still be blocked because they should belong to cycles or be blocked by cycles. *)
+     Those should still be blocked because they should belong to cycles or be blocked by cycles. *)
   env
 
 let solve_env (env : env) make_on_error : env =

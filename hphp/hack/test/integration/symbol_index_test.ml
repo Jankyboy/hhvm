@@ -1,4 +1,4 @@
-open Core_kernel
+open Hh_prelude
 open IndexBuilderTypes
 open SearchUtils
 open Test_harness
@@ -31,16 +31,16 @@ let assert_ns_matches (expected_ns : string) (actual : SearchUtils.si_results) :
     unit =
   let found =
     List.fold actual ~init:false ~f:(fun acc item ->
-        item.si_name = expected_ns || acc)
+        String.equal item.si_name expected_ns || acc)
   in
-  ( if not found then
+  (if not found then
     let results_str =
       List.fold actual ~init:"" ~f:(fun acc item -> acc ^ ";" ^ item.si_name)
     in
     let msg =
       Printf.sprintf "Did not find [%s] in [%s]" expected_ns results_str
     in
-    IA.assert_equals 0 1 msg );
+    IA.assert_equals 0 1 msg);
   ()
 
 let assert_autocomplete
@@ -82,7 +82,7 @@ let run_index_builder (harness : Test_harness.t) : si_env =
   Relative_path.set_path_prefix Relative_path.Hhi hhi_folder;
   let repo_path = Path.to_string harness.repo_dir in
   (* Set up initial variables *)
-  let fn = Filename.temp_file "autocomplete." ".db" in
+  let fn = Caml.Filename.temp_file "autocomplete." ".db" in
   let file_opt = Some fn in
   let ctxt =
     {
@@ -139,7 +139,7 @@ let test_sqlite_plus_local (harness : Test_harness.t) : bool =
   let s = Relative_path.Set.empty in
   let s = Relative_path.Set.add s bar1path in
   let s = Relative_path.Set.add s foo3path in
-  let sienv = SymbolIndex.remove_files ~sienv ~paths:s in
+  let sienv = SymbolIndexCore.remove_files ~sienv ~paths:s in
   Hh_logger.log "Removed files";
 
   (* Two of these have been removed! *)
@@ -162,7 +162,7 @@ let test_sqlite_plus_local (harness : Test_harness.t) : bool =
     (FileInfo.File (FileInfo.Class, bar1path), "\\NoBigTrait")
   in
   let some_long_function_name_id =
-    (FileInfo.File (FileInfo.Class, foo3path), "\\some_long_function_name")
+    (FileInfo.File (FileInfo.Fun, foo3path), "\\some_long_function_name")
   in
   let bar1fileinfo =
     {
@@ -190,15 +190,20 @@ let test_sqlite_plus_local (harness : Test_harness.t) : bool =
   in
   let changelist =
     [
-      (bar1path, Full bar1fileinfo, TypeChecker);
-      (foo3path, Full foo3fileinfo, TypeChecker);
+      (bar1path, bar1fileinfo, TypeChecker);
+      (foo3path, foo3fileinfo, TypeChecker);
     ]
   in
   let init_id = Random_id.short_string () in
-  let env = ServerEnvBuild.make_env ~init_id ServerConfig.default_config in
+  let env =
+    ServerEnvBuild.make_env
+      ~init_id
+      ~deps_mode:Typing_deps_mode.SQLiteMode
+      ServerConfig.default_config
+  in
   let ctx = Provider_utils.ctx_from_server_env env in
-  let sienv = SymbolIndex.update_files ~ctx ~sienv ~paths:changelist in
-  let n = LocalSearchService.count_local_fileinfos sienv in
+  let sienv = SymbolIndexCore.update_files ~ctx ~sienv ~paths:changelist in
+  let n = LocalSearchService.count_local_fileinfos ~sienv in
   Hh_logger.log "Added back; local search service now contains %d files" n;
 
   (* Find one of each major type *)
@@ -361,7 +366,12 @@ let test_namespace_map (harness : Test_harness.t) : bool =
 let test_docblock_finder (harness : Test_harness.t) : bool =
   let _ = harness in
   let init_id = Random_id.short_string () in
-  let env = ServerEnvBuild.make_env ~init_id ServerConfig.default_config in
+  let env =
+    ServerEnvBuild.make_env
+      ~init_id
+      ~deps_mode:Typing_deps_mode.SQLiteMode
+      ServerConfig.default_config
+  in
   let handle = SharedMem.init ~num_workers:0 SharedMem.default_config in
   ignore (handle : SharedMem.handle);
 

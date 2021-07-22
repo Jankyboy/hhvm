@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VSDEBUG_LOGGING_H_
-#define incl_HPHP_VSDEBUG_LOGGING_H_
+#pragma once
 
 #include "hphp/runtime/ext/extension.h"
 #include "hphp/util/async-func.h"
@@ -39,9 +38,10 @@ struct VSDebugLogger final {
   static void SetLogRotationEnabled(bool enabled);
   static bool GetLogRotationEnabled();
 
-  static constexpr char* LogLevelError = "ERROR";
-  static constexpr char* LogLevelWarning = "WARNING";
-  static constexpr char* LogLevelInfo = "INFO";
+  static constexpr const char* LogLevelError = "ERROR";
+  static constexpr const char* LogLevelWarning = "WARNING";
+  static constexpr const char* LogLevelInfo = "INFO";
+  static constexpr const char* LogLevelVerbose = "VERBOSE";
 
   VSDebugLogger() :
     m_loggerTaskThread(this, &VSDebugLogger::loggerMaintenanceTask) {
@@ -77,4 +77,3 @@ private:
 }
 }
 
-#endif // incl_HPHP_VSDEBUG_LOGGING_H_

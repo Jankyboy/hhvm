@@ -179,10 +179,12 @@ Outer:                                 | Inner:
 #include "hphp/runtime/vm/jit/analysis.h"
 #include "hphp/runtime/vm/jit/mutation.h"
 
+#include "hphp/runtime/vm/jit/irgen.h"
 #include "hphp/runtime/vm/jit/irgen-call.h"
 #include "hphp/runtime/vm/jit/irgen-control.h"
 #include "hphp/runtime/vm/jit/irgen-create.h"
 #include "hphp/runtime/vm/jit/irgen-exit.h"
+#include "hphp/runtime/vm/jit/irgen-internal.h"
 #include "hphp/runtime/vm/jit/irgen-func-prologue.h"
 #include "hphp/runtime/vm/jit/irgen-sprop-global.h"
 
@@ -212,13 +214,37 @@ void beginInlining(IRGS& env,
   assertx(callBcOffset >= 0 && "callBcOffset before beginning of caller");
   // curFunc is null when called from conjureBeginInlining
   assertx((!curFunc(env) ||
-          curFunc(env)->base() + callBcOffset < curFunc(env)->past()) &&
+          callBcOffset < curFunc(env)->bclen()) &&
          "callBcOffset past end of caller");
+  assertx(fca.numArgs >= target->numRequiredParams());
   assertx(fca.numArgs <= target->numNonVariadicParams());
   assertx(!fca.hasUnpack() || fca.numArgs == target->numNonVariadicParams());
   assertx(!fca.hasUnpack() || target->hasVariadicCaptureParam());
 
   FTRACE(1, "[[[ begin inlining: {}\n", target->fullName()->data());
+
+  auto const numArgsInclUnpack = fca.numArgs + (fca.hasUnpack() ? 1U : 0U);
+
+  // For cost calculation, use the most permissive coeffect
+  auto const coeffects = curFunc(env)
+    ? curCoeffects(env) : cns(env, RuntimeCoeffects::none().value());
+
+  auto const callFlags = cns(env, CallFlags(
+    fca.hasGenerics(),
+    dynamicCall,
+    false, // inline return stub doesn't support async eager return
+    0, // call offset unused by the logic below
+    0,
+    RuntimeCoeffects::none() // coeffects may not be known statically
+  ).value());
+
+  // Callee checks and input initialization.
+  emitCalleeGenericsChecks(env, target, callFlags, fca.hasGenerics());
+  emitCalleeDynamicCallChecks(env, target, callFlags);
+  emitCalleeCoeffectChecks(env, target, callFlags, coeffects,
+                           numArgsInclUnpack, ctx);
+  emitCalleeRecordFuncCoverage(env, target);
+  emitInitFuncInputs(env, target, numArgsInclUnpack);
 
   auto const closure = target->isClosureBody()
     ? gen(env, AssertType, Type::ExactObj(target->implCls()), ctx)
@@ -261,19 +287,15 @@ void beginInlining(IRGS& env,
     return gen(env, AssertType, ty, ctx);
   }();
 
-  auto const generics = [&]() -> SSATmp* {
-    if (!fca.hasGenerics()) return nullptr;
-    if (target->hasReifiedGenerics()) return popC(env);
-    popDecRef(env, DataTypeGeneric);
-    return nullptr;
-  }();
-
-  auto const numArgs = fca.numArgs + (fca.hasUnpack() ? 1 : 0);
-  jit::vector<SSATmp*> params{numArgs + 1};
-
-  for (unsigned i = 0; i < numArgs; ++i) {
-    params[numArgs - i - 1] = popC(env);
+  auto const numTotalInputs =
+    target->numParams()
+    + (target->hasReifiedGenerics() ? 1U : 0U)
+    + (target->hasCoeffectsLocal() ? 1U : 0U);
+  jit::vector<SSATmp*> inputs{numTotalInputs};
+  for (auto i = 0; i < numTotalInputs; ++i) {
+    inputs[numTotalInputs - i - 1] = popCU(env);
   }
+  updateMarker(env);
 
   // NB: Now that we've popped the callee's arguments off the stack
   // and thus modified the caller's frame state, we're committed to
@@ -287,15 +309,16 @@ void beginInlining(IRGS& env,
   auto const calleeFP = gen(
     env,
     BeginInlining,
-    BeginInliningData{calleeAROff, target, cost, int(numArgs)},
+    BeginInliningData{calleeAROff, target, cost, int(numArgsInclUnpack)},
     sp(env),
     fp(env)
   );
 
+  // Inline return stub doesn't support async eager return.
   StFrameMetaData meta;
-  meta.callBCOff     = callBcOffset;
-  meta.numArgs       = numArgs;
-  meta.asyncEagerReturn = returnTarget.asyncEagerOffset != kInvalidOffset;
+  meta.callBCOff = callBcOffset;
+  meta.isInlined = true;
+  meta.asyncEagerReturn = false;
 
   gen(env, StFrameMeta, meta, calleeFP);
   gen(env, StFrameFunc, FuncData { target }, calleeFP);
@@ -303,9 +326,11 @@ void beginInlining(IRGS& env,
   InlineCallData data;
   data.spOffset = calleeAROff;
   data.syncVmpc = nullptr;
+  data.returnSk = nextSrcKey(env);
+  data.returnSPOff = spOffBCFromStackBase(env) - kNumActRecCells + 1;
 
   assertx(startSk.func() == target &&
-          startSk.offset() == target->getEntryForNumArgs(numArgs) &&
+          startSk.offset() == target->getEntryForNumArgs(numArgsInclUnpack) &&
           startSk.resumeMode() == ResumeMode::None);
 
   env.inlineState.depth++;
@@ -321,29 +346,14 @@ void beginInlining(IRGS& env,
 
   if (!(ctx->type() <= TNullptr)) gen(env, StFrameCtx, fp(env), ctx);
 
-  for (unsigned i = 0; i < numArgs; ++i) {
-    stLocRaw(env, i, calleeFP, params[i]);
-  }
-  if (generics != nullptr) stLocRaw(env, numArgs, calleeFP, generics);
-
-  // All the code below may reenter, so update the marker so we don't
-  // accidentally overwrite the locals.
+  // We have entered a new frame.
   updateMarker(env);
   env.irb->exceptionStackBoundary();
 
-  auto const callFlags = cns(env, CallFlags(
-    generics != nullptr,
-    dynamicCall,
-    returnTarget.asyncEagerOffset != kInvalidOffset,
-    0, // call offset unused by the logic below
-    0
-  ).value());
-
-  emitPrologueLocals(env, target, numArgs, callFlags, closure);
-
-  emitGenericsMismatchCheck(env, target, callFlags);
-  emitCalleeDynamicCallCheck(env, target, callFlags);
-  emitImplicitContextCheck(env, target);
+  for (auto i = 0; i < numTotalInputs; ++i) {
+    stLocRaw(env, i, calleeFP, inputs[i]);
+  }
+  emitInitFuncLocals(env, target, closure);
 
   assertx(startSk.hasThis() == startSk.func()->hasThisInBody());
   assertx(
@@ -378,6 +388,10 @@ void conjureBeginInlining(IRGS& env,
   for (auto const argType : args) {
     push(env, conjure(argType));
   }
+
+  // beginInlining() assumes synced state.
+  updateMarker(env);
+  env.irb->exceptionStackBoundary();
 
   auto const flags = hasUnpack
     ? FCallArgs::Flags::HasUnpack : FCallArgs::Flags::None;
@@ -450,19 +464,10 @@ void pushInlineFrame(IRGS& env, const InlineFrame& inlineFrame) {
 InlineFrame implInlineReturn(IRGS& env, bool suspend) {
   assertx(resumeMode(env) == ResumeMode::None);
 
-  auto const& fs = env.irb->fs();
-
-  // The offset of our caller's FP relative to our own.
-  auto const callerFPOff =
-    // Offset of the (unchanged) vmsp relative to our fp...
-    - fs.irSPOff()
-    // ...plus the offset of our parent's fp relative to vmsp.
-    + FPInvOffset{0}.to<IRSPRelOffset>(fs.callerIRSPOff()).offset;
-
   auto const calleeFp = fp(env);
   auto const prevFp = calleeFp->inst()->src(1);
   // Return to the caller function.
-  gen(env, InlineReturn, FPRelOffsetData { callerFPOff }, fp(env), prevFp);
+  gen(env, InlineReturn, fp(env), prevFp);
   gen(env, EndInlining, calleeFp);
 
   return popInlineFrame(env);
@@ -565,9 +570,9 @@ bool implSuspendBlock(IRGS& env, bool exitOnAwait) {
   push(env, wh);
   if (exitOnAwait) {
     if (rt.asyncEagerOffset == kInvalidOffset) {
-      gen(env, Jmp, makeExit(env, nextBcOff(env)));
+      gen(env, Jmp, makeExit(env, nextSrcKey(env)));
     } else {
-      jmpImpl(env, nextBcOff(env));
+      jmpImpl(env, nextSrcKey(env));
     }
   }
   return true;

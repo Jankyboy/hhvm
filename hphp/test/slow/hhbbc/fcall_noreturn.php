@@ -11,13 +11,13 @@ function main1() {
 
 function main2() {
   $foo = varray[1,2,3];
-  call_user_func_array(fun('no_return'), $foo);
+  call_user_func_array(no_return<>, $foo);
 }
 
 
 <<__EntryPoint>>
 function main_fcall_noreturn() {
-try { main1(); } catch (exception $e) { echo "o"; }
-try { main2(); } catch (exception $f) { echo "k"; }
+try { main1(); } catch (Exception $e) { echo "o"; }
+try { main2(); } catch (Exception $f) { echo "k"; }
 echo "\n";
 }

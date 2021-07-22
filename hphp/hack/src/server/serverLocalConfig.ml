@@ -8,7 +8,9 @@
  *)
 
 open Config_file.Getters
-open Hh_core
+module Hack_bucket = Bucket
+open Hh_prelude
+module Bucket = Hack_bucket
 
 module Watchman = struct
   type t = {
@@ -111,14 +113,22 @@ module RemoteTypeCheck = struct
         (see `declaration_threshold`) *)
     prefetch_deferred_files: bool;
     (* If set, distributes type checking to remote workers if the number of files to
-    type check exceeds the threshold. If not set, then always checks everything locally. *)
+       type check exceeds the threshold. If not set, then always checks everything locally. *)
     recheck_threshold: int option;
     worker_min_log_level: Hh_logger.Level.t;
     (* Indicates the size of the job below which a virtual file system should
-    be used by the remote worker *)
+       be used by the remote worker *)
     worker_vfs_checkout_threshold: int;
     (* File system mode used by ArtifactStore *)
     file_system_mode: ArtifactStore.file_system_mode;
+    (* Max artifact size to use CAS; otherwise use everstore *)
+    max_cas_bytes: int;
+    (* Max artifact size to inline into transport channel *)
+    max_artifact_inline_bytes: int;
+    (* [0.0 - 1.0] ratio that specifies how much portion of the total payload
+       should be used in remote workers initial payload. Default is 0.0 which means
+       one bucket and no special bundling for initial payload *)
+    remote_initial_payload_ratio: float;
   }
 
   let default =
@@ -138,6 +148,9 @@ module RemoteTypeCheck = struct
       worker_min_log_level = Hh_logger.Level.Info;
       worker_vfs_checkout_threshold = 10_000;
       file_system_mode = ArtifactStore.Distributed;
+      max_cas_bytes = 50_000_000;
+      max_artifact_inline_bytes = 2000;
+      remote_initial_payload_ratio = 0.0;
     }
 
   let load ~current_version ~default config =
@@ -163,6 +176,19 @@ module RemoteTypeCheck = struct
       | Some mode -> mode
       | None -> Distributed
     in
+
+    let max_cas_bytes =
+      int_ "max_cas_bytes" ~prefix ~default:default.max_cas_bytes config
+    in
+
+    let max_artifact_inline_bytes =
+      int_
+        "max_artifact_inline_bytes"
+        ~prefix
+        ~default:default.max_artifact_inline_bytes
+        config
+    in
+
     let enabled_on_errors =
       string_list
         "enabled_on_errors"
@@ -181,7 +207,7 @@ module RemoteTypeCheck = struct
         ~f:(fun phase ->
           not
             (List.exists enabled_on_errors ~f:(fun enabled_phase ->
-                 enabled_phase = phase)))
+                 Errors.equal_phase enabled_phase phase)))
     in
     let heartbeat_period =
       int_ "heartbeat_period" ~prefix ~default:default.heartbeat_period config
@@ -204,6 +230,13 @@ module RemoteTypeCheck = struct
         config
     in
     let recheck_threshold = int_opt "recheck_threshold" ~prefix config in
+    let remote_initial_payload_ratio =
+      float_
+        "remote_initial_payload_ratio"
+        ~prefix
+        ~default:default.remote_initial_payload_ratio
+        config
+    in
     let load_naming_table_on_full_init =
       bool_if_min_version
         "load_naming_table_on_full_init"
@@ -231,7 +264,7 @@ module RemoteTypeCheck = struct
     let worker_min_log_level =
       match
         Hh_logger.Level.of_enum_string
-          (String.lowercase_ascii
+          (String.lowercase
              (string_
                 ~prefix
                 "worker_min_log_level"
@@ -264,6 +297,9 @@ module RemoteTypeCheck = struct
       worker_min_log_level;
       worker_vfs_checkout_threshold;
       file_system_mode;
+      max_cas_bytes;
+      max_artifact_inline_bytes;
+      remote_initial_payload_ratio;
     }
 end
 
@@ -341,9 +377,9 @@ module RecheckCapture = struct
           ~default:default.sample_threshold
           config
       in
-      if sample_threshold > 1.0 then
+      if Float.(sample_threshold > 1.0) then
         1.0
-      else if sample_threshold < 0.0 then
+      else if Float.(sample_threshold < 0.0) then
         0.0
       else
         sample_threshold
@@ -374,56 +410,60 @@ type t = {
       (** Prefer using Ocaml implementation over load script. *)
   (* in seconds *)
   load_state_natively: bool;
+  load_state_natively_64bit: bool;
   type_decl_bucket_size: int;
   extend_fast_bucket_size: int;
   enable_on_nfs: bool;
   enable_fuzzy_search: bool;
   lazy_parse: bool;
   lazy_init: bool;
-  (* Limit the number of clients that can sit in purgatory waiting
+  (* Monitor: Limit the number of clients that can sit in purgatory waiting
    * for a server to be started because we don't want this to grow
    * unbounded. *)
   max_purgatory_clients: int;
   search_chunk_size: int;
   io_priority: int;
   cpu_priority: int;
-  saved_state_cache_limit: int;
   can_skip_deptable: bool;
   shm_dirs: string list;
-  state_loader_timeouts: State_loader_config.timeouts;
   max_workers: int option;
+  (* max_bucket_size is the default bucket size for ALL users of MultiWorker unless they provide a specific override max_size *)
   max_bucket_size: int;
+  (* for dirty names (in saved-state-init and changed-file scenarios) we can use small buckets to avoid long poles *)
+  small_buckets_for_dirty_names: bool;
   (* See HhMonitorInformant. *)
   use_dummy_informant: bool;
   informant_min_distance_restart: int;
-  informant_use_xdb: bool;
   use_full_fidelity_parser: bool;
   interrupt_on_watchman: bool;
   interrupt_on_client: bool;
   trace_parsing: bool;
   prechecked_files: bool;
+  enable_type_check_filter_files: bool;
+  re_worker: bool;
+  (* whether clientLsp should use serverless-ide *)
+  ide_serverless: bool;
+  (* whether clientLsp should use ranked autocomplete *)
+  ide_ranked_autocomplete: bool;
+  (* whether clientLsp should use ffp-autocomplete *)
+  ide_ffp_autocomplete: bool;
+  (* like [symbolindex_search_provider] but for IDE *)
+  ide_symbolindex_search_provider: string;
+  (* Let the user configure which files to type check and
+   * which files to ignore. This flag is not expected to be
+   * rolled out broadly, rather it is meant to be used by
+   * power users only. *)
   predeclare_ide: bool;
-  predeclare_ide_deps: bool;
   max_typechecker_worker_memory_mb: int option;
+  longlived_workers: bool;
+  remote_execution: bool;
   hg_aware: bool;
   hg_aware_parsing_restart_threshold: int;
   hg_aware_redecl_restart_threshold: int;
   hg_aware_recheck_restart_threshold: int;
-  (* Flag to disable conservative behavior in incremental-mode typechecks.
-   *
-   * By default, when a class has changed and we do not have access to the old
-   * version of its declaration (and thus cannot determine HOW it has changed),
-   * we conservatively redeclare the entire set of files where the class or any
-   * of its members were referenced. Likewise for definitions of functions or
-   * global constants.
-   *
-   * This flag disables that behavior--instead, when a class has changed, we
-   * only redeclare files with an Extends dependency on the class, and we do not
-   * redeclare any files when a function or global constant changes.
-   *)
-  disable_conservative_redecl: bool;
+  (* forces Hulk *)
+  force_remote_type_check: bool;
   ide_parser_cache: bool;
-  ide_tast_cache: bool;
   (* When enabled, save hot class declarations (for now, specified in a special
      file in the repository) when generating a saved state. *)
   store_decls_in_saved_state: bool;
@@ -436,19 +476,21 @@ type t = {
      computing folded declarations representing the entire class type. *)
   shallow_class_decl: bool;
   (* If false, only the type check delegate's logic will be used.
-    If the delegate fails to type check, the typing check service as a whole
-    will fail. *)
+     If the delegate fails to type check, the typing check service as a whole
+     will fail. *)
   num_local_workers: int option;
   (* If the number of files to type check is fewer than this value, the files
-    will be type checked sequentially (in the master process). Otherwise,
-    the files will be type checked in parallel (in MultiWorker workers). *)
+     will be type checked sequentially (in the master process). Otherwise,
+     the files will be type checked in parallel (in MultiWorker workers). *)
   parallel_type_checking_threshold: int;
   (* If set, defers class declarations after N lazy declarations; if not set,
-    always lazily declares classes not already in cache. *)
+     always lazily declares classes not already in cache. *)
   defer_class_declaration_threshold: int option;
+  (* If set, defers class declaration if worker memory exceeds threshold. *)
+  defer_class_memory_mb_threshold: int option;
   (* If set, prevents type checking of files from being deferred more than
-    the number of times greater than or equal to the threshold. If not set,
-    defers class declarations indefinitely. *)
+     the number of times greater than or equal to the threshold. If not set,
+     defers class declarations indefinitely. *)
   max_times_to_defer_type_checking: int option;
   (* The whether to use the hook that prefetches files on an Eden checkout *)
   prefetch_deferred_files: bool;
@@ -456,12 +498,16 @@ type t = {
   recheck_capture: RecheckCapture.t;
   (* The version of the Remote Execution CLI tool to use *)
   recli_version: string;
+  (* The unique identifier of a particular remote typechecking run *)
+  remote_nonce: Int64.t;
   (* Remote type check settings that can be changed, e.g., by GK *)
   remote_type_check: RemoteTypeCheck.t;
   (* If set, uses the key to fetch type checking jobs *)
   remote_worker_key: string option;
   (* If set, uses the check ID when logging events in the context of remove init/work *)
   remote_check_id: string option;
+  (* Indicates whether the remote version specifier is required for remote type check from non-prod server *)
+  remote_version_specifier_required: bool;
   (* The version of the package the remote worker is to install *)
   remote_version_specifier: string option;
   (* Name of the transport channel used by remote type checking. TODO: move into remote_type_check. *)
@@ -469,7 +515,7 @@ type t = {
   (* Enables the reverse naming table to fall back to SQLite for queries. *)
   naming_sqlite_path: string option;
   enable_naming_table_fallback: bool;
-  (* Selects a search provider for autocomplete and symbol search *)
+  (* Selects a search provider for autocomplete and symbol search; see also [ide_symbolindex_search_provider] *)
   symbolindex_search_provider: string;
   symbolindex_quiet: bool;
   symbolindex_file: string option;
@@ -477,10 +523,16 @@ type t = {
   tico_invalidate_files: bool;
   (* Use finer grain hh_server dependencies *)
   tico_invalidate_smart: bool;
-  (* If --profile-log, we'll record telemetry on typechecks that took longer than the threshold. In case of profile_type_check_twice we judge by the second type check. *)
+  (* Enable use of the direct decl parser for parsing type signatures. *)
+  use_direct_decl_parser: bool;
+  (* If --profile-log, we'll record telemetry on typechecks that took longer than the threshold (in seconds). In case of profile_type_check_twice we judge by the second type check. *)
   profile_type_check_duration_threshold: float;
+  (* If --profile-log, we'll record telemetry on any file which allocated more than this many mb on the ocaml heap. In case of profile_type_check_twice we judge by the second type check. *)
+  profile_type_check_memory_threshold_mb: int;
   (* The flag "--config profile_type_check_twice=true" causes each file to be typechecked twice in succession. If --profile-log then both times are logged. *)
   profile_type_check_twice: bool;
+  (* The flag "--config profile_decling=..." says what kind of instrumentation we want for each decl *)
+  profile_decling: Typing_service_types.profile_decling;
   (* If --profile-log, we can use "--config profile_owner=<str>" to send an arbitrary "owner" along with the telemetry *)
   profile_owner: string option;
   (* If --profile-log, we can use "--config profile_desc=<str>" to send an arbitrary "desc" along with telemetry *)
@@ -489,7 +541,11 @@ type t = {
   go_to_implementation: bool;
   (* Allows unstabled features to be enabled within a file via the '__EnableUnstableFeatures' attribute *)
   allow_unstable_features: bool;
+  stream_errors: bool;
+      (** Whether to send errors to client as soon as they are discovered. *)
   watchman: Watchman.t;
+  (* If enabled, saves naming table into a temp folder and uploads it to the remote typechecker *)
+  save_and_upload_naming_table: bool;
 }
 
 let default =
@@ -499,10 +555,12 @@ let default =
     log_categories = [];
     experiments = [];
     experiments_config_meta = "";
+    force_remote_type_check = false;
     use_saved_state = false;
     require_saved_state = false;
     load_state_script_timeout = 20;
     load_state_natively = false;
+    load_state_natively_64bit = false;
     type_decl_bucket_size = 1000;
     extend_fast_bucket_size = 2000;
     enable_on_nfs = false;
@@ -513,30 +571,32 @@ let default =
     search_chunk_size = 0;
     io_priority = 7;
     cpu_priority = 10;
-    saved_state_cache_limit = 20;
     can_skip_deptable = true;
     shm_dirs = [GlobalConfig.shm_dir; GlobalConfig.tmp_dir];
     max_workers = None;
     max_bucket_size = Bucket.max_size ();
-    state_loader_timeouts = State_loader_config.default_timeouts;
+    small_buckets_for_dirty_names = false;
     use_dummy_informant = true;
     informant_min_distance_restart = 100;
-    informant_use_xdb = false;
     use_full_fidelity_parser = true;
     interrupt_on_watchman = false;
     interrupt_on_client = false;
     trace_parsing = false;
     prechecked_files = false;
+    enable_type_check_filter_files = false;
+    re_worker = false;
+    ide_serverless = false;
+    ide_ranked_autocomplete = false;
+    ide_ffp_autocomplete = false;
     predeclare_ide = false;
-    predeclare_ide_deps = false;
     max_typechecker_worker_memory_mb = None;
+    longlived_workers = false;
+    remote_execution = false;
     hg_aware = false;
     hg_aware_parsing_restart_threshold = 0;
     hg_aware_redecl_restart_threshold = 0;
     hg_aware_recheck_restart_threshold = 0;
-    disable_conservative_redecl = false;
     ide_parser_cache = false;
-    ide_tast_cache = false;
     store_decls_in_saved_state = false;
     load_decls_from_saved_state = false;
     idle_gc_slice = 0;
@@ -544,83 +604,54 @@ let default =
     num_local_workers = None;
     parallel_type_checking_threshold = 10;
     defer_class_declaration_threshold = None;
+    defer_class_memory_mb_threshold = None;
     max_times_to_defer_type_checking = None;
     prefetch_deferred_files = false;
     recheck_capture = RecheckCapture.default;
     recli_version = "STABLE";
+    remote_nonce = Int64.zero;
     remote_type_check = RemoteTypeCheck.default;
     remote_worker_key = None;
     remote_check_id = None;
+    remote_version_specifier_required = true;
     remote_version_specifier = None;
     remote_transport_channel = None;
     naming_sqlite_path = None;
     enable_naming_table_fallback = false;
     symbolindex_search_provider = "SqliteIndex";
+    (* the code actually doesn't use this default for ide_symbolindex_search_provider;
+       it defaults to whatever was computed for symbolindex_search_provider. *)
+    ide_symbolindex_search_provider = "SqliteIndex";
     symbolindex_quiet = false;
     symbolindex_file = None;
     tico_invalidate_files = false;
     tico_invalidate_smart = false;
+    use_direct_decl_parser = false;
     profile_type_check_duration_threshold = 0.05;
+    (* seconds *)
+    profile_type_check_memory_threshold_mb = 100;
     profile_type_check_twice = false;
+    profile_decling = Typing_service_types.DeclingOff;
     profile_owner = None;
     profile_desc = "";
-    (* seconds *)
     go_to_implementation = true;
     allow_unstable_features = false;
+    stream_errors = false;
     watchman = Watchman.default;
+    save_and_upload_naming_table = false;
   }
 
 let path =
   let dir =
-    try Sys.getenv "HH_LOCALCONF_PATH"
-    with _ -> BuildOptions.system_config_path
+    try Sys.getenv "HH_LOCALCONF_PATH" with
+    | _ -> BuildOptions.system_config_path
   in
   Filename.concat dir "hh.conf"
 
-let state_loader_timeouts_ ~default config =
-  State_loader_config.(
-    let package_fetch_timeout =
-      int_
-        "state_loader_timeout_package_fetch"
-        ~default:default.package_fetch_timeout
-        config
-    in
-    let find_exact_state_timeout =
-      int_
-        "state_loader_timeout_find_exact_state"
-        ~default:default.find_exact_state_timeout
-        config
-    in
-    let find_nearest_state_timeout =
-      int_
-        "state_loader_timeout_find_nearest_state"
-        ~default:default.find_nearest_state_timeout
-        config
-    in
-    let current_hg_rev_timeout =
-      int_
-        "state_loader_timeout_current_hg_rev"
-        ~default:default.current_hg_rev_timeout
-        config
-    in
-    let current_base_rev_timeout =
-      int_
-        "state_loader_timeout_current_base_rev_timeout"
-        ~default:default.current_base_rev_timeout
-        config
-    in
-    {
-      State_loader_config.package_fetch_timeout;
-      find_exact_state_timeout;
-      find_nearest_state_timeout;
-      current_hg_rev_timeout;
-      current_base_rev_timeout;
-    })
-
 let apply_overrides ~silent ~current_version ~config ~overrides =
   (* First of all, apply the CLI overrides so the settings below could be specified
-    altered via the CLI, even though the CLI overrides take precedence
-    over the experiments overrides *)
+     altered via the CLI, even though the CLI overrides take precedence
+     over the experiments overrides *)
   let config = Config_file.apply_overrides ~silent ~config ~overrides in
   let prefix = Some "experiments_config" in
   let enabled =
@@ -689,7 +720,7 @@ let load_ fn ~silent ~current_version overrides =
   let min_log_level =
     match
       Hh_logger.Level.of_enum_string
-        (String.lowercase_ascii
+        (String.lowercase
            (string_
               "min_log_level"
               ~default:(Hh_logger.Level.to_enum_string default.min_log_level)
@@ -700,12 +731,17 @@ let load_ fn ~silent ~current_version overrides =
   in
 
   let use_saved_state =
-    bool_if_version "use_mini_state" ~default:default.use_saved_state config
+    bool_if_min_version
+      "use_mini_state"
+      ~default:default.use_saved_state
+      ~current_version
+      config
   in
   let require_saved_state =
-    bool_if_version
+    bool_if_min_version
       "require_saved_state"
       ~default:default.require_saved_state
+      ~current_version
       config
   in
   let attempt_fix_credentials =
@@ -716,19 +752,39 @@ let load_ fn ~silent ~current_version overrides =
       config
   in
   let enable_on_nfs =
-    bool_if_version "enable_on_nfs" ~default:default.enable_on_nfs config
+    bool_if_min_version
+      "enable_on_nfs"
+      ~default:default.enable_on_nfs
+      ~current_version
+      config
   in
   let enable_fuzzy_search =
-    bool_if_version
+    bool_if_min_version
       "enable_fuzzy_search"
       ~default:default.enable_fuzzy_search
+      ~current_version
+      config
+  in
+  let force_remote_type_check =
+    bool_if_min_version
+      "force_remote_type_check"
+      ~default:default.force_remote_type_check
+      ~current_version
       config
   in
   let lazy_parse =
-    bool_if_version "lazy_parse" ~default:default.lazy_parse config
+    bool_if_min_version
+      "lazy_parse"
+      ~default:default.lazy_parse
+      ~current_version
+      config
   in
   let lazy_init =
-    bool_if_version "lazy_init2" ~default:default.lazy_init config
+    bool_if_min_version
+      "lazy_init2"
+      ~default:default.lazy_init
+      ~current_version
+      config
   in
   let max_purgatory_clients =
     int_ "max_purgatory_clients" ~default:default.max_purgatory_clients config
@@ -743,30 +799,30 @@ let load_ fn ~silent ~current_version overrides =
       config
   in
   let load_state_natively =
-    bool_if_version
+    bool_if_min_version
       "load_state_natively_v4"
       ~default:default.load_state_natively
+      ~current_version
       config
   in
-  let state_loader_timeouts =
-    state_loader_timeouts_ ~default:State_loader_config.default_timeouts config
+  let load_state_natively_64bit =
+    bool_if_min_version
+      "load_state_natively_64bit"
+      ~default:default.load_state_natively_64bit
+      ~current_version
+      config
   in
   let use_dummy_informant =
-    bool_if_version
+    bool_if_min_version
       "use_dummy_informant"
       ~default:default.use_dummy_informant
+      ~current_version
       config
   in
   let informant_min_distance_restart =
     int_
       "informant_min_distance_restart"
       ~default:default.informant_min_distance_restart
-      config
-  in
-  let informant_use_xdb =
-    bool_if_version
-      "informant_use_xdb_v5"
-      ~default:default.informant_use_xdb
       config
   in
   let type_decl_bucket_size =
@@ -780,16 +836,11 @@ let load_ fn ~silent ~current_version overrides =
   in
   let io_priority = int_ "io_priority" ~default:default.io_priority config in
   let cpu_priority = int_ "cpu_priority" ~default:default.cpu_priority config in
-  let saved_state_cache_limit =
-    int_
-      "saved_state_cache_limit"
-      ~default:default.saved_state_cache_limit
-      config
-  in
   let can_skip_deptable =
-    bool_if_version
+    bool_if_min_version
       "can_skip_deptable"
       ~default:default.can_skip_deptable
+      ~current_version
       config
   in
   let shm_dirs =
@@ -804,59 +855,120 @@ let load_ fn ~silent ~current_version overrides =
   let max_bucket_size =
     int_ "max_bucket_size" ~default:default.max_bucket_size config
   in
+  let small_buckets_for_dirty_names =
+    bool_if_min_version
+      "small_buckets_for_dirty_names"
+      ~default:default.small_buckets_for_dirty_names
+      ~current_version
+      config
+  in
   let interrupt_on_watchman =
-    bool_if_version
+    bool_if_min_version
       "interrupt_on_watchman"
       ~default:default.interrupt_on_watchman
+      ~current_version
       config
   in
   let interrupt_on_client =
-    bool_if_version
+    bool_if_min_version
       "interrupt_on_client"
       ~default:default.interrupt_on_client
+      ~current_version
       config
   in
   let use_full_fidelity_parser =
-    bool_if_version
+    bool_if_min_version
       "use_full_fidelity_parser"
       ~default:default.use_full_fidelity_parser
+      ~current_version
       config
   in
   let trace_parsing =
-    bool_if_version "trace_parsing" ~default:default.trace_parsing config
+    bool_if_min_version
+      "trace_parsing"
+      ~default:default.trace_parsing
+      ~current_version
+      config
   in
   let prechecked_files =
-    bool_if_version "prechecked_files" ~default:default.prechecked_files config
+    bool_if_min_version
+      "prechecked_files"
+      ~default:default.prechecked_files
+      ~current_version
+      config
+  in
+  let enable_type_check_filter_files =
+    bool_if_min_version
+      "enable_type_check_filter_files"
+      ~default:default.enable_type_check_filter_files
+      ~current_version
+      config
+  in
+  let re_worker =
+    bool_if_min_version
+      "re_worker"
+      ~default:default.re_worker
+      ~current_version
+      config
+  in
+  (* ide_serverless CANNOT use bool_if_min_version, since it's needed before we yet know root/version *)
+  let ide_serverless =
+    bool_ "ide_serverless" ~default:default.ide_serverless config
+  in
+  (* ide_ranked_autocomplete CANNOT use bool_if_min_version, since it's needed before we yet know root/version *)
+  let ide_ranked_autocomplete =
+    bool_
+      "ide_ranked_autocomplete"
+      ~default:default.ide_ranked_autocomplete
+      config
+  in
+  (* ide_ffp_autocomplete CANNOT use bool_if_min_version, since it's needed before we yet know root/version *)
+  let ide_ffp_autocomplete =
+    bool_ "ide_ffp_autocomplete" ~default:default.ide_ffp_autocomplete config
   in
   let predeclare_ide =
-    bool_if_version "predeclare_ide" ~default:default.predeclare_ide config
-  in
-  let predeclare_ide_deps =
-    bool_if_version
-      "predeclare_ide_deps"
-      ~default:default.predeclare_ide_deps
+    bool_if_min_version
+      "predeclare_ide"
+      ~default:default.predeclare_ide
+      ~current_version
       config
   in
   let max_typechecker_worker_memory_mb =
     int_opt "max_typechecker_worker_memory_mb" config
   in
-  let hg_aware = bool_if_version "hg_aware" ~default:default.hg_aware config in
-  let disable_conservative_redecl =
-    bool_if_version
-      "disable_conservative_redecl"
-      ~default:default.disable_conservative_redecl
+  let longlived_workers =
+    bool_if_min_version
+      "longlived_workers"
+      ~default:default.longlived_workers
+      ~current_version
+      config
+  in
+  let remote_execution =
+    bool_if_min_version
+      "remote_execution"
+      ~default:default.remote_execution
+      ~current_version
+      config
+  in
+  let hg_aware =
+    bool_if_min_version
+      "hg_aware"
+      ~default:default.hg_aware
+      ~current_version
       config
   in
   let store_decls_in_saved_state =
-    bool_if_version
+    bool_if_min_version
       "store_decls_in_saved_state"
       ~default:default.store_decls_in_saved_state
+      ~current_version
       config
   in
   let load_decls_from_saved_state =
-    bool_if_version
+    bool_if_min_version
       "load_decls_from_saved_state"
       ~default:default.load_decls_from_saved_state
+      ~current_version
       config
   in
   let hg_aware_parsing_restart_threshold =
@@ -878,18 +990,20 @@ let load_ fn ~silent ~current_version overrides =
       config
   in
   let ide_parser_cache =
-    bool_if_version "ide_parser_cache" ~default:default.ide_parser_cache config
-  in
-  let ide_tast_cache =
-    bool_if_version "ide_tast_cache" ~default:default.ide_tast_cache config
+    bool_if_min_version
+      "ide_parser_cache"
+      ~default:default.ide_parser_cache
+      ~current_version
+      config
   in
   let idle_gc_slice =
     int_ "idle_gc_slice" ~default:default.idle_gc_slice config
   in
   let shallow_class_decl =
-    bool_if_version
+    bool_if_min_version
       "shallow_class_decl"
       ~default:default.shallow_class_decl
+      ~current_version
       config
   in
   let parallel_type_checking_threshold =
@@ -901,6 +1015,9 @@ let load_ fn ~silent ~current_version overrides =
   let num_local_workers = int_opt "num_local_workers" config in
   let defer_class_declaration_threshold =
     int_opt "defer_class_declaration_threshold" config
+  in
+  let defer_class_memory_mb_threshold =
+    int_opt "defer_class_memory_mb_threshold" config
   in
   let max_times_to_defer_type_checking =
     int_opt "max_times_to_defer_type_checking" config
@@ -914,6 +1031,11 @@ let load_ fn ~silent ~current_version overrides =
   in
   let recheck_capture =
     RecheckCapture.load ~current_version ~default:default.recheck_capture config
+  in
+  let remote_nonce =
+    match string_opt "remote_nonce" config with
+    | Some n -> Int64.of_string n
+    | None -> Int64.zero
   in
   let remote_type_check =
     RemoteTypeCheck.load
@@ -929,6 +1051,13 @@ let load_ fn ~silent ~current_version overrides =
   in
   let remote_worker_key = string_opt "remote_worker_key" config in
   let remote_check_id = string_opt "remote_check_id" config in
+  let remote_version_specifier_required =
+    bool_if_min_version
+      "remote_version_specifier_required"
+      ~default:default.remote_version_specifier_required
+      ~current_version
+      config
+  in
   let remote_version_specifier = string_opt "remote_version_specifier" config in
   let remote_transport_channel = string_opt "remote_transport_channel" config in
   let enable_naming_table_fallback =
@@ -950,23 +1079,39 @@ let load_ fn ~silent ~current_version overrides =
       ~default:default.symbolindex_search_provider
       config
   in
+  let ide_symbolindex_search_provider =
+    string_
+      "ide_symbolindex_search_provider"
+      ~default:symbolindex_search_provider
+      config
+  in
   let symbolindex_quiet =
-    bool_if_version
+    bool_if_min_version
       "symbolindex_quiet"
       ~default:default.symbolindex_quiet
+      ~current_version
       config
   in
   let symbolindex_file = string_opt "symbolindex_file" config in
   let tico_invalidate_files =
-    bool_if_version
+    bool_if_min_version
       "tico_invalidate_files"
       ~default:default.tico_invalidate_files
+      ~current_version
       config
   in
   let tico_invalidate_smart =
-    bool_if_version
+    bool_if_min_version
       "tico_invalidate_smart"
       ~default:default.tico_invalidate_smart
+      ~current_version
+      config
+  in
+  let use_direct_decl_parser =
+    bool_if_min_version
+      "use_direct_decl_parser"
+      ~default:default.use_direct_decl_parser
+      ~current_version
       config
   in
   let profile_type_check_duration_threshold =
@@ -975,26 +1120,61 @@ let load_ fn ~silent ~current_version overrides =
       ~default:default.profile_type_check_duration_threshold
       config
   in
+  let profile_type_check_memory_threshold_mb =
+    int_
+      "profile_type_check_memory_threshold_mb"
+      ~default:default.profile_type_check_memory_threshold_mb
+      config
+  in
   let profile_type_check_twice =
-    bool_if_version
+    bool_if_min_version
       "profile_type_check_twice"
       ~default:default.profile_type_check_twice
+      ~current_version
       config
+  in
+  let profile_decling =
+    match string_ "profile_decling" ~default:"off" config with
+    | "off" -> Typing_service_types.DeclingOff
+    | "top_counts" -> Typing_service_types.DeclingTopCounts
+    | "all_telemetry" ->
+      Typing_service_types.DeclingAllTelemetry { callstacks = false }
+    | "all_telemetry_callstacks" ->
+      Typing_service_types.DeclingAllTelemetry { callstacks = true }
+    | _ ->
+      failwith
+        "profile_decling: off | top_counts | all_telemetry | all_telemetry_callstacks"
   in
   let profile_owner = string_opt "profile_owner" config in
   let profile_desc =
     string_ "profile_desc" ~default:default.profile_desc config
   in
   let go_to_implementation =
-    bool_if_version
+    bool_if_min_version
       "go_to_implementation"
       ~default:default.go_to_implementation
+      ~current_version
       config
   in
   let allow_unstable_features =
-    bool_if_version
+    bool_if_min_version
       "allow_unstable_features"
       ~default:default.allow_unstable_features
+      ~current_version
+      config
+  in
+  let stream_errors =
+    bool_if_min_version
+      "stream_errors"
+      ~default:default.stream_errors
+      ~current_version
+      config
+  in
+  let save_and_upload_naming_table =
+    bool_if_min_version
+      "save_and_upload_naming_table"
+      ~default:default.save_and_upload_naming_table
+      ~current_version
       config
   in
   {
@@ -1007,6 +1187,7 @@ let load_ fn ~silent ~current_version overrides =
     require_saved_state;
     load_state_script_timeout;
     load_state_natively;
+    load_state_natively_64bit;
     max_purgatory_clients;
     type_decl_bucket_size;
     extend_fast_bucket_size;
@@ -1017,30 +1198,33 @@ let load_ fn ~silent ~current_version overrides =
     search_chunk_size;
     io_priority;
     cpu_priority;
-    saved_state_cache_limit;
     can_skip_deptable;
     shm_dirs;
     max_workers;
     max_bucket_size;
-    state_loader_timeouts;
+    small_buckets_for_dirty_names;
     use_dummy_informant;
     informant_min_distance_restart;
-    informant_use_xdb;
     use_full_fidelity_parser;
     interrupt_on_watchman;
     interrupt_on_client;
     trace_parsing;
     prechecked_files;
+    enable_type_check_filter_files;
+    re_worker;
+    ide_serverless;
+    ide_ranked_autocomplete;
+    ide_ffp_autocomplete;
+    ide_symbolindex_search_provider;
     predeclare_ide;
     max_typechecker_worker_memory_mb;
+    longlived_workers;
+    remote_execution;
     hg_aware;
     hg_aware_parsing_restart_threshold;
     hg_aware_redecl_restart_threshold;
     hg_aware_recheck_restart_threshold;
-    disable_conservative_redecl;
-    predeclare_ide_deps;
     ide_parser_cache;
-    ide_tast_cache;
     store_decls_in_saved_state;
     load_decls_from_saved_state;
     idle_gc_slice;
@@ -1048,13 +1232,16 @@ let load_ fn ~silent ~current_version overrides =
     num_local_workers;
     parallel_type_checking_threshold;
     defer_class_declaration_threshold;
+    defer_class_memory_mb_threshold;
     max_times_to_defer_type_checking;
     prefetch_deferred_files;
     recheck_capture;
     recli_version;
+    remote_nonce;
     remote_type_check;
     remote_worker_key;
     remote_check_id;
+    remote_version_specifier_required;
     remote_version_specifier;
     remote_transport_channel;
     naming_sqlite_path;
@@ -1064,14 +1251,32 @@ let load_ fn ~silent ~current_version overrides =
     symbolindex_file;
     tico_invalidate_files;
     tico_invalidate_smart;
+    use_direct_decl_parser;
     profile_type_check_duration_threshold;
+    profile_type_check_memory_threshold_mb;
     profile_type_check_twice;
+    profile_decling;
     profile_owner;
     profile_desc;
     go_to_implementation;
     allow_unstable_features;
+    stream_errors;
     watchman;
+    force_remote_type_check;
+    save_and_upload_naming_table;
   }
 
 let load ~silent ~current_version config_overrides =
   load_ path ~silent ~current_version config_overrides
+
+let to_rollout_flags (options : t) : HackEventLogger.rollout_flags =
+  HackEventLogger.
+    {
+      use_direct_decl_parser = options.use_direct_decl_parser;
+      longlived_workers = options.longlived_workers;
+      max_times_to_defer_type_checking =
+        options.max_times_to_defer_type_checking;
+      small_buckets_for_dirty_names = options.small_buckets_for_dirty_names;
+      symbolindex_search_provider = options.symbolindex_search_provider;
+      require_saved_state = options.require_saved_state;
+    }

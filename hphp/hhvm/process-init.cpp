@@ -17,7 +17,8 @@
 #include "hphp/compiler/option.h"
 
 #include "hphp/runtime/vm/bytecode.h"
-#include "hphp/runtime/vm/repo.h"
+#include "hphp/runtime/vm/repo-file.h"
+#include "hphp/runtime/vm/repo-global-data.h"
 #include "hphp/runtime/vm/runtime-compiler.h"
 #include "hphp/runtime/vm/unit.h"
 
@@ -70,6 +71,8 @@ const StaticString s_AssertionError("AssertionError");
 const StaticString s_DivisionByZeroError("DivisionByZeroError");
 const StaticString s_ParseError("ParseError");
 const StaticString s_TypeError("TypeError");
+const StaticString s_MethCallerHelper("\\__SystemLib\\MethCallerHelper");
+const StaticString s_DynMethCallerHelper("\\__SystemLib\\DynMethCallerHelper");
 }
 
 void ProcessInit() {
@@ -89,7 +92,9 @@ void ProcessInit() {
 
   if (RuntimeOption::RepoAuthoritative) {
     LitstrTable::init();
-    Repo::get().loadGlobalData();
+    LitarrayTable::init();
+    RepoFile::loadGlobalTables(RO::RepoLitstrLazyLoad);
+    RepoFile::globalData().load();
   }
   StringData::markSymbolsLoaded();
 
@@ -161,6 +166,8 @@ void ProcessInit() {
   INIT_SYSTEMLIB_CLASS_FIELD(DivisionByZeroException)
   INIT_SYSTEMLIB_CLASS_FIELD(ParseError)
   INIT_SYSTEMLIB_CLASS_FIELD(TypeError)
+  INIT_SYSTEMLIB_CLASS_FIELD(MethCallerHelper)
+  INIT_SYSTEMLIB_CLASS_FIELD(DynMethCallerHelper)
 
   // Stash a pointer to the VM Classes for stdclass, Exception,
   // pinitSentinel and resource

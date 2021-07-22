@@ -24,7 +24,6 @@
 
 #include <boost/dynamic_bitset.hpp>
 
-#include <folly/Optional.h>
 #include <folly/gen/Base.h>
 #include <folly/gen/String.h>
 
@@ -84,17 +83,17 @@ bool ignoresStackInput(Op op) {
 }
 
 template<class TyBC, class ArgType>
-folly::Optional<Bytecode> makeAssert(ArrayTypeTable::Builder& arrTable,
+Optional<Bytecode> makeAssert(ArrayTypeTable::Builder& arrTable,
                                      ArgType arg,
                                      Type t) {
-  if (t.subtypeOf(BBottom)) return folly::none;
+  if (t.subtypeOf(BBottom)) return std::nullopt;
   auto const rat = make_repo_type(arrTable, t);
   using T = RepoAuthType::Tag;
   if (options.FilterAssertions) {
     // Cell and InitCell don't add any useful information, so leave them
     // out entirely.
-    if (rat == RepoAuthType{T::Cell})     return folly::none;
-    if (rat == RepoAuthType{T::InitCell}) return folly::none;
+    if (rat == RepoAuthType{T::Cell})     return std::nullopt;
+    if (rat == RepoAuthType{T::InitCell}) return std::nullopt;
   }
   return Bytecode { TyBC { arg, rat } };
 }
@@ -123,10 +122,10 @@ void insert_assertions_step(ArrayTypeTable::Builder& arrTable,
 
   if (!options.InsertStackAssertions) return;
 
-  assert(obviousStackOutputs.size() == state.stack.size());
+  assertx(obviousStackOutputs.size() == state.stack.size());
 
   auto const assert_stack = [&] (size_t idx) {
-    assert(idx < state.stack.size());
+    assertx(idx < state.stack.size());
     if (obviousStackOutputs[state.stack.size() - idx - 1]) return;
     if (ignoresStackInput(bcode.op)) return;
     auto const realT = state.stack[state.stack.size() - idx - 1].type;
@@ -194,14 +193,11 @@ bool hasObviousStackOutput(const Bytecode& op, const Interp& interp) {
   case Op::Int:
   case Op::Double:
   case Op::String:
-  case Op::Array:
+  case Op::LazyClass:
   case Op::Dict:
   case Op::Vec:
   case Op::Keyset:
-  case Op::NewDArray:
   case Op::NewDictArray:
-  case Op::NewVArray:
-  case Op::NewStructDArray:
   case Op::NewStructDict:
   case Op::NewVec:
   case Op::NewKeysetArray:
@@ -209,12 +205,12 @@ bool hasObviousStackOutput(const Bytecode& op, const Interp& interp) {
   case Op::NewCol:
   case Op::NewPair:
   case Op::ClassName:
+  case Op::LazyClassFromClass:
   case Op::File:
   case Op::Dir:
   case Op::Concat:
   case Op::ConcatN:
   case Op::Not:
-  case Op::Xor:
   case Op::Same:
   case Op::NSame:
   case Op::Eq:
@@ -233,8 +229,6 @@ bool hasObviousStackOutput(const Bytecode& op, const Interp& interp) {
   case Op::CastDict:
   case Op::CastVec:
   case Op::CastKeyset:
-  case Op::CastVArray:
-  case Op::CastDArray:
   case Op::DblAsBits:
   case Op::InstanceOfD:
   case Op::IsLateBoundCls:
@@ -258,7 +252,9 @@ bool hasObviousStackOutput(const Bytecode& op, const Interp& interp) {
   case Op::BareThis:
     if (auto tt = thisType(interp.index, interp.ctx)) {
       auto t = interp.state.stack.back().type;
-      if (is_opt(t)) t = unopt(std::move(t));
+      if (t.couldBe(BInitNull) && !t.subtypeOf(BInitNull)) {
+        t = unopt(std::move(t));
+      }
       return !t.strictSubtypeOf(*tt);
     }
     return true;
@@ -357,54 +353,6 @@ void insert_assertions(VisitContext& visit, BlockId bid, State state) {
 
 //////////////////////////////////////////////////////////////////////
 
-template<class Gen>
-bool propagate_constants(const Bytecode& op, State& state, Gen gen) {
-  auto const numPop  = op.numPop();
-  auto const numPush = op.numPush();
-  auto const stkSize = state.stack.size();
-  constexpr auto numCells = 4;
-  TypedValue constVals[numCells];
-
-  // All outputs of the instruction must have constant types for this
-  // to be allowed.
-  for (auto i = size_t{0}; i < numPush; ++i) {
-    auto const& ty = state.stack[stkSize - i - 1].type;
-    if (i < numCells) {
-      auto const v = tv(ty);
-      if (!v) return false;
-      constVals[i] = *v;
-    } else if (!is_scalar(ty)) {
-      return false;
-    }
-  }
-
-  // Pop the inputs, and push the constants.
-  for (auto i = size_t{0}; i < numPop; ++i) {
-    DEBUG_ONLY auto flavor = op.popFlavor(i);
-    assertx(flavor != Flavor::U);
-    // Even for CU we only support C's.
-    gen(bc::PopC {});
-  }
-
-  for (auto i = size_t{0}; i < numPush; ++i) {
-    auto const v = i < numCells ?
-      constVals[i] : *tv(state.stack[stkSize - i - 1].type);
-    gen(gen_constant(v));
-    state.stack[stkSize - i - 1].type = from_cell(v);
-  }
-
-  return true;
-}
-
-bool propagate_constants(const Bytecode& bc, State& state,
-                         BytecodeVec& out) {
-  return propagate_constants(bc, state, [&] (const Bytecode& bc) {
-      out.push_back(bc);
-    });
-}
-
-//////////////////////////////////////////////////////////////////////
-
 // Create a new fatal error block. Update the given FuncAnalysis if
 // it is non-null - specifically, assign the new block an rpoId.
 BlockId make_fatal_block(php::WideFunc& func, const php::Block* srcBlk,
@@ -458,7 +406,7 @@ void visit_blocks(const char* what, VisitContext& visit, Fun&& fun) {
     // was made that changes the block output state.
     fun(visit, bid, state);
   }
-  assert(check(*visit.func));
+  assertx(check(*visit.func));
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -708,16 +656,12 @@ void fixTypeConstraint(const Index& index, TypeConstraint& tc) {
   if (interface_supports_non_objects(tc.typeName())) return;
   auto const resolved = index.resolve_type_name(tc.typeName());
 
-  assertx(!RuntimeOption::EvalHackArrDVArrs ||
-          (resolved.type != AnnotType::VArray &&
-           resolved.type != AnnotType::DArray));
-
   if (resolved.type == AnnotType::Object) {
-    auto const resolvedValue = match<folly::Optional<res::Class>>(
+    auto const resolvedValue = match<Optional<res::Class>>(
       resolved.value,
-      [&] (boost::blank) { return folly::none; },
-      [&] (const res::Class& c) { return folly::make_optional(c); },
-      [&] (const res::Record&) { always_assert(false); return folly::none; }
+      [&] (boost::blank) { return std::nullopt; },
+      [&] (const res::Class& c) { return make_optional(c); },
+      [&] (const res::Record&) { always_assert(false); return std::nullopt; }
     );
     if (!resolvedValue || !resolvedValue->resolved()) return;
     // Can't resolve if it resolves to a magic interface. If we mark it as
@@ -738,8 +682,8 @@ void do_optimize(const Index& index, FuncAnalysis&& ainfo,
   FTRACE(2, "{:-^70} {}\n", "Optimize Func", func->name);
 
   bool again;
-  folly::Optional<CollectedInfo> collect;
-  folly::Optional<VisitContext> visit;
+  Optional<CollectedInfo> collect;
+  Optional<VisitContext> visit;
   collect.emplace(index, ainfo.ctx, nullptr, CollectionOpts{}, &ainfo);
   visit.emplace(index, ainfo, *collect, func);
 
@@ -762,7 +706,7 @@ void do_optimize(const Index& index, FuncAnalysis&& ainfo,
       split_critical_edges(index, ainfo, func);
       if (global_dce(index, ainfo, func)) again = true;
       if (control_flow_opts(ainfo, func)) again = true;
-      assert(check(*func));
+      assertx(check(*func));
       /*
        * Global DCE can change types of locals across blocks.  See
        * dce.cpp for an explanation.
@@ -840,42 +784,36 @@ Bytecode gen_constant(const TypedValue& cell) {
     case KindOfDouble:
       return bc::Double { cell.m_data.dbl };
     case KindOfString:
-      assert(cell.m_data.pstr->isStatic());
+      assertx(cell.m_data.pstr->isStatic());
     case KindOfPersistentString:
       return bc::String { cell.m_data.pstr };
     case KindOfVec:
-      assert(cell.m_data.parr->isStatic());
+      assertx(cell.m_data.parr->isStatic());
     case KindOfPersistentVec:
-      assert(cell.m_data.parr->isVecType());
+      assertx(cell.m_data.parr->isVecType());
       return bc::Vec { cell.m_data.parr };
     case KindOfDict:
-      assert(cell.m_data.parr->isStatic());
+      assertx(cell.m_data.parr->isStatic());
     case KindOfPersistentDict:
-      assert(cell.m_data.parr->isDictType());
+      assertx(cell.m_data.parr->isDictType());
       return bc::Dict { cell.m_data.parr };
     case KindOfKeyset:
-      assert(cell.m_data.parr->isStatic());
+      assertx(cell.m_data.parr->isStatic());
     case KindOfPersistentKeyset:
-      assert(cell.m_data.parr->isKeysetType());
+      assertx(cell.m_data.parr->isKeysetType());
       return bc::Keyset { cell.m_data.parr };
-    case KindOfDArray:
-    case KindOfVArray:
-      assert(cell.m_data.parr->isStatic());
-    case KindOfPersistentDArray:
-    case KindOfPersistentVArray:
-      assert(cell.m_data.parr->isPHPArrayType());
-      return bc::Array { cell.m_data.parr };
+    case KindOfLazyClass:
+      return bc::LazyClass { cell.m_data.plazyclass.name() };
 
     case KindOfResource:
     case KindOfObject:
     case KindOfRFunc:
     case KindOfFunc:
     case KindOfClass:
-    case KindOfLazyClass: // TODO (T68822846)
     case KindOfClsMeth:
     case KindOfRClsMeth:
     case KindOfRecord:
-      always_assert(0 && "invalid constant in propagate_constants");
+      always_assert(0 && "invalid constant in gen_constant");
   }
   not_reached();
 }
@@ -891,12 +829,17 @@ void optimize_func(const Index& index, FuncAnalysis&& ainfo,
   Trace::Bump bumper1{Trace::hhbbc, bump};
   Trace::Bump bumper2{Trace::hhbbc_cfg, bump};
   Trace::Bump bumper3{Trace::hhbbc_dce, bump};
+  Trace::Bump bumper4{Trace::hhbbc_index, bump};
   do_optimize(index, std::move(ainfo), func);
 }
 
 void update_bytecode(php::WideFunc& func, BlockUpdates&& blockUpdates,
                      FuncAnalysis* ainfo) {
-  for (auto& ent : blockUpdates) {
+  for (auto& compressed : blockUpdates) {
+    std::pair<BlockId, BlockUpdateInfo> ent;
+    ent.first = compressed.first;
+    compressed.second.expand(ent.second);
+
     auto blk = func.blocks()[ent.first].mutate();
     auto const srcLoc = blk->hhbcs.front().srcLoc;
     if (!ent.second.unchangedBcs) {

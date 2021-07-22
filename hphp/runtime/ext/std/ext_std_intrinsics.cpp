@@ -35,7 +35,10 @@ namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
 void HHVM_FUNCTION(trigger_oom, bool oom) {
-  if (oom) setSurpriseFlag(MemExceededFlag);
+  if (oom) {
+    setSurpriseFlag(MemExceededFlag);
+    RID().setRequestOOMFlag();
+  }
 }
 
 TypedValue HHVM_FUNCTION(launder_value, const Variant& val) {
@@ -43,30 +46,29 @@ TypedValue HHVM_FUNCTION(launder_value, const Variant& val) {
 }
 
 Array HHVM_FUNCTION(dummy_varray_builtin, const Array& arr) {
-  if (arr.isHAMSafeVArray()) return arr;
-  return Array::CreateVArray();
+  if (arr.isVec()) return arr;
+  return Array::CreateVec();
 }
 
 Array HHVM_FUNCTION(dummy_darray_builtin, const Array& arr) {
-  if (arr.isHAMSafeDArray()) return arr;
-  return Array::CreateDArray();
+  if (arr.isDict()) return arr;
+  return Array::CreateDict();
 }
 
 TypedValue HHVM_FUNCTION(dummy_kindofdarray_builtin) {
-  return make_array_like_tv(ArrayData::CreateDArray());
+  return make_array_like_tv(ArrayData::CreateDict());
 }
 
 TypedValue HHVM_FUNCTION(dummy_kindofvarray_builtin) {
-  return make_array_like_tv(ArrayData::CreateVArray());
+  return make_array_like_tv(ArrayData::CreateVec());
 }
 
 TypedValue HHVM_FUNCTION(dummy_varr_or_darr_builtin, const Variant& var) {
   if (var.isArray()) {
     auto const& arr = var.asCArrRef();
-    if (arr.isHAMSafeVArray() ||
-        arr.isHAMSafeDArray()) return tvReturn(arr);
+    if (arr.isVec() || arr.isDict()) return tvReturn(arr);
   }
-  return tvReturn(ArrayData::CreateVArray());
+  return tvReturn(ArrayData::CreateVec());
 }
 
 TypedValue HHVM_FUNCTION(dummy_arraylike_builtin, const Variant& var) {
@@ -75,35 +77,6 @@ TypedValue HHVM_FUNCTION(dummy_arraylike_builtin, const Variant& var) {
     return tvReturn(arr);
   }
   return tvReturn(ArrayData::CreateKeyset());
-}
-
-TypedValue HHVM_FUNCTION(dummy_cast_to_kindofarray, const Variant& var) {
-  if (!var.isArray()) {
-    SystemLib::throwInvalidOperationExceptionObject("must pass arraylike");
-  }
-  auto const& arr = var.asCArrRef();
-  if (arr->isPHPArrayType() && arr->isNotDVArray()) {
-    return tvReturn(arr.get());
-  }
-  return make_array_like_tv(arr.toPHPArray().detach());
-}
-
-TypedValue HHVM_FUNCTION(dummy_cast_to_kindofdarray, const Variant& var) {
-  if (!var.isArray()) {
-    SystemLib::throwInvalidOperationExceptionObject("must pass arraylike");
-  }
-  auto const& arr = var.asCArrRef();
-  if (arr->isDArray()) return tvReturn(arr.get());
-  return make_array_like_tv(arr.toDArray().detach());
-}
-
-TypedValue HHVM_FUNCTION(dummy_cast_to_kindofvarray, const Variant& var) {
-  if (!var.isArray()) {
-    SystemLib::throwInvalidOperationExceptionObject("must pass arraylike");
-  }
-  auto const& arr = var.asCArrRef();
-  if (arr->isVArray()) return tvReturn(arr.get());
-  return make_array_like_tv(arr.toVArray().detach());
 }
 
 Array HHVM_FUNCTION(dummy_dict_builtin, const Array& arr) {
@@ -252,8 +225,8 @@ Array HHVM_FUNCTION(
   Variant& outObj
 ) {
   auto const orig = retOrig
-    ? make_varray(s.get(), str, num, i, obj, o.get(), m, mix)
-    : Array::CreateVArray();
+    ? make_vec_array(s.get(), str, num, i, obj, o.get(), m, mix)
+    : Array::CreateVec();
 
   str += ";; IN =\"";
   str += StrNR{s.get()};
@@ -267,8 +240,8 @@ Array HHVM_FUNCTION(
   obj = Object{o.get()};
 
   outArr = retOrig
-    ? make_varray(outBool, outArr, outObj)
-    : Array::CreateVArray();
+    ? make_vec_array(outBool, outArr, outObj)
+    : Array::CreateVec();
   outBool = true;
   outObj = SystemLib::AllocStdClassObject();
 
@@ -298,7 +271,7 @@ struct DummyArrayAwait : AsioExternalThreadEvent {
   DummyArrayAwait() { markAsFinished(); }
 
   void unserialize(TypedValue& tv) override {
-    auto arr = make_map_array("foo", "bar", "baz", "quux");
+    auto arr = make_dict_array("foo", "bar", "baz", "quux");
     tv = make_array_like_tv(arr.detach());
   }
 };
@@ -307,7 +280,7 @@ struct DummyDArrayAwait : AsioExternalThreadEvent {
   DummyDArrayAwait() { markAsFinished(); }
 
   void unserialize(TypedValue& tv) override {
-    auto arr = make_darray("foo", "bar", "baz", "quux");
+    auto arr = make_dict_array("foo", "bar", "baz", "quux");
     tv = make_array_like_tv(arr.detach());
   }
 };
@@ -339,7 +312,7 @@ Object HHVM_FUNCTION(dummy_dict_await) {
 ///////////////////////////////////////////////////////////////////////////////
 
 Variant HHVM_FUNCTION(create_class_pointer, StringArg name) {
-  auto const cls = Unit::loadClass(name.get());
+  auto const cls = Class::load(name.get());
   return cls ? Variant{cls} : init_null();
 }
 
@@ -347,7 +320,7 @@ Variant HHVM_FUNCTION(create_clsmeth_pointer, StringArg cls, StringArg meth) {
   if (RuntimeOption::RepoAuthoritative) {
     raise_error("You can't use %s() in RepoAuthoritative mode", __FUNCTION__+2);
   }
-  auto const c = Unit::loadClass(cls.get());
+  auto const c = Class::load(cls.get());
   if (!c) return init_null();
   auto const m = c->lookupMethod(meth.get());
   if (!m || !m->isStaticInPrologue()) return init_null();
@@ -363,6 +336,45 @@ bool HHVM_FUNCTION(is_unit_loaded, StringArg path) {
 void HHVM_FUNCTION(drain_unit_prefetcher) {
   if (RO::RepoAuthoritative || !unitPrefetchingEnabled()) return;
   drainUnitPrefetcher();
+}
+
+Array HHVM_FUNCTION(non_repo_unit_cache_info) {
+  auto const paths = nonRepoUnitCacheUnits();
+  auto const hashes = nonRepoUnitHashCacheUnits();
+
+  VecInit pathsInit{paths.size()};
+  for (auto const& p : paths) {
+    auto const perRequest = p.second->perRequestFilepath();
+    pathsInit.append(
+      make_dict_array(
+        "path", StrNR{p.first},
+        "orig-filepath", StrNR{p.second->origFilepath()},
+        "per-request-filepath", perRequest ? StrNR{perRequest} : empty_string(),
+        "sha1", String{p.second->sha1().toString()},
+        "bc-sha1", String{p.second->bcSha1().toString()},
+        "addr", (uintptr_t)p.second
+      )
+    );
+  }
+
+  VecInit hashesInit{hashes.size()};
+  for (auto const& p : hashes) {
+    auto const perRequest = p.second->perRequestFilepath();
+    hashesInit.append(
+      make_dict_array(
+        "sha1", String{p.first.toString()},
+        "bc-sha1", String{p.second->bcSha1().toString()},
+        "orig-filepath", StrNR{p.second->origFilepath()},
+        "per-request-filepath", perRequest ? StrNR{perRequest} : empty_string(),
+        "addr", (uintptr_t)p.second
+      )
+    );
+  }
+
+  return make_dict_array(
+    "path-to-unit", pathsInit.toArray(),
+    "hash-to-unit", hashesInit.toArray()
+  );
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -389,13 +401,6 @@ void StandardExtension::initIntrinsics() {
               dummy_arraylike_builtin);
   HHVM_FALIAS(__hhvm_intrinsics\\dummy_dict_builtin, dummy_dict_builtin);
 
-  HHVM_FALIAS(__hhvm_intrinsics\\dummy_cast_to_kindofarray,
-              dummy_cast_to_kindofarray);
-  HHVM_FALIAS(__hhvm_intrinsics\\dummy_cast_to_kindofdarray,
-              dummy_cast_to_kindofdarray);
-  HHVM_FALIAS(__hhvm_intrinsics\\dummy_cast_to_kindofvarray,
-              dummy_cast_to_kindofvarray);
-
   HHVM_FALIAS(__hhvm_intrinsics\\dummy_array_await, dummy_array_await);
   HHVM_FALIAS(__hhvm_intrinsics\\dummy_darray_await, dummy_darray_await);
   HHVM_FALIAS(__hhvm_intrinsics\\dummy_dict_await, dummy_dict_await);
@@ -418,6 +423,7 @@ void StandardExtension::initIntrinsics() {
 
   HHVM_FALIAS(__hhvm_intrinsics\\is_unit_loaded, is_unit_loaded);
   HHVM_FALIAS(__hhvm_intrinsics\\drain_unit_prefetcher, drain_unit_prefetcher);
+  HHVM_FALIAS(__hhvm_intrinsics\\non_repo_unit_cache_info, non_repo_unit_cache_info);
 
   loadSystemlib("std_intrinsics");
 }

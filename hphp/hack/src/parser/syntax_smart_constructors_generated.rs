@@ -16,14 +16,17 @@
  **
  *
  */
-use parser_core_types::syntax::*;
+use parser_core_types::{
+    syntax::*,
+    token_factory::TokenFactory,
+};
 use smart_constructors::{NoState, SmartConstructors};
 use crate::StateType;
 
-pub trait SyntaxSmartConstructors<'src, S: SyntaxType<'src, State>, State = NoState>:
-    SmartConstructors<'src, State, R=S, Token=S::Token>
+pub trait SyntaxSmartConstructors<S: SyntaxType<State>, TF: TokenFactory<Token = S::Token>, State = NoState>:
+    SmartConstructors<State = State, R=S, TF = TF>
 where
-    State: StateType<'src, S>,
+    State: StateType<S>,
 {
     fn make_missing(&mut self, offset: usize) -> Self::R {
         let r = Self::R::make_missing(self.state_mut(), offset);
@@ -31,7 +34,7 @@ where
         r
     }
 
-    fn make_token(&mut self, arg: Self::Token) -> Self::R {
+    fn make_token(&mut self, arg: <Self::TF as TokenFactory>::Token) -> Self::R {
         let r = Self::R::make_token(self.state_mut(), arg);
         self.state_mut().next(&[]);
         r
@@ -39,7 +42,7 @@ where
 
     fn make_list(&mut self, items: Vec<Self::R>, offset: usize) -> Self::R {
         if items.is_empty() {
-            <Self as SyntaxSmartConstructors<'src, S, State>>::make_missing(self, offset)
+            <Self as SyntaxSmartConstructors<S, TF, State>>::make_missing(self, offset)
         } else {
             let item_refs: Vec<_> = items.iter().collect();
             self.state_mut().next(&item_refs);
@@ -97,14 +100,29 @@ where
         Self::R::make_file_attribute_specification(self.state_mut(), arg0, arg1, arg2, arg3, arg4)
     }
 
-    fn make_enum_declaration(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R, arg6 : Self::R, arg7 : Self::R, arg8 : Self::R, arg9 : Self::R, arg10 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5, &arg6, &arg7, &arg8, &arg9, &arg10]);
-        Self::R::make_enum_declaration(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10)
+    fn make_enum_declaration(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R, arg6 : Self::R, arg7 : Self::R, arg8 : Self::R, arg9 : Self::R) -> Self::R {
+        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5, &arg6, &arg7, &arg8, &arg9]);
+        Self::R::make_enum_declaration(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9)
+    }
+
+    fn make_enum_use(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R) -> Self::R {
+        self.state_mut().next(&[&arg0, &arg1, &arg2]);
+        Self::R::make_enum_use(self.state_mut(), arg0, arg1, arg2)
     }
 
     fn make_enumerator(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R) -> Self::R {
         self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3]);
         Self::R::make_enumerator(self.state_mut(), arg0, arg1, arg2, arg3)
+    }
+
+    fn make_enum_class_declaration(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R, arg6 : Self::R, arg7 : Self::R, arg8 : Self::R, arg9 : Self::R, arg10 : Self::R) -> Self::R {
+        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5, &arg6, &arg7, &arg8, &arg9, &arg10]);
+        Self::R::make_enum_class_declaration(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10)
+    }
+
+    fn make_enum_class_enumerator(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R) -> Self::R {
+        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4]);
+        Self::R::make_enum_class_enumerator(self.state_mut(), arg0, arg1, arg2, arg3, arg4)
     }
 
     fn make_record_declaration(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R, arg6 : Self::R, arg7 : Self::R, arg8 : Self::R) -> Self::R {
@@ -120,6 +138,11 @@ where
     fn make_alias_declaration(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R, arg6 : Self::R, arg7 : Self::R) -> Self::R {
         self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5, &arg6, &arg7]);
         Self::R::make_alias_declaration(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7)
+    }
+
+    fn make_context_alias_declaration(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R, arg6 : Self::R, arg7 : Self::R) -> Self::R {
+        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5, &arg6, &arg7]);
+        Self::R::make_context_alias_declaration(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7)
     }
 
     fn make_property_declaration(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R) -> Self::R {
@@ -172,14 +195,14 @@ where
         Self::R::make_function_declaration(self.state_mut(), arg0, arg1, arg2)
     }
 
-    fn make_function_declaration_header(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R, arg6 : Self::R, arg7 : Self::R, arg8 : Self::R, arg9 : Self::R, arg10 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5, &arg6, &arg7, &arg8, &arg9, &arg10]);
-        Self::R::make_function_declaration_header(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10)
+    fn make_function_declaration_header(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R, arg6 : Self::R, arg7 : Self::R, arg8 : Self::R, arg9 : Self::R, arg10 : Self::R, arg11 : Self::R) -> Self::R {
+        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5, &arg6, &arg7, &arg8, &arg9, &arg10, &arg11]);
+        Self::R::make_function_declaration_header(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11)
     }
 
-    fn make_capability_provisional(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5]);
-        Self::R::make_capability_provisional(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5)
+    fn make_contexts(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R) -> Self::R {
+        self.state_mut().next(&[&arg0, &arg1, &arg2]);
+        Self::R::make_contexts(self.state_mut(), arg0, arg1, arg2)
     }
 
     fn make_where_clause(&mut self, arg0 : Self::R, arg1 : Self::R) -> Self::R {
@@ -252,14 +275,19 @@ where
         Self::R::make_type_const_declaration(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9)
     }
 
+    fn make_context_const_declaration(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R, arg6 : Self::R, arg7 : Self::R, arg8 : Self::R) -> Self::R {
+        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5, &arg6, &arg7, &arg8]);
+        Self::R::make_context_const_declaration(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8)
+    }
+
     fn make_decorated_expression(&mut self, arg0 : Self::R, arg1 : Self::R) -> Self::R {
         self.state_mut().next(&[&arg0, &arg1]);
         Self::R::make_decorated_expression(self.state_mut(), arg0, arg1)
     }
 
-    fn make_parameter_declaration(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5]);
-        Self::R::make_parameter_declaration(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5)
+    fn make_parameter_declaration(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R, arg6 : Self::R) -> Self::R {
+        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5, &arg6]);
+        Self::R::make_parameter_declaration(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5, arg6)
     }
 
     fn make_variadic_parameter(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R) -> Self::R {
@@ -407,14 +435,9 @@ where
         Self::R::make_return_statement(self.state_mut(), arg0, arg1, arg2)
     }
 
-    fn make_goto_label(&mut self, arg0 : Self::R, arg1 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1]);
-        Self::R::make_goto_label(self.state_mut(), arg0, arg1)
-    }
-
-    fn make_goto_statement(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R) -> Self::R {
+    fn make_yield_break_statement(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R) -> Self::R {
         self.state_mut().next(&[&arg0, &arg1, &arg2]);
-        Self::R::make_goto_statement(self.state_mut(), arg0, arg1, arg2)
+        Self::R::make_yield_break_statement(self.state_mut(), arg0, arg1, arg2)
     }
 
     fn make_throw_statement(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R) -> Self::R {
@@ -452,9 +475,9 @@ where
         Self::R::make_anonymous_class(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8)
     }
 
-    fn make_anonymous_function(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R, arg6 : Self::R, arg7 : Self::R, arg8 : Self::R, arg9 : Self::R, arg10 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5, &arg6, &arg7, &arg8, &arg9, &arg10]);
-        Self::R::make_anonymous_function(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10)
+    fn make_anonymous_function(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R, arg6 : Self::R, arg7 : Self::R, arg8 : Self::R, arg9 : Self::R, arg10 : Self::R, arg11 : Self::R) -> Self::R {
+        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5, &arg6, &arg7, &arg8, &arg9, &arg10, &arg11]);
+        Self::R::make_anonymous_function(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11)
     }
 
     fn make_anonymous_function_use_clause(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R) -> Self::R {
@@ -467,9 +490,9 @@ where
         Self::R::make_lambda_expression(self.state_mut(), arg0, arg1, arg2, arg3, arg4)
     }
 
-    fn make_lambda_signature(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4]);
-        Self::R::make_lambda_signature(self.state_mut(), arg0, arg1, arg2, arg3, arg4)
+    fn make_lambda_signature(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R, arg6 : Self::R) -> Self::R {
+        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5, &arg6]);
+        Self::R::make_lambda_signature(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5, arg6)
     }
 
     fn make_cast_expression(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R) -> Self::R {
@@ -542,19 +565,14 @@ where
         Self::R::make_eval_expression(self.state_mut(), arg0, arg1, arg2, arg3)
     }
 
-    fn make_define_expression(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3]);
-        Self::R::make_define_expression(self.state_mut(), arg0, arg1, arg2, arg3)
-    }
-
     fn make_isset_expression(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R) -> Self::R {
         self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3]);
         Self::R::make_isset_expression(self.state_mut(), arg0, arg1, arg2, arg3)
     }
 
-    fn make_function_call_expression(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4]);
-        Self::R::make_function_call_expression(self.state_mut(), arg0, arg1, arg2, arg3, arg4)
+    fn make_function_call_expression(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R) -> Self::R {
+        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5]);
+        Self::R::make_function_call_expression(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5)
     }
 
     fn make_function_pointer_expression(&mut self, arg0 : Self::R, arg1 : Self::R) -> Self::R {
@@ -570,6 +588,11 @@ where
     fn make_braced_expression(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R) -> Self::R {
         self.state_mut().next(&[&arg0, &arg1, &arg2]);
         Self::R::make_braced_expression(self.state_mut(), arg0, arg1, arg2)
+    }
+
+    fn make_et_splice_expression(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R) -> Self::R {
+        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3]);
+        Self::R::make_et_splice_expression(self.state_mut(), arg0, arg1, arg2, arg3)
     }
 
     fn make_embedded_braced_expression(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R) -> Self::R {
@@ -722,11 +745,6 @@ where
         Self::R::make_type_constant(self.state_mut(), arg0, arg1, arg2)
     }
 
-    fn make_pu_access(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1, &arg2]);
-        Self::R::make_pu_access(self.state_mut(), arg0, arg1, arg2)
-    }
-
     fn make_vector_type_specifier(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R) -> Self::R {
         self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4]);
         Self::R::make_vector_type_specifier(self.state_mut(), arg0, arg1, arg2, arg3, arg4)
@@ -747,9 +765,9 @@ where
         Self::R::make_varray_type_specifier(self.state_mut(), arg0, arg1, arg2, arg3, arg4)
     }
 
-    fn make_vector_array_type_specifier(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3]);
-        Self::R::make_vector_array_type_specifier(self.state_mut(), arg0, arg1, arg2, arg3)
+    fn make_function_ctx_type_specifier(&mut self, arg0 : Self::R, arg1 : Self::R) -> Self::R {
+        self.state_mut().next(&[&arg0, &arg1]);
+        Self::R::make_function_ctx_type_specifier(self.state_mut(), arg0, arg1)
     }
 
     fn make_type_parameter(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R) -> Self::R {
@@ -762,14 +780,14 @@ where
         Self::R::make_type_constraint(self.state_mut(), arg0, arg1)
     }
 
+    fn make_context_constraint(&mut self, arg0 : Self::R, arg1 : Self::R) -> Self::R {
+        self.state_mut().next(&[&arg0, &arg1]);
+        Self::R::make_context_constraint(self.state_mut(), arg0, arg1)
+    }
+
     fn make_darray_type_specifier(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R, arg6 : Self::R) -> Self::R {
         self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5, &arg6]);
         Self::R::make_darray_type_specifier(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5, arg6)
-    }
-
-    fn make_map_array_type_specifier(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5]);
-        Self::R::make_map_array_type_specifier(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5)
     }
 
     fn make_dictionary_type_specifier(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R) -> Self::R {
@@ -777,14 +795,14 @@ where
         Self::R::make_dictionary_type_specifier(self.state_mut(), arg0, arg1, arg2, arg3)
     }
 
-    fn make_closure_type_specifier(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R, arg6 : Self::R, arg7 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5, &arg6, &arg7]);
-        Self::R::make_closure_type_specifier(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7)
+    fn make_closure_type_specifier(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R, arg6 : Self::R, arg7 : Self::R, arg8 : Self::R, arg9 : Self::R, arg10 : Self::R) -> Self::R {
+        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5, &arg6, &arg7, &arg8, &arg9, &arg10]);
+        Self::R::make_closure_type_specifier(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10)
     }
 
-    fn make_closure_parameter_type_specifier(&mut self, arg0 : Self::R, arg1 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1]);
-        Self::R::make_closure_parameter_type_specifier(self.state_mut(), arg0, arg1)
+    fn make_closure_parameter_type_specifier(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R) -> Self::R {
+        self.state_mut().next(&[&arg0, &arg1, &arg2]);
+        Self::R::make_closure_parameter_type_specifier(self.state_mut(), arg0, arg1, arg2)
     }
 
     fn make_classname_type_specifier(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R) -> Self::R {
@@ -882,44 +900,9 @@ where
         Self::R::make_list_item(self.state_mut(), arg0, arg1)
     }
 
-    fn make_pocket_atom_expression(&mut self, arg0 : Self::R, arg1 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1]);
-        Self::R::make_pocket_atom_expression(self.state_mut(), arg0, arg1)
-    }
-
-    fn make_pocket_identifier_expression(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4]);
-        Self::R::make_pocket_identifier_expression(self.state_mut(), arg0, arg1, arg2, arg3, arg4)
-    }
-
-    fn make_pocket_atom_mapping_declaration(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5]);
-        Self::R::make_pocket_atom_mapping_declaration(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5)
-    }
-
-    fn make_pocket_enum_declaration(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R, arg4 : Self::R, arg5 : Self::R, arg6 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3, &arg4, &arg5, &arg6]);
-        Self::R::make_pocket_enum_declaration(self.state_mut(), arg0, arg1, arg2, arg3, arg4, arg5, arg6)
-    }
-
-    fn make_pocket_field_type_expr_declaration(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3]);
-        Self::R::make_pocket_field_type_expr_declaration(self.state_mut(), arg0, arg1, arg2, arg3)
-    }
-
-    fn make_pocket_field_type_declaration(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3]);
-        Self::R::make_pocket_field_type_declaration(self.state_mut(), arg0, arg1, arg2, arg3)
-    }
-
-    fn make_pocket_mapping_id_declaration(&mut self, arg0 : Self::R, arg1 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1]);
-        Self::R::make_pocket_mapping_id_declaration(self.state_mut(), arg0, arg1)
-    }
-
-    fn make_pocket_mapping_type_declaration(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R, arg3 : Self::R) -> Self::R {
-        self.state_mut().next(&[&arg0, &arg1, &arg2, &arg3]);
-        Self::R::make_pocket_mapping_type_declaration(self.state_mut(), arg0, arg1, arg2, arg3)
+    fn make_enum_class_label_expression(&mut self, arg0 : Self::R, arg1 : Self::R, arg2 : Self::R) -> Self::R {
+        self.state_mut().next(&[&arg0, &arg1, &arg2]);
+        Self::R::make_enum_class_label_expression(self.state_mut(), arg0, arg1, arg2)
     }
 
 }

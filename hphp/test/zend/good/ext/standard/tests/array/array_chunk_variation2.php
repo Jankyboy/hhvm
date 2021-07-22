@@ -14,9 +14,6 @@ echo "*** Testing array_chunk() : usage variations ***\n";
 // input array
 $input = varray[1, 2];
 
-//get an unset variable
-$unset_var = 10;
-unset ($unset_var);
 
 //array of values to iterate over
 $values = varray [
@@ -54,7 +51,7 @@ $values = varray [
         'string',
 
         // object data
-/*21*/  new stdclass(),
+/*21*/  new stdClass(),
 
 ];
 

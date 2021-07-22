@@ -16,6 +16,7 @@
 
 #include "hphp/runtime/base/object-data.h"
 
+#include "hphp/runtime/base/datatype.h"
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/base/collections.h"
@@ -43,7 +44,6 @@
 #include "hphp/runtime/vm/native-data.h"
 #include "hphp/runtime/vm/native-prop-handler.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
-#include "hphp/runtime/vm/repo.h"
 #include "hphp/runtime/vm/repo-global-data.h"
 
 #include "hphp/system/systemlib.h"
@@ -133,7 +133,7 @@ bool ObjectData::assertTypeHint(tv_rval prop, Slot slot) const {
   if (prop.type() == KindOfUninit && (propDecl.attrs & AttrLateInit)) {
     return true;
   }
-  assertATypeHint(propDecl.typeConstraint, prop);
+  if (!assertATypeHint(propDecl.typeConstraint, prop)) return false;
   if (RuntimeOption::EvalEnforceGenericsUB <= 2) return true;
   for (auto const& ub : propDecl.ubs) {
     if (!assertATypeHint(ub, prop)) return false;
@@ -148,7 +148,7 @@ static void freeDynPropArray(ObjectData* inst) {
   auto& table = g_context->dynPropTable;
   auto it = table.find(inst);
   assertx(it != end(table));
-  assertx(it->second.arr().isHAMSafeDArray());
+  assertx(it->second.arr().isDict());
   it->second.destroy();
   table.erase(it);
 }
@@ -235,7 +235,7 @@ StrNR ObjectData::getClassName() const {
 
 bool ObjectData::instanceof(const String& s) const {
   assertx(kindIsValid());
-  auto const cls = Unit::lookupClass(s.get());
+  auto const cls = Class::lookup(s.get());
   return cls && instanceof(cls);
 }
 
@@ -265,18 +265,22 @@ bool ObjectData::toBooleanImpl() const noexcept {
   return false;
 }
 
-int64_t ObjectData::toInt64Impl() const noexcept {
-  // SimpleXMLElement is the only class that has proper custom int casting.
-  assertx(instanceof(SimpleXMLElement_classof()));
+int64_t ObjectData::toInt64() const {
+  /* SimpleXMLElement is the only class that has proper custom num casting. */
+  if (LIKELY(!instanceof(SimpleXMLElement_classof()))) {
+    throwObjToIntException(classname_cstr());
+  }
   if (RuntimeOption::EvalNoticeOnSimpleXMLBehavior) {
     raise_notice("SimpleXMLElement to integer cast");
   }
   return SimpleXMLElement_objectCast(this, KindOfInt64).toInt64();
 }
 
-double ObjectData::toDoubleImpl() const noexcept {
-  // SimpleXMLElement is the only class that has custom double casting.
-  assertx(instanceof(SimpleXMLElement_classof()));
+double ObjectData::toDouble() const {
+  /* SimpleXMLElement is the only class that has proper custom num casting. */
+  if (LIKELY(!instanceof(SimpleXMLElement_classof()))) {
+    throwObjToDoubleException(classname_cstr());
+  }
   if (RuntimeOption::EvalNoticeOnSimpleXMLBehavior) {
     raise_notice("SimpleXMLElement to double cast");
   }
@@ -297,7 +301,7 @@ Object ObjectData::iterableObject(bool& isIterable,
   }
   Object obj(this);
   while (obj->instanceof(SystemLib::s_IteratorAggregateClass)) {
-    auto iterator = obj->o_invoke_few_args(s_getIterator, 0);
+    auto iterator = obj->o_invoke_few_args(s_getIterator, RuntimeCoeffects::fixme(), 0);
     if (!iterator.isObject()) break;
     auto o = iterator.getObjectData();
     if (o->isIterator()) {
@@ -323,13 +327,13 @@ Object ObjectData::iterableObject(bool& isIterable,
 Array& ObjectData::dynPropArray() const {
   assertx(getAttribute(HasDynPropArr));
   assertx(g_context->dynPropTable.count(this));
-  assertx(g_context->dynPropTable[this].arr().isHAMSafeDArray());
+  assertx(g_context->dynPropTable[this].arr().isDict());
   return g_context->dynPropTable[this].arr();
 }
 
 void ObjectData::setDynProps(const Array& newArr) {
   // don't expose the ref returned by setDynPropArr
-  (void)setDynPropArray(newArr.toDArray());
+  (void)setDynPropArray(newArr.toDict());
 }
 
 void ObjectData::reserveDynProps(int numDynamic) {
@@ -348,14 +352,13 @@ Array& ObjectData::reserveProperties(int numDynamic /* = 2 */) {
   }
 
   return setDynPropArray(Array::attach(
-    RO::EvalHackArrDVArrs ? MixedArray::MakeReserveDict(numDynamic)
-                          : MixedArray::MakeReserveDArray(numDynamic)));
+      MixedArray::MakeReserveDict(numDynamic)));
 }
 
 Array& ObjectData::setDynPropArray(const Array& newArr) {
   assertx(!g_context->dynPropTable.count(this));
   assertx(!getAttribute(HasDynPropArr));
-  assertx(newArr.isHAMSafeDArray());
+  assertx(newArr.isDict());
 
   if (m_cls->forbidsDynamicProps()) {
     throw_object_forbids_dynamic_props(getClassName().data());
@@ -379,7 +382,10 @@ tv_lval ObjectData::makeDynProp(const StringData* key) {
   if (RuntimeOption::EvalNoticeOnCreateDynamicProp) {
     raiseCreateDynamicProp(key);
   }
-  return reserveProperties().lvalForce(StrNR(key), AccessFlags::Key);
+  if (!reserveProperties().exists(StrNR(key))) {
+    reserveProperties().set(StrNR(key), make_tv<KindOfNull>());
+  }
+  return reserveProperties().lval(StrNR(key), AccessFlags::Key);
 }
 
 void ObjectData::setDynProp(const StringData* key, TypedValue val) {
@@ -401,7 +407,7 @@ Variant ObjectData::o_get(const String& propName, bool error /* = true */,
 
   Class* ctx = nullptr;
   if (!context.empty()) {
-    ctx = Unit::lookupClass(context.get());
+    ctx = Class::lookup(context.get());
   }
 
   // Can't use propImpl here because if the property is not accessible and
@@ -419,8 +425,10 @@ Variant ObjectData::o_get(const String& propName, bool error /* = true */,
   }
 
   if (error) {
-    raise_notice("Undefined property: %s::$%s", getClassName().data(),
-                 propName.data());
+    SystemLib::throwUndefinedPropertyExceptionObject(
+       folly::sformat("Undefined property: {}::${}",
+                      getClassName().data(),
+                      propName.data()));
   }
 
   return uninit_null();
@@ -438,7 +446,7 @@ void ObjectData::o_set(const String& propName, const Variant& v,
 
   Class* ctx = nullptr;
   if (!context.empty()) {
-    ctx = Unit::lookupClass(context.get());
+    ctx = Class::lookup(context.get());
   }
 
   // Can't use setProp here because if the property is not accessible and
@@ -479,7 +487,7 @@ void ObjectData::o_setArray(const Array& properties) {
         ctx = m_cls;
       } else {
         // Private.
-        ctx = Unit::lookupClass(cls.get());
+        ctx = Class::lookup(cls.get());
         if (!ctx) continue;
       }
       k = k.substr(subLen);
@@ -515,7 +523,7 @@ void ObjectData::o_getArray(Array& props,
     auto val = this->propRvalAtOffset(slot);
     props.set(StrNR(prop.name).asString(), val.tv());
   }
-  IteratePropToArrayOrderNoInc(
+  IteratePropToArrayOrder(
     this,
     [&](Slot slot, const Class::Prop& prop, tv_rval val) {
       assertx(assertTypeHint(val, slot));
@@ -539,6 +547,10 @@ void ObjectData::o_getArray(Array& props,
       }
     }
   );
+
+  if (m_cls->needsInitThrowable()) {
+    throwable_mark_array(this, props);
+  }
 }
 
 template <IntishCast IC /* = IntishCast::None */>
@@ -564,11 +576,11 @@ Array ObjectData::toArray(bool pubOnly /* = false */,
     );
     not_reached();
   } else if (UNLIKELY(instanceof(c_Closure::classof()))) {
-    return make_varray(Object(const_cast<ObjectData*>(this)));
+    return make_vec_array(Object(const_cast<ObjectData*>(this)));
   } else if (UNLIKELY(instanceof(DateTimeData::getClass()))) {
     return Native::data<DateTimeData>(this)->getDebugInfo();
   } else {
-    auto ret = Array::CreateDArray();
+    auto ret = Array::CreateDict();
     o_getArray(ret, pubOnly, ignoreLateInit);
     return ret;
   }
@@ -610,7 +622,7 @@ Array ObjectData::o_toIterArray(const String& context) {
       // not returning Array&; makes a copy
       return props;
     }
-    return Array::CreateDArray();
+    return Array::CreateDict();
   }
 
   size_t accessibleProps = m_cls->declPropNumAccessible();
@@ -618,11 +630,11 @@ Array ObjectData::o_toIterArray(const String& context) {
   if (getAttribute(HasDynPropArr)) {
     size += dynPropArray().size();
   }
-  Array retArray { Array::attach(MixedArray::MakeReserveMixed(size)) };
+  Array retArray { Array::attach(MixedArray::MakeReserveDict(size)) };
 
   Class* ctx = nullptr;
   if (!context.empty()) {
-    ctx = Unit::lookupClass(context.get());
+    ctx = Class::lookup(context.get());
   }
 
   // Get all declared properties first, bottom-to-top in the inheritance
@@ -714,42 +726,29 @@ Variant ObjectData::o_invoke(const String& s, const Variant& params,
     return Variant(Variant::NullInit());
   }
   return Variant::attach(
-    g_context->invokeFunc(ctx, params)
+    g_context->invokeFunc(ctx, params, RuntimeCoeffects::fixme())
   );
 }
 
-#define INVOKE_FEW_ARGS_IMPL3                        \
-  const Variant& a0, const Variant& a1, const Variant& a2
-#define INVOKE_FEW_ARGS_IMPL6                        \
-  INVOKE_FEW_ARGS_IMPL3,                             \
-  const Variant& a3, const Variant& a4, const Variant& a5
-#define INVOKE_FEW_ARGS_IMPL10                       \
-  INVOKE_FEW_ARGS_IMPL6,                             \
-  const Variant& a6, const Variant& a7, const Variant& a8, const Variant& a9
-#define INVOKE_FEW_ARGS_IMPL_ARGS INVOKE_FEW_ARGS(IMPL,INVOKE_FEW_ARGS_COUNT)
-
-Variant ObjectData::o_invoke_few_args(const String& s, int count,
-                                      INVOKE_FEW_ARGS_IMPL_ARGS) {
+Variant ObjectData::o_invoke_few_args(const String& s,
+                                      RuntimeCoeffects providedCoeffects,
+                                      int count,
+                                      const Variant& a0 /* = uninit_variant*/,
+                                      const Variant& a1 /* = uninit_variant*/,
+                                      const Variant& a2 /* = uninit_variant*/,
+                                      const Variant& a3 /* = uninit_variant*/,
+                                      const Variant& a4 /* = uninit_variant*/) {
 
   CallCtx ctx;
   if (!decode_invoke(s, this, true, ctx)) {
     return Variant(Variant::NullInit());
   }
 
-  TypedValue args[INVOKE_FEW_ARGS_COUNT];
+  TypedValue args[5];
   switch(count) {
     default: not_implemented();
-#if INVOKE_FEW_ARGS_COUNT > 6
-    case 10: tvCopy(*a9.asTypedValue(), args[9]);
-    case  9: tvCopy(*a8.asTypedValue(), args[8]);
-    case  8: tvCopy(*a7.asTypedValue(), args[7]);
-    case  7: tvCopy(*a6.asTypedValue(), args[6]);
-#endif
-#if INVOKE_FEW_ARGS_COUNT > 3
-    case  6: tvCopy(*a5.asTypedValue(), args[5]);
     case  5: tvCopy(*a4.asTypedValue(), args[4]);
     case  4: tvCopy(*a3.asTypedValue(), args[3]);
-#endif
     case  3: tvCopy(*a2.asTypedValue(), args[2]);
     case  2: tvCopy(*a1.asTypedValue(), args[1]);
     case  1: tvCopy(*a0.asTypedValue(), args[0]);
@@ -757,7 +756,7 @@ Variant ObjectData::o_invoke_few_args(const String& s, int count,
   }
 
   return Variant::attach(
-    g_context->invokeFuncFew(ctx, count, args)
+    g_context->invokeFuncFew(ctx, count, args, providedCoeffects)
   );
 }
 
@@ -814,14 +813,16 @@ ObjectData* ObjectData::clone() {
     assertx(method);
     clone->unlockObject();
     SCOPE_EXIT { clone->lockObject(); };
-    g_context->invokeMethodV(clone.get(), method, InvokeArgs{}, false);
+    g_context->invokeMethodV(clone.get(), method, InvokeArgs{},
+                             RuntimeCoeffects::fixme());
   }
   return clone.detach();
 }
 
 bool ObjectData::equal(const ObjectData& other) const {
   if (this == &other) return true;
-  if ((this->m_cls->attrs() & AttrEnumClass) || (other.m_cls->attrs() & AttrEnumClass)) {
+  if (getVMClass() == SystemLib::s_HH_SwitchableClassClass ||
+      other.getVMClass() == SystemLib::s_HH_SwitchableClassClass) {
     return false; // Never compare for structural equality.
   }
   if (isCollection()) {
@@ -862,7 +863,7 @@ bool ObjectData::equal(const ObjectData& other) const {
   check_recursion_error();
 
   bool result = true;
-  IteratePropMemOrderNoInc(
+  IteratePropMemOrder(
     this,
     [&](Slot slot, const Class::Prop& prop, tv_rval thisVal) {
       auto otherVal = other.propRvalAtOffset(slot);
@@ -919,7 +920,12 @@ int64_t ObjectData::compare(const ObjectData& other) const {
     return DateTimeData::compare(this, &other);
   }
   // Return 1 for different classes to match PHP7 behavior.
-  if (getVMClass() != other.getVMClass()) return 1;
+  if (getVMClass() != other.getVMClass()) {
+    handleConvNoticeForCmp(
+      folly::sformat("object of class {}", classname_cstr()).c_str(),
+      folly::sformat("object of class {}", other.classname_cstr()).c_str());
+    return 1;
+  }
   if (UNLIKELY(instanceof(SimpleXMLElement_classof()))) {
     if (RuntimeOption::EvalNoticeOnSimpleXMLBehavior) {
       raise_notice("SimpleXMLElement comparison");
@@ -954,7 +960,7 @@ int64_t ObjectData::compare(const ObjectData& other) const {
   check_recursion_error();
 
   int64_t result = 0;
-  IteratePropToArrayOrderNoInc(
+  IteratePropToArrayOrder(
     this,
     [&](Slot slot, const Class::Prop& prop, tv_rval thisVal) {
       auto otherVal = other.propRvalAtOffset(slot);
@@ -1014,7 +1020,8 @@ void ObjectData::setReifiedGenerics(Class* cls, ArrayData* reifiedTypes) {
   auto const arg = make_array_like_tv(reifiedTypes);
   auto const meth = cls->lookupMethod(s_86reifiedinit.get());
   assertx(meth != nullptr);
-  g_context->invokeMethod(this, meth, InvokeArgs(&arg, 1));
+  g_context->invokeMethod(this, meth, InvokeArgs(&arg, 1),
+                          RuntimeCoeffects::fixme());
 }
 
 // called from jit code
@@ -1081,7 +1088,7 @@ ObjectData::~ObjectData() {
 }
 
 Object ObjectData::FromArray(ArrayData* properties) {
-  auto const props = properties->toDArray(true);
+  auto const props = properties->toDict(true);
   Object retval{SystemLib::s_stdclassClass};
   retval->setAttribute(HasDynPropArr);
   g_context->dynPropTable.emplace(retval.get(), props);
@@ -1092,6 +1099,22 @@ Object ObjectData::FromArray(ArrayData* properties) {
 NEVER_INLINE
 void ObjectData::throwMutateConstProp(Slot prop) const {
   throw_cannot_modify_const_prop(
+    getClassName().data(),
+    m_cls->declProperties()[prop].name->data()
+  );
+}
+
+NEVER_INLINE
+void ObjectData::throwMustBeMutable(Slot prop) const {
+  throw_must_be_mutable(
+    getClassName().data(),
+    m_cls->declProperties()[prop].name->data()
+  );
+}
+
+NEVER_INLINE
+void ObjectData::throwMustBeReadOnly(Slot prop) const {
+  throw_cannot_write_non_readonly_prop(
     getClassName().data(),
     m_cls->declProperties()[prop].name->data()
   );
@@ -1131,7 +1154,8 @@ ObjectData::PropLookup ObjectData::getPropImpl(
      // instantiates with false by mistake it will always see const
      forWrite
        ? bool(declProp.attrs & AttrIsConst)
-       : true
+       : true,
+     lookup.readonly
     };
   }
 
@@ -1147,11 +1171,11 @@ ObjectData::PropLookup ObjectData::getPropImpl(
       // not const since all dynamic properties are. If we may write to
       // the property we need to allow the array to escalate.
       auto const lval = arr.lval(StrNR(key), AccessFlags::Key);
-      return { lval, nullptr, kInvalidSlot, true, !forWrite };
+      return { lval, nullptr, kInvalidSlot, true, !forWrite, false };
     }
   }
 
-  return { nullptr, nullptr, kInvalidSlot, false, !forWrite };
+  return { nullptr, nullptr, kInvalidSlot, false, !forWrite, false };
 }
 
 tv_lval ObjectData::getPropLval(const Class* ctx, const StringData* key) {
@@ -1191,29 +1215,38 @@ tv_lval ObjectData::getPropIgnoreAccessibility(const StringData* key) {
 template<ObjectData::PropMode mode>
 ALWAYS_INLINE
 tv_lval ObjectData::propImpl(TypedValue* tvRef, const Class* ctx,
-                             const StringData* key) {
+                             const StringData* key, const ReadOnlyOp op,
+                             bool* roProp) {
   auto constexpr write = (mode == PropMode::DimForWrite);
   auto constexpr read = (mode == PropMode::ReadNoWarn) ||
                         (mode == PropMode::ReadWarn);
   auto const lookup = getPropImpl<write, read, false>(ctx, key);
   auto const prop = lookup.val;
-
   if (prop) {
     if (lookup.accessible) {
-      auto const checkConstProp = [&]() {
+      auto const checkPropAttrs = [&]() {
         if (mode == PropMode::DimForWrite) {
           if (UNLIKELY(lookup.isConst) && !isBeingConstructed()) {
             throwMutateConstProp(lookup.slot);
+          }
+        }
+        if (lookup.readonly) {
+          if (op == ReadOnlyOp::CheckROCOW &&
+            (!isRefcountedType(lookup.val.type()) || hasPersistentFlavor(lookup.val.type()))) {
+            assertx(roProp);
+            *roProp = true;
+          } else if (op == ReadOnlyOp::Mutable || op == ReadOnlyOp::CheckROCOW) {
+            throwMustBeMutable(lookup.slot);
           }
         }
         return prop;
       };
 
       // Property exists, is accessible, and is not unset.
-      if (type(prop) != KindOfUninit) return checkConstProp();
+      if (type(prop) != KindOfUninit) return checkPropAttrs();
 
       if (mode == PropMode::ReadWarn) raiseUndefProp(key);
-      if (write) return checkConstProp();
+      if (write) return checkPropAttrs();
       return const_cast<TypedValue*>(&immutable_null_base);
     }
 
@@ -1252,33 +1285,40 @@ tv_lval ObjectData::propImpl(TypedValue* tvRef, const Class* ctx,
 tv_lval ObjectData::prop(
   TypedValue* tvRef,
   const Class* ctx,
-  const StringData* key
+  const StringData* key,
+  const ReadOnlyOp op,
+  bool* roProp
 ) {
-  return propImpl<PropMode::ReadNoWarn>(tvRef, ctx, key);
+  return propImpl<PropMode::ReadNoWarn>(tvRef, ctx, key, op, roProp);
 }
 
 tv_lval ObjectData::propW(
   TypedValue* tvRef,
   const Class* ctx,
-  const StringData* key
+  const StringData* key,
+  const ReadOnlyOp op
 ) {
-  return propImpl<PropMode::ReadWarn>(tvRef, ctx, key);
+  return propImpl<PropMode::ReadWarn>(tvRef, ctx, key, op);
 }
 
 tv_lval ObjectData::propU(
   TypedValue* tvRef,
   const Class* ctx,
-  const StringData* key
+  const StringData* key,
+  const ReadOnlyOp op,
+  bool* roProp
 ) {
-  return propImpl<PropMode::DimForWrite>(tvRef, ctx, key);
+  return propImpl<PropMode::DimForWrite>(tvRef, ctx, key, op, roProp);
 }
 
 tv_lval ObjectData::propD(
   TypedValue* tvRef,
   const Class* ctx,
-  const StringData* key
+  const StringData* key,
+  const ReadOnlyOp op,
+  bool* roProp
 ) {
-  return propImpl<PropMode::DimForWrite>(tvRef, ctx, key);
+  return propImpl<PropMode::DimForWrite>(tvRef, ctx, key, op, roProp);
 }
 
 bool ObjectData::propIsset(const Class* ctx, const StringData* key) {
@@ -1300,7 +1340,7 @@ bool ObjectData::propIsset(const Class* ctx, const StringData* key) {
   return false;
 }
 
-void ObjectData::setProp(Class* ctx, const StringData* key, TypedValue val) {
+void ObjectData::setProp(Class* ctx, const StringData* key, TypedValue val, ReadOnlyOp op) {
   assertx(tvIsPlausible(val));
   assertx(val.m_type != KindOfUninit);
 
@@ -1310,6 +1350,9 @@ void ObjectData::setProp(Class* ctx, const StringData* key, TypedValue val) {
   if (prop && lookup.accessible) {
     if (UNLIKELY(lookup.isConst) && !isBeingConstructed()) {
       throwMutateConstProp(lookup.slot);
+    }
+    if (!lookup.readonly && op == ReadOnlyOp::ReadOnly) {
+      throwMustBeReadOnly(lookup.slot);
     }
     // TODO(T61738946): We can remove the temporary here once we no longer
     // coerce class_meth types.
@@ -1511,12 +1554,14 @@ void ObjectData::unsetProp(Class* ctx, const StringData* key) {
   }
 }
 
-void ObjectData::raiseObjToIntNotice(const char* clsName) {
-  raise_notice("Object of class %s could not be converted to int", clsName);
+void ObjectData::throwObjToIntException(const char* clsName) {
+  SystemLib::throwTypecastExceptionObject(folly::sformat(
+    "Object of class {} could not be converted to int", clsName));
 }
 
-void ObjectData::raiseObjToDoubleNotice(const char* clsName) {
-  raise_notice("Object of class %s could not be converted to float", clsName);
+void ObjectData::throwObjToDoubleException(const char* clsName) {
+  SystemLib::throwTypecastExceptionObject(folly::sformat(
+    "Object of class {} could not be converted to float", clsName));
 }
 
 void ObjectData::raiseAbstractClassError(Class* cls) {
@@ -1524,13 +1569,15 @@ void ObjectData::raiseAbstractClassError(Class* cls) {
   raise_error("Cannot instantiate %s %s",
               (attrs & AttrInterface) ? "interface" :
               (attrs & AttrTrait)     ? "trait" :
-              (attrs & AttrEnum)      ? "enum" : "abstract class",
+              (attrs & (AttrEnum|AttrEnumClass)) ? "enum" : "abstract class",
               cls->preClass()->name()->data());
 }
 
 void ObjectData::raiseUndefProp(const StringData* key) const {
-  raise_notice("Undefined property: %s::$%s",
-               m_cls->name()->data(), key->data());
+  SystemLib::throwUndefinedPropertyExceptionObject(
+    folly::sformat("Undefined property: {}::${}",
+                   m_cls->name()->data(),
+                   key->data()));
 }
 
 void ObjectData::raiseCreateDynamicProp(const StringData* key) const {
@@ -1567,29 +1614,30 @@ void ObjectData::raiseImplicitInvokeToString() const {
   raise_notice("Implicitly invoked %s::__toString", m_cls->name()->data());
 }
 
-Variant ObjectData::InvokeSimple(ObjectData* obj, const StaticString& name) {
+Variant ObjectData::InvokeSimple(ObjectData* obj, const StaticString& name,
+                                 RuntimeCoeffects providedCoeffects) {
   auto const meth = obj->methodNamed(name.get());
   return meth
-    ? g_context->invokeMethodV(obj, meth, InvokeArgs{}, false)
+    ? g_context->invokeMethodV(obj, meth, InvokeArgs{}, providedCoeffects)
     : uninit_null();
 }
 
-Variant ObjectData::invokeSleep() {
-  return InvokeSimple(this, s___sleep);
+Variant ObjectData::invokeSleep(RuntimeCoeffects provided) {
+  return InvokeSimple(this, s___sleep, provided);
 }
 
 Variant ObjectData::invokeToDebugDisplay() {
-  return InvokeSimple(this, s___toDebugDisplay);
+  return InvokeSimple(this, s___toDebugDisplay, RuntimeCoeffects::fixme());
 }
 
-Variant ObjectData::invokeWakeup() {
+Variant ObjectData::invokeWakeup(RuntimeCoeffects provided) {
   unlockObject();
   SCOPE_EXIT { lockObject(); };
-  return InvokeSimple(this, s___wakeup);
+  return InvokeSimple(this, s___wakeup, provided);
 }
 
 Variant ObjectData::invokeDebugInfo() {
-  return InvokeSimple(this, s___debugInfo);
+  return InvokeSimple(this, s___debugInfo, RuntimeCoeffects::fixme());
 }
 
 String ObjectData::invokeToString() {
@@ -1612,8 +1660,11 @@ String ObjectData::invokeToString() {
   if (RuntimeOption::EvalNoticeOnImplicitInvokeToString) {
     raiseImplicitInvokeToString();
   }
-  auto const tv = g_context->invokeMethod(this, method, InvokeArgs{}, false);
-  if (!isStringType(tv.m_type) && !isClassType(tv.m_type)) {
+  auto const tv = g_context->invokeMethod(this, method, InvokeArgs{},
+                                          RuntimeCoeffects::fixme());
+  if (!isStringType(tv.m_type) &&
+      !isClassType(tv.m_type) &&
+      !isLazyClassType(tv.m_type)) {
     // Discard the value returned by the __toString() method and raise
     // a recoverable error
     tvDecRefGen(tv);
@@ -1626,6 +1677,10 @@ String ObjectData::invokeToString() {
   }
 
   if (tvIsString(tv)) return String::attach(val(tv).pstr);
+  if (tvIsLazyClass(tv)) {
+    return StrNR{lazyClassToStringHelper(tv.m_data.plazyclass)};
+  }
+  assertx(isClassType(type(tv)));
   return StrNR(classToStringHelper(tv.m_data.pclass));
 }
 

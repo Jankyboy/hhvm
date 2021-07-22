@@ -25,7 +25,6 @@
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/base/type-string.h"
 #include "hphp/runtime/ext/json/ext_json.h"
-#include "hphp/runtime/base/libevent-http-client.h"
 #include "hphp/runtime/server/http-protocol.h"
 #include "hphp/runtime/vm/runtime.h"
 #include "hphp/runtime/vm/jit/translator.h"
@@ -42,7 +41,7 @@ const StaticString
   s_user("user");
 
 Array HHVM_FUNCTION(get_defined_functions) {
-  return make_darray(s_internal, Unit::getSystemFunctions(),
+  return make_dict_array(s_internal, Unit::getSystemFunctions(),
                      s_user, Unit::getUserFunctions());
 }
 
@@ -100,13 +99,12 @@ const StaticString s_call_user_func("call_user_func");
 const StaticString s_call_user_func_array("call_user_func_array");
 
 Array hhvm_get_frame_args(const ActRec* ar) {
-  ARRPROV_USE_RUNTIME_LOCATION();
   while (ar && (ar->func()->name()->isame(s_call_user_func.get()) ||
                 ar->func()->name()->isame(s_call_user_func_array.get()))) {
     ar = g_context->getPrevVMState(ar);
   }
 
-  auto ret = Array::CreateVArray();
+  auto ret = Array::CreateVec();
   if (!ar) return ret;
 
   int numNonVariadic = ar->func()->numNonVariadicParams();
@@ -120,10 +118,10 @@ Array hhvm_get_frame_args(const ActRec* ar) {
   if (!ar->func()->hasVariadicCaptureParam()) return ret;
   assertx(numNonVariadic == ret.size());
   auto const arr = frame_local(ar, numNonVariadic);
-  if (tvIsHAMSafeVArray(arr)) {
+  if (tvIsVec(arr)) {
     // If there are still args that haven't been accounted for, they have
     // been shuffled into a packed array stored in the variadic capture param.
-    IterateVNoInc(val(arr).parr, [&](TypedValue v) { ret.append(v); });
+    IterateV(val(arr).parr, [&](TypedValue v) { ret.append(v); });
   }
   return ret;
 }

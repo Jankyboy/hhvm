@@ -57,12 +57,14 @@ module Watchman_process_helpers = struct
        let warning = J.get_string_val "warning" obj in
        EventLogger.watchman_warning warning;
        Hh_logger.log "Watchman warning: %s\n" warning
-     with Caml.Not_found -> ());
+     with
+    | J.Not_found -> ());
     (try
        let error = J.get_string_val "error" obj in
        EventLogger.watchman_error error;
        raise @@ Watchman_error error
-     with Caml.Not_found -> ());
+     with
+    | J.Not_found -> ());
     try
       let canceled = J.get_bool_val "canceled" obj in
       if canceled then (
@@ -70,14 +72,30 @@ module Watchman_process_helpers = struct
         raise @@ Subscription_canceled_by_watchman
       ) else
         ()
-    with Caml.Not_found -> ()
+    with
+    | J.Not_found -> ()
+
+  let max_array_elt_in_json_logging = 5
 
   (* Verifies that a watchman response is valid JSON and free from common errors *)
   let sanitize_watchman_response ~debug_logging output =
     if debug_logging then Hh_logger.info "Watchman response: %s" output;
     let response =
-      try Hh_json.json_of_string output
-      with e ->
+      try
+        let response = Hh_json.json_of_string output in
+        if not debug_logging then
+          (* if debug_logging, we've already logged the full watchman response, so skip
+           * logging truncated one. *)
+          Hh_json.json_truncate
+            ~max_array_elt_count:max_array_elt_in_json_logging
+            response
+          |> Hh_json.json_to_string
+          |> Hh_logger.info
+               "Watchman response (arrays are truncated to max %d elements): %s"
+               max_array_elt_in_json_logging;
+        response
+      with
+      | e ->
         let raw_stack = Caml.Printexc.get_raw_backtrace () in
         let stack = Caml.Printexc.raw_backtrace_to_string raw_stack in
         Hh_logger.error
@@ -108,14 +126,25 @@ end = struct
 
   let return x = x
 
-  let catch ~f ~catch = (try f () with exn -> catch (Exception.wrap exn))
+  let catch ~f ~catch =
+    try f () with
+    | exn -> catch (Exception.wrap exn)
 
   let list_fold_values = List.fold
 
   (* Send a request to the watchman process *)
   let send_request ~debug_logging oc json =
     let json_str = Hh_json.(json_to_string json) in
-    if debug_logging then Hh_logger.info "Watchman request: %s" json_str;
+    if debug_logging then
+      Hh_logger.info "Watchman request: %s" json_str
+    else
+      Hh_logger.info
+        "Watchman request (arrays are truncated to max %d elements): %s"
+        max_array_elt_in_json_logging
+        (Hh_json.json_truncate
+           json
+           ~max_array_elt_count:max_array_elt_in_json_logging
+        |> Hh_json.json_to_string);
     Out_channel.output_string oc json_str;
     Out_channel.output_string oc "\n";
     Out_channel.flush oc
@@ -176,7 +205,7 @@ end = struct
     assert (
       match Timeout.close_process_in ic with
       | Unix.WEXITED 0 -> true
-      | _ -> false );
+      | _ -> false);
     let json = Hh_json.json_of_string output in
     J.get_string_val "sockname" json
 
@@ -202,8 +231,8 @@ end = struct
   let with_watchman_conn ~timeout ~(sockname : string option) f =
     let conn = open_connection ~timeout ~sockname in
     let result =
-      try f conn
-      with e ->
+      try f conn with
+      | e ->
         let stack = Caml.Printexc.get_raw_backtrace () in
         Unix.close @@ Buffered_line_reader.get_fd @@ fst conn;
         Caml.Printexc.raise_with_backtrace e stack
@@ -395,12 +424,12 @@ module Functor (Watchman_process : Watchman_sig.WATCHMAN_PROCESS) :
       let directives =
         [
           JSON_Object
-            ( extra_kv
+            (extra_kv
             @ [
                 ("fields", J.strlist ["name"]);
                 (* Watchman doesn't allow an empty allof expression. But expressions is never empty *)
                 ("expression", J.pred "allof" expressions);
-              ] );
+              ]);
         ]
       in
       let request = JSON_Array (header @ directives) in
@@ -438,23 +467,23 @@ module Functor (Watchman_process : Watchman_sig.WATCHMAN_PROCESS) :
       match mode with
       | All_changes -> (Hh_json.JSON_String env.clockspec, [])
       | Defer_changes ->
-        (Hh_json.JSON_String env.clockspec, [("defer", J.strlist ["hg.update"])])
-      | Drop_changes ->
-        (Hh_json.JSON_String env.clockspec, [("drop", J.strlist ["hg.update"])])
+        ( Hh_json.JSON_String env.clockspec,
+          [("defer", J.strlist ["hg.update"; "meerkat-build"])] )
       | Scm_aware ->
         Hh_logger.log "Making Scm_aware subscription";
         let scm =
           Hh_json.JSON_Object [("mergebase-with", Hh_json.JSON_String "master")]
         in
         let since =
-          Hh_json.JSON_Object [("scm", scm); ("drop", J.strlist ["hg.update"])]
+          Hh_json.JSON_Object
+            [("scm", scm); ("drop", J.strlist ["hg.update"; "meerkat-build"])]
         in
         (since, [])
     in
     request_json
       ~extra_kv:
-        ( ([("since", since)] @ mode)
-        @ [("empty_on_fresh_instance", Hh_json.JSON_Bool true)] )
+        (([("since", since)] @ mode)
+        @ [("empty_on_fresh_instance", Hh_json.JSON_Bool true)])
       Subscribe
       env
 
@@ -464,14 +493,14 @@ module Functor (Watchman_process : Watchman_sig.WATCHMAN_PROCESS) :
   let capability_check ?(optional = []) required =
     Hh_json.(
       JSON_Array
-        ( [JSON_String "version"]
+        ([JSON_String "version"]
         @ [
             JSON_Object
               [
                 ("optional", J.strlist optional);
                 ("required", J.strlist required);
               ];
-          ] ))
+          ]))
 
   (** We filter all responses from get_changes through this. This is to detect
    * Watchman server crashes.
@@ -580,9 +609,8 @@ module Functor (Watchman_process : Watchman_sig.WATCHMAN_PROCESS) :
       (* So lets say we're being told to watch foo/bar. Is foo/bar a directory? Is it a file? If it
        * is a file now, might it become a directory later? I'm not aware of aterm which will watch for either a file or a directory, so let's add two terms *)
       Some
-        ( J.strlist ["dirname"; relative_path]
-        :: J.strlist ["name"; relative_path]
-        :: terms )
+        (J.strlist ["dirname"; relative_path]
+         :: J.strlist ["name"; relative_path] :: terms)
 
   let re_init
       ?prior_clockspec
@@ -725,15 +753,13 @@ module Functor (Watchman_process : Watchman_sig.WATCHMAN_PROCESS) :
 
   let extract_file_names env json =
     let files =
-      try J.get_array_val "files" json
-      with
+      try J.get_array_val "files" json with
       (* When an hg.update happens, it shows up in the watchman subscription
        * as a notification with no files key present. *)
-      | Caml.Not_found ->
-        []
+      | J.Not_found -> []
     in
     let files =
-      List.map files (fun json ->
+      List.map files ~f:(fun json ->
           let s = Hh_json.get_string_exn json in
           let abs = Filename.concat env.watch_root s in
           abs)
@@ -745,10 +771,10 @@ module Functor (Watchman_process : Watchman_sig.WATCHMAN_PROCESS) :
       4.0
       *. 2.0
          ** float
-              ( if attempts > 3 then
+              (if attempts > 3 then
                 3
               else
-                attempts )
+                attempts)
     in
     Float.(Unix.time () >= time +. offset)
 
@@ -790,10 +816,10 @@ module Functor (Watchman_process : Watchman_sig.WATCHMAN_PROCESS) :
     (Watchman_dead (dead_env_from_alive env), Watchman_unavailable)
 
   let with_instance instance ~try_to_restart ~on_alive ~on_dead =
-    ( if try_to_restart then
+    (if try_to_restart then
       maybe_restart_instance instance
     else
-      Watchman_process.return instance )
+      Watchman_process.return instance)
     >>= function
     | Watchman_dead dead_env -> on_dead dead_env
     | Watchman_alive env -> on_alive env
@@ -876,11 +902,66 @@ module Functor (Watchman_process : Watchman_sig.WATCHMAN_PROCESS) :
         extract_file_names env response)
       ~catch:(fun _ -> raise Exit_status.(Exit_with Watchman_failed))
 
+  module RepoStates : sig
+    type state = string
+
+    val enter : state -> unit
+
+    val leave : state -> unit
+
+    val get_as_telemetry : unit -> Telemetry.t
+  end = struct
+    type state = string
+
+    type t = {
+      past_states: SSet.t;
+      current_states: state list;
+    }
+
+    let init : t = { past_states = SSet.empty; current_states = [] }
+
+    let states : t ref = ref init
+
+    let enter : state -> unit =
+     fun state ->
+      states :=
+        { !states with current_states = state :: !states.current_states }
+
+    let rec remove_first : string list -> string -> string list =
+     fun list elt ->
+      match list with
+      | [] -> []
+      | hd :: list ->
+        if String.equal hd elt then
+          list
+        else
+          hd :: remove_first list elt
+
+    let leave : state -> unit =
+     fun state ->
+      let { current_states; past_states } = !states in
+      let current_states = remove_first current_states state in
+      let past_states = SSet.add state past_states in
+      states := { current_states; past_states }
+
+    let get_as_telemetry () =
+      let { current_states; past_states } = !states in
+      Telemetry.create ()
+      |> Telemetry.string_list ~key:"current_states" ~value:current_states
+      |> Telemetry.string_list
+           ~key:"past_states"
+           ~value:(SSet.elements past_states)
+  end
+
   let make_state_change_response state name data =
     let metadata = J.try_get_val "metadata" data in
     match state with
-    | `Enter -> State_enter (name, metadata)
-    | `Leave -> State_leave (name, metadata)
+    | `Enter ->
+      RepoStates.enter name;
+      State_enter (name, metadata)
+    | `Leave ->
+      RepoStates.leave name;
+      State_leave (name, metadata)
 
   let extract_mergebase data =
     Hh_json.Access.(
@@ -921,21 +1002,23 @@ module Functor (Watchman_process : Watchman_sig.WATCHMAN_PROCESS) :
                  `Enter
                  (J.get_string_val "state-enter" data)
                  data )
-           with Caml.Not_found ->
-             (try
-                ( env,
-                  make_state_change_response
-                    `Leave
-                    (J.get_string_val "state-leave" data)
-                    data )
-              with Caml.Not_found ->
-                (env, Files_changed (set_of_list @@ extract_file_names env data))))
+           with
+          | J.Not_found ->
+            (try
+               ( env,
+                 make_state_change_response
+                   `Leave
+                   (J.get_string_val "state-leave" data)
+                   data )
+             with
+            | J.Not_found ->
+              (env, Files_changed (set_of_list @@ extract_file_names env data))))
       end
 
   let get_changes ?deadline instance =
     call_on_instance instance "get_changes" @@ fun env ->
     let timeout =
-      Option.map deadline (fun deadline ->
+      Option.map deadline ~f:(fun deadline ->
           let timeout = deadline -. Unix.time () in
           Explicit_timeout Float.(max timeout 0.0))
     in
@@ -1155,6 +1238,10 @@ module Watchman_mock = struct
       raise Not_available_in_mocking
   end
 
+  module RepoStates = struct
+    let get_as_telemetry () = Telemetry.create ()
+  end
+
   let init ?since_clockspec:_ _ () = !Mocking.init
 
   let get_changes ?deadline instance =
@@ -1196,7 +1283,8 @@ module type S = sig
   val get_reader : watchman_instance -> Buffered_line_reader.t option
 end
 
-include ( val if Injector_config.use_test_stubbing then
-                (module Watchman_mock : S)
-              else
-                (module Watchman_actual : S) )
+include
+  (val if Injector_config.use_test_stubbing then
+         (module Watchman_mock : S)
+       else
+         (module Watchman_actual : S))

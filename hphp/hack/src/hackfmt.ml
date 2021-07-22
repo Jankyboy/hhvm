@@ -7,7 +7,7 @@
  *
  *)
 
-open Core_kernel
+open Hh_prelude
 module SyntaxTree = Full_fidelity_syntax_tree
 module SourceText = Full_fidelity_source_text
 module SyntaxError = Full_fidelity_syntax_error
@@ -18,6 +18,7 @@ open Boundaries
 open Libhackfmt
 open Hackfmt_error
 open Ocaml_overrides
+open FindUtils
 
 type filename = string
 
@@ -39,7 +40,7 @@ let text_source_to_filename = function
 let file_exists path = Option.is_some (Sys_utils.realpath path)
 
 let rec guess_root config start recursion_limit =
-  if start = Path.parent start then
+  if Path.equal start (Path.parent start) then
     None
   (* Reach fs root, nothing to do. *)
   else if Wwwroot.is_www_directory ~config start then
@@ -119,6 +120,7 @@ let opt_default opt def =
 
 module Env = struct
   type t = {
+    debug: bool;
     test: bool;
     mutable mode: string option;
     mutable text_source: text_source;
@@ -140,6 +142,7 @@ let parse_options () =
   let inplace = ref false in
   let diff = ref false in
   let diff_dry = ref false in
+  let debug = ref false in
   let test = ref false in
   (* The following are either inferred from context (cwd and .hhconfig),
    * or via CLI flags, with priority given to the latter. *)
@@ -148,7 +151,7 @@ let parse_options () =
   let cli_line_width = ref None in
   let cli_root = ref None in
   let cli_format_generated_code = ref false in
-  let options =
+  let rec options =
     ref
       [
         ( "--range",
@@ -202,6 +205,12 @@ let parse_options () =
         ( "--diff-dry-run",
           Arg.Set diff_dry,
           " Preview the files that would be overwritten by --diff mode" );
+        ( "--debug",
+          Arg.Unit
+            (fun () ->
+              debug := true;
+              options := Hackfmt_debug.init_with_options ()),
+          " Print debug statements" );
         ( "--filename-for-logging",
           Arg.String (fun x -> filename_for_logging := Some x),
           " The filename for logging purposes, when providing file contents "
@@ -255,7 +264,7 @@ let parse_options () =
       config ),
     root,
     parser_env,
-    !test )
+    (!debug, !test) )
 
 type format_options =
   | Print of {
@@ -332,6 +341,7 @@ let validate_options
   (* Let --diff-dry-run imply --diff *)
   let diff = diff || diff_dry in
   match { diff; inplace; text_source; range; at_char } with
+  | _ when env.Env.debug && diff -> fail "Can't format diff in debug mode"
   | { diff = true; text_source = File _; _ }
   | { diff = true; text_source = Stdin (Some _); _ } ->
     fail "--diff mode expects no files"
@@ -367,12 +377,13 @@ let read_stdin () =
     while true do
       Buffer.add_string
         buf
-        ( Out_channel.(flush stdout);
-          In_channel.(input_line_exn stdin) );
+        (Out_channel.(flush stdout);
+         In_channel.(input_line_exn stdin));
       Buffer.add_char buf '\n'
     done;
     assert false
-  with End_of_file -> Buffer.contents buf
+  with
+  | End_of_file -> Buffer.contents buf
 
 let print_error source_text error =
   let text =
@@ -400,7 +411,7 @@ let parse ~parser_env text_source =
   if List.is_empty (SyntaxTree.all_errors tree) then
     tree
   else (
-    List.iter (SyntaxTree.all_errors tree) (print_error source_text);
+    List.iter (SyntaxTree.all_errors tree) ~f:(print_error source_text);
     raise Hackfmt_error.InvalidSyntax
   )
 
@@ -430,8 +441,8 @@ let expand_or_convert_range ?ranges source_text range =
     in
     let st = max st 1 in
     let ed = min ed (Array.length line_boundaries) in
-    (try line_interval_to_offset_range line_boundaries (st, ed)
-     with Invalid_argument msg -> raise (InvalidCliArg msg))
+    (try line_interval_to_offset_range line_boundaries (st, ed) with
+    | Invalid_argument msg -> raise (InvalidCliArg msg))
 
 let format ?config ?range ?ranges env tree =
   let source_text = SyntaxTree.text tree in
@@ -450,7 +461,7 @@ let format ?config ?range ?ranges env tree =
          * incorrect newline than to omit it, which would cause the following line
          * (along with its indentation spaces) to be joined with the last line in
          * the range. See test case: binary_expression_range_formatting.php *)
-        if formatted.[String.length formatted - 1] = '\n' then
+        if Char.equal formatted.[String.length formatted - 1] '\n' then
           formatted
         else
           formatted ^ "\n")
@@ -472,7 +483,19 @@ let format_diff_intervals ?config env intervals tree =
   try
     logging_time_taken env Logger.format_intervals_end (fun () ->
         format_intervals ?config intervals tree)
-  with Invalid_argument s -> raise (InvalidDiff s)
+  with
+  | Invalid_argument s -> raise (InvalidDiff s)
+
+let debug_print ?range ?config text_source =
+  let tree = parse ~parser_env:Full_fidelity_parser_env.default text_source in
+  let source_text = SyntaxTree.text tree in
+  let range = Option.map range ~f:(expand_or_convert_range source_text) in
+  let env = Libhackfmt.env_from_config config in
+  let doc =
+    Hack_format.transform env (SyntaxTransforms.editable_from_positioned tree)
+  in
+  let chunk_groups = Chunk_builder.build doc in
+  Hackfmt_debug.debug env ~range source_text doc chunk_groups
 
 let main
     (env : Env.t)
@@ -482,10 +505,14 @@ let main
   match options with
   | Print { text_source; range; config } ->
     env.Env.text_source <- text_source;
-    text_source |> parse ~parser_env |> format ?range ~config env |> output
+    if env.Env.debug then
+      debug_print ?range ~config text_source
+    else
+      text_source |> parse ~parser_env |> format ?range ~config env |> output
   | InPlace { filename; config } ->
     let text_source = File filename in
     env.Env.text_source <- text_source;
+    if env.Env.debug then debug_print ~config text_source;
     text_source
     |> parse ~parser_env
     |> format ~config env
@@ -497,14 +524,17 @@ let main
       try
         logging_time_taken env Logger.format_at_offset_end (fun () ->
             format_at_offset ~config tree pos)
-      with Invalid_argument s -> raise (InvalidCliArg s)
+      with
+      | Invalid_argument s -> raise (InvalidCliArg s)
     in
+    if env.Env.debug then debug_print text_source ~range:(Byte range) ~config;
     Printf.printf "%d %d\n" (fst range) (snd range);
     output formatted
   | Diff { dry; config } ->
     let root = Path.make env.Env.root in
     read_stdin ()
     |> Parse_diff.go
+    |> List.filter ~f:(fun (rel_path, _intervals) -> is_hack rel_path)
     |> List.filter_map ~f:(fun (rel_path, intervals) ->
            (* We intentionally raise an exception here instead of printing a
             * message and moving on--if a file is missing, it may be a signal that
@@ -554,10 +584,11 @@ let () =
      HackfmtEventLogger) to behave correctly *)
   Daemon.check_entry_point ();
 
-  let (options, root, parser_env, test) = parse_options () in
+  let (options, root, parser_env, (debug, test)) = parse_options () in
   let env =
     {
-      Env.test;
+      Env.debug;
+      test;
       mode = None;
       text_source = Stdin None;
       root = Path.to_string root;
@@ -571,7 +602,8 @@ let () =
       let options = validate_options env options in
       main env options parser_env;
       (None, 0)
-    with exn ->
+    with
+    | exn ->
       let exit_code = get_exception_exit_value exn in
       if exit_code = 255 then Printexc.print_backtrace stderr;
       let err_str = get_error_string_from_exn exn in
@@ -585,7 +617,7 @@ let () =
       in
       (Some err_msg, exit_code)
   in
-  ( if not env.Env.test then
+  (if not env.Env.test then
     let time_taken = Unix.gettimeofday () -. start_time in
     Logger.exit
       ~time_taken
@@ -593,7 +625,7 @@ let () =
       ~exit_code:(Some exit_code)
       ~mode:env.Env.mode
       ~file:(text_source_to_filename env.Env.text_source)
-      ~root:env.Env.root );
+      ~root:env.Env.root);
 
-  Option.iter err_msg (eprintf "%s\n");
+  Option.iter err_msg ~f:(eprintf "%s\n");
   exit exit_code

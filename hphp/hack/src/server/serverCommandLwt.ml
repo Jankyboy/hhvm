@@ -23,24 +23,33 @@ let rec wait_for_rpc_response stack fd state callback =
     | Ping ->
       Lwt.return
         (Error (state, stack, Failure "unexpected ping on persistent connection"))
-  with e -> Lwt.return (Error (state, stack, e))
+    | Monitor_failed_to_handoff ->
+      Lwt.return
+        (Error
+           ( state,
+             stack,
+             Failure
+               "unexpected monitor_failed_to_handoff on persistent connection"
+           ))
+  with
+  | e -> Lwt.return (Error (state, stack, e))
 
 (** Sends a message over the given `out_channel`, then listens for incoming
-messages - either an exception which it raises, or a push which it dispatches
-via the supplied callback, or a response which it returns.
+    messages - either an exception which it raises, or a push which it dispatches
+    via the supplied callback, or a response which it returns.
 
-Note: although this function returns a promise, it is not safe to call this
-function multiple times in parallel, since they are writing to the same output
-channel, and the server is not equipped to serve parallel requests anyways.
-*)
+    Note: although this function returns a promise, it is not safe to call this
+    function multiple times in parallel, since they are writing to the same output
+    channel, and the server is not equipped to serve parallel requests anyways. *)
 let rpc_persistent :
     type a s.
     Timeout.in_channel * Out_channel.t ->
     s ->
     (s -> push -> s) ->
+    desc:string ->
     a t ->
     (s * a * Connection_tracker.t, s * Utils.callstack * exn) result Lwt.t =
- fun (_, oc) state callback cmd ->
+ fun (_, oc) state callback ~desc cmd ->
   let stack =
     Caml.Printexc.get_callstack 100 |> Caml.Printexc.raw_backtrace_to_string
   in
@@ -48,7 +57,8 @@ let rpc_persistent :
   try%lwt
     let fd = Unix.descr_of_out_channel oc in
     let oc = Lwt_io.of_unix_fd fd ~mode:Lwt_io.Output in
-    let buffer = Marshal.to_string (Rpc cmd) [] in
+    let metadata = { ServerCommandTypes.from = "HackIDE"; desc } in
+    let buffer = Marshal.to_string (Rpc (metadata, cmd)) [] in
     let%lwt () = Lwt_io.write oc buffer in
     let%lwt () = Lwt_io.flush oc in
     let%lwt response =
@@ -59,11 +69,8 @@ let rpc_persistent :
         callback
     in
     Lwt.return response
-  with e -> Lwt.return (Error (state, stack, e))
-
-let connect_debug oc =
-  Marshal.to_channel oc Debug [];
-  Out_channel.flush oc
+  with
+  | e -> Lwt.return (Error (state, stack, e))
 
 let send_connection_type oc t =
   Marshal.to_channel oc t [];

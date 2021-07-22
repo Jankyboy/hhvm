@@ -15,8 +15,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EXT_DATETIME_H_
-#define incl_HPHP_EXT_DATETIME_H_
+#pragma once
 
 #include "hphp/runtime/ext/extension.h"
 #include "hphp/runtime/base/timestamp.h"
@@ -104,7 +103,7 @@ Variant HHVM_METHOD(DateTime, sub,
                     const Object& interval);
 Array HHVM_METHOD(DateTime, __sleep);
 void HHVM_METHOD(DateTime, __wakeup);
-Array HHVM_METHOD(DateTime, __debuginfo);
+Array HHVM_METHOD(DateTime, __debugInfo);
 
 ///////////////////////////////////////////////////////////////////////////////
 // class DateTimeZone
@@ -152,7 +151,7 @@ void HHVM_METHOD(DateTimeZone, __construct,
                  const String& timezone);
 Array HHVM_METHOD(DateTimeZone, getLocation);
 String HHVM_METHOD(DateTimeZone, getName);
-Array HHVM_METHOD(DateTimeZone, __debuginfo);
+Array HHVM_METHOD(DateTimeZone, __debugInfo);
 Variant HHVM_METHOD(DateTimeZone, getOffset,
                     const Object& datetime);
 TypedValue HHVM_METHOD(DateTimeZone, getTransitions,
@@ -256,4 +255,3 @@ Array HHVM_FUNCTION(date_sun_info,
 ///////////////////////////////////////////////////////////////////////////////
 }
 
-#endif // incl_HPHP_EXT_DATETIME_H_

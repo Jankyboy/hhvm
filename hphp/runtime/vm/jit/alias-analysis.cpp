@@ -70,14 +70,14 @@ void visit_locations(const BlockList& blocks, Visit visit) {
   }
 }
 
-folly::Optional<uint32_t> add_class(AliasAnalysis& ret, AliasClass acls) {
+Optional<uint32_t> add_class(AliasAnalysis& ret, AliasClass acls) {
   assertx(acls.isSingleLocation());
   auto const ins = ret.locations.insert(std::make_pair(acls, ALocMeta{}));
   if (!ins.second) return ins.first->second.index;
   if (ret.locations.size() > kMaxTrackedALocs) {
     always_assert(ret.locations.size() == kMaxTrackedALocs + 1);
     ret.locations.erase(acls);
-    return folly::none;
+    return std::nullopt;
   }
   FTRACE(1, "    new: {}\n", show(acls));
   auto& meta = ins.first->second;
@@ -92,7 +92,7 @@ folly::Optional<uint32_t> add_class(AliasAnalysis& ret, AliasClass acls) {
 template<class T>
 ALocBits may_alias_component(const AliasAnalysis& aa,
                              AliasClass acls,
-                             folly::Optional<T> proj,
+                             Optional<T> proj,
                              const AliasAnalysis::LocationMap& sets,
                              AliasClass any,
                              ALocBits pessimistic) {
@@ -120,7 +120,7 @@ ALocBits may_alias_component(const AliasAnalysis& aa,
 template<class T>
 ALocBits may_alias_part(const AliasAnalysis& aa,
                         AliasClass acls,
-                        folly::Optional<T> proj,
+                        Optional<T> proj,
                         AliasClass any,
                         ALocBits pessimistic) {
   if (proj) {
@@ -139,7 +139,7 @@ ALocBits may_alias_part(const AliasAnalysis& aa,
 template<class T>
 ALocBits expand_component(const AliasAnalysis& aa,
                           AliasClass acls,
-                          folly::Optional<T> loc,
+                          Optional<T> loc,
                           const AliasAnalysis::LocationMap& sets,
                           AliasClass any,
                           ALocBits all) {
@@ -165,7 +165,7 @@ ALocBits expand_component(const AliasAnalysis& aa,
 template<class T>
 ALocBits expand_part(const AliasAnalysis& aa,
                      AliasClass acls,
-                     folly::Optional<T> proj,
+                     Optional<T> proj,
                      AliasClass any,
                      ALocBits all) {
   auto ret = ALocBits{};
@@ -181,7 +181,7 @@ ALocBits expand_part(const AliasAnalysis& aa,
 
 template<class T>
 bool collect_component(AliasAnalysis& aa,
-                       folly::Optional<T> loc,
+                       Optional<T> loc,
                        AliasAnalysis::LocationMap& map) {
   if (loc) {
     assertx(!loc->ids.empty());
@@ -192,7 +192,7 @@ bool collect_component(AliasAnalysis& aa,
       if (loc->ids.size() <= kMaxExpandedSize) {
         for (uint32_t id = 0; id < AliasIdSet::BitsetMax; ++id) {
           if (loc->ids.test(id)) {
-            if (auto const index = add_class(aa, T { loc->base, id })) {
+            if (auto const index = add_class(aa, T { loc->frameIdx, id })) {
               range.set(*index);
             }
           }
@@ -214,9 +214,9 @@ bool collect_component(AliasAnalysis& aa,
 
 AliasAnalysis::AliasAnalysis(const IRUnit& /*unit*/) {}
 
-folly::Optional<ALocMeta> AliasAnalysis::find(AliasClass acls) const {
+Optional<ALocMeta> AliasAnalysis::find(AliasClass acls) const {
   auto const it = locations.find(acls);
-  if (it == end(locations)) return folly::none;
+  if (it == end(locations)) return std::nullopt;
   return it->second;
 }
 
@@ -244,7 +244,7 @@ ALocBits AliasAnalysis::may_alias(AliasClass acls) const {
   // Handle stacks specially to be less pessimistic.  We can always use the
   // expand map to find stack locations that may alias our class.
   auto const stk = acls.stack();
-  if (stk && stk->size > 1) {
+  if (stk && stk->size() > 1) {
     auto const it = stk_expand_map.find(*stk);
     ret |= it != end(stk_expand_map) ? it->second : all_stack;
   } else {
@@ -293,8 +293,8 @@ ALocBits AliasAnalysis::expand(AliasClass acls) const {
   // We want to handle stacks partially specially, because they can be expanded
   // in some situations even if they don't have an ALocMeta.
   if (auto const stk = acls.stack()) {
-    auto const it = stk->size > 1 ? stk_expand_map.find(*stk)
-                                  : end(stk_expand_map);
+    auto const it = stk->size() > 1 ? stk_expand_map.find(*stk)
+                                    : end(stk_expand_map);
     if (it != end(stk_expand_map)) {
       ret |= it->second;
     } else {
@@ -391,10 +391,10 @@ AliasAnalysis collect_aliases(const IRUnit& unit, const BlockList& blocks) {
     }
 
     if (auto const ar = acls.actrec()) {
-      auto const fp = ar->base;
-      if (acls.maybe(AFContext { fp })) add_class(ret, AFContext { fp });
-      if (acls.maybe(AFFunc { fp }))    add_class(ret, AFFunc { fp });
-      if (acls.maybe(AFMeta { fp }))    add_class(ret, AFMeta { fp });
+      auto const idx = ar->frameIdx;
+      if (acls.maybe(AFContext { idx })) add_class(ret, AFContext { idx });
+      if (acls.maybe(AFFunc { idx }))    add_class(ret, AFFunc { idx });
+      if (acls.maybe(AFMeta { idx }))    add_class(ret, AFMeta { idx });
       // Fallthrough here: it's possible to share these specializations with
       // ALocal and AIter specializations.
     }
@@ -425,15 +425,15 @@ AliasAnalysis collect_aliases(const IRUnit& unit, const BlockList& blocks) {
      * re-entry) unioned with a single stack slot).
      */
     if (auto const stk = acls.stack()) {
-      if (stk->size > 1) {
+      if (stk->size() > 1) {
         ret.stk_expand_map[AliasClass { *stk }];
       }
-      if (stk->size > kMaxExpandedSize) return;
+      if (stk->size() > kMaxExpandedSize) return;
 
       auto complete = true;
       auto range = ALocBits{};
-      for (auto stkidx = int32_t{0}; stkidx < stk->size; ++stkidx) {
-        AliasClass single = AStack { stk->offset - stkidx, 1 };
+      for (auto stkidx = stk->low; stkidx < stk->high; ++stkidx) {
+        AliasClass single = AStack::at(stkidx);
         if (auto const index = add_class(ret, single)) {
           range.set(*index);
         } else {
@@ -441,7 +441,7 @@ AliasAnalysis collect_aliases(const IRUnit& unit, const BlockList& blocks) {
         }
       }
 
-      if (stk->size > 1 && complete) {
+      if (stk->size() > 1 && complete) {
         FTRACE(2, "    range {}:  {}\n", show(acls), show(range));
         ret.stack_ranges[acls] = range;
       }
@@ -456,7 +456,7 @@ AliasAnalysis collect_aliases(const IRUnit& unit, const BlockList& blocks) {
       [&](StructuredLogEntry& cols) {
         auto const func = unit.context().initSrcKey.func();
         cols.setStr("func", func->fullName()->slice());
-        cols.setStr("filename", func->unit()->filepath()->slice());
+        cols.setStr("filename", func->unit()->origFilepath()->slice());
         cols.setStr("hhir_unit", show(unit));
       }
     );

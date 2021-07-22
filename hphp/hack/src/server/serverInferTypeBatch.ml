@@ -40,7 +40,7 @@ let result_to_string result (fn, line, char, range_end) =
         [
           ( "position",
             JSON_Object
-              ( [("file", JSON_String (Relative_path.to_absolute fn))]
+              ([("file", JSON_String (Relative_path.to_absolute fn))]
               @
               match range_end with
               | None -> [("line", int_ line); ("character", int_ char)]
@@ -48,7 +48,7 @@ let result_to_string result (fn, line, char, range_end) =
                 let pos l c =
                   JSON_Object [("line", int_ l); ("character", int_ c)]
                 in
-                [("start", pos line char); ("end", pos end_line end_char)] ) );
+                [("start", pos line char); ("end", pos end_line end_char)]) );
           (match result with
           | Ok ty -> ("type", Option.value ty ~default:JSON_Null)
           | Error e -> ("error", JSON_String e));
@@ -56,8 +56,7 @@ let result_to_string result (fn, line, char, range_end) =
     in
     json_to_string obj)
 
-let helper env acc pos_list =
-  let ctx = Provider_utils.ctx_from_server_env env in
+let helper ctx acc pos_list =
   let (ctx, paths_and_tasts) = recheck_typing ctx pos_list in
   let tasts =
     List.fold
@@ -88,13 +87,34 @@ let helper env acc pos_list =
       in
       result_to_string result pos :: acc)
 
-let parallel_helper workers env pos_list =
+(** This divides files amongst all the workers.
+No file is handled by more than one worker. *)
+let parallel_helper
+    (workers : MultiWorker.worker list option)
+    (ctx : Provider_context.t)
+    (pos_list : pos list) : string list =
+  let add_pos_to_map map pos =
+    let (path, _, _, _) = pos in
+    Relative_path.Map.update
+      path
+      (function
+        | None -> Some [pos]
+        | Some others -> Some (pos :: others))
+      map
+  in
+  let pos_by_file =
+    List.fold ~init:Relative_path.Map.empty ~f:add_pos_to_map pos_list
+    |> Relative_path.Map.values
+  in
+  (* pos_by_file is a list-of-lists [[posA1;posA2;...];[posB1;...];...]
+     where each inner list [posA1;posA2;...] is all for the same file.
+     This is so that a given file is only ever processed by a single worker. *)
   MultiWorker.call
     workers
-    ~job:(helper env)
+    ~job:(fun acc pos_by_file -> helper ctx acc (List.concat pos_by_file))
     ~neutral:[]
     ~merge:List.rev_append
-    ~next:(MultiWorker.next workers pos_list)
+    ~next:(MultiWorker.next workers pos_by_file)
 
 (* Entry Point *)
 let go :
@@ -114,10 +134,30 @@ let go :
            let fn = Relative_path.create_detect_prefix fn in
            (fn, line, char, range_end))
   in
-  let results =
-    if List.length pos_list < 10 then
-      helper env [] pos_list
-    else
-      parallel_helper workers env pos_list
+  let num_files =
+    pos_list
+    |> List.map ~f:(fun (path, _, _, _) -> path)
+    |> Relative_path.Set.of_list
+    |> Relative_path.Set.cardinal
   in
+  let num_positions = List.length pos_list in
+  let ctx = Provider_utils.ctx_from_server_env env in
+  let start_time = Unix.gettimeofday () in
+  (* Just for now, as a rollout telemetry defense against crashes, we'll log at the start *)
+  HackEventLogger.type_at_pos_batch
+    ~start_time
+    ~num_files
+    ~num_positions
+    ~results:None;
+  let results =
+    if num_positions < 10 then
+      helper ctx [] pos_list
+    else
+      parallel_helper workers ctx pos_list
+  in
+  HackEventLogger.type_at_pos_batch
+    ~start_time
+    ~num_files
+    ~num_positions
+    ~results:(Some (List.length results));
   results

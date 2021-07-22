@@ -255,7 +255,7 @@ static bool set_sockaddr(sockaddr_storage &sa_storage, req::ptr<Socket> sock,
       sa->sun_family = AF_UNIX;
       if (addr.length() > sizeof(sa->sun_path)) {
         raise_warning(
-          "Unix socket path length (%d) is larger than system limit (%lu)",
+          "Unix socket path length (%ld) is larger than system limit (%lu)",
           addr.length(),
           sizeof(sa->sun_path)
         );
@@ -332,7 +332,7 @@ static bool set_sockaddr(sockaddr_storage &sa_storage, req::ptr<Socket> sock,
 
 static void sock_array_to_fd_set(const Array& sockets, std::vector<pollfd>& fds,
                                  const short flag) {
-  IterateVNoInc(
+  IterateV(
     sockets.get(),
     [&](TypedValue v) {
       assertx(v.m_type == KindOfResource);
@@ -355,10 +355,10 @@ static void sock_array_to_fd_set(const Array& sockets, std::vector<pollfd>& fds,
 static void sock_array_from_fd_set(Variant &sockets,
                                    const std::vector<pollfd>& fds,
                                    int &nfds, int &count, const short flag) {
-  Array ret = Array::CreateDArray();
+  Array ret = Array::CreateDict();
   assertx(sockets.isArray());
   const auto& sock_array = sockets.asCArrRef();
-  IterateKVNoInc(
+  IterateKV(
     sock_array.get(),
     [&](TypedValue k, TypedValue v) {
       const pollfd &fd = fds.at(nfds++);
@@ -695,14 +695,14 @@ bool socket_create_pair_impl(int domain, int type, int protocol, Variant& fd,
   }
 
   if (asStream) {
-    fd = make_varray(
+    fd = make_vec_array(
       Variant(req::make<StreamSocket>(fds_array[0], domain, nullptr, 0, 0.0,
                                       s_socktype_generic)),
       Variant(req::make<StreamSocket>(fds_array[1], domain, nullptr, 0, 0.0,
                                       s_socktype_generic))
     );
   } else {
-    fd = make_varray(
+    fd = make_vec_array(
       Variant(req::make<ConcreteSocket>(fds_array[0], domain, nullptr, 0, 0.0,
                                         s_socktype_generic)),
       Variant(req::make<ConcreteSocket>(fds_array[1], domain, nullptr, 0, 0.0,
@@ -744,7 +744,7 @@ Variant HHVM_FUNCTION(socket_get_option,
         return false;
       }
 
-      return make_darray(
+      return make_dict_array(
         s_l_onoff, linger_val.l_onoff,
         s_l_linger, linger_val.l_linger
       );
@@ -760,7 +760,7 @@ Variant HHVM_FUNCTION(socket_get_option,
         SOCKET_ERROR(sock, "unable to retrieve socket option", errno);
         return false;
       }
-      return make_darray(
+      return make_dict_array(
         s_sec,  (int)tv.tv_sec,
         s_usec, (int)tv.tv_usec
       );
@@ -1043,8 +1043,8 @@ Variant HHVM_FUNCTION(socket_select,
   if (!read.isNull()) {
     // sock_array_from_fd_set can set a sparsely indexed array, so
     // we use darray everywhere.
-    auto hasData = Array::CreateDArray();
-    IterateVNoInc(
+    auto hasData = Array::CreateDict();
+    IterateV(
       read.asCArrRef().get(),
       [&](TypedValue v) {
         assertx(v.m_type == KindOfResource);
@@ -1055,8 +1055,8 @@ Variant HHVM_FUNCTION(socket_select,
       }
     );
     if (hasData.size() > 0) {
-      write = empty_darray();
-      except = empty_darray();
+      write = empty_dict_array();
+      except = empty_dict_array();
       read = hasData;
       return hasData.size();
     }
@@ -1633,10 +1633,10 @@ Variant HHVM_FUNCTION(getaddrinfo,
     return false;
   }
 
-  Array ret = Array::CreateVArray();
+  Array ret = Array::CreateVec();
 
   for (res = res0; res; res = res->ai_next) {
-    Array data = make_darray(
+    Array data = make_dict_array(
       s_family, res->ai_family,
       s_socktype, res->ai_socktype,
       s_protocol, res->ai_protocol
@@ -1651,7 +1651,7 @@ Variant HHVM_FUNCTION(getaddrinfo,
           a = (struct sockaddr_in *)res->ai_addr;
           data.set(
             s_sockaddr,
-            make_darray(
+            make_dict_array(
               s_address, buffer,
               s_port, ntohs(a->sin_port)
             )
@@ -1667,7 +1667,7 @@ Variant HHVM_FUNCTION(getaddrinfo,
           a = (struct sockaddr_in6 *)res->ai_addr;
           data.set(
             s_sockaddr,
-            make_darray(
+            make_dict_array(
               s_address, buffer,
               s_port, ntohs(a->sin6_port),
               s_flow_info, (int32_t)a->sin6_flowinfo,
@@ -1678,7 +1678,7 @@ Variant HHVM_FUNCTION(getaddrinfo,
         break;
       }
       default:
-        data.set(s_sockaddr, empty_array());
+        data.set(s_sockaddr, empty_dict_array());
         break;
     }
 

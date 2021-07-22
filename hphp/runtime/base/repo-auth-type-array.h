@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_REPO_AUTH_TYPE_DEFS_H_
-#define incl_HPHP_REPO_AUTH_TYPE_DEFS_H_
+#pragma once
 
 #include <cstdint>
 #include <vector>
@@ -101,13 +100,13 @@ struct RepoAuthType::Array {
     /*
      * Known size with zero-based contiguous integer keys.
      *
-     * Does not currently imply kPackedKind at runtime.
+     * May be used with list-like dicts as well as with vecs.
      */
     Packed,
     /*
      * Unknown size, zero-based contiguous integer keys.
      *
-     * Does not currently imply kPackedKind at runtime.
+     * May be used with list-like dicts as well as with vecs.
      */
     PackedN,
   };
@@ -278,4 +277,3 @@ std::string show(const RepoAuthType::Array&);
 
 #include "hphp/runtime/base/repo-auth-type-array-inl.h"
 
-#endif

@@ -1,6 +1,20 @@
-Linearization for class \C:
-[\C]
-Linearization for class \D:
-[\D, \C<int,T3>]
-Linearization for class \E:
-[\E, \D<string>, \C<int,string>]
+Member Linearization \C:
+  C
+Ancestor Linearization \C:
+  C
+
+Member Linearization \D:
+  D
+  C<int, T3>
+Ancestor Linearization \D:
+  D
+  C<int, T3>
+
+Member Linearization \E:
+  E
+  D<string>
+  C<int, string>
+Ancestor Linearization \E:
+  E
+  D<string>
+  C<int, string>

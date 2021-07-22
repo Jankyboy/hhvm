@@ -8,16 +8,28 @@
  *)
 
 module SourceText = Full_fidelity_source_text
-module MinimalTrivia = Full_fidelity_minimal_trivia
 
-external scan_leading_xhp_trivia : SourceText.t -> int -> MinimalTrivia.t list
+module RustPositionedTrivium = struct
+  type t = {
+    kind: Full_fidelity_trivia_kind.t;
+    offset: int;
+    width: int;
+  }
+  [@@deriving show, eq]
+end
+
+external scan_leading_xhp_trivia :
+  SourceText.t -> int -> int -> RustPositionedTrivium.t list
   = "scan_leading_xhp_trivia"
 
-external scan_trailing_xhp_trivia : SourceText.t -> int -> MinimalTrivia.t list
+external scan_trailing_xhp_trivia :
+  SourceText.t -> int -> int -> RustPositionedTrivium.t list
   = "scan_trailing_xhp_trivia"
 
-external scan_leading_php_trivia : SourceText.t -> int -> MinimalTrivia.t list
+external scan_leading_php_trivia :
+  SourceText.t -> int -> int -> RustPositionedTrivium.t list
   = "scan_leading_php_trivia"
 
-external scan_trailing_php_trivia : SourceText.t -> int -> MinimalTrivia.t list
+external scan_trailing_php_trivia :
+  SourceText.t -> int -> int -> RustPositionedTrivium.t list
   = "scan_trailing_php_trivia"

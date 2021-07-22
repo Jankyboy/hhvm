@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_HEAP_GRAPH_H_
-#define incl_HPHP_HEAP_GRAPH_H_
+#pragma once
 
 #include "hphp/util/type-scan.h"
 #include <vector>
@@ -24,6 +23,7 @@
 
 namespace HPHP {
 
+struct Class;
 struct HeapObject;
 
 // Graph representation of the heap. The heap consists of some objects
@@ -50,10 +50,7 @@ struct HeapGraph {
   };
   static constexpr auto NumPtrKinds = 3;
   struct Node {
-    union {
-      const void* ptr;
-      const HeapObject* h;
-    };
+    const HeapObject* h; // nullptr for roots
     size_t size;
     bool is_root;
     type_scan::Index tyindex;
@@ -126,4 +123,3 @@ bool checkPointers(const HeapGraph& g, const char* phase);
 
 }
 
-#endif

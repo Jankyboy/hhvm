@@ -24,44 +24,17 @@ namespace HPHP { namespace jit { namespace irgen {
 
 //////////////////////////////////////////////////////////////////////
 
-namespace {
-
-BCMarker initial_marker(const TransContext& ctx) {
-  return BCMarker { ctx.initSrcKey, ctx.initSpOffset, ctx.transIDs, nullptr };
-}
-
-}
-
-//////////////////////////////////////////////////////////////////////
-
 IRGS::IRGS(IRUnit& unit, const RegionDesc* region, int32_t budgetBCInstrs,
-           TranslateRetryContext* retryContext, bool prologueSetup)
+           TranslateRetryContext* retryContext)
   : context(unit.context())
-  , transFlags(unit.context().flags)
   , region(region)
   , unit(unit)
-  , irb(new IRBuilder(unit, initial_marker(context)))
+  , irb(new IRBuilder(unit, context.initSrcKey.func()))
   , bcState(context.initSrcKey)
   , budgetBCInstrs(budgetBCInstrs)
   , retryContext(retryContext)
 {
   updateMarker(*this);
-  auto const frame = gen(*this, DefFP);
-
-  // Now that we've defined the FP, update the BC marker appropriately.
-  updateMarker(*this);
-
-  // Define SP.
-  if (resumeMode(*this) == ResumeMode::None && !prologueSetup) {
-    gen(*this, DefFrameRelSP, FPInvOffsetData { context.initSpOffset }, frame);
-  } else {
-    gen(*this, DefRegSP, FPInvOffsetData { context.initSpOffset });
-  }
-
-  if (RuntimeOption::EvalHHIRGenerateAsserts && !prologueSetup) {
-    // Assert that we're in the correct function.
-    gen(*this, DbgAssertFunc, frame);
-  }
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -72,10 +45,7 @@ std::string show(const IRGS& irgs) {
     out << folly::format("+{:-^102}+\n", str);
   };
 
-  const int32_t frameCells = resumeMode(irgs) != ResumeMode::None
-    ? 0
-    : curFunc(irgs)->numSlotsInFrame();
-  auto const stackDepth = irgs.irb->fs().bcSPOff().offset - frameCells;
+  auto const stackDepth = irgs.irb->fs().bcSPOff().offset;
   assertx(stackDepth >= 0);
   auto spOffset = stackDepth;
   auto elem = [&](const std::string& str) {
@@ -105,7 +75,7 @@ std::string show(const IRGS& irgs) {
     }
 
     auto const irSPRel = BCSPRelOffset{i}
-      .to<FPInvOffset>(irgs.irb->fs().bcSPOff());
+      .to<SBInvOffset>(irgs.irb->fs().bcSPOff());
     auto const predicted = predictedType(irgs, Location::Stack { irSPRel });
 
     if (predicted < stkTy) {

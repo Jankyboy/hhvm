@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_INLINING_H_
-#define incl_HPHP_JIT_INLINING_H_
+#pragma once
 
 #include "hphp/runtime/vm/hhbc.h"
 #include "hphp/runtime/vm/jit/annotation-data.h"
@@ -109,7 +108,11 @@ RegionDescPtr selectCalleeRegion(const irgen::IRGS& irgs,
 
 void setBaseInliningProfCount(uint64_t value);
 
+/*
+ * Clear all cached inlining costs.
+ */
+void clearCachedInliningCost();
+
 ///////////////////////////////////////////////////////////////////////////////
 }}
 
-#endif

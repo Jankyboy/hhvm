@@ -12,6 +12,7 @@ open Aast
 open Typing_defs
 module Env = Tast_env
 module MakeType = Typing_make_type
+module SN = Naming_special_names
 
 let is_awaitable env ty =
   let mixed = MakeType.mixed Typing_reason.none in
@@ -27,7 +28,7 @@ let rec enforce_not_awaitable env p ty =
   match get_node ety with
   | Tunion tyl
   | Tintersection tyl ->
-    List.iter tyl (enforce_not_awaitable env p)
+    List.iter tyl ~f:(enforce_not_awaitable env p)
   | Tclass ((_, awaitable), _, _)
     when String.equal awaitable SN.Classes.cAwaitable ->
     Errors.discarded_awaitable p (get_pos ety)
@@ -45,6 +46,7 @@ let rec enforce_not_awaitable env p ty =
   | Tvarray _
   | Tdarray _
   | Tvarray_or_darray _
+  | Tvec_or_dict _
   | Tprim _
   | Tvar _
   | Tfun _
@@ -56,8 +58,8 @@ let rec enforce_not_awaitable env p ty =
   | Tobject
   | Tshape _
   | Tdynamic
-  | Tpu _
-  | Tpu_type_access _ ->
+  | Taccess _
+  | Tneg _ ->
     ()
   | Tunapplied_alias _ ->
     Typing_defs.error_Tunapplied_alias_in_illegal_context ()
@@ -119,20 +121,16 @@ let visitor =
   object (this)
     inherit [_] Tast_visitor.iter_with_state as super
 
-    method! on_expr (env, ctx) (((p, ty), e) as te) =
+    method! on_expr (env, ctx) ((ty, p, e) as te) =
       match e with
       | Unop (Ast_defs.Unot, e)
-      | Assert (AE_assert e) ->
-        this#on_expr (env, disallow_due_to_cast ctx env) e
-      | Binop (Ast_defs.Eqeqeq, e, (_, Null))
-      | Binop (Ast_defs.Eqeqeq, (_, Null), e)
-      | Binop (Ast_defs.Diff2, e, (_, Null))
-      | Binop (Ast_defs.Diff2, (_, Null), e) ->
+      | Binop (Ast_defs.Eqeqeq, e, (_, _, Null))
+      | Binop (Ast_defs.Eqeqeq, (_, _, Null), e)
+      | Binop (Ast_defs.Diff2, e, (_, _, Null))
+      | Binop (Ast_defs.Diff2, (_, _, Null), e) ->
         this#on_expr (env, disallow_due_to_cast_with_explicit_nullcheck) e
-      | Binop
-          ( Ast_defs.(Eqeq | Eqeqeq | Diff | Diff2 | Barbar | Ampamp | LogXor),
-            e1,
-            e2 ) ->
+      | Binop (Ast_defs.(Eqeq | Eqeqeq | Diff | Diff2 | Barbar | Ampamp), e1, e2)
+        ->
         this#on_expr (env, disallow_due_to_cast ctx env) e1;
         this#on_expr (env, disallow_due_to_cast ctx env) e2
       | Binop (Ast_defs.QuestionQuestion, e1, e2) ->
@@ -155,7 +153,9 @@ let visitor =
       | Is (e, hint)
       | As (e, hint, _) ->
         let hint_ty = Env.hint_to_ty env hint in
-        let (env, hint_ty) = Env.localize_with_self env hint_ty in
+        let (env, hint_ty) =
+          Env.localize_no_subst env ~ignore_errors:true hint_ty
+        in
         let ctx' =
           if is_awaitable env hint_ty then
             allow_awaitable
@@ -179,7 +179,7 @@ let visitor =
 
     method! on_stmt (env, ctx) stmt =
       match snd stmt with
-      | Expr ((_, Binop (Ast_defs.Eq _, _, _)) as e) ->
+      | Expr ((_, _, Binop (Ast_defs.Eq _, _, _)) as e) ->
         this#on_expr (env, allow_awaitable) e
       | Expr e -> this#on_expr (env, disallow_awaitable) e
       | If (e, b1, b2) ->
@@ -193,9 +193,9 @@ let visitor =
         this#on_expr (env, disallow_due_to_cast ctx env) e;
         this#on_block (env, ctx) b
       | For (e1, e2, e3, b) ->
-        this#on_expr (env, ctx) e1;
-        this#on_expr (env, disallow_due_to_cast ctx env) e2;
-        this#on_expr (env, ctx) e3;
+        List.iter e1 ~f:(this#on_expr (env, ctx));
+        Option.iter e2 ~f:(this#on_expr (env, disallow_due_to_cast ctx env));
+        List.iter e3 ~f:(this#on_expr (env, ctx));
         this#on_block (env, ctx) b
       | Switch (e, casel) ->
         this#on_expr (env, disallow_awaitable) e;

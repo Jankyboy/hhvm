@@ -13,13 +13,10 @@ function entrypoint_base64_encode_variation_001(): void {
    */
 
   echo "*** Testing base64_encode() : usage variations ***\n";
-  set_error_handler(fun('test_error_handler'));
+  set_error_handler(test_error_handler<>);
 
   // Initialise function arguments not being substituted (if any)
 
-  //get an unset variable
-  $unset_var = 10;
-  unset ($unset_var);
 
   //array of values to iterate over
   $values = varray[
@@ -59,19 +56,13 @@ function entrypoint_base64_encode_variation_001(): void {
         '',
 
         // object data
-        new stdclass(),
-
-        // undefined data
-        $undefined_var,
-
-        // unset data
-        $unset_var,
+        new stdClass()
   ];
 
   // loop through each element of the array for str
 
   foreach($values as $value) {
-        echo "\nArg value $value\n";
+        echo "\nArg value ".(string)$value."\n";
         try { var_dump( base64_encode($value) ); } catch (Exception $e) { echo "\n".'Warning: '.$e->getMessage().' in '.__FILE__.' on line '.__LINE__."\n"; }
   }
 

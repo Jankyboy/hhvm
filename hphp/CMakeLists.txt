@@ -34,6 +34,7 @@ endif()
 include(HHVMProject)
 
 include(HHVMExtensionConfig)
+add_custom_target(generated_systemlib)
 # Before we do anything else, we'll configure the extensions,
 # so that the defines take effect globally.
 file(GLOB subdirs ${CMAKE_CURRENT_SOURCE_DIR}/runtime/ext/*)
@@ -81,7 +82,6 @@ if (ENABLE_COTIRE)
       "${LIBC_INCLUDE_PATH}/resolv.h"
       "${ARCH_INCLUDE_PATH}"
       "${CCLIENT_INCLUDE_PATH}"
-      "${JEMALLOC_INCLUDE_DIR}/jemalloc"
       "${LIBPNG_INCLUDE_DIRS}/png.h"
       "${LDAP_INCLUDE_DIR}/ldap.h"
       "${LIBSQLITE3_INCLUDE_DIR}/sqlite3ext.h"
@@ -114,7 +114,6 @@ add_definitions("-DUSE_CMAKE")
 
 enable_language(ASM)
 
-link_libraries(folly)
 if (NOT PCRE_LIBRARY)
   link_libraries(pcre)
 endif()
@@ -140,7 +139,6 @@ endif ()
 
 add_subdirectory(system)
 add_subdirectory(util)
-add_subdirectory(ppc64-asm)
 add_subdirectory(vixl)
 add_subdirectory(zend)
 

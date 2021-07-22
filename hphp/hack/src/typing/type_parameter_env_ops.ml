@@ -7,7 +7,7 @@
  *
  *)
 
-module TP = Type_parameter_env
+module TPEnv = Type_parameter_env
 module KDefs = Typing_kinding_defs
 module TySet = Typing_set
 module Env = Typing_env
@@ -21,20 +21,6 @@ let intersect_upper_bounds env r ul =
 let union_lower_bounds env r ll =
   Typing_union.union_list env r (TySet.elements ll)
 
-(*
- * Merge two type parameter environments. Given tpenv1 and tpenv2 we want
- * to compute a "merged" environment tpenv such that
- *     tpenv1 |- tpenv
- * and tpenv2 |- tpenv
- *
- * If a type parameter is defined only on one input, we do not include it in tpenv.
- * If it appears in both, supposing we have
- *     l1 <: T <: u1 in tpenv1
- * and l2 <: T <: u2 in tpenv2
- * with multiple lower bounds reduced to a union, and multiple upper bounds
- * reduced to an intersection, then the resulting tpenv will have
- *     l1&l2 <: T <: u1|u2
- *)
 let join_lower_bounds env l1 l2 =
   (* Special case: subset inclusion. Return subset
    * (e.g. if t|u <: T or t <: T then t <: T ) *)
@@ -47,7 +33,7 @@ let join_lower_bounds env l1 l2 =
     let (env, union1) = union_lower_bounds env Reason.Rnone l1 in
     let (env, union2) = union_lower_bounds env Reason.Rnone l2 in
     let (env, new_lower) =
-      Typing_intersection.intersect env Reason.Rnone union1 union2
+      Typing_intersection.intersect env ~r:Reason.Rnone union1 union2
     in
     (env, TySet.singleton new_lower)
 
@@ -65,15 +51,27 @@ let join_upper_bounds env u1 u2 =
     let (env, new_upper) = Typing_union.union env inter1 inter2 in
     (env, TySet.singleton new_upper)
 
+(* Merge two type parameter environments. Given tpenv1 and tpenv2 we want
+ * to compute a "merged" environment tpenv such that
+ *     tpenv1 |- tpenv
+ * and tpenv2 |- tpenv
+ *
+ * If a type parameter is defined only on one input, we do not include it in tpenv.
+ * If it appears in both, supposing we have
+ *     l1 <: T <: u1 in tpenv1
+ * and l2 <: T <: u2 in tpenv2
+ * with multiple lower bounds reduced to a union, and multiple upper bounds
+ * reduced to an intersection, then the resulting tpenv will have
+ *     l1&l2 <: T <: u1|u2
+ *)
 let join env tpenv1 tpenv2 =
   let merge_pos p1 p2 =
-    if Pos.equal p1 Pos.none then
+    if Pos_or_decl.equal p1 Pos_or_decl.none then
       p2
     else
       p1
   in
-
-  TP.merge_env env tpenv1 tpenv2 ~combine:(fun env _tparam info1 info2 ->
+  TPEnv.merge_env env tpenv1 tpenv2 ~combine:(fun env _tparam info1 info2 ->
       match (info1, info2) with
       | ( Some
             (pos1, (KDefs.{ lower_bounds = l1; upper_bounds = u1; _ } as info1)),
@@ -87,8 +85,8 @@ let join env tpenv1 tpenv2 =
       | (_, _) -> (env, None))
 
 let get_tpenv_equal_bounds env name tyargs =
-  let lower = TP.get_lower_bounds env name tyargs in
-  let upper = TP.get_upper_bounds env name tyargs in
+  let lower = TPEnv.get_lower_bounds env name tyargs in
+  let upper = TPEnv.get_upper_bounds env name tyargs in
   TySet.inter lower upper
 
 (** Given a list of type parameter names, attempt to simplify away those
@@ -98,11 +96,11 @@ Returns a set of substitutions mapping each type parameter name to the type
 to which it is equal if found, otherwise to itself. *)
 let simplify_tpenv env (tparams : ((_ * string) option * locl_ty) list) r =
   (* TODO(T70068435)
-    TODO(T70087549)
-    This currently assumes that [tparams] only contains non-HK type paramters.
-    (as seen in the Tgenerics created within and their arguments ignored)
-    Once Type_parameter_env know about kinds, we can at least check here
-    that this precondition is satisfied. *)
+     TODO(T70087549)
+     This currently assumes that [tparams] only contains non-HK type paramters.
+     (as seen in the Tgenerics created within and their arguments ignored)
+     Once Type_parameter_env know about kinds, we can at least check here
+     that this precondition is satisfied. *)
   let old_env = env in
   let tpenv = Env.get_tpenv env in
   (* For each tparam, "solve" it if it falls in any of those categories:
@@ -121,8 +119,8 @@ let simplify_tpenv env (tparams : ((_ * string) option * locl_ty) list) r =
         | None -> (env, tpenv, substs)
         | Some (tp, tparam_name) ->
           let equal_bounds = get_tpenv_equal_bounds tpenv tparam_name [] in
-          let lower_bounds = TP.get_lower_bounds tpenv tparam_name [] in
-          let upper_bounds = TP.get_upper_bounds tpenv tparam_name [] in
+          let lower_bounds = TPEnv.get_lower_bounds tpenv tparam_name [] in
+          let upper_bounds = TPEnv.get_upper_bounds tpenv tparam_name [] in
           let (env, lower_bound) = union_lower_bounds env reason lower_bounds in
           let (env, upper_bound) =
             intersect_upper_bounds env reason upper_bounds
@@ -137,15 +135,15 @@ let simplify_tpenv env (tparams : ((_ * string) option * locl_ty) list) r =
           let (tpenv, substs) =
             match (tp.tp_variance, TySet.choose_opt equal_bounds) with
             | (_, Some bound) ->
-              let tpenv = TP.remove tpenv tparam_name in
+              let tpenv = TPEnv.remove tpenv tparam_name in
               let substs = SMap.add tparam_name bound substs in
               (tpenv, substs)
             | (Ast_defs.Covariant, _) ->
-              let tpenv = TP.remove tpenv tparam_name in
+              let tpenv = TPEnv.remove tpenv tparam_name in
               let substs = SMap.add tparam_name upper_bound substs in
               (tpenv, substs)
             | (Ast_defs.Contravariant, _) ->
-              let tpenv = TP.remove tpenv tparam_name in
+              let tpenv = TPEnv.remove tpenv tparam_name in
               let substs = SMap.add tparam_name lower_bound substs in
               (tpenv, substs)
             | _ ->

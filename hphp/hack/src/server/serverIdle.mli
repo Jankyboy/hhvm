@@ -7,12 +7,20 @@
  *
  *)
 
-(* Called whenever the server is idle *)
-val go : ServerEnv.env -> ServerEnv.env
+(** This module contains the code to be run whenever the server is idle, e.g.
+    garbage collection. It manages a set of callbacks to be run periodically
+    whenever the server is idle. *)
 
+(** Initialize with a set of default periodic callbacks, for example
+    garbage collection, log flushing, etc. *)
+val init : ServerEnv.genv -> Path.t -> unit
+
+(** Register the provided function as a callback to be run next time the server
+    is idle. *)
 val async : (env:ServerEnv.env -> ServerEnv.env) -> unit
 
-(* Called every time a client connects *)
-val stamp_connection : unit -> unit
+(** Called whenever the server is idle. Will run any due callbacks. *)
+val go : ServerEnv.env -> ServerEnv.env
 
-val init : ServerEnv.genv -> Path.t -> unit
+(** Record timestamp of client connections *)
+val stamp_connection : unit -> unit

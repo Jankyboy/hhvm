@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_CONTAINER_FUNCTIONS_H_
-#define incl_HPHP_CONTAINER_FUNCTIONS_H_
+#pragma once
 
 #include "hphp/runtime/base/type-variant.h"
 #include "hphp/runtime/base/collections.h"
@@ -83,7 +82,7 @@ const TypedValue container_as_tv(const Variant& container) {
  * clsmeth compact container helpers.
  */
 inline bool isClsMethCompactContainer(const TypedValue c) {
- return isContainer(c) || isClsMethType(c.m_type);
+  return isContainer(c);
 }
 
 inline bool isClsMethCompactContainer(const Variant& v) {
@@ -91,25 +90,13 @@ inline bool isClsMethCompactContainer(const Variant& v) {
 }
 
 inline size_t getClsMethCompactContainerSize(const TypedValue c) {
- return isClsMethType(c.m_type) ? 2 : getContainerSize(c);
+  assertx(!isClsMethType(c.m_type));
+  return isClsMethType(c.m_type) ? 2 : getContainerSize(c);
 }
 
 inline size_t getClsMethCompactContainerSize(const Variant& v) {
- return getClsMethCompactContainerSize(*v.asTypedValue());
-}
-
-inline TypedValue* castClsmethToContainerInplace(TypedValue* c) {
-  if (isClsMethType(c->m_type)) {
-    if (RuntimeOption::EvalHackArrDVArrs) {
-      tvCastToVecInPlace(c);
-    } else {
-      tvCastToVArrayInPlace(c);
-    }
-  }
-  return c;
+  return getClsMethCompactContainerSize(*v.asTypedValue());
 }
 
 //////////////////////////////////////////////////////////////////////
 }
-
-#endif

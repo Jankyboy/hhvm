@@ -14,10 +14,8 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_ARRAY_DATA_H_
-#define incl_HPHP_ARRAY_DATA_H_
+#pragma once
 
-#include "hphp/runtime/base/array-provenance.h"
 #include "hphp/runtime/base/countable.h"
 #include "hphp/runtime/base/datatype.h"
 #include "hphp/runtime/base/header-kind.h"
@@ -39,12 +37,29 @@ namespace HPHP {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-struct APCArray;
 struct Array;
+struct MakeUncountedEnv;
 struct String;
 struct StringData;
-struct VariableSerializer;
 struct Variant;
+
+namespace bespoke {
+  struct LoggingArray;
+  struct MonotypeVec;
+
+  // Type-safe layout index, so that we can't mix it up with other ints.
+  struct LayoutIndex {
+    bool operator==(LayoutIndex o) const { return raw == o.raw; }
+    bool operator!=(LayoutIndex o) const { return raw != o.raw; }
+    bool operator<(LayoutIndex o) const { return raw < o.raw; }
+
+    // We use the high byte of the index for type tests and virtual dispatch.
+    uint8_t byte() const { return raw >> 8; }
+
+  public:
+    uint16_t raw;
+  };
+}
 
 /*
  * arr_lval is a tv_lval augmented with an ArrayData*, and is used to return an
@@ -83,14 +98,10 @@ struct ArrayData : MaybeCountable {
    * kNumKinds-1 since we use these values to index into a table.
    */
   enum ArrayKind : uint8_t {
-    kMixedKind,         // darray: dict-like array with int or string keys
-    kBespokeDArrayKind,
-    kPackedKind,        // varray: vec-like array with keys in range [0..size)
-    kBespokeVArrayKind,
-    kDictKind,
-    kBespokeDictKind,
     kVecKind,
     kBespokeVecKind,
+    kDictKind,
+    kBespokeDictKind,
     kKeysetKind,
     kBespokeKeysetKind,
     kNumKinds           // Insert new values before kNumKinds.
@@ -114,16 +125,22 @@ struct ArrayData : MaybeCountable {
   static auto constexpr kLegacyArray = 2;
 
   /*
-   * Indicates that this array has provenance data available in a side table
-   * See array-provenance.h
+   * Indicates that this array has a side table that contains information
+   * about its keys (which must all be static strings).
    */
-  static auto constexpr kHasProvenanceData = 4;
+  static auto constexpr kHasStrKeyTable = 4;
 
   /*
-   * Indicates that this array has a side table that contains information about
-   * its keys.
+   * Indicates that this array-like was sampled for bespoke logging. Set for
+   * arrays produced by Hack constructors - e.g. Vec, NewStructDict - but not
+   * for arrays produced by native constructors - e.g. builtins, varargs.
    */
-  static auto constexpr kHasStrKeyTable = 8;
+  static auto constexpr kSampledArray = 8;
+
+  /*
+   * See notes on the m_layout_index field for constraints on this value.
+   */
+  static auto constexpr kVanillaLayoutIndex = bespoke::LayoutIndex { 0xffff };
 
   /////////////////////////////////////////////////////////////////////////////
   // Creation and destruction.
@@ -138,58 +155,27 @@ public:
   /*
    * Create a new empty ArrayData with the appropriate ArrayKind.
    */
-  static ArrayData* Create();
-  static ArrayData* CreateVec(arrprov::Tag tag = {});
-  static ArrayData* CreateDict(arrprov::Tag tag = {});
+  static ArrayData* CreateVec(bool legacy = false);
+  static ArrayData* CreateDict(bool legacy = false);
   static ArrayData* CreateKeyset();
-  static ArrayData* CreateVArray(arrprov::Tag tag = {});
-  static ArrayData* CreateDArray(arrprov::Tag tag = {});
-
-  /*
-   * Create a new kPackedKind ArrayData with a single element, `value'.
-   *
-   * Initializes `value' if it's UninitNull.
-   */
-  static ArrayData* Create(TypedValue value);
-  static ArrayData* Create(const Variant& value);
-
-  /*
-   * Create a new kMixedKind ArrayData with a single key `name' and value
-   * `value'.
-   *
-   * Initializes `value' if it's UninitNull.
-   */
-  static ArrayData* Create(TypedValue name, TypedValue value);
-  static ArrayData* Create(const Variant& name, TypedValue value);
-  static ArrayData* Create(const Variant& name, const Variant& value);
-
-  /*
-   * Make a copy of the array.
-   *
-   * copy() makes a normal request-allocated ArrayData, whereas copyStatic()
-   * makes a static ArrayData.
-   */
-  ArrayData* copy() const;
-  ArrayData* copyStatic() const;
 
   /*
    * Convert between array kinds.
    */
-  ArrayData* toPHPArray(bool copy);
-  ArrayData* toPHPArrayIntishCast(bool copy);
-  ArrayData* toDict(bool copy);
   ArrayData* toVec(bool copy);
+  ArrayData* toDict(bool copy);
   ArrayData* toKeyset(bool copy);
-  ArrayData* toVArray(bool copy);
-  ArrayData* toDArray(bool copy);
+  ArrayData* toDictIntishCast(bool copy);
 
   /*
-   * Return the array to the request heap.
+   * Return the array to the request heap or the global heap.
    *
-   * This is normally called when the reference count goes to zero (e.g., via a
-   * helper like decRefArr()).
+   * The counted variant is called when the refcount goes to zero (e.g. from
+   * the JIT or from a helper like decRefArr). The uncounted variant is called
+   * when the refcount goes to "uncounted zero", from DecRefUncounted.
    */
-  void release() noexcept;
+  void release() DEBUG_NOEXCEPT;
+  void releaseUncounted();
 
   /*
    * Decref the array and release() it if its refcount goes to zero.
@@ -222,33 +208,22 @@ public:
   ArrayKind kind() const;
 
   /*
-   * Whether the array has a particular kind.
+   * Whether the array has a particular type.
    */
-  bool isPackedKind() const;
-  bool isMixedKind() const;
-  bool isPlainKind() const;
-  bool isDictKind() const;
-  bool isVecKind() const;
-  bool isKeysetKind() const;
-
-  /*
-   * Whether the array has a particular Hack type
-   */
-  bool isPHPArrayType() const;
-  bool isHackArrayType() const;
   bool isVecType() const;
   bool isDictType() const;
   bool isKeysetType() const;
 
   /*
-   * Whether the ArrayData is backed by PackedArray or MixedArray.
+   * Whether the array has a particular type *and layout*.
    */
-  bool hasVanillaPackedLayout() const;
-  bool hasVanillaMixedLayout() const;
+  bool isVanillaVec() const;
+  bool isVanillaDict() const;
+  bool isVanillaKeyset() const;
 
   /*
-   * Whether the array-like has the standard layout. This check excludes
-   * array-likes with a "bespoke" hidden-class layout.
+   * Whether the array-like has the standard layout for its type.
+   * This check excludes array-likes with a "bespoke" hidden-class layout.
    */
   bool isVanilla() const;
 
@@ -264,42 +239,28 @@ public:
   bool hasApcTv() const;
 
   /*
-   * Whether this ArrayData has provenance data stored in the
-   * side table--see array-provenance.h
-   */
-  bool hasProvenanceData() const;
-
-  /*
-   * Sets the provenance data bit
-   */
-  void setHasProvenanceData(bool value);
-
-  /*
-   * Whether the array has legacy behaviors enabled (this bit can only be set
-   * for vecs and dicts).
+   * Whether the array has legacy behaviors enabled. This method can only be
+   * called for dvarrays, vecs and dicts.
+   *
+   * The default setter has the normal copy/escalation behavior. If it returns
+   * a new ArrayData, the caller must dec-ref the old one. The in-place setter
+   * may only be called if the array is known to have exactly one ref.
    */
   bool isLegacyArray() const;
-  void setLegacyArray(bool legacy);
+  ArrayData* setLegacyArray(bool copy, bool legacy);
+  void setLegacyArrayInPlace(bool legacy);
 
   bool hasStrKeyTable() const;
 
-  /* Get the aux bits in the header that must be preserved
+  bool isSampledArray() const;
+  void setSampledArrayInPlace();
+  ArrayData* makeSampledStaticArray() const;
+
+  /*
+   * Get the aux bits in the header that must be preserved
    * when we copy or resize the array
    */
   uint8_t auxBits() const;
-
-  /*
-   * Is the array a varray, darray, either, or neither?
-   */
-  bool isVArray() const;
-  bool isDArray() const;
-  bool isDVArray() const;
-  bool isNotDVArray() const;
-  bool isHAMSafeVArray() const;
-  bool isHAMSafeDArray() const;
-  bool isHAMSafeDVArray() const;
-
-  static bool dvArrayEqual(const ArrayData* a, const ArrayData* b);
 
   /*
    * Whether the array contains "vector-like" data---i.e., iteration order
@@ -308,11 +269,6 @@ public:
    * For non-hasPackedLayout() arrays, this is generally an O(N) operation.
    */
   bool isVectorData() const;
-
-  /*
-   * Return true for array kinds that don't have COW semantics.
-   */
-  bool noCopyOnWrite() const;
 
   /*
    * ensure a circular self-reference is not being created
@@ -360,20 +316,8 @@ public:
   TypedValue at(TypedValue k) const;
 
   /*
-   * Get the internal position for element with key `k', if it exists.
-   * If the key is not present then these return the canonical invalid position
-   * (i.e. iter_end()).
-   * The returned values can be passed to atPos or nvGetKey (if they're not the
-   * canonical invalid position).
-   */
-  ssize_t nvGetIntPos(int64_t k) const;
-  ssize_t nvGetStrPos(const StringData* k) const;
-
-  /*
-   * Get the value or key for the element at raw position `pos'.
-   *
-   * nvGetKey will inc-ref the key before returning it, but nvGetVal will not
-   * do any refcount ops. TODO(kshaunak): Eliminate this discrepancy.
+   * Get the value or key for the element at raw position `pos'. This op
+   * never does any ref-counting on the key.
    *
    * @requires: `pos' refers to a valid array element.
    */
@@ -388,20 +332,32 @@ public:
   Variant getValue(ssize_t pos) const;
 
   /*
+   * Get the value of the element at key `k'. Returns an Uninit TypedValue if
+   * the key `k` is missing from the array.
+   */
+  TypedValue get(int64_t k) const;
+  TypedValue get(const StringData* k) const;
+
+  /*
+   * Get the value of the element at key `k'. Throws if `k` is missing.
+   */
+  TypedValue getThrow(int64_t k) const;
+  TypedValue getThrow(const StringData* k) const;
+
+  /*
    * Get the value of the element at key `k'.
    *
    * If `error` is false, get returns an Uninit TypedValue if `k` is missing.
    * If `error` is true, get throws if `k` is missing.
    */
+  TypedValue get(int64_t k, bool error) const;
+  TypedValue get(const StringData* k, bool error) const;
   TypedValue get(TypedValue k, bool error = false) const;
-  TypedValue get(int64_t k, bool error = false) const;
-  TypedValue get(const StringData* k, bool error = false) const;
   TypedValue get(const String& k, bool error = false) const;
   TypedValue get(const Variant& k, bool error = false) const;
 
   /*
-   * Set the element at key `k' to `v'. set() methods make a copy first if
-   * cowCheck() returns true. If `v' is a ref, its inner value is used.
+   * Set the element at key `k' to `v'. `v' must be a TInitCell.
    *
    * Semantically, setMove() methods 1) do a set, 2) dec-ref the value, and
    * 3) if the operation required copy/escalation, dec-ref the old array. This
@@ -411,20 +367,15 @@ public:
    * These methods return `this' if copy/escalation are not needed, or a
    * copied/escalated array data if they are.
    */
-  ArrayData* set(int64_t k, TypedValue v);
-  ArrayData* set(StringData* k, TypedValue v);
-  ArrayData* set(TypedValue k, TypedValue v);
-  ArrayData* set(const String& k, TypedValue v);
   ArrayData* setMove(int64_t k, TypedValue v);
   ArrayData* setMove(StringData* k, TypedValue v);
 
-  ArrayData* set(int64_t k, const Variant& v);
-  ArrayData* set(StringData* k, const Variant& v);
-  ArrayData* set(const String& k, const Variant& v);
-  ArrayData* set(const Variant& k, const Variant& v);
-
-  ArrayData* set(const StringData*, TypedValue) = delete;
-  ArrayData* set(const StringData*, const Variant&) = delete;
+  ArrayData* setMove(TypedValue k, TypedValue v);
+  ArrayData* setMove(const String& k, TypedValue v);
+  ArrayData* setMove(int64_t k, const Variant& v);
+  ArrayData* setMove(StringData* k, const Variant& v);
+  ArrayData* setMove(const String& k, const Variant& v);
+  ArrayData* setMove(const Variant& k, const Variant& v);
 
   /*
    * Remove the value at key `k', making a copy first if necessary. Returns
@@ -439,8 +390,13 @@ public:
   /**
    * Append `v' to the array, making a copy first if necessary. Returns `this`
    * if copy/escalation are not needed, or a copied/escalated ArrayData.
+   *
+   * As with setMove, `v' must be a TInitCell.
+   *
+   * appendMove dec-refs the old array if we needed copy / escalation, and
+   * does not do any refcounting ops on the value.
    */
-  ArrayData* append(TypedValue v);
+  ArrayData* appendMove(TypedValue v);
 
   /////////////////////////////////////////////////////////////////////////////
   // Iteration.
@@ -480,32 +436,10 @@ public:
   bool uasort(const Variant& cmp_function);
 
   /*
-   * PHP array_merge() implementations.
-   */
-  ArrayData* merge(const ArrayData* elems);
-
-  /*
    * Remove the first or last element of the array, and assign it to `value'.
-   *
-   * These implement:
-   *  - dequeue(): array_shift()
-   *  - pop(): array_pop()
-   *
-   * Return `this' if copy/escalation are not needed, or a copied/escalated
-   * array data.
+   * Return a copied/escalated array if necessary, or `this` otherwise.
    */
-  ArrayData* dequeue(Variant& value);
   ArrayData* pop(Variant& value);
-
-  /*
-   * Prepend `v' to the array, making a copy first if cowCheck() returns true.
-   *
-   * This implements array_unshift().
-   *
-   * Return `this' if copy/escalation are not needed, or a copied/escalated
-   * array data.
-   */
-  ArrayData* prepend(TypedValue v);
 
   /*
    * Comparisons.
@@ -523,7 +457,7 @@ public:
   static int64_t Compare(const ArrayData*, const ArrayData*);
 
   /////////////////////////////////////////////////////////////////////////////
-  // Static arrays.
+  // Shared arrays: static and uncounted.
 
   /*
    * If `arr' points to a static array, do nothing.  Otherwise, make a static
@@ -532,8 +466,7 @@ public:
    * If `tag` is set or `arr` has provenance data, we copy the tag to the new
    * static array.  (A set `tag` overrides the provenance of `arr`.)
    */
-  static void GetScalarArray(ArrayData** arr,
-                             arrprov::Tag tag = {});
+  static void GetScalarArray(ArrayData** arr);
 
   /*
    * Promote the array referenced by `arr` to a static array and return it.
@@ -545,6 +478,12 @@ public:
    * Static-ify the contents of the array.
    */
   void onSetEvalScalar();
+
+  /*
+   * Return a new uncounted version of the given array. The array must be a
+   * refcounted array - otherwise, we should call persistentIncRef() instead.
+   */
+  ArrayData* makeUncounted(const MakeUncountedEnv& env, bool hasApcTv);
 
   /////////////////////////////////////////////////////////////////////////////
   // Other functions.
@@ -561,17 +500,10 @@ public:
   /*
    * Perform intish-string array key conversion on `key'.
    *
-   * Return whether `key' should undergo intish-cast when used in this array
-   * (which may depend on the array kind, e.g.).  If true, `i' is set to the
-   * intish value of `key'.
+   * Return whether `key' should undergo intish-cast.  If true, `i' is set to
+   * the intish value of `key'.
    */
-  bool intishCastKey(const StringData* key, int64_t& i) const;
-
-  /*
-   * Re-index all numeric keys to start from 0. This operation may require
-   * escalation on the array, so it returns the new result.
-   */
-  ArrayData* renumber();
+  static bool IntishCastKey(const StringData* key, int64_t& i);
 
   /*
    * Get the string name for the array kind `kind'.
@@ -585,8 +517,12 @@ public:
    */
   static constexpr size_t offsetofSize() { return offsetof(ArrayData, m_size); }
   static constexpr size_t sizeofSize() { return sizeof(m_size); }
-  static constexpr size_t offsetofTag() { return offsetof(ArrayData, m_extra); }
-  static constexpr size_t sizeofTag() { return sizeof(m_extra); }
+  static constexpr size_t offsetofExtra() { return offsetof(ArrayData, m_extra); }
+  static constexpr size_t sizeofExtra() { return sizeof(m_extra); }
+
+  static constexpr size_t offsetOfBespokeIndex() {
+    return offsetof(ArrayData, m_layout_index);
+  }
 
   const StrKeyTable& missingKeySideTable() const {
     assertx(this->hasStrKeyTable());
@@ -658,9 +594,16 @@ private:
   static bool EqualHelper(const ArrayData*, const ArrayData*, bool);
   static int64_t CompareHelper(const ArrayData*, const ArrayData*);
 
+  /*
+   * Make a copy of the array. Only for internal use. To make a static array,
+   * we convert its contents static values, then copy it to static memory.
+   */
+  ArrayData* copyStatic() const;
+
   /////////////////////////////////////////////////////////////////////////////
 
 protected:
+  friend struct BespokeArray;
   friend struct PackedArray;
   friend struct EmptyArray;
   friend struct MixedArray;
@@ -671,22 +614,53 @@ protected:
   friend struct BaseMap;
   friend struct c_Map;
   friend struct c_ImmMap;
+  friend struct bespoke::LoggingArray;
+  friend struct bespoke::MonotypeVec;
 
-  // m_extra is used by bespoke arrays for the bespoke layout ID, and by
-  // dvarrays for the array provenance tag. Since we never enable both
-  // features at the same time, sharing the field is okay.
   uint32_t m_size;
-  uint32_t m_extra;
+
+  /*
+   * m_layout_index identifies the array's layout. For vanilla arrays, it's
+   * always kVanillaLayoutIndex. For bespoke arrays, it's the index of some
+   * concrete bespoke::Layout hidden class.
+   *
+   * m_extra_lo8, m_extra_hi8, and m_extra_lo16 are for use by each concrete
+   * array class. We don't constrain the values in these fields in any way.
+   *
+   * m_extra is provided for fast initialization of all of these fields.
+   */
+  union {
+    struct {
+      /* NB the names are definitely little-endian centric but whatever */
+      union {
+        struct {
+          uint8_t m_extra_lo8;
+          uint8_t m_extra_hi8;
+        };
+        uint16_t m_extra_lo16;
+      };
+      bespoke::LayoutIndex m_layout_index;
+    };
+    uint32_t m_extra;
+  };
 };
 
-static_assert(ArrayData::kPackedKind == uint8_t(HeaderKind::Packed), "");
-static_assert(ArrayData::kMixedKind == uint8_t(HeaderKind::Mixed), "");
-static_assert(ArrayData::kDictKind == uint8_t(HeaderKind::Dict), "");
-static_assert(ArrayData::kVecKind == uint8_t(HeaderKind::Vec), "");
+static_assert(ArrayData::kVecKind == uint8_t(HeaderKind::Vec));
+static_assert(ArrayData::kDictKind == uint8_t(HeaderKind::Dict));
+static_assert(ArrayData::kKeysetKind == uint8_t(HeaderKind::Keyset));
+static_assert(ArrayData::kBespokeVecKind == uint8_t(HeaderKind::BespokeVec));
+static_assert(ArrayData::kBespokeDictKind == uint8_t(HeaderKind::BespokeDict));
+static_assert(ArrayData::kBespokeKeysetKind == uint8_t(HeaderKind::BespokeKeyset));
 
 //////////////////////////////////////////////////////////////////////
 
-constexpr size_t kEmptyMixedArraySize = 120;
+// The size of the StrKeyTable, which is stored in front of the array, needs to
+// rounded up to a multiple of 16, so that we can enforce the base array pointer
+// is 16-byte aligned.
+constexpr size_t kEmptyMixedArrayStrKeyTableSize =
+  ((sizeof(StrKeyTable) - 1) / 16 + 1) * 16;
+
+constexpr size_t kEmptyMixedArraySize = 120 + kEmptyMixedArrayStrKeyTableSize;
 constexpr size_t kEmptySetArraySize = 96;
 
 /*
@@ -694,14 +668,18 @@ constexpr size_t kEmptySetArraySize = 96;
  */
 extern std::aligned_storage<sizeof(ArrayData), 16>::type s_theEmptyVec;
 extern std::aligned_storage<sizeof(ArrayData), 16>::type s_theEmptyVArray;
-extern std::aligned_storage<kEmptyMixedArraySize, 16>::type s_theEmptyDictArray;
-extern std::aligned_storage<kEmptyMixedArraySize, 16>::type s_theEmptyDArray;
 extern std::aligned_storage<kEmptySetArraySize, 16>::type s_theEmptySetArray;
 
 extern std::aligned_storage<sizeof(ArrayData), 16>::type s_theEmptyMarkedVArray;
-extern std::aligned_storage<kEmptyMixedArraySize, 16>::type s_theEmptyMarkedDArray;
 extern std::aligned_storage<sizeof(ArrayData), 16>::type s_theEmptyMarkedVec;
-extern std::aligned_storage<kEmptyMixedArraySize, 16>::type s_theEmptyMarkedDictArray;
+
+/*
+ * Pointers to canonical empty Dicts/DArrays.
+ */
+extern ArrayData* s_theEmptyDictArrayPtr;
+extern ArrayData* s_theEmptyDArrayPtr;
+extern ArrayData* s_theEmptyMarkedDArrayPtr;
+extern ArrayData* s_theEmptyMarkedDictArrayPtr;
 
 /*
  * Return the static empty array, for PHP and Hack arrays.
@@ -710,8 +688,6 @@ extern std::aligned_storage<kEmptyMixedArraySize, 16>::type s_theEmptyMarkedDict
  * is needed. We should avoid using these methods, as these arrays don't have
  * provenance information; use ArrayData::CreateDArray and friends instead.
  */
-ArrayData* staticEmptyVArray();
-ArrayData* staticEmptyDArray();
 ArrayData* staticEmptyVec();
 ArrayData* staticEmptyDictArray();
 ArrayData* staticEmptyKeysetArray();
@@ -720,8 +696,6 @@ ArrayData* staticEmptyKeysetArray();
  * Static empty marked arrays; they're common enough (due to constant-folding)
  * that it's useful to keep a singleton value for them, too.
  */
-ArrayData* staticEmptyMarkedVArray();
-ArrayData* staticEmptyMarkedDArray();
 ArrayData* staticEmptyMarkedVec();
 ArrayData* staticEmptyMarkedDictArray();
 
@@ -750,15 +724,12 @@ struct ArrayFunctions {
   static auto const NK = size_t{ArrayData::kNumKinds};
 
   void (*release[NK])(ArrayData*);
+  void (*releaseUncounted[NK])(ArrayData*);
   TypedValue (*nvGetInt[NK])(const ArrayData*, int64_t k);
   TypedValue (*nvGetStr[NK])(const ArrayData*, const StringData* k);
-  ssize_t (*nvGetIntPos[NK])(const ArrayData*, int64_t k);
-  ssize_t (*nvGetStrPos[NK])(const ArrayData*, const StringData* k);
   TypedValue (*getPosKey[NK])(const ArrayData*, ssize_t pos);
   TypedValue (*getPosVal[NK])(const ArrayData*, ssize_t pos);
-  ArrayData* (*setInt[NK])(ArrayData*, int64_t k, TypedValue v);
   ArrayData* (*setIntMove[NK])(ArrayData*, int64_t k, TypedValue v);
-  ArrayData* (*setStr[NK])(ArrayData*, StringData* k, TypedValue v);
   ArrayData* (*setStrMove[NK])(ArrayData*, StringData* k, TypedValue v);
   bool (*isVectorData[NK])(const ArrayData*);
   bool (*existsInt[NK])(const ArrayData*, int64_t k);
@@ -779,20 +750,12 @@ struct ArrayFunctions {
   bool (*uksort[NK])(ArrayData* ad, const Variant& cmp_function);
   bool (*usort[NK])(ArrayData* ad, const Variant& cmp_function);
   bool (*uasort[NK])(ArrayData* ad, const Variant& cmp_function);
-  ArrayData* (*copy[NK])(const ArrayData*);
   ArrayData* (*copyStatic[NK])(const ArrayData*);
-  ArrayData* (*append[NK])(ArrayData*, TypedValue v);
-  ArrayData* (*merge[NK])(ArrayData*, const ArrayData* elems);
+  ArrayData* (*appendMove[NK])(ArrayData*, TypedValue v);
   ArrayData* (*pop[NK])(ArrayData*, Variant& value);
-  ArrayData* (*dequeue[NK])(ArrayData*, Variant& value);
-  ArrayData* (*prepend[NK])(ArrayData*, TypedValue v);
-  ArrayData* (*renumber[NK])(ArrayData*);
   void (*onSetEvalScalar[NK])(ArrayData*);
-  ArrayData* (*toDict[NK])(ArrayData*, bool);
-  ArrayData* (*toVec[NK])(ArrayData*, bool);
-  ArrayData* (*toKeyset[NK])(ArrayData*, bool);
-  ArrayData* (*toVArray[NK])(ArrayData*, bool);
-  ArrayData* (*toDArray[NK])(ArrayData*, bool);
+  ArrayData* (*makeUncounted[NK])(
+    ArrayData*, const MakeUncountedEnv& env, bool hasApcTv);
 };
 
 extern const ArrayFunctions g_array_funcs;
@@ -813,35 +776,19 @@ extern const ArrayFunctions g_array_funcs;
 [[noreturn]] void throwOOBArrayKeyException(const StringData* key,
                                             const ArrayData* ad);
 [[noreturn]] void throwFalseyPromoteException(const char* type);
-[[noreturn]] void throwMissingElementException(const char* op);
 [[noreturn]] void throwInvalidKeysetOperation();
-[[noreturn]] void throwInvalidAdditionException(const ArrayData* ad);
+[[noreturn]] void throwReadOnlyCollectionMutation();
 [[noreturn]] void throwVarrayUnsetException();
 [[noreturn]] void throwVecUnsetException();
 
 void raiseHackArrCompatArrHackArrCmp();
-void raiseHackArrCompatDVArrCmp(const ArrayData*, const ArrayData*, bool);
 
 std::string makeHackArrCompatImplicitArrayKeyMsg(const TypedValue* key);
 
 StringData* getHackArrCompatNullHackArrayKeyMsg();
-
-bool checkHACCompare();
-
-/*
- * Add a provenance tag for the current vmpc to `ad`, copying instead from
- * `src` if it's provided (and if it has a tag).  Returns `ad` for convenience.
- *
- * This function does not assert that `ad` does not have an existing tag, and
- * instead overrides it.
- */
-ArrayData* tagArrProv(ArrayData* ad, const ArrayData* src = nullptr);
-ArrayData* tagArrProv(ArrayData* ad, const APCArray* src);
 
 ///////////////////////////////////////////////////////////////////////////////
 
 }
 
 #include "hphp/runtime/base/array-data-inl.h"
-
-#endif // incl_HPHP_ARRAY_DATA_H_

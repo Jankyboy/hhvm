@@ -8,8 +8,8 @@
  *)
 
 type load_state_error =
-  (* an error reported by mk_state_future for downloading saved-state *)
-  | Load_state_loader_failure of State_loader.error
+  (* an error reported when downloading saved-state through [Saved_state_loader] *)
+  | Load_state_saved_state_loader_failure of Saved_state_loader.load_error
   (* an error fetching list of dirty files from hg *)
   | Load_state_dirty_files_failure of Future.error
   (* either the downloader or hg-dirty-files took too long *)
@@ -20,15 +20,25 @@ type load_state_error =
       stack: Utils.callstack;
     }
 
+type load_state_verbose_error = {
+  message: string;
+  stack: Utils.callstack;
+  auto_retry: bool;
+  environment: string option;
+}
+[@@deriving show]
+
 type load_state_approach =
   | Precomputed of ServerArgs.saved_state_target_info
-  | Load_state_natively of bool
-  | Load_state_natively_with_target of ServerMonitorUtils.target_saved_state
+  | Load_state_natively
+[@@deriving show]
 
 type remote_init = {
   worker_key: string;
+  nonce: Int64.t;
   check_id: string;
 }
+[@@deriving show]
 
 type init_approach =
   | Full_init
@@ -36,6 +46,7 @@ type init_approach =
   | Saved_state_init of load_state_approach
   | Remote_init of remote_init
   | Write_symbol_info
+[@@deriving show]
 
 (** Docs are in .mli *)
 type init_result =
@@ -45,10 +56,22 @@ type init_result =
 
 (** returns human-readable string, an indication of whether auto-retry is sensible, and stack *)
 let load_state_error_to_verbose_string (err : load_state_error) :
-    State_loader.verbose_error =
-  let open State_loader in
+    load_state_verbose_error =
   match err with
-  | Load_state_loader_failure err -> State_loader.error_string_verbose err
+  | Load_state_saved_state_loader_failure err ->
+    (* TODO(hverr): Construct verbose errors with all fields properly set *)
+    {
+      message =
+        Printf.sprintf
+          ("Could not load saved-state from DevX infrastructure. "
+          ^^ "The underlying error message was: %s\n\n"
+          ^^ "The accompanying debug details are: %s")
+          (Saved_state_loader.long_user_message_of_error err)
+          (Saved_state_loader.debug_details_of_error err);
+      auto_retry = false;
+      stack = Utils.Callstack "";
+      environment = None;
+    }
   | Load_state_dirty_files_failure error ->
     let Future.{ message; stack; environment } =
       Future.error_to_string_verbose error
@@ -80,22 +103,27 @@ let load_state_error_to_verbose_string (err : load_state_error) :
 type files_changed_while_parsing = Relative_path.Set.t
 
 type loaded_info = {
-  saved_state_fn: string;
+  naming_table_fn: string;
   deptable_fn: string;
-  naming_table_fn: string option;
+  deptable_is_64bit: bool;
+  naming_table_fallback_fn: string option;
   corresponding_rev: Hg.rev;
   mergebase_rev: Hg.global_rev option;
-  mergebase: Hg.hg_rev option Future.t;
+  mergebase: Hg.hg_rev option Future.t; [@opaque]
   (* Files changed between the loaded naming table saved state and current revision. *)
-  dirty_naming_files: Relative_path.Set.t;
+  dirty_naming_files: Relative_path.Set.t; [@printer Relative_path.Set.pp_large]
   (* Files changed between saved state revision and current public merge base *)
-  dirty_master_files: Relative_path.Set.t;
+  dirty_master_files: Relative_path.Set.t; [@printer Relative_path.Set.pp_large]
   (* Files changed between public merge base and current revision *)
-  dirty_local_files: Relative_path.Set.t;
-  old_naming_table: Naming_table.t;
-  old_errors: SaveStateServiceTypes.saved_state_errors;
+  dirty_local_files: Relative_path.Set.t; [@printer Relative_path.Set.pp_large]
+  old_naming_table: Naming_table.t; [@opaque]
+  old_errors: SaveStateServiceTypes.saved_state_errors; [@opaque]
   state_distance: int option;
+  (* The manifold path for naming table saved state, to be used by remote type checker
+     for downloading the naming table in the case of a saved-state init *)
+  naming_table_manifold_path: string option;
 }
+[@@deriving show]
 
 (* Laziness *)
 type lazy_level =
@@ -103,3 +131,4 @@ type lazy_level =
   | Decl
   | Parse
   | Init
+[@@deriving show]

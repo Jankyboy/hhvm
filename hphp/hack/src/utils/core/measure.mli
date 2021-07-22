@@ -29,7 +29,7 @@ val time : ?record:record -> string -> (unit -> 'a) -> 'a
 
 val delete : ?record:record -> string -> unit
 
-val merge : ?record:record -> from:record -> unit
+val merge : ?record:record -> record -> unit
 
 val get_sum : ?record:record -> string -> float option
 
@@ -43,6 +43,8 @@ val print_entry_stats :
   ?record:record -> ?print_raw:(string -> unit) -> string -> unit
 
 val print_stats : ?record:record -> ?print_raw:(string -> unit) -> unit -> unit
+
+val stats_to_telemetry : ?record:record -> unit -> Telemetry.t
 
 val print_entry_distribution : ?record:record -> string -> unit
 

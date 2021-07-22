@@ -40,7 +40,7 @@ let test_unsaved_symbol_change ~(sqlite : bool) () =
     Tast_provider.compute_tast_and_errors_unquarantined ~ctx ~entry
   in
   Asserter.Int_asserter.assert_equals
-    7
+    3
     (Telemetry_test_utils.int_exn telemetry "get_ast.count")
     "unsaved: compute_tast(class Foo) should have this many calls to get_ast";
   Asserter.Int_asserter.assert_equals
@@ -69,7 +69,7 @@ let test_unsaved_symbol_change ~(sqlite : bool) () =
     Tast_provider.compute_tast_and_errors_unquarantined ~ctx ~entry
   in
   Asserter.Int_asserter.assert_equals
-    4
+    1
     (Telemetry_test_utils.int_exn telemetry "get_ast.count")
     "unsaved: compute_tast(class Foo1) should have this many calls to get_ast";
   Asserter.Int_asserter.assert_equals
@@ -96,7 +96,7 @@ let test_unsaved_symbol_change ~(sqlite : bool) () =
     Tast_provider.compute_tast_and_errors_unquarantined ~ctx ~entry
   in
   Asserter.Int_asserter.assert_equals
-    5
+    1
     (Telemetry_test_utils.int_exn telemetry "get_ast.count")
     "unsaved: compute_tast(class Foo again) should have this many calls to get_ast";
   Asserter.Int_asserter.assert_equals
@@ -222,10 +222,10 @@ let test_dupe_setup ~(sqlite : bool) =
   let ctx = setup.Common_setup.ctx in
 
   (* In the common_setup, 'foo.php' defines symbols Foo,f1,f2.
-  Let's make another file 'nonexistent.php' define duplicates,
-  but with different capitalization for Foo.
-  It gets written to disk because canon-name-lookups have
-  to read from disk to resolve canon names. *)
+     Let's make another file 'nonexistent.php' define duplicates,
+     but with different capitalization for Foo.
+     It gets written to disk because canon-name-lookups have
+     to read from disk to resolve canon names. *)
   let contents =
     Str.global_replace
       (Str.regexp "class Foo")

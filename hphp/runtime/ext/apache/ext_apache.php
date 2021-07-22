@@ -67,7 +67,7 @@ function apache_setenv(string $variable,
 <<__Native>>
 function getallheaders(): darray<string, string>;
 
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function apache_get_config(): darray<string, mixed>;
 
 }
@@ -80,7 +80,18 @@ namespace HH {
  *   current request. The values in the array will be strings for uniquely
  *   specified headers, but arrays where a header was specified more than once.
  */
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function get_headers_secure(): darray<string, varray<string>>;
+
+/**
+ * Fetch all HTTP request names in the order they were received from proxygen
+ *
+ * @return array - An array of all the HTTP header names in the
+ *   current request.
+ * Note: if the same header name appears more than once in the request headers
+ * sent by client, it will appear more than once in this array.
+ */
+<<__Native>>
+function get_proxygen_headers(): vec<(string, string)>;
 
 }

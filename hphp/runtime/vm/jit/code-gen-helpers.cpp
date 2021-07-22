@@ -330,20 +330,13 @@ void emitIncRef(Vout& v, Vreg base, Reason reason) {
     emitAssertRefCount(v, base, reason);
   }
 
-  if (one_bit_refcount) {
-    emitStoreRefCount(v, MultiReference, base);
-  } else {
-    auto const sf = v.makeReg();
-    v << inclm{base[FAST_REFCOUNT_OFFSET], sf};
-    assertSFNonNegative(v, sf, reason);
-  }
+  auto const sf = v.makeReg();
+  v << inclm{base[FAST_REFCOUNT_OFFSET], sf};
+  assertSFNonNegative(v, sf, reason);
 }
 
 Vreg emitDecRef(Vout& v, Vreg base, Reason reason) {
-  auto const sf = one_bit_refcount ?
-    emitCmpRefCount(v, OneReference, base) :
-    emitDecRefCount(v, base);
-
+  auto const sf = emitDecRefCount(v, base);
   assertSFNonNegative(v, sf, reason);
   return sf;
 }
@@ -356,7 +349,7 @@ void emitIncRefWork(Vout& v, Vreg data, Vreg type, Reason reason) {
     // One-bit mode: do the IncRef if m_count == OneReference (0). Normal mode:
     // do the IncRef if m_count >= 0.
     auto const sf2 = emitCmpRefCount(v, 0, data);
-    auto const cc = one_bit_refcount ? CC_E : CC_GE;
+    auto const cc = CC_GE;
     ifThen(v, cc, sf2, [&] (Vout& v) { emitIncRef(v, data, reason); });
   });
 }
@@ -382,7 +375,7 @@ void emitIncRefWork(Vout& v, Vloc loc, Type type, Reason reason) {
   // We do know the type, but it might be persistent or counted. Check the
   // ref-count.
   auto const sf = emitCmpRefCount(v, 0, loc.reg());
-  auto const cc = one_bit_refcount ? CC_E : CC_GE;
+  auto const cc = CC_GE;
   ifThen(v, cc, sf, [&] (Vout& v) { emitIncRef(v, loc.reg(), reason); });
 }
 
@@ -394,7 +387,8 @@ void emitDecRefWorkObj(Vout& v, Vreg obj, Reason reason) {
       // Put fn inside vcall{} triggers a compiler internal error (gcc 4.4.7)
       auto const cls = emitLdObjClass(v, obj, v.makeReg());
       auto const fn = CallSpec::objDestruct(cls);
-      v << vcall{fn, v.makeVcallArgs({{obj, cls}}), v.makeTuple({})};
+      v << vcall{fn, v.makeVcallArgs({{obj, cls}}), v.makeTuple({}),
+                 Fixup::none()};
     },
     [&] (Vout& v) {
       emitDecRef(v, obj, reason);
@@ -441,7 +435,7 @@ void emitCall(Vout& v, CallSpec target, RegSet args) {
 
 Vptr lookupDestructor(Vout& v, Vreg type, bool typeIsQuad) {
   auto const elem_sz = static_cast<int>(sizeof(g_destructors[0]) / 2);
-  auto const table = reinterpret_cast<intptr_t>(g_destructors) -
+  auto const table = reinterpret_cast<intptr_t>(&g_destructors[0]) -
     kMinRefCountedDataType * elem_sz;
 
   auto const index = [&] {
@@ -551,7 +545,8 @@ void emitRB(Vout& v, Trace::RingBufferType t, const char* msg) {
   if (!Trace::moduleEnabled(Trace::ringbuffer, 1)) return;
   v << vcall{CallSpec::direct(Trace::ringbufferMsg),
              v.makeVcallArgs({{v.cns(msg), v.cns(strlen(msg)), v.cns(t)}}),
-             v.makeTuple({})};
+             v.makeTuple({}),
+             Fixup::none()};
 }
 
 void emitIncStat(Vout& v, Stats::StatCounter stat) {
@@ -577,6 +572,7 @@ static Vptr getRDSHandleGenNumberAddr(Vreg handle) {
 
 template<typename HandleT>
 Vreg doCheckRDSHandleInitialized(Vout& v, HandleT ch) {
+  markRDSAccess(v, ch);
   auto const gen = v.makeReg();
   auto const sf = v.makeReg();
   v << loadb{getRDSHandleGenNumberAddr(ch), gen};
@@ -593,7 +589,8 @@ Vreg checkRDSHandleInitialized(Vout& v, Vreg ch) {
 }
 
 template<typename HandleT>
-void doMarkRDSHandleInitialized(Vout &v, HandleT ch) {
+void doMarkRDSHandleInitialized(Vout& v, HandleT ch) {
+  markRDSAccess(v, ch);
   auto const gen = v.makeReg();
   v << loadb{rvmtl()[rds::currentGenNumberHandle()], gen};
   v << storeb{gen, getRDSHandleGenNumberAddr(ch)};
@@ -606,6 +603,27 @@ void markRDSHandleInitialized(Vout& v, rds::Handle ch) {
 
 void markRDSHandleInitialized(Vout& v, Vreg ch) {
   doMarkRDSHandleInitialized(v, ch);
+}
+
+void markRDSAccess(Vout& v, rds::Handle ch) {
+  if (!rds::shouldProfileAccesses()) return;
+  auto const& vunit = v.unit();
+  if (vunit.context && !isProfiling(vunit.context->kind)) return;
+  auto const profile = rds::profileForHandle(ch);
+  if (profile == rds::kUninitHandle) return;
+  v << incqm{rvmtl()[profile], v.makeReg()};
+}
+
+void markRDSAccess(Vout& v, Vreg ch) {
+  if (!rds::shouldProfileAccesses()) return;
+  auto const& vunit = v.unit();
+  if (vunit.context && !isProfiling(vunit.context->kind)) return;
+  v << vcall{
+    CallSpec::direct(rds::markAccess),
+    v.makeVcallArgs({{ch}}),
+    v.makeTuple({}),
+    Fixup::none()
+  };
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -628,9 +646,12 @@ void nextLocal(Vout& v,
                Vreg typeIn,
                Vreg dataIn,
                Vreg typeOut,
-               Vreg dataOut) {
-  v << subqi{(int32_t)sizeof(TypedValue), typeIn, typeOut, v.makeReg()};
-  v << subqi{(int32_t)sizeof(TypedValue), dataIn, dataOut, v.makeReg()};
+               Vreg dataOut,
+               unsigned distance) {
+  v << subqi{(int32_t)(sizeof(TypedValue) * distance), typeIn, typeOut,
+      v.makeReg()};
+  v << subqi{(int32_t)(sizeof(TypedValue) * distance), dataIn, dataOut,
+      v.makeReg()};
 }
 
 void prevLocal(Vout& v,

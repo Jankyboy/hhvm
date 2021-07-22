@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_TV_MUTATE_H_
-#define incl_HPHP_TV_MUTATE_H_
+#pragma once
 
 #include "hphp/runtime/base/datatype.h"
 #include "hphp/runtime/base/tv-array-like.h"
@@ -108,6 +107,12 @@ enable_if_lval_t<T&&, void> tvWriteUninit(T&& to) {
 template<typename T> ALWAYS_INLINE
 enable_if_lval_t<T&&, void> tvWriteNull(T&& to) {
   type(to) = KindOfNull;
+}
+
+template<typename T> ALWAYS_INLINE
+enable_if_lval_t<T&&, void> tvWriteConstValMissing(T&& to) {
+  type(to) = KindOfUninit;
+  val(to).num = kConstValMissing;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -262,5 +267,3 @@ ALWAYS_INLINE void tvDebugTrash(tv_lval lval) {
 ///////////////////////////////////////////////////////////////////////////////
 
 }
-
-#endif

@@ -7,11 +7,11 @@
 /*
  * Test array_map() by passing array having binary values for $arr1 argument
  */
-
 function callback1($a)
 {
   return ($a);
 }
+<<__DynamicallyCallable>>
 function callback2($a, $b)
 {
   return darray[$a => $b];
@@ -23,7 +23,7 @@ echo "*** Testing array_map() : array with binary data for 'arr1' argument ***\n
 $arr1 = varray[b"hello", b"world", "1", b"22.22"];
 
 echo "-- checking binary safe array with one parameter callback function --\n";
-var_dump( array_map(fun('callback1'), $arr1) );
+var_dump( array_map(callback1<>, $arr1) );
 
 echo "-- checking binary safe array with two parameter callback function --\n";
 try { var_dump( array_map(b"callback2", $arr1) ); } catch (Exception $e) { var_dump($e->getMessage()); }

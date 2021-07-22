@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_WRITELEASE_H_
-#define incl_HPHP_WRITELEASE_H_
+#pragma once
 
 #include "hphp/util/assertions.h"
 #include "hphp/util/compilation-flags.h"
@@ -56,6 +55,9 @@ struct LeaseHolder {
   LeaseHolder(const Func* f, TransKind kind, bool isWorker = false);
   ~LeaseHolder();
 
+  LeaseHolder(const LeaseHolder&) = delete;
+  LeaseHolder& operator=(const LeaseHolder&) = delete;
+
   /*
    * Returns true iff all the necessary locks were acquired and it's ok to
    * continue with translation.
@@ -90,4 +92,3 @@ struct LeaseHolder {
 
 }} // HPHP::jit
 
-#endif /* incl_HPHP_WRITELEASE_H_ */

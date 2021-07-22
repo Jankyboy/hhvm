@@ -1,2 +1,2 @@
---max-errors 1
 --allowed-fixme-codes-strict 4110,4105
+--extra-builtin ../../hhi/XHPTest.hhi

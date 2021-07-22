@@ -17,7 +17,6 @@
 #include "hphp/runtime/ext/std/ext_std_variable.h"
 
 #include "hphp/runtime/base/array-init.h"
-#include "hphp/runtime/base/array-provenance.h"
 #include "hphp/runtime/base/backtrace.h"
 #include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/base/collections.h"
@@ -53,7 +52,8 @@ const StaticString
   s_array("array"),
   s_NULL("NULL"),
   s_null("null"),
-  s_meth_caller_cls("__SystemLib\\MethCallerHelper");
+  s_meth_caller_cls("__SystemLib\\MethCallerHelper"),
+  s_dyn_meth_caller_cls("__SystemLib\\DynMethCallerHelper");
 
 String HHVM_FUNCTION(gettype, const Variant& v) {
   if (v.getType() == KindOfResource && v.toCResRef().isInvalid()) {
@@ -65,14 +65,13 @@ String HHVM_FUNCTION(gettype, const Variant& v) {
   if (v.isNull()) {
     return s_NULL;
   }
-  if (v.isArray() && arrprov::arrayWantsTag(v.asCArrRef().get())) {
-    raise_array_serialization_notice(SerializationSite::Gettype,
-                                     v.getArrayData());
+  if (isArrayLikeType(v.getType()) && v.getArrayData()->isLegacyArray()) {
+    return s_array;
   }
-
-  // OH NO. This string could be used by logic in Hack, so we can't do the
-  // sensible thing here and return "varray" or "darray" for dvarrays.
-  if (isArrayType(v.getType())) return s_array;
+  if (RuntimeOption::EvalClassAsStringGetType &&
+      (v.isLazyClass() || v.isClass())) {
+    return s_string;
+  }
   return getDataTypeString(v.getType());
 }
 
@@ -125,13 +124,11 @@ bool HHVM_FUNCTION(is_scalar, const Variant& v) {
 }
 
 bool HHVM_FUNCTION(HH_is_php_array, const Variant& v) {
-  // We want this set to false as this is meant to be the "this can receive
-  // both PHP and Hack arrays" version of `is_array`.
-  return is_php_array(v.asTypedValue());
+  return isArrayLikeType(v.getType()) && v.getArrayData()->isLegacyArray();
 }
 
 bool HHVM_FUNCTION(is_array, const Variant& v) {
-  if (RuntimeOption::EvalLogOnIsArrayFunction) {
+  if (RO::EvalLogOnIsArrayFunction) {
     raise_notice("call to deprecated builtin is_array()");
   }
   return is_any_array(v.asTypedValue());
@@ -150,40 +147,26 @@ bool HHVM_FUNCTION(HH_is_keyset, const Variant& v) {
 }
 
 bool HHVM_FUNCTION(HH_is_varray, const Variant& val) {
-  return is_varray(val.asTypedValue());
+  return is_vec(val.asTypedValue());
 }
 
 bool HHVM_FUNCTION(HH_is_darray, const Variant& val) {
-  return is_darray(val.asTypedValue());
-}
-
-bool HHVM_FUNCTION(HH_is_dict_or_darray, const Variant& val) {
-  return is_dict_or_darray(val.asTypedValue());
+  return is_dict(val.asTypedValue());
 }
 
 bool HHVM_FUNCTION(HH_is_vec_or_varray, const Variant& val) {
-  return is_vec_or_varray(val.asTypedValue());
+  return is_vec(val.asTypedValue());
+}
+
+bool HHVM_FUNCTION(HH_is_dict_or_darray, const Variant& val) {
+  return is_dict(val.asTypedValue());
 }
 
 bool HHVM_FUNCTION(HH_is_any_array, const Variant& val) {
-  if (tvIsClsMeth(val.asTypedValue())) {
-    if (RuntimeOption::EvalIsCompatibleClsMethType) {
-      if (RuntimeOption::EvalIsVecNotices) {
-        raise_notice(Strings::CLSMETH_COMPAT_IS_ANY_ARR);
-      }
-      return true;
-    }
-    return false;
-  }
-
-  return tvIsArrayLike(val.asTypedValue()) || tvIsClsMeth(val.asTypedValue());
+  return is_any_array(val.asTypedValue());
 }
 
 bool HHVM_FUNCTION(HH_is_list_like, const Variant& val) {
-  if (val.isClsMeth()) {
-    raiseClsMethToVecWarningHelper();
-    return true;
-  }
   auto const& ty = val.getType();
   if (!isArrayLikeType(ty)) return false;
   if (isVecType(ty)) return true;
@@ -203,9 +186,12 @@ bool HHVM_FUNCTION(HH_is_meth_caller, TypedValue v) {
   if (tvIsFunc(v)) {
     return val(v).pfunc->isMethCaller();
   } else if (tvIsObject(v)) {
-    auto const mcCls = Unit::lookupClass(s_meth_caller_cls.get());
+    auto const mcCls = Class::lookup(s_meth_caller_cls.get());
+    auto const dynMcCls = Class::lookup(s_dyn_meth_caller_cls.get());
+    auto const cls = val(v).pobj->getVMClass();
     assertx(mcCls);
-    return mcCls == val(v).pobj->getVMClass();
+    assertx(dynMcCls);
+    return mcCls == cls || dynMcCls == cls;
   }
   return false;
 }
@@ -213,7 +199,7 @@ bool HHVM_FUNCTION(HH_is_meth_caller, TypedValue v) {
 ///////////////////////////////////////////////////////////////////////////////
 
 Array HHVM_FUNCTION(HH_object_prop_array, const Object& obj) {
-  return obj.toArray().toDArray();
+  return obj.toArray().toDict();
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -431,7 +417,8 @@ struct SerializeOptions {
 };
 
 ALWAYS_INLINE String serialize_impl(const Variant& value,
-                                    const SerializeOptions& opts) {
+                                    const SerializeOptions& opts,
+                                    bool pure) {
   switch (value.getType()) {
     case KindOfClass:
     case KindOfLazyClass:
@@ -443,7 +430,7 @@ ALWAYS_INLINE String serialize_impl(const Variant& value,
         lazyClassToStringHelper(value.toLazyClassVal());
       auto const size = str->size();
       if (size >= RuntimeOption::MaxSerializedStringSize) {
-        throw Exception("Size of serialized string (%d) exceeds max", size);
+        throw Exception("Size of serialized string (%ld) exceeds max", size);
       }
       StringBuffer sb;
       sb.append("s:");
@@ -467,10 +454,6 @@ ALWAYS_INLINE String serialize_impl(const Variant& value,
     case KindOfDict:
     case KindOfPersistentKeyset:
     case KindOfKeyset:
-    case KindOfPersistentDArray:
-    case KindOfDArray:
-    case KindOfPersistentVArray:
-    case KindOfVArray:
     case KindOfDouble:
     case KindOfObject:
     case KindOfClsMeth:
@@ -486,6 +469,7 @@ ALWAYS_INLINE String serialize_impl(const Variant& value,
   if (opts.warnOnPHPArrays)     vs.setPHPWarn();
   if (opts.ignoreLateInit)      vs.setIgnoreLateInit();
   if (opts.serializeProvenanceAndLegacy) vs.setSerializeProvenanceAndLegacy();
+  if (pure) vs.setPure();
   // Keep the count so recursive calls to serialize() embed references properly.
   return vs.serialize(value, true, true);
 }
@@ -493,7 +477,11 @@ ALWAYS_INLINE String serialize_impl(const Variant& value,
 }
 
 String HHVM_FUNCTION(serialize, const Variant& value) {
-  return serialize_impl(value, SerializeOptions());
+  return serialize_impl(value, SerializeOptions(), false);
+}
+
+String HHVM_FUNCTION(serialize_pure, const Variant& value) {
+  return serialize_impl(value, SerializeOptions(), true);
 }
 
 const StaticString
@@ -520,20 +508,20 @@ String HHVM_FUNCTION(HH_serialize_with_options,
   opts.serializeProvenanceAndLegacy =
     options.exists(s_serializeProvenanceAndLegacy) &&
     options[s_serializeProvenanceAndLegacy].toBoolean();
-  return serialize_impl(value, opts);
+  return serialize_impl(value, opts, false);
 }
 
 String serialize_keep_dvarrays(const Variant& value) {
   SerializeOptions opts;
   opts.keepDVArrays = true;
-  return serialize_impl(value, opts);
+  return serialize_impl(value, opts, false);
 }
 
 String HHVM_FUNCTION(hhvm_intrinsics_serialize_keep_dvarrays,
                      const Variant& value) {
   SerializeOptions opts;
   opts.keepDVArrays = true;
-  return serialize_impl(value, opts);
+  return serialize_impl(value, opts, false);
 }
 
 Variant HHVM_FUNCTION(unserialize, const String& str,
@@ -545,13 +533,23 @@ Variant HHVM_FUNCTION(unserialize, const String& str,
   );
 }
 
+Variant HHVM_FUNCTION(unserialize_pure, const String& str,
+                                        const Array& options) {
+  return unserialize_from_string(
+    str,
+    VariableUnserializer::Type::Serialize,
+    options,
+    true
+  );
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // variable table
 
 void HHVM_FUNCTION(parse_str,
                    const String& str,
                    Array& arr) {
-  arr = Array::CreateDArray();
+  arr = Array::CreateDict();
   HttpProtocol::DecodeParameters(arr, str.data(), str.size());
 }
 
@@ -579,7 +577,7 @@ bool HHVM_FUNCTION(HH_is_late_init_prop_init,
 bool HHVM_FUNCTION(HH_is_late_init_sprop_init,
                    const String& clsName,
                    const String& name) {
-  auto const cls = Unit::loadClass(clsName.get());
+  auto const cls = Class::load(clsName.get());
   if (!cls) {
     SystemLib::throwInvalidArgumentExceptionObject(
       folly::sformat("Unknown class {}", clsName)
@@ -645,7 +643,9 @@ void StandardExtension::initVariable() {
   HHVM_FE(debug_zval_dump);
   HHVM_FE(var_dump);
   HHVM_FE(serialize);
+  HHVM_FE(serialize_pure);
   HHVM_FE(unserialize);
+  HHVM_FE(unserialize_pure);
   HHVM_FE(parse_str);
   HHVM_FALIAS(HH\\object_prop_array, HH_object_prop_array);
   HHVM_FALIAS(HH\\serialize_with_options, HH_serialize_with_options);

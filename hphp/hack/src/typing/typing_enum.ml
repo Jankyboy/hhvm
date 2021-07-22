@@ -43,69 +43,27 @@ let member_type env member_ce =
              (Cls.enum_type tc)
              Option.(
                Cls.get_typeconst tc Naming_special_names.FB.tInner >>= fun t ->
-               t.ttc_type)
-             (Cls.get_ancestor tc)
+               (* TODO(T88552052) This code was taking the default of abstract
+                * type constants as a value *)
+               match t.ttc_kind with
+               | TCConcrete { tc_type = t }
+               | TCPartiallyAbstract { patc_type = t; _ }
+               | TCAbstract { atc_default = Some t; _ } ->
+                 Some t
+               | TCAbstract { atc_default = None; _ } -> None)
+             ~get_ancestor:(Cls.get_ancestor tc)
          with
         | None -> default_result
-        | Some (_base, enum_ty, _constraint) ->
+        | Some
+            {
+              Decl_enum.base = _;
+              type_ = enum_ty;
+              constraint_ = _;
+              interface = _;
+            } ->
           let ty = mk (get_reason default_result, get_node enum_ty) in
           ty))
     | _ -> default_result
-
-(* Check that a type is something that can be used as an array index
- * (int or string), blowing through typedefs to do it. Takes a function
- * to call to report the error if it isn't. *)
-let check_valid_array_key_type f_fail ~allow_any env p t =
-  let rec check_valid_array_key_type env t =
-    let ety_env = Phase.env_with_self env in
-    let (env, t, trail) = Typing_tdef.force_expand_typedef ~ety_env env t in
-    match get_node t with
-    | Tprim (Tint | Tstring) -> (env, None)
-    (* Enums have to be valid array keys *)
-    | Tnewtype (id, _, _) when Typing_env.is_enum env id -> (env, None)
-    | Terr
-    | Tany _
-      when allow_any ->
-      (env, None)
-    | Tintersection tyl ->
-      (* Ok if at least one element of the intersection is ok. *)
-      let (env, errors) =
-        List.fold_map tyl ~init:env ~f:check_valid_array_key_type
-      in
-      if List.exists errors ~f:Option.is_none then
-        (env, None)
-      else
-        (env, Option.value ~default:None (List.find errors ~f:Option.is_some))
-    | Tunapplied_alias _ ->
-      Typing_defs.error_Tunapplied_alias_in_illegal_context ()
-    | Terr
-    | Tany _
-    | Tnonnull
-    | Tvarray _
-    | Tdarray _
-    | Tvarray_or_darray _
-    | Tprim _
-    | Toption _
-    | Tdynamic
-    | Tvar _
-    | Tgeneric _
-    | Tnewtype _
-    | Tdependent _
-    | Tclass _
-    | Ttuple _
-    | Tfun _
-    | Tunion _
-    | Tobject
-    | Tshape _
-    | Tpu _
-    | Tpu_type_access _ ->
-      ( env,
-        Some (fun () -> f_fail p (get_pos t) (Typing_print.error env t) trail)
-      )
-  in
-  let (env, err) = check_valid_array_key_type env t in
-  Option.iter err (fun f -> f ());
-  env
 
 let enum_check_const ty_exp env cc t =
   let p = fst cc.cc_id in
@@ -117,13 +75,49 @@ let enum_check_const ty_exp env cc t =
     ty_exp
     Errors.constant_does_not_match_enum_type
 
-(* Check that the `as` bound or the underlying type of an enum is a subtype of arraykey *)
-let enum_check_type env pos ur ty _on_error =
+(* Check that the `as` bound or the underlying type of an enum is a subtype of
+ * arraykey. For enum class, check that it is a denotable closed type:
+ * no free type parameters are allowed, and we also prevent uncertain cases,
+ * like any, or dynamic. The free status of type parameter is caught during
+ * naming (Unbound name), so we only check the kind of type that is used.
+ *)
+let enum_check_type env (pos : Pos_or_decl.t) ur ty_interface ty _on_error =
   let ty_arraykey =
     MakeType.arraykey (Reason.Rimplicit_upper_bound (pos, "arraykey"))
   in
-  Typing_ops.sub_type pos ur env ty ty_arraykey (fun ?code:_ _ ->
-      Errors.enum_type_bad pos (Typing_print.full_strip_ns env ty) [])
+  let rec is_valid_base lty =
+    match get_node lty with
+    | Tprim _
+    | Tnonnull ->
+      true
+    | Toption lty -> is_valid_base lty
+    | Ttuple ltys -> List.for_all ~f:is_valid_base ltys
+    | Tnewtype (_, ltys, lty) -> List.for_all ~f:is_valid_base (lty :: ltys)
+    | Tclass (_, _, ltys) -> List.for_all ~f:is_valid_base ltys
+    | _ -> false
+  in
+  match ty_interface with
+  | Some interface ->
+    if not (is_valid_base interface) then
+      Errors.enum_type_bad
+        (Pos_or_decl.unsafe_to_raw_pos pos)
+        true
+        (Typing_print.full_strip_ns env interface)
+        [];
+    env
+  | None ->
+    Typing_ops.sub_type
+      (Pos_or_decl.unsafe_to_raw_pos pos)
+      ur
+      env
+      ty
+      ty_arraykey
+      (fun ?code:_ _ _ ->
+        Errors.enum_type_bad
+          (Pos_or_decl.unsafe_to_raw_pos pos)
+          false
+          (Typing_print.full_strip_ns env ty)
+          [])
 
 (* Check an enum declaration of the form
  *    enum E : <ty_exp> as <ty_constraint>
@@ -143,19 +137,41 @@ let enum_class_check env tc consts const_types =
       (Cls.enum_type tc)
       Option.(
         Cls.get_typeconst tc Naming_special_names.FB.tInner >>= fun t ->
-        t.ttc_type)
-      (Cls.get_ancestor tc)
+        (* TODO(T88552052) This code was taking the default of abstract
+         * type constants as a value *)
+        match t.ttc_kind with
+        | TCConcrete { tc_type = t }
+        | TCPartiallyAbstract { patc_type = t; _ }
+        | TCAbstract { atc_default = Some t; _ } ->
+          Some t
+        | TCAbstract { atc_default = None; _ } -> None)
+      ~get_ancestor:(Cls.get_ancestor tc)
   in
   match enum_info_opt with
-  | Some (ty_exp, _, ty_constraint) ->
-    let ety_env = Phase.env_with_self env in
-    let (env, ty_exp) = Phase.localize ~ety_env env ty_exp in
+  | Some
+      {
+        Decl_enum.base = ty_exp;
+        type_ = _;
+        constraint_ = ty_constraint;
+        interface = ty_interface;
+      } ->
+    let (env, ty_exp) =
+      Phase.localize_no_subst env ~ignore_errors:false ty_exp
+    in
+    let (env, ty_interface) =
+      match ty_interface with
+      | Some dty ->
+        let (env, lty) = Phase.localize_no_subst env ~ignore_errors:false dty in
+        (env, Some lty)
+      | None -> (env, None)
+    in
     (* Check that ty_exp <: arraykey *)
     let env =
       enum_check_type
         env
         pos
         Reason.URenum_underlying
+        ty_interface
         ty_exp
         Errors.enum_underlying_type_must_be_arraykey
     in
@@ -164,17 +180,18 @@ let enum_class_check env tc consts const_types =
       match ty_constraint with
       | None -> env
       | Some ty ->
-        let (env, ty) = Phase.localize ~ety_env env ty in
+        let (env, ty) = Phase.localize_no_subst env ~ignore_errors:false ty in
         let env =
           enum_check_type
             env
             pos
             Reason.URenum_cstr
+            None (* Enum classes do not have constraints *)
             ty
             Errors.enum_constraint_must_be_arraykey
         in
         Typing_ops.sub_type
-          pos
+          (Pos_or_decl.unsafe_to_raw_pos pos)
           Reason.URenum_incompatible_cstr
           env
           ty_exp

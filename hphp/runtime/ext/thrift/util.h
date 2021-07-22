@@ -15,10 +15,10 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EXT_THRIFT_UTIL_H
-#define incl_HPHP_EXT_THRIFT_UTIL_H
+#pragma once
 
 #include "hphp/runtime/base/array-init.h"
+#include "hphp/runtime/ext/thrift/transport.h"
 
 namespace HPHP { namespace thrift {
 
@@ -33,10 +33,9 @@ enum TError {
 }
 
 inline void set_with_intish_key_cast(
-  DArrayInit& arr,
-  const Variant& key,
-  const Variant& value
-) {
+    DictInit& arr,
+    const Variant& key,
+    const Variant& value) {
   if (key.isString()) {
     int64_t intish_key;
     if (key.getStringData()->isStrictlyInteger(intish_key)) {
@@ -52,7 +51,4 @@ inline void set_with_intish_key_cast(
         ERR_INVALID_DATA);
   }
 }
-
 }}
-
-#endif // incl_HPHP_EXT_THRIFT_UTIL_H

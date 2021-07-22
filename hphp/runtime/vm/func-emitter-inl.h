@@ -42,9 +42,83 @@ inline bool FuncEmitter::useGlobalIds() const {
   return m_ue.useGlobalIds();
 }
 
-inline void FuncEmitter::setIds(int sn, Id id) {
-  m_sn = sn;
-  m_id = id;
+///////////////////////////////////////////////////////////////////////////////
+// Bytecode
+
+inline const unsigned char* FuncEmitter::bc() const {
+  return m_bc.ptr();
+}
+
+inline Offset FuncEmitter::bcPos() const {
+  return m_bclen;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Bytecode emit.
+
+inline void FuncEmitter::emitOp(Op op) {
+  encode_op(op, [&](uint8_t byte) { emitByte(byte); });
+}
+
+inline void FuncEmitter::emitByte(unsigned char n, int64_t pos) {
+  emitImpl(n, pos);
+}
+
+inline void FuncEmitter::emitInt16(uint16_t n, int64_t pos) {
+  emitImpl(n, pos);
+}
+
+inline void FuncEmitter::emitInt32(int n, int64_t pos) {
+  emitImpl(n, pos);
+}
+
+inline void FuncEmitter::emitInt64(int64_t n, int64_t pos) {
+  emitImpl(n, pos);
+}
+
+inline void FuncEmitter::emitDouble(double n, int64_t pos) {
+  emitImpl(n, pos);
+}
+
+template<typename T>
+void FuncEmitter::emitIVA(T n) {
+  if (LIKELY((n & 0x7f) == n)) {
+    emitByte((unsigned char)n);
+  } else {
+    assertx((n & 0x7fffffff) == n);
+    emitInt32((n & 0x7fffff80) << 1 | 0x80 | (n & 0x7f));
+  }
+}
+
+inline void FuncEmitter::emitNamedLocal(NamedLocal loc) {
+  emitIVA(loc.name + 1);
+  emitIVA(loc.id);
+}
+
+template<class T>
+void FuncEmitter::emitImpl(T n, int64_t pos) {
+  assertx(m_bc.isPtr());
+  auto c = (unsigned char*)&n;
+  if (pos == -1) {
+    // Make sure m_bc is large enough.
+    auto p = m_bc.ptr();
+    while (m_bclen + sizeof(T) > m_bcmax) {
+      // If m_bcmax is 0 we haven't allocated a buffer yet so start with a size
+      // of BCMaxInit
+      m_bcmax = m_bcmax == 0 ? BCMaxInit : m_bcmax << 1;
+      p = (unsigned char*)realloc(p, m_bcmax);
+    }
+    memcpy(&p[m_bclen], c, sizeof(T));
+    m_bc = Func::BCPtr::FromPtr(p);
+    m_bclen += sizeof(T);
+  } else {
+    assertx(pos + sizeof(T) <= m_bclen);
+    auto p = m_bc.ptr();
+    for (uint32_t i = 0; i < sizeof(T); ++i) {
+      p[pos + i] = c[i];
+    }
+    m_bc = Func::BCPtr::FromPtr(p);
+  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -70,6 +144,15 @@ inline Id FuncEmitter::numLiveIterators() const {
 inline void FuncEmitter::setNumIterators(Id numIterators) {
   assertx(m_numIterators == 0);
   m_numIterators = numIterators;
+}
+
+inline Id FuncEmitter::numClosures() const {
+  return m_numClosures;
+}
+
+inline void FuncEmitter::setNumClosures(Id numClosures) {
+  assertx(m_numClosures == 0);
+  m_numClosures = numClosures;
 }
 
 inline void FuncEmitter::setNumLiveIterators(Id id) {
@@ -124,12 +207,27 @@ inline void FuncEmitter::setLocation(int l1, int l2) {
   line2 = l2;
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// Source locations.
+
+inline bool FuncEmitter::hasSourceLocInfo() const {
+  return !m_sourceLocTab.empty();
+}
+
+inline const LineTable& FuncEmitter::lineTable() const {
+  auto const p = m_lineTable.ptr();
+  if (!p) {
+    static LineTable empty;
+    return empty;
+  }
+  return *p;
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 // Bytecode.
 
 inline Offset FuncEmitter::offsetOf(const unsigned char* pc) const {
-  return pc - ue().bc();
+  return pc - bc();
 }
 
 ///////////////////////////////////////////////////////////////////////////////

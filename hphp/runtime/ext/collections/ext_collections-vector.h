@@ -1,5 +1,4 @@
-#ifndef incl_HPHP_EXT_COLLECTIONS_VECTOR_H
-#define incl_HPHP_EXT_COLLECTIONS_VECTOR_H
+#pragma once
 
 #include "hphp/runtime/ext/collections/ext_collections.h"
 #include "hphp/runtime/base/array-iterator.h"
@@ -33,63 +32,32 @@ protected:
   explicit BaseVector(Class* cls, HeaderKind kind)
     : ObjectData(cls, NoInit{}, ObjectData::NoAttrs, kind)
     , m_unusedAndSize(0)
-    , m_arr(ArrayData::CreateVec())
-  {}
+  {
+    setArrayData(ArrayData::CreateVec());
+  }
   explicit BaseVector(Class* cls, HeaderKind kind, ArrayData* arr)
     : ObjectData(cls, NoInit{}, ObjectData::NoAttrs, kind)
     , m_unusedAndSize(arr->m_size)
-    , m_arr(arr)
   {
-    assertx(arr->isVecKind());
+    setArrayData(arr);
   }
   explicit BaseVector(Class* cls, HeaderKind kind, uint32_t cap)
     : ObjectData(cls, NoInit{}, ObjectData::NoAttrs, kind)
     , m_unusedAndSize(0)
-    , m_arr(PackedArray::MakeReserveVec(cap))
-  {}
+  {
+    setArrayData(PackedArray::MakeReserveVec(cap));
+  }
   ~BaseVector();
 
 public:
-  Variant firstValue() const {
-    if (!m_size) return init_null_variant;
-    const auto tv = *dataAt(0);
-    return Variant(tvAsCVarRef(&tv));
+  ArrayData* arrayData() { return m_arr; }
+  const ArrayData* arrayData() const { return m_arr; }
+  void setArrayData(ArrayData* arr) {
+    assertx(arr->isVanillaVec());
+    assertx(!arr->isLegacyArray());
+    m_arr = arr;
   }
 
-  Variant lastValue() const {
-    if (!m_size) return init_null_variant;
-    const auto tv = *dataAt(m_size-1);
-    return Variant(tvAsCVarRef(&tv));
-  }
-
-  template<class TVector>
-  typename std::enable_if<
-    std::is_base_of<BaseVector, TVector>::value, Object>::type
-  php_take(const Variant& n);
-
-  template<class TVector>
-  typename std::enable_if<
-    std::is_base_of<BaseVector, TVector>::value, Object>::type
-  php_skip(const Variant& n);
-
-  template<class TVector>
-  typename std::enable_if<
-    std::is_base_of<BaseVector, TVector>::value, Object>::type
-  php_slice(const Variant& start, const Variant& len);
-
-  template<class TVector>
-  typename std::enable_if<
-    std::is_base_of<BaseVector, TVector>::value, Object>::type
-  php_concat(const Variant& iterable);
-
-  ArrayData* arrayData() {
-    assertx(m_arr->isVecKind());
-    return m_arr;
-  }
-  const ArrayData* arrayData() const {
-    assertx(m_arr->isVecKind());
-    return m_arr;
-  }
   void setSize(uint32_t sz) {
     assertx(canMutateBuffer());
     assertx(sz <= PackedArray::capacity(arrayData()));
@@ -111,7 +79,7 @@ public:
   tv_lval appendForUnserialize(int64_t k) {
     assertx(k == m_size);
     incSize();
-    return dataAt(k);
+    return lvalAt(k);
   }
 
   template <IntishCast intishCast = IntishCast::None>
@@ -147,7 +115,7 @@ public:
       collections::throwOOB(key);
       return nullptr;
     }
-    return dataAt(key);
+    return lvalAt(key);
   }
   tv_lval at(const TypedValue* key) {
     if (LIKELY(key->m_type == KindOfInt64)) {
@@ -162,7 +130,7 @@ public:
     if ((uint64_t)key >= (uint64_t)m_size) {
       return nullptr;
     }
-    return dataAt(key);
+    return lvalAt(key);
   }
   tv_lval get(const TypedValue* key) {
     if (LIKELY(key->m_type == KindOfInt64)) {
@@ -180,7 +148,6 @@ public:
     addAllImpl(it);
   }
 
-  int64_t linearSearch(const Variant& search_value);
   void zip(BaseVector* bvec, const Variant& iterable);
   void addFront(TypedValue v);
   Variant popFront();
@@ -197,20 +164,8 @@ public:
   void reserve(uint32_t sz);
 
   Array toPHPArrayImpl() {
-    if (!m_size) return empty_array();
-    auto ad = arrayData()->toPHPArray(true);
-    return ad != arrayData() ? Array::attach(ad) : Array{ad};
-  }
-
-  Array toVArray() {
-    if (!m_size) return empty_varray();
-    auto ad = arrayData()->toVArray(true);
-    return ad != arrayData() ? Array::attach(ad) : Array{ad};
-  }
-
-  Array toDArray() {
-    if (!m_size) return empty_darray();
-    auto ad = arrayData()->toDArray(true);
+    if (!m_size) return empty_dict_array();
+    auto ad = arrayData()->toDict(true);
     return ad != arrayData() ? Array::attach(ad) : Array{ad};
   }
 
@@ -255,13 +210,8 @@ public:
     if (UNLIKELY((uint64_t)key >= (uint64_t)m_size)) {
       collections::throwOOB(key);
     }
-    tvMove(val, dataAt(key));
+    tvMove(val, lvalAt(key));
   }
-
-  template<class TVector>
-  static typename
-    std::enable_if<std::is_base_of<BaseVector, TVector>::value, Object>::type
-  fromKeysOf(const TypedValue& container);
 
   /**
    * canMutateBuffer() indicates whether it is currently safe to directly
@@ -314,8 +264,12 @@ protected:
     std::is_base_of<BaseVector, TVector>::value, TVector*>::type
   static Clone(ObjectData* obj);
 
-  tv_lval dataAt(int64_t index) const {
-    return PackedArray::LvalUncheckedInt(m_arr, index);
+  // Get a (mutable or const) ref to the value. `index` must be a valid index.
+  tv_lval lvalAt(int64_t index) {
+    return PackedArray::LvalUncheckedInt(arrayData(), index);
+  }
+  tv_rval rvalAt(int64_t index) const {
+    return const_cast<BaseVector*>(this)->lvalAt(index);
   }
 
   // Returns the value at k, with no refcount change. Requires contains(k).
@@ -330,13 +284,14 @@ protected:
     auto oldAd = arrayData();
     if (raw) {
       assertx(canMutateBuffer());
-      m_arr = PackedArray::AppendInPlace(oldAd, tv);
+      setArrayData(PackedArray::AppendInPlace(oldAd, tv));
+      if (arrayData() != oldAd) {
+        decRefArr(oldAd);
+      }
     } else {
       dropImmCopy();
-      m_arr = PackedArray::Append(oldAd, tv);
-    }
-    if (m_arr != oldAd) {
-      decRefArr(oldAd);
+      setArrayData(PackedArray::AppendMove(oldAd, tv));
+      tvIncRefGen(tv);
     }
     m_size = arrayData()->m_size;
   }
@@ -353,25 +308,6 @@ protected:
   void mutateImpl();
 
   Object getIterator();
-  Variant php_at(const Variant& key) {
-    const auto tv = *at(key.asTypedValue())  ;
-    return Variant(tvAsCVarRef(&tv));
-  }
-  Variant php_get(const Variant& key) {
-    if (const auto lval = get(key.asTypedValue())) {
-      const auto tv = *lval;
-      return Variant(tvAsCVarRef(&tv));
-    }
-    return init_null_variant;
-  }
-
-  template<class TVector> typename
-    std::enable_if<std::is_base_of<BaseVector, TVector>::value, Object>::type
-  php_keys();
-
-  template<class TVector> typename
-    std::enable_if<std::is_base_of<BaseVector, TVector>::value, Object>::type
-  php_zip(const Variant& it);
 
   /////////////////////////////////////////////////////////////////////////////
 
@@ -384,10 +320,8 @@ protected:
     int64_t m_unusedAndSize;
   };
 
-
-  // The ArrayData's element area can be computed from m_arr via the
-  // packedData() helper function. When capacity is non-zero, m_arr points
-  // to a Vec.
+  // The vec backing this collection. See setArrayData() for a list of the
+  // invariants that this vec must satisfy.
   ArrayData* m_arr;
 
   // m_immCopy is a smart pointer to an ImmVector that is an up-to-date
@@ -440,7 +374,6 @@ struct c_Vector : BaseVector {
 
   static c_Vector* Clone(ObjectData* obj);
 
-  void addAllKeysOf(const Variant& val);
   void clear();
   Variant pop();
   void resize(uint32_t sz, const TypedValue* val);
@@ -460,16 +393,16 @@ struct c_Vector : BaseVector {
   struct SortTmp {
     SortTmp(c_Vector* v, SortFunction sf) : m_v(v) {
       if (hasUserDefinedCmp(sf)) {
-        m_ad = PackedArray::Copy(m_v->m_arr);
+        m_ad = PackedArray::Copy(m_v->arrayData());
       } else {
         m_v->mutate();
-        m_ad = m_v->m_arr;
+        m_ad = m_v->arrayData();
       }
     }
     ~SortTmp() {
-      if (m_v->m_arr != m_ad) {
-        Array tmp = Array::attach(m_v->m_arr);
-        m_v->m_arr = m_ad;
+      if (m_v->arrayData() != m_ad) {
+        Array tmp = Array::attach(m_v->arrayData());
+        m_v->setArrayData(m_ad);
       }
     }
     ArrayData* operator->() { return m_ad; }
@@ -496,18 +429,6 @@ struct c_Vector : BaseVector {
     return intSz;
   }
 
-  Object php_add(const Variant& value) {
-    add(value);
-    return Object{this};
-  }
-  Object php_addAll(const Variant& it) {
-    addAll(it);
-    return Object{this};
-  }
-  Object php_addAllKeysOf(const Variant& it) {
-    addAllKeysOf(it);
-    return Object{this};
-  }
   Object php_clear() {
     clear();
     return Object{this};
@@ -524,19 +445,6 @@ struct c_Vector : BaseVector {
   }
   void php_resize(const Variant& sz, const Variant& value) {
     return resize(checkRequestedSize(sz), value.asTypedValue());
-  }
-  Object php_set(const Variant& key, const Variant& value) {
-    set(key, value);
-    return Object{this};
-  }
-  Object php_setAll(const Variant& it) {
-    if (it.isNull()) return Object{this};
-    size_t sz;
-    ArrayIter iter = getArrayIterHelper(it, sz);
-    for (; iter; ++iter) {
-      set(iter.first(), iter.second());
-    }
-    return Object{this};
   }
   void php_splice(const Variant& offset,
                   const Variant& len = uninit_variant,
@@ -585,7 +493,7 @@ struct VectorIterator {
   ~VectorIterator() {}
 
   static Object newInstance() {
-    static Class* cls = Unit::lookupClass(s_VectorIterator.get());
+    static Class* cls = Class::lookup(s_VectorIterator.get());
     assertx(cls);
     return Object{cls};
   }
@@ -600,7 +508,7 @@ struct VectorIterator {
     if (m_pos >= vec->m_size) {
       throw_iterator_not_valid();
     }
-    const auto tv = *vec->dataAt(m_pos);
+    const auto tv = *vec->rvalAt(m_pos);
     return Variant(tvAsCVarRef(&tv));
   }
 
@@ -627,4 +535,3 @@ struct VectorIterator {
 
 /////////////////////////////////////////////////////////////////////////////
 }}
-#endif

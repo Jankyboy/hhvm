@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_VASM_EMIT_H_
-#define incl_HPHP_JIT_VASM_EMIT_H_
+#pragma once
 
 #include "hphp/runtime/vm/jit/code-cache.h"
 #include "hphp/runtime/vm/jit/types.h"
@@ -38,7 +37,7 @@ struct Vcost {
   // The "cost" of inlining the callee is based on an estimate of the resulting
   // increase in code size
   int cost;
-  // If the callee region contains any bind* or fallback instructions track that
+  // If the callee region contains bindjmp or fallback instructions track that
   // separately as executing them will be disproportionately expensive
   bool incomplete;
 };
@@ -49,7 +48,6 @@ struct Vcost {
  */
 void optimizeX64(Vunit&, const Abi&, bool regalloc);
 void optimizeARM(Vunit&, const Abi&, bool regalloc);
-void optimizePPC64(Vunit&, const Abi&, bool regalloc);
 
 /*
  * Emit code for the given unit using the given code areas. The unit must have
@@ -57,13 +55,12 @@ void optimizePPC64(Vunit&, const Abi&, bool regalloc);
  */
 void emitX64(Vunit&, Vtext&, CGMeta&, AsmInfo*);
 void emitARM(Vunit&, Vtext&, CGMeta&, AsmInfo*);
-void emitPPC64(Vunit&, Vtext&, CGMeta&, AsmInfo*);
 
 /*
  * Emit code for the given Vunit, which must already be register-allocated, to
  * the given CodeBlocks.
  */
-void emitVunit(Vunit& vunit, const IRUnit& unit,
+void emitVunit(Vunit& vunit, const IRUnit* unit,
                CodeCache::View code, CGMeta& fixups,
                Annotations* annotations = nullptr);
 
@@ -74,5 +71,3 @@ Vcost computeVunitCost(const Vunit& unit);
 
 ///////////////////////////////////////////////////////////////////////////////
 }}
-
-#endif

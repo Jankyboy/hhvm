@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VM_BYTECODE_H_
-#define incl_HPHP_VM_BYTECODE_H_
+#pragma once
 
 #include "hphp/runtime/base/rds.h"
 #include "hphp/runtime/base/rds-util.h"
@@ -374,11 +373,8 @@ public:
     *m_top = make_tv<KindOfLazyClass>(l);
   }
 
-  // These should only be called directly when the caller has
-  // already adjusted the refcount appropriately
   ALWAYS_INLINE
-  void pushArrayNoRc(ArrayData* a) {
-    assertx(a->isPHPArrayType());
+  void pushArrayLikeNoRc(ArrayData* a) {
     assertx(m_top != m_elms);
     m_top--;
     *m_top = make_array_like_tv(a);
@@ -409,9 +405,9 @@ public:
   }
 
   ALWAYS_INLINE
-  void pushArray(ArrayData* a) {
+  void pushArrayLike(ArrayData* a) {
     assertx(a);
-    pushArrayNoRc(a);
+    pushArrayLikeNoRc(a);
     a->incRefCount();
   }
 
@@ -437,9 +433,8 @@ public:
   }
 
   ALWAYS_INLINE
-  void pushStaticArray(const ArrayData* a) {
+  void pushStaticArrayLike(const ArrayData* a) {
     assertx(a->isStatic()); // No need to call a->incRefCount().
-    assertx(a->isPHPArrayType());
     assertx(m_top != m_elms);
     m_top--;
     *m_top = make_persistent_array_like_tv(const_cast<ArrayData*>(a));
@@ -681,8 +676,7 @@ Array getDefinedVariables(const ActRec*);
  * level frame, in which case vmfp()/vmpc() are set to nullptr, or by throwing
  * an exception, which callers usually process via exception_handler().
  */
-void enterVMAtFunc(ActRec* enterFnAr, Array&& generics, bool hasInOut,
-                   bool dynamicCall, bool allowDynCallNoPointer);
+void enterVMAtFunc(ActRec* enterFnAr, uint32_t numArgsInclUnpack);
 void enterVMAtCurPC();
 uint32_t prepareUnpackArgs(const Func* func, uint32_t numArgs,
                            bool checkInOutAnnot);
@@ -691,4 +685,3 @@ uint32_t prepareUnpackArgs(const Func* func, uint32_t numArgs,
 
 }
 
-#endif

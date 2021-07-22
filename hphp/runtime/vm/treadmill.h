@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_TREADMILL_H_
-#define incl_HPHP_TREADMILL_H_
+#pragma once
 
 #include <stdint.h>
 #include <memory>
@@ -30,7 +29,6 @@ namespace HPHP { namespace Treadmill {
 enum class SessionKind {
   None,
   DebuggerClient,
-  APCPrime,
   PreloadRepo,
   Watchman,
   Vsdebug,
@@ -41,13 +39,15 @@ enum class SessionKind {
   RpcRequest,
   TranslateWorker,
   Retranslate,
+  RetranslateAll,
   ProfData,
   UnitTests,
   CompileRepo,
   HHBBC,
   CompilerEmit,
   CompilerAnalysis,
-  CLISession
+  CLISession,
+  UnitReaper
 };
 
 /*
@@ -66,6 +66,12 @@ int64_t requestIdx();
  */
 void startRequest(SessionKind session_kind);
 void finishRequest();
+
+/*
+ * Returns the unique GenCount identifying the oldest request in
+ * flight (or zero if there is none).
+ */
+int64_t getOldestRequestGenCount();
 
 /*
  * Returns the oldest start time in seconds of all requests in flight.
@@ -122,5 +128,3 @@ struct Session final {
 }}
 
 #include "hphp/runtime/vm/treadmill-inl.h"
-
-#endif

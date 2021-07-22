@@ -26,7 +26,9 @@
 
 #include "hphp/util/alloc.h"
 #include "hphp/util/asm-x64.h"
+#include "hphp/util/bump-mapper.h"
 #include "hphp/util/hugetlb.h"
+#include "hphp/util/managed-arena.h"
 #include "hphp/util/numa.h"
 #include "hphp/util/trace.h"
 
@@ -34,9 +36,7 @@ namespace HPHP { namespace jit {
 
 TRACE_SET_MOD(mcg);
 
-// This value should be enough bytes to emit a REQ_RETRANSLATE: lea (4 or 7
-// bytes), movq (10 bytes), and jmp (5 bytes). We then add some extra slack for
-// safety.
+// FIXME: kMinTranslationBytes is probably no longer needed
 static constexpr int kMinTranslationBytes = 32;
 static constexpr size_t kRoundUp = 2ull << 20;
 
@@ -90,9 +90,9 @@ CodeCache::CodeCache()
   m_tcSize = m_totalSize - kABytecodeSize - kGDataSize;
   m_codeSize = m_totalSize - kGDataSize;
 
-  if ((kASize < (10 << 20)) ||
-      (kAColdSize < (4 << 20)) ||
-      (kAFrozenSize < (6 << 20)) ||
+  if ((kASize < (2 << 20)) ||
+      (kAColdSize < (2 << 20)) ||
+      (kAFrozenSize < (2 << 20)) ||
       (kGDataSize < (2 << 20))) {
     fprintf(stderr, "Allocation sizes ASize, AColdSize, AFrozenSize and "
                     "GlobalDataSize are too small.\n");
@@ -143,15 +143,19 @@ CodeCache::CodeCache()
 
 #if USE_JEMALLOC_EXTENT_HOOKS
   if (use_lowptr) {
-    // in LOWPTR builds, TC must fit in lower 1G address.  If it doesn't, we
+    // in LOWPTR builds, TC must fit below lowArenaMinAddr().  If it doesn't, we
     // shrink things to make it so.
-    if (currBase + (32u << 20) > kLowArenaMinAddr) {
+    auto const lowArenaStart = lowArenaMinAddr();
+    if (RuntimeOption::ServerExecutionMode()) {
+      Logger::Info("lowArenaMinAddr(): 0x%lx", lowArenaStart);
+    }
+    if (currBase + (32u << 20) > lowArenaStart) {
       fprintf(stderr, "brk is too big for LOWPTR build\n");
       exit(1);
     }
     auto const endAddr = currBase + m_totalSize;
-    if (endAddr > kLowArenaMinAddr) {
-      cutTCSizeTo(kLowArenaMinAddr - kRoundUp - currBase - thread_local_size);
+    if (endAddr > lowArenaStart) {
+      cutTCSizeTo(lowArenaStart - kRoundUp - currBase - thread_local_size);
       new (this) CodeCache;
       return;
     }
@@ -206,7 +210,7 @@ CodeCache::CodeCache()
     if (CodeCache::AutoTCShift) {
       allocationSize += kRoundUp;
     }
-    base = (uint8_t*)low_malloc(allocationSize);
+    base = (uint8_t*)lower_malloc(allocationSize);
     if (!base) {
       fprintf(stderr, "could not allocate %zd bytes for translation cache\n",
               allocationSize);
@@ -341,6 +345,22 @@ void CodeCache::freeProf() {
       }
     }
     mprotect(m_prof.base(), m_prof.size(), PROT_NONE);
+#if USE_JEMALLOC_EXTENT_HOOKS
+    // Reuse the memory region as an emergency buffer for low memory.
+    if (use_lowptr && RO::EvalRecycleAProf &&
+        is_low_mem(m_prof.base()) && low_arena) {
+      auto const base = reinterpret_cast<uintptr_t>(m_prof.base());
+      assertx((base & ~(s_pageSize - 1)) == 0);
+      assertx((m_prof.size() & ~(s_pageSize - 1)) == 0);
+      using namespace alloc;
+      auto prof_range = new RangeState(base, base + m_prof.size(), Reserved{});
+      auto mapper =
+        new BumpEmergencyMapper([]{ kill(getpid(), SIGTERM); }, *prof_range);
+      reinterpret_cast<LowArena*>(&g_lowerArena)->appendMapper(mapper);
+      reinterpret_cast<LowArena*>(&g_lowArena)->appendMapper(mapper);
+      reinterpret_cast<LowArena*>(&g_lowColdArena)->appendMapper(mapper);
+    }
+#endif
   }
 
   m_profFreed = true;
@@ -363,6 +383,13 @@ CodeCache::View CodeCache::view(TransKind kind) {
 
   tc::assertOwnsCodeLock(view);
   return view;
+}
+
+void CodeCache::View::alignForTranslation(bool alignMain) {
+  if (alignMain) main().alignFrontier(tc::Translator::kTranslationAlign);
+  cold().alignFrontier(tc::Translator::kTranslationAlign);
+  data().alignFrontier(tc::Translator::kTranslationAlign);
+  frozen().alignFrontier(tc::Translator::kTranslationAlign);
 }
 
 }}

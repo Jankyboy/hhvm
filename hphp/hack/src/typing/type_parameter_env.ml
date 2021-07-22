@@ -15,7 +15,10 @@ open Hh_prelude
 
 open Typing_defs
 open Typing_kinding_defs
+module SN = Naming_special_names
 module TySet = Typing_set
+
+type tparam_name = string
 
 type tparam_bounds = TySet.t
 
@@ -29,7 +32,7 @@ let tparam_info_size tpinfo =
   TySet.cardinal tpinfo.lower_bounds + TySet.cardinal tpinfo.upper_bounds
 
 type t = {
-  tparams: (Pos.t * tparam_info) SMap.t;
+  tparams: (Pos_or_decl.t * tparam_info) SMap.t;
       (** The position indicates where the type parameter was defined.
           It may be Pos.none if the type parameter denotes a fresh type variable
           (i.e., without a source location that defines it) *)
@@ -42,7 +45,9 @@ let mem name tpenv = SMap.mem name tpenv.tparams
 
 let get_with_pos name tpenv = SMap.find_opt name tpenv.tparams
 
-let get name tpenv = Option.map (get_with_pos name tpenv) snd
+let get name tpenv = Option.map (get_with_pos name tpenv) ~f:snd
+
+let get_tparams tpenv = tpenv.tparams
 
 let add ~def_pos name tpinfo tpenv =
   { tpenv with tparams = SMap.add name (def_pos, tpinfo) tpenv.tparams }
@@ -68,16 +73,19 @@ let fold f tpenv accu =
 
 let merge_env env tpenv1 tpenv2 ~combine =
   let (env, tparams) =
-    SMap.merge_env env tpenv1.tparams tpenv2.tparams ~combine
+    match (tpenv1.consistent, tpenv2.consistent) with
+    | (false, true) -> (env, tpenv2.tparams)
+    | (true, false) -> (env, tpenv1.tparams)
+    | _ -> SMap.merge_env env tpenv1.tparams tpenv2.tparams ~combine
   in
-  (env, { tparams; consistent = tpenv1.consistent && tpenv2.consistent })
+  (env, { tparams; consistent = tpenv1.consistent || tpenv2.consistent })
 
 let get_lower_bounds tpenv name tyargs =
   (* TODO(T70068435) For now, anything with tyargs cannot have bounds.
      Eventually, we need to instantiate the parameters with the provided args.
      We must support the case here that the number of provided tyargs does not
      match the number of expected arguments for the named type parameter. In this
-     case, chop off superfluous argumnents and fill in Tany for missing ones.  *)
+     case, chop off superfluous argumnents and fill in Tany for missing ones. *)
   match (get name tpenv, tyargs) with
   | (_, _ :: _)
   | (None, _) ->
@@ -116,12 +124,17 @@ let get_newable tpenv name =
   | None -> false
   | Some { newable; _ } -> newable
 
+let get_require_dynamic tpenv name =
+  match get name tpenv with
+  | None -> false
+  | Some { require_dynamic; _ } -> require_dynamic
+
 let get_pos tpenv name =
   match get_with_pos name tpenv with
-  | None -> Pos.none
+  | None -> Pos_or_decl.none
   | Some (pos, _) -> pos
 
-let get_names tpenv = SMap.keys tpenv.tparams
+let get_tparam_names tpenv = SMap.keys tpenv.tparams
 
 let is_consistent tpenv = tpenv.consistent
 
@@ -143,13 +156,14 @@ let add_upper_bound_ tpenv name ty =
     let (def_pos, tpinfo) =
       match get_with_pos name tpenv with
       | None ->
-        ( Pos.none,
+        ( Pos_or_decl.none,
           {
             lower_bounds = empty_bounds;
             upper_bounds = singleton_bound ty;
             reified = Aast.Erased;
             enforceable = false;
             newable = false;
+            require_dynamic = false;
             parameters = [];
           } )
       | Some (pos, tp) ->
@@ -166,13 +180,14 @@ let add_lower_bound_ tpenv name ty =
     let (def_pos, tpinfo) =
       match get_with_pos name tpenv with
       | None ->
-        ( Pos.none,
+        ( Pos_or_decl.none,
           {
             lower_bounds = singleton_bound ty;
             upper_bounds = empty_bounds;
             reified = Aast.Erased;
             enforceable = false;
             newable = false;
+            require_dynamic = false;
             parameters = [];
           } )
       | Some (pos, tp) ->
@@ -180,8 +195,7 @@ let add_lower_bound_ tpenv name ty =
     in
     add ~def_pos name tpinfo tpenv
 
-(* Add a single new upper bound [ty] to generic parameter [name] in the local
-  * type parameter environment of [env].
+(* Add a single new upper bound [ty] to generic parameter [name].
   * If the optional [intersect] operation is supplied, then use this to avoid
   * adding redundant bounds by merging the type with existing bounds. This makes
   * sense because a conjunction of upper bounds
@@ -218,15 +232,23 @@ let add_upper_bound ?intersect env_tpenv name ty =
     let reified = get_reified env_tpenv name in
     let enforceable = get_enforceable env_tpenv name in
     let newable = get_newable env_tpenv name in
+    let require_dynamic = get_require_dynamic env_tpenv name in
     let parameters = [] in
     add
       ~def_pos
       name
-      { lower_bounds; upper_bounds; reified; enforceable; newable; parameters }
+      {
+        lower_bounds;
+        upper_bounds;
+        reified;
+        enforceable;
+        newable;
+        require_dynamic;
+        parameters;
+      }
       tpenv
 
-(* Add a single new upper lower [ty] to generic parameter [name] in the
- * local type parameter environment [env].
+(* Add a single new upper lower [ty] to generic parameter [name].
  * If the optional [union] operation is supplied, then use this to avoid
  * adding redundant bounds by merging the type with existing bounds. This makes
  * sense because a conjunction of lower bounds
@@ -254,11 +276,20 @@ let add_lower_bound ?union env_tpenv name ty =
     let reified = get_reified env_tpenv name in
     let enforceable = get_enforceable env_tpenv name in
     let newable = get_newable env_tpenv name in
+    let require_dynamic = get_require_dynamic env_tpenv name in
     let parameters = [] in
     add
       ~def_pos
       name
-      { lower_bounds; upper_bounds; reified; enforceable; newable; parameters }
+      {
+        lower_bounds;
+        upper_bounds;
+        reified;
+        enforceable;
+        newable;
+        require_dynamic;
+        parameters;
+      }
       tpenv
 
 let remove_upper_bound tpenv name bound =
@@ -281,7 +312,7 @@ let remove_lower_bound tpenv name bound =
 
 let remove tpenv name =
   (* TODO(T70068435) Revisit this function when implementing bounds on HK generic vars,
-    in particular, look at the two Tgeneric below. *)
+     in particular, look at the two Tgeneric below. *)
   let tparam = mk (Typing_reason.Rnone, Tgeneric (name, [])) in
   let lower_bounds = get_lower_bounds tpenv name [] in
   let remove_from_upper_bounds_of ty tpenv =
@@ -310,6 +341,10 @@ let add_generic_parameters tpenv tparaml =
     let newable =
       Attributes.mem SN.UserAttributes.uaNewable tp_user_attributes
     in
+    let require_dynamic =
+      not
+        (Attributes.mem SN.UserAttributes.uaNoRequireDynamic tp_user_attributes)
+    in
     let nested_params =
       List.map tp_tparams ~f:(fun tp -> (tp.tp_name, make_param_info tp))
     in
@@ -320,6 +355,7 @@ let add_generic_parameters tpenv tparaml =
       reified = ast_tparam.tp_reified;
       enforceable;
       newable;
+      require_dynamic;
       parameters = nested_params;
     }
   in
@@ -331,7 +367,7 @@ let add_generic_parameters tpenv tparaml =
   List.fold_left tparaml ~f:add_top ~init:tpenv
 
 let get_parameter_names tpi =
-  List.map tpi.parameters (fun (name, _) -> snd name)
+  List.map tpi.parameters ~f:(fun (name, _) -> snd name)
 
 let rec pp_tparam_info fmt tpi =
   Format.fprintf fmt "@[<hv 2>{ ";
@@ -365,7 +401,7 @@ let rec pp_tparam_info fmt tpi =
     (List.fold_left
        ~f:(fun sep (name, x) ->
          if sep then Format.fprintf fmt ";@ ";
-         let () = Aast.pp_sid fmt name in
+         let () = Typing_defs.pp_pos_id fmt name in
          Format.fprintf fmt ":@ ";
          pp_tparam_info fmt x;
          true)

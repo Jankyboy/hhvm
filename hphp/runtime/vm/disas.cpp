@@ -179,8 +179,8 @@ FuncInfo find_func_info(const Func* func) {
 
   auto find_jump_targets = [&] {
     auto pc           = func->entry();
-    auto const stop   = func->at(func->past());
-    auto const bcBase = func->unit()->entry();
+    auto const stop   = func->at(func->bclen());
+    auto const bcBase = func->entry();
 
     for (; pc != stop; pc += instrLen(pc)) {
       auto const off = func->offsetOf(pc);
@@ -303,7 +303,7 @@ void print_instr(Output& out, const FuncInfo& finfo, PC pc) {
   auto print_mk = [&] (MemberKey m) {
     if (m.mcode == MEL || m.mcode == MPL) {
       std::string ret = memberCodeString(m.mcode);
-      folly::toAppend(':', loc_name(finfo, m.iva), &ret);
+      folly::toAppend(':', loc_name(finfo, m.iva), " ", subopToName(m.rop), &ret);
       return ret;
     }
     return show(m);
@@ -424,6 +424,17 @@ void print_func_directives(Output& out, const FuncInfo& finfo) {
     }
     out.fmtln(".declvars {};", folly::join(" ", locals));
   }
+  auto const coeffects = func->staticCoeffectNames();
+  if (!coeffects.empty()) {
+    std::vector<std::string> names;
+    for (auto const& name : coeffects) names.push_back(name->toCppString());
+    out.fmtln(".static_coeffects {};", folly::join(" ", names));
+  }
+  if (func->hasCoeffectRules()) {
+    for (auto const& rule : func->getCoeffectRules()) {
+      out.fmtln(rule.getDirectiveString());
+    }
+  }
 }
 
 std::string get_srcloc_str(SourceLoc loc) {
@@ -444,7 +455,7 @@ void print_func_body(Output& out, const FuncInfo& finfo) {
   auto       ehIter  = begin(finfo.ehStarts);
   auto const ehStop  = end(finfo.ehStarts);
   auto       bcIter  = func->entry();
-  auto const bcStop  = func->at(func->past());
+  auto const bcStop  = func->at(func->bclen());
 
   SourceLoc srcLoc;
 
@@ -504,7 +515,7 @@ void print_func_body(Output& out, const FuncInfo& finfo) {
     }
 
     SourceLoc newLoc;
-    finfo.unit->getSourceLoc(off, newLoc);
+    finfo.func->getSourceLoc(off, newLoc);
     if (!(newLoc == srcLoc)) {
       print_srcloc(out, newLoc);
       srcLoc = newLoc;
@@ -537,7 +548,8 @@ std::string opt_attrs(AttrContext ctx, Attr attrs,
                       bool needPrefix = true) {
   auto str = folly::trimWhitespace(folly::sformat(
                "{} {}",
-               attrs_to_string(ctx, attrs), user_attrs(userAttrs))).str();
+               attrs_to_string(ctx, attrs),
+               user_attrs(userAttrs))).str();
   if (!str.empty()) {
     str = folly::sformat("{}[{}]", needPrefix ? " " : "", str);
   }
@@ -584,7 +596,6 @@ std::string func_flag_list(const FuncInfo& finfo) {
   if (func->isAsync()) flags.push_back("isAsync");
   if (func->isClosureBody()) flags.push_back("isClosureBody");
   if (func->isPairGenerator()) flags.push_back("isPairGenerator");
-  if (func->isRxDisabled()) flags.push_back("isRxDisabled");
 
   std::string strflags = folly::join(" ", flags);
   if (!strflags.empty()) return " " + strflags + " ";
@@ -643,14 +654,40 @@ std::string member_tv_initializer(TypedValue cell) {
 }
 
 void print_class_constant(Output& out, const PreClass::Const* cns) {
-  if (cns->isAbstract()) {
-    out.fmtln(".const {}{};", cns->name(),
-              cns->isType() ? " isType" : "");
-    return;
+  switch (cns->kind()) {
+    case ConstModifiers::Kind::Context:
+      out.indent();
+      out.fmt(".ctx {}", cns->name());
+      if (cns->isAbstract()) {
+        out.fmt(" isAbstract");
+      }
+      if (!cns->isAbstractAndUninit()) {
+        out.fmt(" {}", cns->coeffects().toString());
+      }
+      out.fmt(";");
+      out.nl();
+      break;
+    case ConstModifiers::Kind::Value:
+      if (cns->isAbstract()) {
+        out.fmtln(".const {} isAbstract;", cns->name());
+      } else {
+        // Class constants use uninit to indicate initialization with 86cinit
+        out.fmtln(".const {} = {};", cns->name(), member_tv_initializer(cns->val()));
+      }
+      break;
+    case ConstModifiers::Kind::Type:
+      out.indent();
+      out.fmt(".const {} isType", cns->name());
+      if (cns->isAbstract()) {
+        out.fmt(" isAbstract");
+      }
+      if (cns->val().is_init()) {
+        out.fmt(" = {}", member_tv_initializer(cns->val()));
+      }
+      out.fmt(";");
+      out.nl();
+      break;
   }
-  out.fmtln(".const {}{} = {};", cns->name(),
-    cns->isType() ? " isType" : "",
-    member_tv_initializer(cns->val()));
 }
 
 template<class T>
@@ -707,8 +744,18 @@ void print_cls_inheritance_list(Output& out, const PreClass* cls) {
   }
 }
 
+void print_enum_includes(Output& out, const PreClass* cls) {
+  if (!cls->includedEnums().empty()) {
+    out.fmt(" enum_includes (");
+    for (auto i = uint32_t{}; i < cls->includedEnums().size(); ++i) {
+      out.fmt("{}{}", i != 0 ? " " : "", cls->includedEnums()[i].get());
+    }
+    out.fmt(")");
+  }
+}
+
 void print_cls_enum_ty(Output& out, const PreClass* cls) {
-  if (cls->attrs() & AttrEnum) {
+  if (cls->attrs() & (AttrEnum|AttrEnumClass)) {
     out.fmtln(".enum_ty <{}>;", type_constraint(cls->enumBaseTy()));
   }
 }
@@ -833,6 +880,7 @@ void print_cls(Output& out, const PreClass* cls) {
     name,
     format_line_pair(cls));
   print_cls_inheritance_list(out, cls);
+  print_enum_includes(out, cls);
   out.fmt(" {{");
   out.nl();
   indented(out, [&] { print_cls_directives(out, cls); });
@@ -874,7 +922,7 @@ void print_fatal(Output& out, const Unit* unit) {
 void print_unit_metadata(Output& out, const Unit* unit) {
   out.nl();
 
-  out.fmtln(".filepath {};", escaped(unit->filepath()));
+  out.fmtln(".filepath {};", escaped(unit->origFilepath()));
   print_fatal(out, unit);
   if (!unit->fileAttributes().empty()) {
     out.nl();
@@ -897,14 +945,15 @@ void print_unit_metadata(Output& out, const Unit* unit) {
     }
   }
   for (auto i = size_t{0}; i < unit->numArrays(); ++i) {
-    auto const ad = unit->lookupArrayId(i);
-    out.fmtln(".adata A_{} = {};", i, escaped_long(ad));
+    auto const unitId = encodeUnitId(i);
+    auto const ad = unit->lookupArrayId(unitId);
+    out.fmtln(".adata A_{} = {};", unitId, escaped_long(ad));
   }
   out.nl();
 }
 
 void print_unit(Output& out, const Unit* unit) {
-  out.fmtln("# {} starts here", unit->filepath());
+  out.fmtln("# {} starts here", unit->origFilepath());
   out.nl();
   print_unit_metadata(out, unit);
   for (auto* func : unit->funcs())        print_func(out, func);
@@ -912,7 +961,7 @@ void print_unit(Output& out, const Unit* unit) {
   for (auto& rec : unit->prerecords())    print_rec(out, rec.get());
   for (auto& alias : unit->typeAliases()) print_alias(out, alias);
   for (auto& c : unit->constants())       print_constant(out, c);
-  out.fmtln("# {} ends here", unit->filepath());
+  out.fmtln("# {} ends here", unit->origFilepath());
 }
 
 //////////////////////////////////////////////////////////////////////

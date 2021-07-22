@@ -7,8 +7,7 @@
  *
  *)
 
-open Hh_core
-module SSet = Set.Make (String)
+module List = Core_kernel.List
 
 exception Error of string * Unix.error
 
@@ -38,14 +37,14 @@ let add_watch env path =
 
 let init roots =
   let env = { fsevents = Fsevents.init (); wpaths = SSet.empty } in
-  List.iter roots (fun root ->
-      try ignore (Fsevents.add_watch env.fsevents root)
-      with Unix.Unix_error (Unix.ENOENT, _, _) ->
+  List.iter roots ~f:(fun root ->
+      try ignore (Fsevents.add_watch env.fsevents root) with
+      | Unix.Unix_error (Unix.ENOENT, _, _) ->
         prerr_endline ("Not watching root \"" ^ root ^ "\": file not found."));
   env
 
 let read env =
-  List.map (Fsevents.read_events env.fsevents) (fun (path, wpath) ->
+  List.map (Fsevents.read_events env.fsevents) ~f:(fun (path, wpath) ->
       { path; wpath })
 
 module FDMap = Map.Make (struct
@@ -59,7 +58,10 @@ type fd_select = Unix.file_descr * (unit -> unit)
 let make_callback fdmap (fd, callback) = FDMap.add fd callback fdmap
 
 let invoke_callback fdmap fd =
-  let callback = (try FDMap.find fd fdmap with _ -> assert false) in
+  let callback =
+    try FDMap.find fd fdmap with
+    | _ -> assert false
+  in
   callback ()
 
 let select env ?(read_fdl = []) ?(write_fdl = []) ~timeout callback =
@@ -72,7 +74,11 @@ let select env ?(read_fdl = []) ?(write_fdl = []) ~timeout callback =
     List.fold_left ~f:make_callback ~init:FDMap.empty write_fdl
   in
   let (read_ready, write_ready, _) =
-    Unix.select (List.map read_fdl fst) (List.map write_fdl fst) [] timeout
+    Unix.select
+      (List.map read_fdl ~f:fst)
+      (List.map write_fdl ~f:fst)
+      []
+      timeout
   in
-  List.iter write_ready (invoke_callback write_callbacks);
-  List.iter read_ready (invoke_callback read_callbacks)
+  List.iter write_ready ~f:(invoke_callback write_callbacks);
+  List.iter read_ready ~f:(invoke_callback read_callbacks)

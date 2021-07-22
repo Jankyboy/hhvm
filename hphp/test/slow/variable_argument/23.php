@@ -1,7 +1,8 @@
 <?hh
 
 class Foo {
-  public static function Add($x, $y) {
+  <<__DynamicallyCallable>>
+  public static function add($x, $y) {
 }
 }
 

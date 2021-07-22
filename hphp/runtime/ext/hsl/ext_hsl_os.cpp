@@ -392,6 +392,7 @@ struct HSLFileDescriptor {
   void close() {
     switch (m_type) {
       case Type::FD:
+        FileAwait::closeAllForFD(m_fd);
         throw_errno_if_minus_one(::close(fd()));
         s_fds_to_close->erase(m_fd);
         m_fd = -1;
@@ -420,7 +421,7 @@ struct HSLFileDescriptor {
       default:
         assertx(false);
     }
-    return make_darray(
+    return make_dict_array(
       s_type, type,
       s_fd, VarNR{make_tv<KindOfInt64>(rawfd())}
     );
@@ -531,7 +532,7 @@ Array HHVM_FUNCTION(HSL_os_mkostemps, const String& path_template, int64_t suffi
     suffixlen,
     flags
   );
-  return make_varray(
+  return make_vec_array(
     HSLFileDescriptor::newInstance(fd.fd),
     path
   );
@@ -589,7 +590,7 @@ void HHVM_FUNCTION(HSL_os_close, const Object& obj) {
 Array HHVM_FUNCTION(HSL_os_pipe) {
   int fds[2];
   throw_errno_if_minus_one(retry_on_eintr(-1, ::pipe, fds));
-  return make_varray(
+  return make_vec_array(
     HSLFileDescriptor::newInstance(fds[0]),
     HSLFileDescriptor::newInstance(fds[1])
   );
@@ -619,7 +620,7 @@ Array HHVM_FUNCTION(HSL_os_socketpair, int64_t domain, int64_t type, int64_t pro
   }
   int fds[2];
   throw_errno_if_minus_one(retry_on_eintr(-1, ::socketpair, domain, type, protocol, fds));
-  return make_varray(
+  return make_vec_array(
     HSLFileDescriptor::newInstance(fds[0]),
     HSLFileDescriptor::newInstance(fds[1])
   );
@@ -726,7 +727,7 @@ Array HHVM_FUNCTION(HSL_os_accept, const Object& hsl_server_fd) {
     &ss_len
   );
   throw_errno_if_minus_one(fd);
-  return make_varray(
+  return make_vec_array(
     HSLFileDescriptor::newInstance(fd),
     hsl_sockaddr_from_native(ss, ss_len)
   );
@@ -1081,6 +1082,17 @@ struct OSExtension final : Extension {
 
   OSExtension() : Extension("hsl_os", "0.1") {}
 
+  void cliClientInit() override {
+    CLI_REGISTER_HANDLER(HSL_os_open);
+    CLI_REGISTER_HANDLER(HSL_os_mkostemps);
+    CLI_REGISTER_HANDLER(HSL_os_mkdtemp);
+    CLI_REGISTER_HANDLER(HSL_os_socket);
+    CLI_REGISTER_HANDLER(HSL_os_connect);
+    CLI_REGISTER_HANDLER(HSL_os_bind);
+    CLI_REGISTER_HANDLER(HSL_os_listen);
+    CLI_REGISTER_HANDLER(HSL_os_fcntl_intarg);
+  }
+
   void moduleInit() override {
     // Remember to update the HHI :)
 
@@ -1315,7 +1327,7 @@ struct OSExtension final : Extension {
     HHVM_FALIAS(HH\\Lib\\_Private\\_OS\\fork_and_execve, HSL_os_fork_and_execve);
 
     loadSystemlib();
-    s_FileDescriptorClass = Unit::lookupClass(s_FQHSLFileDescriptor.get());
+    s_FileDescriptorClass = Class::lookup(s_FQHSLFileDescriptor.get());
     assertx(s_FileDescriptorClass);
   }
 

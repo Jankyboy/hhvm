@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_LOGGER_H_
-#define incl_HPHP_LOGGER_H_
+#pragma once
 
 #include <atomic>
 #include <chrono>
@@ -138,6 +137,7 @@ struct Logger {
   static void FlushAll();
   static void SetBatchSize(size_t bsize);
   static void SetFlushTimeout(std::chrono::milliseconds timeoutMs);
+  static int64_t GetRequestId();
 
   virtual FILE* fileForStackTrace() { return output(); }
 
@@ -209,4 +209,3 @@ protected:
 
 #include "hphp/util/logger-inl.h"
 
-#endif // incl_HPHP_LOGGER_H_

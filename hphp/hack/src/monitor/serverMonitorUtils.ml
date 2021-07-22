@@ -8,14 +8,11 @@
  *)
 
 type monitor_config = {
-  (* The socket file on which the monitor is listening for connections. *)
   socket_file: string;
-  (* This lock is held when a monitor is alive. *)
-  lock_file: string;
-  (* The path to the server log file *)
-  server_log_file: string;
-  (* The path to the monitor log file *)
-  monitor_log_file: string;
+      (** The socket file on which the monitor is listening for connections. *)
+  lock_file: string;  (** This lock is held when a monitor is alive. *)
+  server_log_file: string;  (** The path to the server log file *)
+  monitor_log_file: string;  (** The path to the monitor log file *)
 }
 
 (* In an Informant-directed restart, Watchman provided a new
@@ -31,20 +28,11 @@ type watchman_mergebase = {
   (* Watchman says current repo mergebase is this. *)
   mergebase_global_rev: int;
   (* ... plus these files changed to represent its current state *)
-  files_changed: SSet.t;
+  files_changed: SSet.t; [@printer SSet.pp_large]
   (* ...as of this clock *)
   watchman_clock: string;
 }
 [@@deriving show]
-
-(* Informant-induced restart may specify the saved state
- * we should load from. *)
-type target_saved_state = {
-  saved_state_everstore_handle: string;
-  (* The global revision to which the above handle corresponds to. *)
-  target_global_rev: int;
-  watchman_mergebase: watchman_mergebase option;
-}
 
 let watchman_mergebase_to_string
     { mergebase_global_rev; files_changed; watchman_clock } =
@@ -57,10 +45,9 @@ let watchman_mergebase_to_string
 module type Server_config = sig
   type server_start_options
 
-  (* Start the server. Optionally takes in the exit code of the previously
-   * running server that exited. *)
+  (** Start the server. Optionally takes in the exit code of the previously
+      running server that exited. *)
   val start_server :
-    ?target_saved_state:target_saved_state ->
     informant_managed:bool ->
     prior_exit_status:int option ->
     server_start_options ->
@@ -73,8 +60,7 @@ module type Server_config = sig
 
   val wait_pid : ServerProcess.process_data -> int * Unix.process_status
 
-  (* Callback to run when server exits *)
-  val on_server_exit : monitor_config -> unit
+  val is_saved_state_precomputed : server_start_options -> bool
 end
 
 type build_mismatch_info = {
@@ -93,20 +79,27 @@ let current_build_info =
     existing_launch_time = Unix.gettimeofday ();
   }
 
+type connect_failure_reason =
+  | Connect_timeout
+  | Connect_exception of Exception.t
+
+type connect_failure_phase =
+  | Connect_open_socket
+  | Connect_send_version
+  | Connect_send_newline
+  | Connect_receive_connection_ok
+  | Connect_send_shutdown
+[@@deriving show]
+
+type connect_to_monitor_failure = {
+  server_exists: bool;
+      (** This reflects the state of the lock file shortly after the failure happened. *)
+  failure_phase: connect_failure_phase;
+  failure_reason: connect_failure_reason;
+}
+
 type connection_error =
-  (*
-   * This should be rare. The monitor rapidly accepts connections and does
-   * the version ID check very quickly. Only under very heavy load will that
-   * sequence time out. *)
-  | Monitor_establish_connection_timeout
-  | Server_missing_exn of Exception.t
-  | Server_missing_timeout of Timeout.timings
-  (* There is a brief period of time after the Monitor has grabbed its
-   * liveness lock and before it starts listening in on the socket
-   * (which can only happen after the socket file is created). During that
-   * period, either the socket file doesn't exist yet, or socket connections
-   * are refused. *)
-  | Monitor_socket_not_ready of Exception.t
+  | Connect_to_monitor_failure of connect_to_monitor_failure
   | Server_died
   (* Server dormant and can't join the (now full) queue of connections
    * waiting for the next server. *)
@@ -125,17 +118,51 @@ type connection_error =
    *   correctly.
    *)
   | Build_id_mismatched of build_mismatch_info option
-  | Monitor_connection_failure of Exception.t
-[@@deriving show]
+
+let connection_error_to_telemetry (e : connection_error) : Telemetry.t =
+  let telemetry = Telemetry.create () in
+  match e with
+  | Server_died ->
+    telemetry |> Telemetry.string_ ~key:"kind" ~value:"Server_died"
+  | Server_dormant ->
+    telemetry |> Telemetry.string_ ~key:"kind" ~value:"Server_dormant"
+  | Server_dormant_out_of_retries ->
+    telemetry
+    |> Telemetry.string_ ~key:"kind" ~value:"Server_dormant_out_of_retries"
+  | Build_id_mismatched _ ->
+    telemetry |> Telemetry.string_ ~key:"kind" ~value:"Build_id_mismatched"
+  | Connect_to_monitor_failure { server_exists; failure_phase; failure_reason }
+    ->
+    let (reason, exn, stack) =
+      match failure_reason with
+      | Connect_timeout -> ("timeout", None, None)
+      | Connect_exception e ->
+        ( "exception",
+          Some (Exception.get_ctor_string e),
+          Some (Exception.get_backtrace_string e |> Exception.clean_stack) )
+    in
+    telemetry
+    |> Telemetry.string_ ~key:"kind" ~value:"Connection_to_monitor_Failure"
+    |> Telemetry.bool_ ~key:"server_exists" ~value:server_exists
+    |> Telemetry.string_
+         ~key:"phase"
+         ~value:(show_connect_failure_phase failure_phase)
+    |> Telemetry.string_ ~key:"reason" ~value:reason
+    |> Telemetry.string_opt ~key:"exn" ~value:exn
+    |> Telemetry.string_opt ~key:"exn_stack" ~value:stack
 
 type connection_state =
   | Connection_ok
-  (* Build_is_mismatch is never used, but it can't be removed, because *)
-  (* the sequence of constructors here is part of the binary protocol  *)
-  (* we want to support between mismatched versions of client_server.  *)
   | Build_id_mismatch
-  (* Build_id_mismatch_ex *is* used. *)
+      (** Build_is_mismatch is never used, but it can't be removed, because
+          the sequence of constructors here is part of the binary protocol
+          we want to support between mismatched versions of client_server. *)
   | Build_id_mismatch_ex of build_mismatch_info
+      (** Build_id_mismatch_ex *is* used. Ex stands for 'extended' *)
+  | Build_id_mismatch_v3 of build_mismatch_info * string
+      (** Build_id_mismatch_v3 isn't used yet, but might be *)
+  | Connection_ok_v2 of string
+      (** Connection_ok_v2 isn't used yet, but might be *)
 
 (* Result of a shutdown monitor RPC. *)
 type shutdown_result =

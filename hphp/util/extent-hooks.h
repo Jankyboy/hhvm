@@ -14,8 +14,7 @@
   +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_UTIL_EXTENT_HOOK_H_
-#define incl_HPHP_UTIL_EXTENT_HOOK_H_
+#pragma once
 
 #include "hphp/util/alloc-defs.h"
 #include "hphp/util/bump-mapper.h"
@@ -114,7 +113,7 @@ struct MultiRangeExtentAllocator {
 
  private:
   static constexpr std::size_t kMaxMapperCount = 7u;
-  std::array<RangeMapper*, kMaxMapperCount> m_mappers;
+  std::array<std::atomic<RangeMapper*>, kMaxMapperCount> m_mappers{};
   std::atomic_size_t m_allocatedSize;
 };
 
@@ -167,4 +166,3 @@ struct RangeFallbackExtentAllocator : RangeState {
 }}
 
 #endif // USE_JEMALLOC_EXTENT_HOOKS
-#endif // incl_HPHP_UTIL_EXTENT_HOOK_H_

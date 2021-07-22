@@ -13,12 +13,12 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_REPO_GLOBAL_DATA_H_
-#define incl_HPHP_REPO_GLOBAL_DATA_H_
+#pragma once
 
-#include "hphp/runtime/vm/repo.h"
-#include "hphp/runtime/base/repo-auth-type-array.h"
-#include "hphp/runtime/base/repo-autoload-map.h"
+#include "hphp/runtime/base/config.h"
+
+#include <cstdint>
+#include <vector>
 
 namespace HPHP {
 
@@ -29,9 +29,7 @@ namespace HPHP {
  *
  * Only used in RepoAuthoritative mode.  See loadGlobalData().
  */
-struct Repo::GlobalData {
-  GlobalData() {}
-
+struct RepoGlobalData {
   /*
    * Copy of InitialNamedEntityTableSize for hhbbc to use.
    */
@@ -55,7 +53,7 @@ struct Repo::GlobalData {
    * This changes program behavior because this type hints that are checked
    * at runtime will enable additional HHBBC optimizations.
    */
-   bool HardGenericsUB = false;
+  bool HardGenericsUB = false;
 
   /*
    * Indicates whether a repo was compiled with HardPrivatePropInference.
@@ -80,23 +78,7 @@ struct Repo::GlobalData {
    */
   bool PHP7_Substr = false;
 
-  /*
-   * Should all functions be interceptable?
-   */
-  bool EnableRenameFunction = false;
-
-  /*
-   * Are Hack array compatibility notices enabled? If so, certain optimizations
-   * may be disabled.
-   */
-  bool HackArrCompatNotices = false;
-  bool HackArrCompatIsVecDictNotices = false;
   bool HackArrCompatSerializeNotices = false;
-
-  /*
-   * Are d/varrays dicts and vecs?
-   */
-  bool HackArrDVArrs = false;
 
   /*
    * Should the extension containing HHVM intrinsics be enabled?
@@ -111,7 +93,7 @@ struct Repo::GlobalData {
   int32_t ForbidDynamicCallsToClsMeth = 0;
   int32_t ForbidDynamicCallsToInstMeth = 0;
   int32_t ForbidDynamicConstructs = 0;
-  bool ForbidDynamicCallsWithAttr = false;
+  bool ForbidDynamicCallsWithAttr = true;
 
   /*
   * If set to true calls to class methods of form $cls::meth() will not be
@@ -141,7 +123,7 @@ struct Repo::GlobalData {
   uint64_t Signature = 0;
 
   int32_t EmitClassPointers = 0;
-  bool EmitClsMethPointers = false;
+  bool EmitClsMethPointers = true;
 
   /*
    * If clsmeth type may raise,
@@ -149,22 +131,44 @@ struct Repo::GlobalData {
    */
   bool IsVecNotices = false;
 
-  /* Skip ClsMeth type refinement when this is true. */
-  bool IsCompatibleClsMethType = false;
+  /* Whether implicit class conversions can raise a warning */
+  bool RaiseClassConversionWarning = false;
 
-  /* Avoid optimizations that interfere with array provenance */
-  bool ArrayProvenance = false;
+  /* Whether classname type-hint accepts (lazy) classes */
+  bool ClassPassesClassname = false;
+
+  /* Whether passing (lazy) classes to classname can raise a notice */
+  bool ClassnameNotices = false;
+
+  /* Whether checking is string on (lazy) classes can raise a notice */
+  bool ClassIsStringNotices = false;
+
+  /* Whether implicit coercions for concat/interp trigger logs/exceptions */
+  int32_t NoticeOnCoerceForStrConcat = 0;
+
+  /* Whether implicit coercions for bit ops trigger logs/exceptions */
+  int32_t NoticeOnCoerceForBitOp = 0;
+
+  /* Constants from traits behave like constants from interfaces (error on conflict) */
+  bool TraitConstantInterfaceBehavior = false;
 
   /*
    * The Hack.Lang.StrictArrayFillKeys option the repo was compiled with.
    */
   HackStrictOption StrictArrayFillKeys = HackStrictOption::OFF;
 
-  std::vector<const StringData*> APCProfile;
+  std::vector<std::pair<std::string,std::string>> ConstantFunctions;
 
-  std::vector<std::pair<std::string,TypedValue>> ConstantFunctions;
+  bool BuildMayNoticeOnMethCallerHelperIsObject = false;
 
-  std::unique_ptr<RepoAutoloadMap> AutoloadMap = nullptr;
+  // Load the appropriate options into their matching
+  // RuntimeOptions. If `loadConstantFuncs' is true, also deserialize
+  // ConstantFunctions and store it in RuntimeOptions (this can only
+  // be done if the memory manager is initialized).
+  void load(bool loadConstantFuncs = true) const;
+
+  // NB: Only use C++ types in this struct because we want to be able
+  // to serde it before memory manager and family are set up.
 
   template<class SerDe> void serde(SerDe& sd) {
     sd(InitialNamedEntityTableSize)
@@ -175,11 +179,7 @@ struct Repo::GlobalData {
       (PHP7_NoHexNumerics)
       (PHP7_Substr)
       (PHP7_Builtins)
-      (EnableRenameFunction)
-      (HackArrCompatNotices)
-      (HackArrCompatIsVecDictNotices)
       (HackArrCompatSerializeNotices)
-      (HackArrDVArrs)
       (EnableIntrinsicsExtension)
       (ForbidDynamicCallsToFunc)
       (ForbidDynamicCallsToClsMeth)
@@ -194,18 +194,22 @@ struct Repo::GlobalData {
       (EmitClassPointers)
       (EmitClsMethPointers)
       (IsVecNotices)
-      (IsCompatibleClsMethType)
-      (ArrayProvenance)
+      (RaiseClassConversionWarning)
+      (ClassPassesClassname)
+      (ClassnameNotices)
+      (ClassIsStringNotices)
       (StrictArrayFillKeys)
+      (NoticeOnCoerceForStrConcat)
+      (NoticeOnCoerceForBitOp)
+      (TraitConstantInterfaceBehavior)
+      (ConstantFunctions)
+      (BuildMayNoticeOnMethCallerHelperIsObject)
       ;
   }
 };
 
-std::string show(const Repo::GlobalData& gd);
+std::string show(const RepoGlobalData& gd);
 
 //////////////////////////////////////////////////////////////////////
 
 }
-
-
-#endif

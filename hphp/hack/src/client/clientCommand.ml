@@ -12,8 +12,7 @@ type command =
   | CStart of ClientStart.env
   | CStop of ClientStop.env
   | CRestart of ClientStart.env
-  | CLsp of ClientLsp.env
-  | CDebug of ClientDebug.env
+  | CLsp of ClientLsp.args
   | CDownloadSavedState of ClientDownloadSavedState.env
   | CRage of ClientRage.env
 
@@ -24,7 +23,6 @@ type command_keyword =
   | CKRestart
   | CKNone
   | CKLsp
-  | CKDebug
   | CKDownloadSavedState
   | CKRage
 

@@ -1,8 +1,31 @@
-Linearization for class \A:
-[\A(PAT)]
-Linearization for class \B:
-[\B, \A]
-Linearization for class \C:
-[\C(PAT), \B, \A]
-Linearization for class \D:
-[\D, \C, \B, \A]
+Member Linearization \A:
+  A (PAT)
+Ancestor Linearization \A:
+  A (PAT)
+
+Member Linearization \B:
+  B
+  A
+Ancestor Linearization \B:
+  B
+  A
+
+Member Linearization \C:
+  C (PAT)
+  B
+  A
+Ancestor Linearization \C:
+  C (PAT)
+  B
+  A
+
+Member Linearization \D:
+  D
+  C
+  B
+  A
+Ancestor Linearization \D:
+  D
+  C
+  B
+  A

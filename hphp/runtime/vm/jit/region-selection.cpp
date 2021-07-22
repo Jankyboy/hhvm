@@ -169,10 +169,9 @@ SrcKey RegionDesc::lastSrcKey() const {
 
 RegionDesc::Block* RegionDesc::addBlock(SrcKey      sk,
                                         int         length,
-                                        FPInvOffset spOffset) {
+                                        SBInvOffset spOffset) {
   m_blocks.push_back(
-    std::make_shared<Block>(kInvalidTransID, sk.func(), sk.resumeMode(),
-                            sk.offset(), length, spOffset));
+    std::make_shared<Block>(kInvalidTransID, sk, length, spOffset));
   BlockPtr block = m_blocks.back();
   m_data[block->id()] = BlockData(block);
   return block.get();
@@ -270,15 +269,15 @@ const RegionDesc::BlockIdSet& RegionDesc::merged(BlockId id) const {
   return data(id).merged;
 }
 
-folly::Optional<RegionDesc::BlockId> RegionDesc::prevRetrans(BlockId id) const {
+Optional<RegionDesc::BlockId> RegionDesc::prevRetrans(BlockId id) const {
   auto const prev = data(id).prevRetransId;
-  if (prev == kInvalidTransID) return folly::none;
+  if (prev == kInvalidTransID) return std::nullopt;
   return prev;
 }
 
-folly::Optional<RegionDesc::BlockId> RegionDesc::nextRetrans(BlockId id) const {
+Optional<RegionDesc::BlockId> RegionDesc::nextRetrans(BlockId id) const {
   auto const next = data(id).nextRetransId;
-  if (next == kInvalidTransID) return folly::none;
+  if (next == kInvalidTransID) return std::nullopt;
   return next;
 }
 
@@ -322,7 +321,15 @@ int64_t RegionDesc::blockProfCount(RegionDesc::BlockId bid) const {
   for (auto mid : merged(bid)) {
     total += pd->transCounter(mid);
   }
-  return total;
+  return int64_t(total * blockProfCountScale(bid));
+}
+
+double RegionDesc::blockProfCountScale(RegionDesc::BlockId bid) const {
+  return data(bid).profCountScale;
+}
+
+void RegionDesc::setBlockProfCountScale(RegionDesc::BlockId bid, double scale) {
+  data(bid).profCountScale = scale;
 }
 
 void RegionDesc::renumberBlock(BlockId oldId, BlockId newId) {
@@ -406,7 +413,12 @@ void RegionDesc::sortBlocks() {
   RegionDesc::BlockIdSet visited;
   RegionDesc::BlockIdVec reverse;
 
-  postOrderSort(entry()->id(), visited, reverse);
+  auto const entryId = entry()->id();
+  for (auto& block : m_blocks) {
+    if (block->start() == start()) {
+      postOrderSort(block->id(), visited, reverse);
+    }
+  }
   assertx(m_blocks.size() >= reverse.size());
 
   // Remove unreachable blocks from `m_data'.
@@ -419,12 +431,19 @@ void RegionDesc::sortBlocks() {
     }
   }
 
-  // Update `m_blocks' vector.
+  // Update `m_blocks' vector, making sure that entryId remains the first one.
   m_blocks.clear();
+  m_blocks.push_back(block(entryId));
   auto size = reverse.size();
   for (size_t i = 0; i < size; i++) {
-    m_blocks.push_back(block(reverse[size - i - 1]));
+    auto const id = reverse[size - i - 1];
+    if (id != entryId) m_blocks.push_back(block(id));
   }
+  always_assert_flog(
+    entryId == entry()->id(),
+    "sortBlocks() changed region entry: entryId ({}) != entry()->id() ({})",
+    entryId, entry()->id()
+  );
 }
 
 namespace {
@@ -492,6 +511,8 @@ void RegionDesc::chainRetransBlocks() {
   auto profData = jit::profData();
 
   // 1. Initially assign each region block to its own chain.
+  const auto entryBid = entry()->id();
+  RegionDesc::BlockId entryCid = -1;
   for (auto b : blocks()) {
     auto bid = b->id();
     auto cid = chains.size();
@@ -500,10 +521,21 @@ void RegionDesc::chainRetransBlocks() {
     blockIds.insert(bid);
     always_assert(hasTransID(bid));
     blockWgt[bid] = profData->transCounter(bid);
+    if (bid == entryBid) entryCid = cid;
   }
   always_assert_flog(chainsAreValid(chains, blockIds), show(chains));
 
-  // 2. For each block, if it has 2 successors with the same SrcKey,
+  // 2. Merge all blocks with the same SrcKey as the entry into the entry's
+  //    chain.
+  for (auto b : blocks()) {
+    if (b->id() == entryBid) continue;
+    if (b->start() == entry()->start()) {
+      const auto cid = block2chain[b->id()];
+      mergeChains(chains[entryCid], chains[cid], block2chain);
+    }
+  }
+
+  // 3. For each block, if it has 2 successors with the same SrcKey,
   //    then merge the successors' chains into one.
   for (auto b : blocks()) {
     auto bid = b->id();
@@ -522,7 +554,7 @@ void RegionDesc::chainRetransBlocks() {
   }
   always_assert_flog(chainsAreValid(chains, blockIds), show(chains));
 
-  // 3. Sort each chain.  In general, we want to sort each chain in
+  // 4. Sort each chain.  In general, we want to sort each chain in
   //    decreasing order of profile weights.  However, note that this
   //    transformation can turn acyclic graphs into cyclic ones (see
   //    example below).
@@ -545,6 +577,9 @@ void RegionDesc::chainRetransBlocks() {
   //        Note the cycle: B2" -R-> B2' -> B3 -> B2".
   //
   auto cmpBlocks = [&](RegionDesc::BlockId bid1, RegionDesc::BlockId bid2) {
+    const auto isEntry1 = bid1 == entryBid;
+    const auto isEntry2 = bid2 == entryBid;
+    if (isEntry1 != isEntry2) return isEntry1;
     return blockWgt[bid1] > blockWgt[bid2];
   };
 
@@ -562,7 +597,7 @@ void RegionDesc::chainRetransBlocks() {
   }
   always_assert_flog(chainsAreValid(chains, blockIds), show(chains));
 
-  // 4. Set the nextRetrans blocks according to the computed chains.
+  // 5. Set the nextRetrans blocks according to the computed chains.
   for (auto& c : chains) {
     if (c.blocks.size() == 0) continue;
     for (size_t i = 0; i < c.blocks.size() - 1; i++) {
@@ -570,7 +605,7 @@ void RegionDesc::chainRetransBlocks() {
     }
   }
 
-  // 5. For each block with multiple successors in the same chain,
+  // 6. For each block with multiple successors in the same chain,
   //    only keep the successor that first appears in the chain.
   BlockIdSet erased_ids;
   for (auto b : blocks()) {
@@ -592,7 +627,13 @@ void RegionDesc::chainRetransBlocks() {
     erased_ids.clear();
   }
 
-  // 6. Reorder the blocks in the region in topological order (if
+  ITRACE(
+    3,
+    "selectHotCFG: before sortBlocks at the end of chainRetransBlocks:\n{}\n",
+    show(*this)
+  );
+
+  // 7. Reorder the blocks in the region in topological order (if
   //    region is acyclic), since the previous steps may break it.
   sortBlocks();
 }
@@ -625,15 +666,11 @@ bool hasTransID(RegionDesc::BlockId blockId) {
 }
 
 RegionDesc::Block::Block(BlockId     id,
-                         const Func* func,
-                         ResumeMode  resumeMode,
-                         Offset      start,
+                         SrcKey      start,
                          int         length,
-                         FPInvOffset initSpOff)
-  : m_func(func)
-  , m_resumeMode(resumeMode)
-  , m_start(start)
-  , m_last(kInvalidOffset)
+                         SBInvOffset initSpOff)
+  : m_start(start)
+  , m_last(SrcKey{})
   , m_length(length)
   , m_initialSpOffset(initSpOff)
   , m_profTransID(kInvalidTransID)
@@ -654,27 +691,23 @@ RegionDesc::Block::Block(BlockId     id,
 
   assertx(length >= 0);
   if (length > 0) {
-    SrcKey sk(func, start, resumeMode);
+    SrcKey sk = start;
     for (unsigned i = 1; i < length; ++i) sk.advance();
-    m_last = sk.offset();
+    m_last = sk;
   }
   checkInstructions();
   checkMetadata();
 }
 
-bool RegionDesc::Block::contains(SrcKey sk) const {
-  return sk >= start() && sk <= last();
-}
-
 void RegionDesc::Block::addInstruction() {
   if (m_length > 0) checkInstruction(last().op());
-  assertx((m_last == kInvalidOffset) == (m_length == 0));
+  assertx((m_last.valid()) == (m_length != 0));
 
   ++m_length;
   if (m_length == 1) {
     m_last = m_start;
   } else {
-    m_last = last().advanced().offset();
+    m_last.advance();
   }
 }
 
@@ -689,7 +722,7 @@ void RegionDesc::Block::truncateAfter(SrcKey final) {
   }
   assertx(newLen != -1);
   m_length = newLen;
-  m_last = final.offset();
+  m_last = final;
 
   checkInstructions();
   checkMetadata();
@@ -729,7 +762,7 @@ void RegionDesc::Block::checkInstructions() const {
     if (i != length() - 1) checkInstruction(sk.op());
     sk.advance(func());
   }
-  assertx(sk.offset() == m_last);
+  assertx(sk == m_last);
 }
 
 void RegionDesc::Block::checkInstruction(Op op) const {
@@ -761,7 +794,7 @@ void RegionDesc::Block::checkMetadata() const {
       auto& loc = typedLoc.location;
       switch (loc.tag()) {
         case LTag::Local:
-          assertx(loc.localId() < m_func->numLocals());
+          assertx(loc.localId() < func()->numLocals());
           break;
         case LTag::Stack:
         case LTag::MBase:
@@ -778,7 +811,7 @@ void RegionDesc::Block::checkMetadata() const {
       auto& loc = guardedLoc.location;
       switch (loc.tag()) {
         case LTag::Local:
-          assertx(loc.localId() < m_func->numLocals());
+          assertx(loc.localId() < func()->numLocals());
           break;
         case LTag::Stack:
         case LTag::MBase:
@@ -846,7 +879,7 @@ RegionDescPtr selectHotRegion(TransID transId) {
   HotTransContext ctx;
   ctx.cfg = &cfg;
   ctx.profData = profData;
-  ctx.tid = transId;
+  ctx.entries = {transId};
   ctx.maxBCInstrs = RuntimeOption::EvalJitMaxRegionInstrs;
   switch (pgoRegionMode(func)) {
     case PGORegionMode::Hottrace:
@@ -908,6 +941,12 @@ bool preCondsAreSatisfied(const RegionDesc::BlockPtr& block,
   return true;
 }
 
+const StaticString
+  s_HH_AsyncGenerator("HH\\AsyncGenerator"),
+  s_next("next"),
+  s_send("send"),
+  s_rewind("rewind");
+
 bool breaksRegion(SrcKey sk) {
   switch (sk.op()) {
     case Op::SSwitch:
@@ -922,9 +961,8 @@ bool breaksRegion(SrcKey sk) {
     case Op::Throw:
     case Op::Eval:
     case Op::NativeImpl:
-      return true;
     case Op::ThrowNonExhaustiveSwitch:
-      return RuntimeOption::EvalThrowOnNonExhaustiveSwitch > 1;
+      return true;
 
     case Op::Await:
     case Op::AwaitAll:
@@ -932,6 +970,22 @@ bool breaksRegion(SrcKey sk) {
       // duplicating the translation of the resumed SrcKey after the
       // Await.
       return sk.resumeMode() == ResumeMode::Async;
+
+    case Op::FCallObjMethodD: {
+      // AsyncGenerators executing in Async mode will resume after a side exit.
+      // As a result, we should break the translation here to avoid needing a
+      // live translation for the resume point.
+      auto const cls  = sk.unit()->lookupLitstrId(getImm(sk.pc(), 1).u_SA);
+      auto const func = sk.unit()->lookupLitstrId(getImm(sk.pc(), 3).u_SA);
+      if (sk.resumeMode() == ResumeMode::Async &&
+          cls->isame(s_HH_AsyncGenerator.get()) &&
+          (func->isame(s_send.get()) || func->isame(s_next.get()) ||
+           func->isame(s_rewind.get()))) {
+        return true;
+      }
+
+      return false;
+    }
 
     default:
       return false;
@@ -1197,9 +1251,7 @@ std::string show(const RegionContext& ctx) {
 
 std::string show(const RegionDesc::Block& b) {
   std::string ret{"Block "};
-  folly::toAppend(b.id(), ' ',
-                  b.func()->fullName()->data(), '@', b.start().offset(),
-                  resumeModeShortName(b.start().resumeMode()),
+  folly::toAppend(b.id(), ' ', showShort(b.start()),
                   " length ", b.length(),
                   " initSpOff ", b.initialSpOffset().offset,
                   " profTransID ", b.profTransID(),
@@ -1215,15 +1267,11 @@ std::string show(const RegionDesc::Block& b) {
   }
 
   for (int i = 0; i < b.length(); ++i) {
-    std::string instrString;
-    folly::toAppend(instrToString(b.func()->at(skIter.offset()), b.func()),
-                    &instrString);
-
     folly::toAppend(
       "    ",
-      skIter.offset(),
+      skIter.printableOffset(),
       "  ",
-      instrString,
+      skIter.showInst(),
       "\n",
       &ret
     );

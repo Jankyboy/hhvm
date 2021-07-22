@@ -29,6 +29,11 @@ namespace {
 
 //////////////////////////////////////////////////////////////////////////////
 
+DataType mergeEquivTypes(DataType a, DataType b) {
+  assertx(equivDataTypes(a, b));
+  return a == b ? a : dt_with_rc(a);
+}
+
 KeyTypes keyTypesForKey(TypedValue k, KeyTypes b) {
   auto const a = [&] {
     if (isStringType(k.type())) {
@@ -63,7 +68,7 @@ std::pair<ValueTypes, DataType> valueTypesForValue(TypedValue v,
 
     case ValueTypes::Monotype:
       if (equivDataTypes(type, v.type())) {
-        return {ValueTypes::Monotype, type};
+        return {ValueTypes::Monotype, mergeEquivTypes(type, v.type())};
       } else if (isNullType(v.type())) {
         return {ValueTypes::MonotypeNullable, type};
       } else if (isNullType(type)) {
@@ -73,7 +78,9 @@ std::pair<ValueTypes, DataType> valueTypesForValue(TypedValue v,
       }
 
     case ValueTypes::MonotypeNullable:
-      if (isNullType(v.type()) || equivDataTypes(type, v.type())) {
+      if (equivDataTypes(type, v.type())) {
+        return {ValueTypes::MonotypeNullable, mergeEquivTypes(type, v.type())};
+      } else if (isNullType(v.type())) {
         return {ValueTypes::MonotypeNullable, type};
       } else {
         return {ValueTypes::Any, kInvalidDataType};
@@ -100,28 +107,13 @@ bool EntryTypes::checkInvariants() const {
   return true;
 }
 
-EntryTypes EntryTypes::ForArray(ArrayData* ad) {
-  auto state = EntryTypes(KeyTypes::Empty, ValueTypes::Empty,
-                          kInvalidDataType);
-
-  IterateKV(
-    ad,
-    [&](TypedValue k, TypedValue v) {
-      state = state.withKV(k, v);
-      return true;
-    }
-  );
-
+EntryTypes EntryTypes::ForArray(const ArrayData* ad) {
+  auto state = EntryTypes(KeyTypes::Empty, ValueTypes::Empty, kInvalidDataType);
+  IterateKV(ad, [&](auto k, auto v) { state = state.with(k, v); });
   return state;
 }
 
-EntryTypes EntryTypes::withV(TypedValue v) const {
-  auto const valuePair = valueTypesForValue(v, valueTypes, valueDatatype);
-
-  return EntryTypes(keyTypes, valuePair.first, valuePair.second);
-}
-
-EntryTypes EntryTypes::withKV(TypedValue k, TypedValue v) const {
+EntryTypes EntryTypes::with(TypedValue k, TypedValue v) const {
   auto const newKeyTypes = keyTypesForKey(k, keyTypes);
   auto const valuePair = valueTypesForValue(v, valueTypes, valueDatatype);
 
@@ -129,21 +121,33 @@ EntryTypes EntryTypes::withKV(TypedValue k, TypedValue v) const {
 }
 
 EntryTypes EntryTypes::pessimizeValueTypes() const {
-  return EntryTypes(keyTypes, ValueTypes::Any,
-                    kInvalidDataType);
+  return EntryTypes(keyTypes, ValueTypes::Any, kInvalidDataType);
+}
+
+bool EntryTypes::isMonotypeState() const {
+  auto const monotype_key = [&]{
+    switch (keyTypes) {
+      case KeyTypes::Empty:         return true;
+      case KeyTypes::Ints:          return true;
+      case KeyTypes::StaticStrings: return true;
+      case KeyTypes::Strings:       return true;
+      case KeyTypes::Any:           return false;
+    }
+    always_assert(false);
+  }();
+  auto const monotype_val = [&]{
+    switch (valueTypes) {
+      case ValueTypes::Empty:            return true;
+      case ValueTypes::Monotype:         return true;
+      case ValueTypes::MonotypeNullable: return false;
+      case ValueTypes::Any:              return false;
+    }
+    always_assert(false);
+  }();
+  return monotype_key && monotype_val;
 }
 
 std::string EntryTypes::toString() const {
-  auto const keySt = [&] {
-    switch (keyTypes) {
-      case KeyTypes::Empty: return "Empty";
-      case KeyTypes::Ints: return "Ints";
-      case KeyTypes::StaticStrings: return "StaticStrings";
-      case KeyTypes::Strings: return "Strings";
-      case KeyTypes::Any: return "Any";
-    }
-    not_reached();
-  }();
   auto const valueSt = [&] {
     switch (valueTypes) {
       case ValueTypes::Empty: return folly::sformat("Empty");
@@ -156,7 +160,18 @@ std::string EntryTypes::toString() const {
     not_reached();
   }();
 
-  return folly::sformat("<{}, {}>", keySt, valueSt);
+  return folly::sformat("<{}, {}>", show(keyTypes), valueSt);
+}
+
+const char* show(KeyTypes kt) {
+  switch (kt) {
+    case KeyTypes::Empty: return "Empty";
+    case KeyTypes::Ints: return "Ints";
+    case KeyTypes::StaticStrings: return "StaticStrings";
+    case KeyTypes::Strings: return "Strings";
+    case KeyTypes::Any: return "Any";
+  }
+  not_reached();
 }
 
 }}

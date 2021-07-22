@@ -30,9 +30,6 @@ echo "*** Testing array_intersect_uassoc() : usage variation ***\n";
 $array2 = darray["a" => "green", 0 => "yellow", 1 => "red"];
 $array3 = darray["a"=>"green", 0 => "brown"];
 
-//get an unset variable
-$unset_var = 10;
-unset ($unset_var);
 
 //resource variable
 $fp = fopen(__FILE__, "r");
@@ -86,11 +83,7 @@ $inputs = darray[
       'instance of classWithToString' => new classWithToString(),
       'instance of classWithoutToString' => new classWithoutToString(),
 
-      // undefined data
-      'undefined var' => @$undefined_var,
 
-      // unset data
-      'unset var' => @$unset_var,
 
       // resource data
       'resource' => $fp,
@@ -99,8 +92,8 @@ $inputs = darray[
 // loop through each element of the array for arr1
 foreach($inputs as $key =>$value) {
       echo "\n--$key--\n";
-      var_dump( array_intersect_uassoc($value, $array2, fun('key_compare_func')) );
-      var_dump( array_intersect_uassoc($value, $array2, $array3, fun('key_compare_func')) );
+      var_dump( array_intersect_uassoc($value, $array2, key_compare_func<>) );
+      var_dump( array_intersect_uassoc($value, $array2, $array3, key_compare_func<>) );
 };
 
 fclose($fp);

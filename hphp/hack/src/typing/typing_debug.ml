@@ -7,12 +7,10 @@
  *
  *)
 
-open Core_kernel
+open Hh_prelude
 open Typing_env_types
 open Typing_inference_env.Size
 module Env = Typing_env
-module Log = Typing_log
-module ITySet = Internal_type_set
 
 let local_env_size env =
   match Env.next_cont_opt env with

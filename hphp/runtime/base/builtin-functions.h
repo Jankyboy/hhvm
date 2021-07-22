@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_BUILTIN_FUNCTIONS_H_
-#define incl_HPHP_BUILTIN_FUNCTIONS_H_
+#pragma once
 
 #include "hphp/runtime/base/type-variant.h"
 #include "hphp/runtime/base/variable-unserializer.h"
@@ -91,7 +90,7 @@ inline bool is_double(const TypedValue* c) {
 
 inline bool is_string(const TypedValue* c) {
   if (tvIsString(c)) return true;
-  if (tvIsClass(c)) {
+  if (tvIsClass(c) || tvIsLazyClass(c)) {
     if (RuntimeOption::EvalClassIsStringNotices) {
       raise_notice("Class used in is_string");
     }
@@ -100,97 +99,19 @@ inline bool is_string(const TypedValue* c) {
   return false;
 }
 
-// This function behaves how most callers of raise_array_serialization_notice
-// should behave: it checks if `tv` *should* have a provenance tag and then
-// logs a serialization notice of some kind if so.
-//
-// If we trace through call sites of the bare function, we'll find a number of
-// places where we're incorrectly losing provenance logs. Clean this up soon.
-inline void maybe_raise_array_serialization_notice(
-    SerializationSite site, const TypedValue* tv) {
-  assertx(isArrayLikeType(tv->m_type));
-  auto const ad = tv->m_data.parr;
-  if (arrprov::arrayWantsTag(ad)) {
-    raise_array_serialization_notice(site, ad);
-  }
-}
-
 inline bool is_any_array(const TypedValue* c) {
   assertx(tvIsPlausible(*c));
-  if (tvIsClsMeth(c) && RO::EvalIsCompatibleClsMethType) {
-    if (RO::EvalIsVecNotices) {
-      raise_notice(Strings::CLSMETH_COMPAT_IS_ANY_ARR);
-    }
-    return true;
-  }
   return tvIsArrayLike(c);
-}
-
-inline bool is_php_array(const TypedValue* c) {
-  assertx(tvIsPlausible(*c));
-
-  if (tvIsArray(c)) {
-    maybe_raise_array_serialization_notice(SerializationSite::IsArray, c);
-    return true;
-  }
-
-  if (tvIsClsMeth(c)) {
-    if (!RO::EvalHackArrDVArrs && RO::EvalIsCompatibleClsMethType) {
-      if (RO::EvalIsVecNotices) raise_notice(Strings::CLSMETH_COMPAT_IS_ARR);
-      return true;
-    }
-    return false;
-  }
-
-  return false;
 }
 
 inline bool is_vec(const TypedValue* c) {
   assertx(tvIsPlausible(*c));
-
-  if (tvIsVec(c)) {
-    maybe_raise_array_serialization_notice(SerializationSite::IsVec, c);
-    return true;
-  }
-
-  auto const hacLogging = [&](const char* msg) {
-    if (RO::EvalHackArrCompatIsVecDictNotices) raise_hackarr_compat_notice(msg);
-  };
-  if (tvIsClsMeth(c)) {
-    if (RO::EvalHackArrDVArrs && RO::EvalIsCompatibleClsMethType) {
-      if (RO::EvalIsVecNotices) raise_notice(Strings::CLSMETH_COMPAT_IS_VEC);
-      return true;
-    }
-
-    if (!RO::EvalHackArrDVArrs) {
-      hacLogging(Strings::HACKARR_COMPAT_VARR_IS_VEC);
-    }
-    return false;
-  }
-
-  if (tvIsArrayLike(c) && c->m_data.parr->isVArray()) {
-    hacLogging(Strings::HACKARR_COMPAT_VARR_IS_VEC);
-    maybe_raise_array_serialization_notice(SerializationSite::IsVec, c);
-  }
-  return false;
+  return tvIsVec(c);
 }
 
 inline bool is_dict(const TypedValue* c) {
   assertx(tvIsPlausible(*c));
-
-  if (tvIsDict(c)) {
-    maybe_raise_array_serialization_notice(SerializationSite::IsDict, c);
-    return true;
-  }
-
-  auto const hacLogging = [&](const char* msg) {
-    if (RO::EvalHackArrCompatIsVecDictNotices) raise_hackarr_compat_notice(msg);
-  };
-  if (tvIsArrayLike(c) && c->m_data.parr->isDArray()) {
-    hacLogging(Strings::HACKARR_COMPAT_DARR_IS_DICT);
-    maybe_raise_array_serialization_notice(SerializationSite::IsDict, c);
-  }
-  return false;
+  return tvIsDict(c);
 }
 
 inline bool is_keyset(const TypedValue* c) {
@@ -198,67 +119,16 @@ inline bool is_keyset(const TypedValue* c) {
   return tvIsKeyset(c);
 }
 
-inline bool is_varray(const TypedValue* c) {
-  assertx(tvIsPlausible(*c));
-
-  // Is this line safe? It returns the correct result, but if it logs a notice,
-  // it'll be for is_vec, not is_varray. That may be fine, post-HAM, because
-  // only dynamic calls to is_varray will remain at that point.
-  if (RuntimeOption::EvalHackArrDVArrs) return is_vec(c);
-
-  if (tvIsArrayLike(c) && c->m_data.parr->isVArray()) {
-    return true;
-  }
-
-  if (tvIsClsMeth(c) && RO::EvalIsCompatibleClsMethType) {
-    if (RO::EvalIsVecNotices) raise_notice(Strings::CLSMETH_COMPAT_IS_VARR);
-    return true;
-  }
-  return false;
-}
-
-inline bool is_vec_or_varray(const TypedValue* c) {
-  assertx(tvIsPlausible(*c));
-
-  if (tvIsVec(c) || (tvIsArrayLike(c) && c->m_data.parr->isVArray())) {
-    return true;
-  }
-
-  if (tvIsClsMeth(c) && RO::EvalIsCompatibleClsMethType) {
-    if (RO::EvalIsVecNotices) {
-      raise_notice(Strings::CLSMETH_COMPAT_IS_VEC_OR_VARR);
-    }
-    return true;
-  }
-
-  return false;
-}
-
-inline bool is_darray(const TypedValue* c) {
-  assertx(tvIsPlausible(*c));
-
-  // Is this line safe? It returns the correct result, but if it logs a notice,
-  // it'll be for is_dict, not is_darray. That may be fine, post-HAM, because
-  // only dynamic calls to is_darray will remain at that point.
-  if (RuntimeOption::EvalHackArrDVArrs) return is_dict(c);
-
-  return tvIsArrayLike(c) && c->m_data.parr->isDArray();
-}
-
-inline bool is_dict_or_darray(const TypedValue* c) {
-  assertx(tvIsPlausible(*c));
-
-  if (tvIsDict(c) || (tvIsArrayLike(c) && c->m_data.parr->isDArray())) {
-    return true;
-  }
-
-  return false;
-}
-
 inline bool is_object(const TypedValue* c) {
   assertx(tvIsPlausible(*c));
-  return tvIsObject(c) &&
-    c->m_data.pobj->getVMClass() != SystemLib::s___PHP_Incomplete_ClassClass;
+  if (!tvIsObject(c)) return false;
+  auto const cls = val(c).pobj->getVMClass();
+  if (RO::EvalNoticeOnMethCallerHelperIsObject) {
+    if (cls == SystemLib::s_MethCallerHelperClass) {
+      raise_notice("is_object() called on MethCaller");
+    }
+  }
+  return cls != SystemLib::s___PHP_Incomplete_ClassClass;
 }
 
 inline bool is_clsmeth(const TypedValue* c) {
@@ -268,12 +138,12 @@ inline bool is_clsmeth(const TypedValue* c) {
 
 inline bool is_class(const TypedValue* c) {
   assertx(tvIsPlausible(*c));
-  return tvIsClass(c);
+  return tvIsClass(c) || tvIsLazyClass(c);
 }
 
 inline bool is_fun(const TypedValue* c) {
   assertx(tvIsPlausible(*c));
-  return tvIsFunc(c);
+  return tvIsFunc(c) && !val(c).pfunc->isMethCaller();
 }
 
 inline bool is_empty_string(const TypedValue* c) {
@@ -348,8 +218,6 @@ bool is_constructor_name(const char* func);
 [[noreturn]] void throw_iterator_not_valid();
 [[noreturn]] void throw_collection_property_exception();
 [[noreturn]] void throw_collection_compare_exception();
-[[noreturn]] void throw_varray_compare_exception();
-[[noreturn]] void throw_darray_compare_exception();
 [[noreturn]] void throw_vec_compare_exception();
 [[noreturn]] void throw_dict_compare_exception();
 [[noreturn]] void throw_keyset_compare_exception();
@@ -358,7 +226,6 @@ bool is_constructor_name(const char* func);
 [[noreturn]] void throw_record_compare_exception();
 [[noreturn]] void throw_rfunc_compare_exception();
 [[noreturn]] void throw_rec_non_rec_compare_exception();
-[[noreturn]] void throw_arr_non_arr_compare_exception();
 [[noreturn]] void throw_func_compare_exception();
 [[noreturn]] void throw_param_is_not_container();
 [[noreturn]] void throw_invalid_inout_base();
@@ -369,6 +236,9 @@ bool is_constructor_name(const char* func);
                                                  const char* propName);
 [[noreturn]] void throw_cannot_modify_static_const_prop(const char* className,
                                                         const char* propName);
+[[noreturn]] void throw_cannot_write_non_readonly_prop(const char* className,
+                                                       const char* propName);
+[[noreturn]] void throw_must_be_mutable(const char* className, const char* propName);
 [[noreturn]] void throw_late_init_prop(const Class* cls,
                                        const StringData* propName,
                                        bool isSProp);
@@ -437,21 +307,25 @@ String f_serialize(const Variant& value);
 String serialize_keep_dvarrays(const Variant& value);
 Variant unserialize_ex(const String& str,
                        VariableUnserializer::Type type,
-                       const Array& options = null_array);
+                       const Array& options = null_array,
+                       bool pure = false);
 Variant unserialize_ex(const char* str, int len,
                        VariableUnserializer::Type type,
-                       const Array& options = null_array);
+                       const Array& options = null_array,
+                       bool pure = false);
 
 inline Variant unserialize_from_buffer(const char* str, int len,
                                        VariableUnserializer::Type type,
-                                       const Array& options = null_array) {
-  return unserialize_ex(str, len, type, options);
+                                       const Array& options = null_array,
+                                       bool pure = false) {
+  return unserialize_ex(str, len, type, options, pure);
 }
 
 inline Variant unserialize_from_string(const String& str,
                                        VariableUnserializer::Type type,
-                                       const Array& options = null_array) {
-  return unserialize_from_buffer(str.data(), str.size(), type, options);
+                                       const Array& options = null_array,
+                                       bool pure = false) {
+  return unserialize_from_buffer(str.data(), str.size(), type, options, pure);
 }
 
 String resolve_include(const String& file, const char* currentDir,
@@ -467,5 +341,3 @@ bool function_exists(const String& function_name);
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif

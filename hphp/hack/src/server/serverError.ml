@@ -28,7 +28,7 @@ let get_save_state_result_json
     Hh_json.JSON_Object (get_save_state_result_props_json save_state_result) )
 
 let get_error_list_json
-    (error_list : Pos.absolute Errors.error_ list)
+    (error_list : Errors.finalized_error list)
     ~(save_state_result : SaveStateServiceTypes.save_state_result option)
     ~(recheck_stats : Telemetry.t option) =
   let (error_list, did_pass) =
@@ -62,7 +62,7 @@ let get_error_list_json
 
 let print_error_list_json
     (oc : Out_channel.t)
-    (error_list : Pos.absolute Errors.error_ list)
+    (error_list : Errors.finalized_error list)
     (save_state_result : SaveStateServiceTypes.save_state_result option)
     (recheck_stats : Telemetry.t option) =
   let res = get_error_list_json error_list ~save_state_result ~recheck_stats in
@@ -73,10 +73,10 @@ let print_error_list
     (oc : Out_channel.t)
     ~(stale_msg : string option)
     ~(output_json : bool)
-    ~(error_list : Pos.absolute Errors.error_ list)
+    ~(error_list : Errors.finalized_error list)
     ~(save_state_result : SaveStateServiceTypes.save_state_result option)
     ~(recheck_stats : Telemetry.t option) =
-  ( if output_json then
+  (if output_json then
     print_error_list_json oc error_list save_state_result recheck_stats
   else if List.is_empty error_list then
     Out_channel.output_string oc "No errors!\n"
@@ -90,6 +90,6 @@ let print_error_list
           Out_channel.output_string oc s;
           Out_channel.output_string oc "\n"
         end
-      sl );
+      sl);
   Option.iter stale_msg ~f:(fun msg -> Out_channel.output_string oc msg);
   Out_channel.flush oc

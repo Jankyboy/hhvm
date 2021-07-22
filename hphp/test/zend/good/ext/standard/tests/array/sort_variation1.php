@@ -15,9 +15,6 @@
 <<__EntryPoint>> function main(): void {
 echo "*** Testing sort() : usage variations ***\n";
 
-//get an unset variable
-$unset_var = 10;
-unset ($unset_var);
 
 // resource variable
 $fp = fopen(__FILE__, "r");
@@ -57,7 +54,7 @@ $unexpected_values = varray [
        'string',
 
        // object data
-/*20*/ new stdclass(),
+/*20*/ new stdClass(),
 
        // resource variable
 /*23*/ $fp

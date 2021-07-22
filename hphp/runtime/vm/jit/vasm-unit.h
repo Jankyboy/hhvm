@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_VASM_UNIT_H_
-#define incl_HPHP_JIT_VASM_UNIT_H_
+#pragma once
 
 #include "hphp/runtime/base/datatype.h"
 
@@ -256,6 +255,11 @@ struct Vunit {
    * that must be lowered by xls.
    */
   bool needsRegAlloc() const;
+  /*
+   * Return true iff this Vunit needs to have frames computed for
+   * its blocks before being emitted.
+   */
+  bool needsFramesComputed() const;
 
   /////////////////////////////////////////////////////////////////////////////
   // Data members.
@@ -273,7 +277,7 @@ struct Vunit {
   uint16_t cur_voff{0};  // current instruction index managed by Vout
   bool padding{false};
   bool profiling{false};
-  folly::Optional<TransContext> context;
+  Optional<TransContext> context;
   StructuredLogEntry* log_entry{nullptr};
   Annotations annotations;
 };
@@ -286,4 +290,3 @@ inline tracing::Props traceProps(const Vunit& v) {
 ///////////////////////////////////////////////////////////////////////////////
 }}
 
-#endif

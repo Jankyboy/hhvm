@@ -28,7 +28,7 @@ function entrypoint_mcrypt_decrypt_variation4(): void {
    */
 
   echo "*** Testing mcrypt_decrypt() : usage variation ***\n";
-  set_error_handler(fun('test_error_handler'));
+  set_error_handler(test_error_handler<>);
 
   // Initialise function arguments not being substituted (if any)
   $cipher = MCRYPT_TRIPLEDES;
@@ -36,9 +36,6 @@ function entrypoint_mcrypt_decrypt_variation4(): void {
   $data = b'string_val';
   $iv = b'01234567';
 
-  //get an unset variable
-  $unset_var = 10;
-  unset ($unset_var);
 
   // heredoc string
   $heredoc = <<<EOT
@@ -92,11 +89,7 @@ EOT;
         'instance of classWithToString' => new classWithToString(),
         'instance of classWithoutToString' => new classWithoutToString(),
 
-        // undefined data
-        'undefined var' => @$undefined_var,
 
-        // unset data
-        'unset var' => @$unset_var,
 
         // resource variable
         'resource' => $fp      

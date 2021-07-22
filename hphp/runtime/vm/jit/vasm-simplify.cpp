@@ -182,6 +182,9 @@ FoldableLoadInfo foldable_load_helper(Env& env, Vreg reg, int size,
     case Vinstr::loadzbl:
       if (size > sz::byte) return { nullptr, 0, false };
       break;
+    case Vinstr::loadzwq:
+      if (size > sz::word) return { nullptr, 0, false };
+      break;
     case Vinstr::loadzlq:
       if (size > sz::dword) return { nullptr, 0, false };
       break;
@@ -206,6 +209,7 @@ FoldableLoadInfo foldable_load_helper(Env& env, Vreg reg, int size,
         CHECK_LOAD(load);
         CHECK_LOAD(loadzbq);
         CHECK_LOAD(loadzbl);
+        CHECK_LOAD(loadzwq);
         CHECK_LOAD(loadzlq);
         case Vinstr::copy:
           if (inst.copy_.d != reg) break;
@@ -324,6 +328,7 @@ int value_width(Env& env, Vreg reg) {
 
     case Vinstr::movzwl:
     case Vinstr::movzwq:
+    case Vinstr::loadzwq:
       return sz::word;
 
     case Vinstr::movzlq:
@@ -412,6 +417,17 @@ Vreg narrow_reg(Env& env, int size, Vreg r, Vlabel b, size_t i) {
         case Vinstr::movzwq:
           if (inst.movzwq_.d == r) return match(sz::word, inst.movzwq_.s);
           break;
+        case Vinstr::loadzwq: {
+          auto const& load = inst.get<Vinstr::loadzwq>();
+          if (load.d == r) {
+            if (size == sz::word && env.use_counts[r] == 1) {
+              replace(loadw{load.s, r});
+              return r;
+            }
+            return {};
+          }
+          break;
+        }
 
         case Vinstr::movzlq:
           if (inst.movzlq_.d == r) return match(sz::dword, inst.movzlq_.s);
@@ -635,7 +651,7 @@ bool flip_operands_helper(Env& env, const Op& op, Vlabel b, size_t i) {
 }
 
 bool simplify(Env& env, const addq& vadd, Vlabel b, size_t i) {
-  if (arch_any(Arch::ARM, Arch::PPC64)) return false;
+  if (arch_any(Arch::ARM)) return false;
 
   auto stPair = storeq(env, vadd.d, b, i);
   auto const vptrs = stPair.first;
@@ -741,7 +757,7 @@ bool simplify(Env& env, const cmpq& vcmp, Vlabel b, size_t i) {
   if (simplify_dead_cmp(env, vcmp, b, i)) return true;
   if (flip_operands_helper(env, vcmp, b, i)) return true;
 
-  if (!arch_any(Arch::ARM, Arch::PPC64)) {
+  if (!arch_any(Arch::ARM)) {
     if (auto const vptr = foldable_load(env, vcmp.s1, b, i)) {
       return simplify_impl(env, b, i, cmpqm { vcmp.s0, *vptr, vcmp.sf });
     }
@@ -769,7 +785,7 @@ bool simplify(Env& env, const cmpq& vcmp, Vlabel b, size_t i) {
 bool simplify(Env& env, const cmpl& vcmp, Vlabel b, size_t i) {
   if (simplify_dead_cmp(env, vcmp, b, i)) return true;
   if (flip_operands_helper(env, vcmp, b, i)) return true;
-  if (arch_any(Arch::ARM, Arch::PPC64)) return false;
+  if (arch_any(Arch::ARM)) return false;
 
   if (auto const vptr = foldable_load(env, vcmp.s1, b, i)) {
     return simplify_impl(env, b, i,
@@ -781,7 +797,7 @@ bool simplify(Env& env, const cmpl& vcmp, Vlabel b, size_t i) {
 bool simplify(Env& env, const cmpw& vcmp, Vlabel b, size_t i) {
   if (simplify_dead_cmp(env, vcmp, b, i))  return true;
   if (flip_operands_helper(env, vcmp, b, i)) return true;
-  if (arch_any(Arch::ARM, Arch::PPC64)) return false;
+  if (arch_any(Arch::ARM)) return false;
 
   if (auto const vptr = foldable_load(env, vcmp.s1, b, i)) {
     return simplify_impl(env, b, i,
@@ -793,7 +809,7 @@ bool simplify(Env& env, const cmpw& vcmp, Vlabel b, size_t i) {
 bool simplify(Env& env, const cmpb& vcmp, Vlabel b, size_t i) {
   if (flip_operands_helper(env, vcmp, b, i)) return true;
   if (simplify_dead_cmp(env, vcmp, b, i)) return true;
-  if (arch_any(Arch::ARM, Arch::PPC64)) return false;
+  if (arch_any(Arch::ARM)) return false;
 
   if (auto const vptr = foldable_load(env, vcmp.s1, b, i)) {
     return simplify_impl(env, b, i,
@@ -804,7 +820,7 @@ bool simplify(Env& env, const cmpb& vcmp, Vlabel b, size_t i) {
 
 bool simplify(Env& env, const cmpqi& vcmp, Vlabel b, size_t i) {
   if (simplify_dead_cmp(env, vcmp, b, i)) return true;
-  if (arch_any(Arch::ARM, Arch::PPC64)) return false;
+  if (arch_any(Arch::ARM)) return false;
   if (auto const vptr = foldable_load(env, vcmp.s1, b, i)) {
     return simplify_impl(env, b, i,
                          cmpqim { vcmp.s0, *vptr, vcmp.sf });
@@ -814,7 +830,7 @@ bool simplify(Env& env, const cmpqi& vcmp, Vlabel b, size_t i) {
 
 bool simplify(Env& env, const cmpli& vcmp, Vlabel b, size_t i) {
   if (simplify_dead_cmp(env, vcmp, b, i)) return true;
-  if (arch_any(Arch::ARM, Arch::PPC64)) return false;
+  if (arch_any(Arch::ARM)) return false;
   if (auto const vptr = foldable_load(env, vcmp.s1, b, i)) {
     return simplify_impl(env, b, i,
                          cmplim { vcmp.s0, *vptr, vcmp.sf });
@@ -824,7 +840,7 @@ bool simplify(Env& env, const cmpli& vcmp, Vlabel b, size_t i) {
 
 bool simplify(Env& env, const cmpwi& vcmp, Vlabel b, size_t i) {
   if (simplify_dead_cmp(env, vcmp, b, i)) return true;
-  if (arch_any(Arch::ARM, Arch::PPC64)) return false;
+  if (arch_any(Arch::ARM)) return false;
   if (auto const vptr = foldable_load(env, vcmp.s1, b, i)) {
     return simplify_impl(env, b, i,
                          cmpwim { vcmp.s0, *vptr, vcmp.sf });
@@ -834,7 +850,7 @@ bool simplify(Env& env, const cmpwi& vcmp, Vlabel b, size_t i) {
 
 bool simplify(Env& env, const cmpbi& vcmp, Vlabel b, size_t i) {
   if (simplify_dead_cmp(env, vcmp, b, i)) return true;
-  if (arch_any(Arch::ARM, Arch::PPC64)) return false;
+  if (arch_any(Arch::ARM)) return false;
   if (auto const vptr = foldable_load(env, vcmp.s1, b, i)) {
     return simplify_impl(env, b, i,
                          cmpbim { vcmp.s0, *vptr, vcmp.sf });
@@ -1069,7 +1085,7 @@ bool simplify_signed_test(Env& env, const In& test, uint32_t val,
 
 template<typename testm, typename test>
 bool simplify_testi(Env& env, const test& vtest, Vlabel b, size_t i) {
-  if (arch_any(Arch::ARM, Arch::PPC64)) return false;
+  if (arch_any(Arch::ARM)) return false;
 
   if (auto const vptr = foldable_load(env, vtest.s1, b, i)) {
     return simplify_impl(env, b, i, testm { vtest.s0, *vptr, vtest.sf });
@@ -1080,7 +1096,7 @@ bool simplify_testi(Env& env, const test& vtest, Vlabel b, size_t i) {
 
 template<typename testm, typename cmpm, typename test>
 bool simplify_test(Env& env, const test& vtest, Vlabel b, size_t i) {
-  if (arch_any(Arch::ARM, Arch::PPC64)) return false;
+  if (arch_any(Arch::ARM)) return false;
   if (vtest.s0 == vtest.s1 && env.use_counts[vtest.s0] == 2) {
     env.use_counts[vtest.s0]--;
     auto const vptr = foldable_load(env, vtest.s0, b, i);
@@ -1122,7 +1138,7 @@ bool shrink_test_immediate(Env& env, uint64_t v, Vptr ptr, Vreg sf,
   if (!v) return simplify_impl(env, b, i, testbi{ 0, rarg(0), sf });
 
   auto getNewVal = [&] (uint64_t val, int bits, bool top_bits, Vreg sf)
-      -> folly::Optional<int> {
+      -> Optional<int> {
     auto const mask = (1LL << bits) - 1;
     auto const low = mask >> 1;
     val &= mask;
@@ -1158,7 +1174,7 @@ bool shrink_test_immediate(Env& env, uint64_t v, Vptr ptr, Vreg sf,
         }
         not_reached();
       })) {
-      return folly::none;
+      return std::nullopt;
     }
 
     return (val & low) - (mask - low);
@@ -1469,6 +1485,7 @@ bool simplify(Env& env, const cmovq& inst, Vlabel b, size_t i) {
  *  load{s, tmp}; movtqb{tmp, d} -> loadtqb{s, d}
  *  load{s, tmp}; movtql{tmp, d} -> loadtql{s, d}
  *  loadzbq{s, tmp}; movtqb{tmp, d} -> loadb{s, d}
+ *  loadzwq{s, tmp}; movtqw{tmp, d} -> loadw{s, d}
  *  loadzlq{s, tmp}; movtql{tmp, d} -> loadl{s, d}
  */
 template<Vinstr::Opcode mov_op, typename loadt, typename load_in>
@@ -1494,6 +1511,10 @@ bool simplify(Env& env, const load& load, Vlabel b, size_t i) {
 
 bool simplify(Env& env, const loadzbq& load, Vlabel b, size_t i) {
   return simplify_load_truncate<Vinstr::movtqb, loadb>(env, load, b, i);
+}
+
+bool simplify(Env& env, const loadzwq& load, Vlabel b, size_t i) {
+  return simplify_load_truncate<Vinstr::movtqw, loadw>(env, load, b, i);
 }
 
 bool simplify(Env& env, const loadzlq& load, Vlabel b, size_t i) {

@@ -18,6 +18,7 @@ open Aast
 open Shallow_decl_defs
 open Typing_defs
 module Reason = Typing_reason
+module SN = Naming_special_names
 
 (** [tagged_elt] is a representation internal to Decl_inheritance which is used
     for both methods and properties (members represented using
@@ -27,30 +28,31 @@ module Reason = Typing_reason
 type tagged_elt = {
   id: string;
   inherit_when_private: bool;
-  elt: class_elt;
+  elt: Typing_defs.class_elt;
 }
 
-let base_visibility origin_class_name = function
+let base_visibility origin_class_name module_name = function
   | Public -> Vpublic
   | Private -> Vprivate origin_class_name
   | Protected -> Vprotected origin_class_name
+  | Internal ->
+    begin
+      match module_name with
+      | Some m -> Vinternal m
+      | None -> failwith "internal outside of a module"
+    end
 
-let shallow_method_to_class_elt child_class mro subst meth : class_elt =
+let shallow_method_to_class_elt child_class mname mro subst meth : class_elt =
   let {
-    sm_abstract = abstract;
-    sm_final = final;
-    sm_memoizelsb = memoizelsb;
     sm_name = (pos, _);
-    sm_dynamicallycallable = dynamicallycallable;
-    sm_override = override;
-    sm_reactivity = _;
     sm_type = ty;
     sm_visibility;
     sm_deprecated;
+    sm_flags = _;
   } =
     meth
   in
-  let visibility = base_visibility mro.mro_name sm_visibility in
+  let visibility = base_visibility mro.mro_name mname sm_visibility in
   let ty =
     lazy
       begin
@@ -69,45 +71,40 @@ let shallow_method_to_class_elt child_class mro subst meth : class_elt =
     ce_flags =
       make_ce_flags
         ~xhp_attr:None
-        ~synthesized:mro.mro_via_req_extends
-        ~abstract
-        ~final
+        ~synthesized:(is_set mro_via_req_extends mro.mro_flags)
+        ~abstract:(sm_abstract meth)
+        ~final:(sm_final meth)
         ~const:false
         ~lateinit:false
         ~lsb:false
-        ~override
-        ~memoizelsb
-        ~dynamicallycallable;
+        ~override:(sm_override meth)
+        ~dynamicallycallable:(sm_dynamicallycallable meth)
+        ~readonly_prop:false
+        ~support_dynamic_type:(sm_support_dynamic_type meth)
+      (* The readonliness of the method is on the type *);
   }
 
-let shallow_method_to_telt child_class mro subst meth : tagged_elt =
+let shallow_method_to_telt child_class mname mro subst meth : tagged_elt =
   {
     id = snd meth.sm_name;
-    inherit_when_private = mro.mro_copy_private_members;
-    elt = shallow_method_to_class_elt child_class mro subst meth;
+    inherit_when_private = is_set mro_copy_private_members mro.mro_flags;
+    elt = shallow_method_to_class_elt child_class mname mro subst meth;
   }
 
-let shallow_prop_to_telt child_class mro subst prop : tagged_elt =
-  let {
-    sp_const = const;
-    sp_xhp_attr = xhp_attr;
-    sp_lateinit = lateinit;
-    sp_lsb = lsb;
-    sp_name;
-    sp_needs_init = _;
-    sp_type;
-    sp_abstract;
-    sp_visibility;
-  } =
+let shallow_prop_to_telt child_class mname mro subst prop : tagged_elt =
+  let { sp_xhp_attr = xhp_attr; sp_name; sp_type; sp_visibility; sp_flags = _ }
+      =
     prop
   in
-  let visibility = base_visibility mro.mro_name sp_visibility in
+  let visibility = base_visibility mro.mro_name mname sp_visibility in
   let ty =
     lazy
       begin
         let ty =
           match sp_type with
-          | None -> mk (Reason.Rwitness (fst sp_name), Typing_defs.make_tany ())
+          | None ->
+            mk
+              (Reason.Rwitness_from_decl (fst sp_name), Typing_defs.make_tany ())
           | Some ty -> ty
         in
         if String.equal child_class mro.mro_name then
@@ -118,7 +115,7 @@ let shallow_prop_to_telt child_class mro subst prop : tagged_elt =
   in
   {
     id = snd sp_name;
-    inherit_when_private = mro.mro_copy_private_members;
+    inherit_when_private = is_set mro_copy_private_members mro.mro_flags;
     elt =
       {
         ce_visibility = visibility;
@@ -129,20 +126,21 @@ let shallow_prop_to_telt child_class mro subst prop : tagged_elt =
         ce_flags =
           make_ce_flags
             ~xhp_attr
-            ~lsb
-            ~const
-            ~lateinit
-            ~abstract:sp_abstract
+            ~lsb:(sp_lsb prop)
+            ~const:(sp_const prop)
+            ~lateinit:(sp_lateinit prop)
+            ~abstract:(sp_abstract prop)
             ~final:true
             ~override:false
-            ~memoizelsb:false
             ~synthesized:false
-            ~dynamicallycallable:false;
+            ~dynamicallycallable:false
+            ~readonly_prop:(sp_readonly prop)
+            ~support_dynamic_type:false;
       };
   }
 
 let shallow_const_to_class_const child_class mro subst const =
-  let { scc_abstract = cc_abstract; scc_name; scc_type } = const in
+  let { scc_abstract; scc_name; scc_type; scc_refs } = const in
   let ty =
     let ty = scc_type in
     if String.equal child_class mro.mro_name then
@@ -150,18 +148,27 @@ let shallow_const_to_class_const child_class mro subst const =
     else
       Decl_instantiate.instantiate subst ty
   in
+  let cc_abstract =
+    match scc_abstract with
+    | CCAbstract true
+      when not (is_set mro_passthrough_abstract_typeconst mro.mro_flags) ->
+      CCConcrete
+    | _ -> scc_abstract
+  in
   ( snd scc_name,
     {
-      cc_synthesized = mro.mro_via_req_extends;
+      cc_synthesized = is_set mro_via_req_extends mro.mro_flags;
       cc_abstract;
       cc_pos = fst scc_name;
       cc_type = ty;
       cc_origin = mro.mro_name;
+      cc_refs = scc_refs;
     } )
 
 (** Each class [C] implicitly defines a class constant named [class], which has
     type [classname<C>]. *)
-let classname_const class_id =
+let classname_const : Typing_defs.pos_id -> string * Typing_defs.class_const =
+ fun class_id ->
   let (pos, name) = class_id in
   let reason = Reason.Rclass_class (pos, name) in
   let classname_ty =
@@ -169,11 +176,12 @@ let classname_const class_id =
   in
   ( SN.Members.mClass,
     {
-      cc_abstract = false;
+      cc_abstract = CCConcrete;
       cc_pos = pos;
       cc_synthesized = true;
       cc_type = classname_ty;
       cc_origin = name;
+      cc_refs = [];
     } )
 
 (** Each concrete type constant [const type <sometype> T] implicitly defines a
@@ -182,19 +190,23 @@ let classname_const class_id =
     implicit class constant representing its reified type structure. *)
 let typeconst_structure mro class_name stc =
   let pos = fst stc.stc_name in
-  let r = Reason.Rwitness pos in
+  let r = Reason.Rwitness_from_decl pos in
   let tsid = (pos, SN.FB.cTypeStructure) in
   let ts_ty =
-    mk (r, Tapply (tsid, [mk (r, Taccess (mk (r, Tthis), [stc.stc_name]))]))
+    mk (r, Tapply (tsid, [mk (r, Taccess (mk (r, Tthis), stc.stc_name))]))
   in
+  (* TODO(T88552052) this belongs under the umbrella of distinctions between
+   * abstract type constants with and without defaults *)
   let abstract =
-    match stc.stc_abstract with
-    | TCAbstract (Some _) when not mro.mro_passthrough_abstract_typeconst ->
-      false
-    | TCAbstract _ -> true
-    | TCPartiallyAbstract
-    | TCConcrete ->
-      false
+    match stc.stc_kind with
+    | TCAbstract { atc_default = Some _; _ }
+      when not (is_set mro_passthrough_abstract_typeconst mro.mro_flags) ->
+      CCConcrete
+    | TCAbstract { atc_default = default; _ } ->
+      CCAbstract (Option.is_some default)
+    | TCPartiallyAbstract _
+    | TCConcrete _ ->
+      CCConcrete
   in
   ( snd stc.stc_name,
     {
@@ -203,122 +215,52 @@ let typeconst_structure mro class_name stc =
       cc_synthesized = true;
       cc_type = ts_ty;
       cc_origin = class_name;
+      cc_refs = [];
     } )
 
 let shallow_typeconst_to_typeconst_type child_class mro subst stc =
   let {
-    stc_abstract;
-    stc_constraint;
+    stc_kind = ttc_kind;
     stc_name = ttc_name;
-    stc_type;
     stc_enforceable = ttc_enforceable;
     stc_reifiable = ttc_reifiable;
+    stc_is_ctx = ttc_is_ctx;
   } =
     stc
   in
-  let constraint_ =
-    if String.equal child_class mro.mro_name then
-      stc_constraint
+  let child_and_mro_same = String.equal child_class mro.mro_name in
+  let ttc_kind =
+    if child_and_mro_same then
+      ttc_kind
     else
-      Option.map stc_constraint (Decl_instantiate.instantiate subst)
+      Decl_instantiate.instantiate_typeconst subst ttc_kind
   in
-  let ty =
-    if String.equal child_class mro.mro_name then
-      stc_type
-    else
-      Option.map stc_type (Decl_instantiate.instantiate subst)
-  in
-  let abstract =
-    match stc_abstract with
-    | TCAbstract default_opt when String.( <> ) child_class mro.mro_name ->
-      TCAbstract (Option.map default_opt (Decl_instantiate.instantiate subst))
-    | _ -> stc_abstract
-  in
+  let ttc_origin = mro.mro_name in
   let typeconst =
-    match abstract with
-    | TCAbstract (Some default) when not mro.mro_passthrough_abstract_typeconst
-      ->
+    match ttc_kind with
+    | TCAbstract { atc_default = Some default; _ }
+      when not (is_set mro_passthrough_abstract_typeconst mro.mro_flags) ->
+      (* concretization of abstract type constant with default *)
       {
-        ttc_abstract = TCConcrete;
+        ttc_synthesized = is_set mro_via_req_extends mro.mro_flags;
         ttc_name;
-        ttc_constraint = None;
-        ttc_type = Some default;
-        ttc_origin = mro.mro_name;
+        ttc_kind = TCConcrete { tc_type = default };
+        ttc_origin;
         ttc_enforceable;
         ttc_reifiable;
+        ttc_is_ctx;
+        ttc_concretized = true;
       }
     | _ ->
       {
-        ttc_abstract = abstract;
+        ttc_synthesized = is_set mro_via_req_extends mro.mro_flags;
         ttc_name;
-        ttc_constraint = constraint_;
-        ttc_type = ty;
-        ttc_origin = mro.mro_name;
+        ttc_kind;
+        ttc_origin;
         ttc_enforceable;
         ttc_reifiable;
+        ttc_is_ctx;
+        ttc_concretized = false;
       }
   in
   (snd ttc_name, typeconst)
-
-let shallow_pu_enum_to_pu_enum_type origin spu =
-  let to_member origin { spum_atom; spum_types; spum_exprs } =
-    {
-      tpum_atom = spum_atom;
-      tpum_origin = origin;
-      tpum_types =
-        List.fold
-          ~init:SMap.empty
-          ~f:
-            begin
-              fun acc (k, t) ->
-              SMap.add (snd k) (origin, k, t) acc
-            end
-          spum_types;
-      tpum_exprs =
-        List.fold
-          ~init:SMap.empty
-          ~f:
-            begin
-              fun acc k ->
-              SMap.add (snd k) (origin, k) acc
-            end
-          spum_exprs;
-    }
-  in
-  let { spu_name; spu_is_final; spu_case_types; spu_case_values; spu_members } =
-    spu
-  in
-  let enum_name = snd spu_name in
-  let origin = { pu_class = origin; pu_enum = enum_name } in
-  {
-    tpu_name = spu_name;
-    tpu_is_final = spu_is_final;
-    tpu_case_types =
-      List.fold
-        ~init:SMap.empty
-        ~f:
-          begin
-            fun acc tp ->
-            let sid = snd tp.tp_name in
-            SMap.add sid (origin, tp) acc
-          end
-        spu_case_types;
-    tpu_case_values =
-      List.fold
-        ~init:SMap.empty
-        ~f:
-          begin
-            fun acc (k, t) ->
-            SMap.add (snd k) (origin, k, t) acc
-          end
-        spu_case_values;
-    tpu_members =
-      List.fold
-        ~init:SMap.empty
-        ~f:
-          begin
-            fun acc pum ->
-            SMap.add (snd pum.spum_atom) (to_member origin pum) acc
-          end
-        spu_members;
-  }

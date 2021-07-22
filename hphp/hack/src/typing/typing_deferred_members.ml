@@ -35,7 +35,7 @@ let add_parent_construct env c props parent_ty =
   | _ -> props
 
 let parent env c acc =
-  if FileInfo.(equal_mode c.sc_mode Mdecl) then
+  if FileInfo.(equal_mode c.sc_mode Mhhi) then
     acc
   else if Ast_defs.(equal_class_kind c.sc_kind Ctrait) then
     List.fold_left c.sc_req_extends ~f:(add_parent_construct env c) ~init:acc
@@ -52,10 +52,10 @@ let is_lateinit cv =
 let prop_may_need_init sp =
   if Option.is_some sp.sp_xhp_attr then
     false
-  else if sp.sp_lateinit then
+  else if sp_lateinit sp then
     false
   else
-    sp.sp_needs_init
+    sp_needs_init sp
 
 let own_props c props =
   List.fold_left

@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_TIMEZONE_H_
-#define incl_HPHP_TIMEZONE_H_
+#pragma once
 
 #include "hphp/runtime/base/resource-data.h"
 #include "hphp/runtime/base/type-string.h"
@@ -27,6 +26,11 @@
 extern "C" {
 #include <timelib.h>
 }
+
+// NOTE: The "timelib" library underwent at least one major revision between
+// versions 201102 and 202002.  We use "TIMELIB_MODERN" to test for a modern
+// version, when we do not know exactly when a particular change occurred.
+#define TIMELIB_MODERN 202002
 
 namespace HPHP {
 
@@ -146,7 +150,11 @@ private:
   /**
    * Look up cache and if found return it, otherwise, read it from database.
    */
+#if TIMELIB_VERSION >= TIMELIB_MODERN
+  static timelib_tzinfo* GetTimeZoneInfoRaw(const char* name, const timelib_tzdb* db, int* error_code);
+#else
   static timelib_tzinfo* GetTimeZoneInfoRaw(char* name, const timelib_tzdb* db);
+#endif
 
   unsigned int m_tztype = 0;
   timelib_tzinfo* m_tzi = nullptr;
@@ -163,5 +171,3 @@ extern const timelib_tzdb* (*timezone_raw_get_tzdb)();
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif // incl_HPHP_TIMEZONE_H_

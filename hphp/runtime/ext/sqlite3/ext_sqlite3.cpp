@@ -38,7 +38,7 @@ namespace HPHP {
 #define IMPLEMENT_GET_CLASS(cls)                                               \
   Class *cls::getClass() {                                                     \
     if (s_class == nullptr) {                                                  \
-      s_class = Unit::lookupClass(s_className.get());                          \
+      s_class = Class::lookup(s_className.get());                          \
       assertx(s_class);                                                        \
     }                                                                          \
     return s_class;                                                            \
@@ -101,11 +101,17 @@ static void sqlite3_do_callback(sqlite3_context *context,
                                 int argc,
                                 sqlite3_value **argv,
                                 bool is_agg) {
-  Array params = Array::CreateVArray();
+  Array params = Array::CreateVec();
   php_sqlite3_agg_context *agg_context = nullptr;
   if (is_agg) {
     agg_context = (php_sqlite3_agg_context *)sqlite3_aggregate_context
       (context, sizeof(php_sqlite3_agg_context));
+    // context is zero-initialized. We must turn that into a valid DataType.
+    auto tv = agg_context->context.asTypedValue();
+    static_assert(kExtraInvalidDataType == static_cast<DataType>(0));
+    if (tv->m_type == kExtraInvalidDataType) {
+      tv->m_type = KindOfNull;
+    }
     params.append(agg_context->context);
     params.append(agg_context->row_count);
   }
@@ -279,7 +285,7 @@ const StaticString
   s_versionNumber("versionNumber");
 
 Array HHVM_STATIC_METHOD(SQLite3, version) {
-  return make_darray(
+  return make_dict_array(
     s_versionString, String((char*)sqlite3_libversion(), CopyString),
     s_versionNumber, (int64_t)sqlite3_libversion_number()
   );
@@ -303,7 +309,7 @@ String HHVM_METHOD(SQLite3, lasterrormsg) {
   return String((char*)sqlite3_errmsg(data->m_raw_db), CopyString);
 }
 
-bool HHVM_METHOD(SQLite3, loadextension,
+bool HHVM_METHOD(SQLite3, loadExtension,
                  const String& extension) {
   auto *data = Native::data<SQLite3>(this_);
   data->validate();
@@ -397,7 +403,7 @@ Variant HHVM_METHOD(SQLite3, querysingle,
       switch (sqlite3_step(pstmt)) {
       case SQLITE_ROW: /* Valid Row */
         if (entire_row) {
-          Array ret = Array::CreateDArray();
+          Array ret = Array::CreateDict();
           for (int i = 0; i < sqlite3_data_count(pstmt); i++) {
             ret.set(String((char*)sqlite3_column_name(pstmt, i), CopyString),
                     get_column_value(pstmt, i));
@@ -407,7 +413,7 @@ Variant HHVM_METHOD(SQLite3, querysingle,
         return get_column_value(pstmt, 0);
       case SQLITE_DONE: /* Valid but no results */
         if (entire_row) {
-          return empty_array();
+          return empty_dict_array();
         } else {
           return init_null();
         }
@@ -720,7 +726,7 @@ Variant HHVM_METHOD(SQLite3Result, fetcharray,
   switch (sqlite3_step(data->m_stmt->m_raw_stmt)) {
   case SQLITE_ROW:
     if (mode & PHP_SQLITE3_BOTH) {
-      Array ret = Array::CreateDArray();
+      Array ret = Array::CreateDict();
       for (int i = 0; i < sqlite3_data_count(data->m_stmt->m_raw_stmt); i++) {
         Variant value = get_column_value(data->m_stmt->m_raw_stmt, i);
         if (mode & PHP_SQLITE3_NUM) {
@@ -782,7 +788,7 @@ static struct SQLite3Extension final : Extension {
     HHVM_ME(SQLite3, lastinsertrowid);
     HHVM_ME(SQLite3, lasterrorcode);
     HHVM_ME(SQLite3, lasterrormsg);
-    HHVM_ME(SQLite3, loadextension);
+    HHVM_ME(SQLite3, loadExtension);
     HHVM_ME(SQLite3, changes);
     HHVM_ME(SQLite3, prepare);
     HHVM_ME(SQLite3, query);

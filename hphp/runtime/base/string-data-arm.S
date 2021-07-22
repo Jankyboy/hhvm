@@ -2,14 +2,13 @@
 #include "hphp/util/etch-helpers.h"
 #include "hphp/util/hphp-config.h"
 
-#if defined(ENABLE_AARCH64_CRC) && !defined(NO_HWCRC) && defined(NO_M_DATA) && \
-    !defined(_MSC_VER)
+#ifdef USE_ARM_STRING_HELPERS
 
         .file     "hphp/runtime/base/string-data-arm.S"
 
 /*
  * HPHP::StringData::hashHelper() is defined here only when ENABLE_AARCH64_CRC
- * is explicitly specified, and NO_M_DATA is used in StringData.
+ * is explicitly specified.
  */
 
 ETCH_SECTION(_ZNK4HPHP10StringData10hashHelperEv)

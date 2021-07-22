@@ -1,11 +1,11 @@
-darray(2) {
-  ["%s"]=>
-  darray(1) {
-    [181]=>
+dict(2) {
+  ["/:systemlib.phpfb"]=>
+  dict(1) {
+    [%d]=>
     int(1)
   }
-  ["%s"]=>
-  darray(4) {
+  ["%s/test/slow/ext_fb/coverage.php"]=>
+  dict(4) {
     [3]=>
     int(1)
     [13]=>
@@ -16,11 +16,11 @@ darray(2) {
     int(1)
   }
 }
-darray(3) {
-  ["%s"]=>
+dict(3) {
+  ["/:systemlib.phpstd_variable"]=>
   int(1)
-  ["%s"]=>
-  int(1)
-  ["%s"]=>
+  ["/:systemlib.phpfb"]=>
+  int(2)
+  ["%s/test/slow/ext_fb/coverage.php"]=>
   int(5)
 }

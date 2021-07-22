@@ -5,14 +5,28 @@
 
 use std::cmp::Ordering;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
+use no_pos_hash::NoPosHash;
 use ocamlrep_derive::{FromOcamlRepIn, ToOcamlRep};
 
 use crate::ast_defs::{Id, ShapeFieldName};
 
-#[derive(Clone, Debug, FromOcamlRepIn, Hash, Serialize, ToOcamlRep)]
-pub struct ShapeField<'a>(pub ShapeFieldName<'a>);
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Deserialize,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Serialize,
+    ToOcamlRep
+)]
+pub struct ShapeField<'a>(
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] pub ShapeFieldName<'a>,
+);
+arena_deserializer::impl_deserialize_in_arena!(ShapeField<'arena>);
 
 impl arena_trait::TrivialDrop for ShapeField<'_> {}
 
@@ -22,13 +36,13 @@ impl<'a> Ord for ShapeField<'a> {
         match (&self.0, &other.0) {
             (SFlitInt((_, s1)), SFlitInt((_, s2))) => s1.cmp(&s2),
             (SFlitStr((_, s1)), SFlitStr((_, s2))) => s1.cmp(&s2),
-            (SFclassConst(Id(_, c1), (_, m1)), SFclassConst(Id(_, c2), (_, m2))) => {
+            (SFclassConst((Id(_, c1), (_, m1))), SFclassConst((Id(_, c2), (_, m2)))) => {
                 (c1, m1).cmp(&(c2, m2))
             }
             (SFlitInt(_), _) => Ordering::Less,
             (SFlitStr(_), SFlitInt(_)) => Ordering::Greater,
             (SFlitStr(_), _) => Ordering::Less,
-            (SFclassConst(_, _), _) => Ordering::Greater,
+            (SFclassConst(_), _) => Ordering::Greater,
         }
     }
 }

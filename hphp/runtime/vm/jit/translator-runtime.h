@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_TRANSLATOR_RUNTIME_H_
-#define incl_HPHP_TRANSLATOR_RUNTIME_H_
+#pragma once
 
 #include "hphp/runtime/base/datatype.h"
 #include "hphp/runtime/base/rds.h"
@@ -64,13 +63,6 @@ ArrayData* convArrLikeToDictHelper(ArrayData* a);
 ArrayData* convObjToDictHelper(ObjectData* o);
 ArrayData* convArrLikeToKeysetHelper(ArrayData* a);
 ArrayData* convObjToKeysetHelper(ObjectData* o);
-ArrayData* convArrLikeToVArrHelper(ArrayData* a);
-ArrayData* convClsMethToVArrHelper(ClsMethDataRef clsmeth);
-ArrayData* convClsMethToVecHelper(ClsMethDataRef clsmeth);
-ArrayData* convArrLikeToDArrHelper(ArrayData* a);
-ArrayData* convClsMethToDArrHelper(ClsMethDataRef clsmeth);
-ArrayData* convClsMethToDictHelper(ClsMethDataRef clsmeth);
-ArrayData* convClsMethToKeysetHelper(ClsMethDataRef clsmeth);
 double convObjToDblHelper(const ObjectData* o);
 double convArrToDblHelper(ArrayData* a);
 double convStrToDblHelper(const StringData* s);
@@ -79,10 +71,9 @@ double convTVToDblHelper(TypedValue tv);
 StringData* convDblToStrHelper(double i);
 StringData* convIntToStrHelper(int64_t i);
 StringData* convObjToStrHelper(ObjectData* o);
-StringData* convResToStrHelper(ResourceHdr* o);
 
 void raiseUndefProp(ObjectData* base, const StringData* name);
-void raiseUndefVariable(StringData* nm);
+void throwUndefVariable(StringData* nm);
 void VerifyParamTypeSlow(const Class* cls,
                          const Class* constraint,
                          const TypeConstraint* expected,
@@ -112,13 +103,6 @@ void VerifyRetRecDescImpl(int32_t id,
 
 void raise_error_sd(const StringData* sd);
 
-void raiseClsMethPropConvertNotice(
-  const TypeConstraint*, bool, const Class*, const StringData*);
-
-TypedValue arrayIdxI(ArrayData*, int64_t, TypedValue);
-TypedValue arrayIdxS(ArrayData*, StringData*, TypedValue);
-TypedValue arrayIdxScan(ArrayData*, StringData*, TypedValue);
-
 TypedValue dictIdxI(ArrayData*, int64_t, TypedValue);
 TypedValue dictIdxS(ArrayData*, StringData*, TypedValue);
 TypedValue dictIdxScan(ArrayData*, StringData*, TypedValue);
@@ -137,13 +121,21 @@ tv_lval ldGblAddrDefHelper(StringData* name);
 TypedValue* getSPropOrNull(const Class* cls,
                            const StringData* name,
                            Class* ctx,
+                           bool* roProp,
                            bool ignoreLateInit,
-                           bool disallowConst);
+                           bool writeMode,
+                           bool mustBeMutable,
+                           bool mustBeReadOnly,
+                           bool checkROCOW);
 TypedValue* getSPropOrRaise(const Class* cls,
                             const StringData* name,
                             Class* ctx,
+                            bool* roProp,
                             bool ignoreLateInit,
-                            bool disallowConst);
+                            bool writeMode,
+                            bool mustBeMutable,
+                            bool mustBeReadOnly,
+                            bool checkROCOW);
 
 int64_t switchDoubleHelper(double val, int64_t base, int64_t nTargets);
 int64_t switchStringHelper(StringData* s, int64_t base, int64_t nTargets);
@@ -157,16 +149,13 @@ const Func* loadClassCtor(Class* cls, Class* ctx);
 const Func* lookupClsMethodHelper(const Class* cls, const StringData* methName,
                                   ObjectData* obj, const Class* ctx);
 
+TypedValue lookupClsCns(const Class* cls, const StringData* cnsName);
+int lookupClsCtxCns(const Class* cls, const StringData* cnsName);
+
 // These shuffle* functions are the JIT's version of bytecode.cpp's
 // shuffleExtraStackArgs
 void trimExtraArgs(ActRec* ar);
 void shuffleExtraArgsVariadic(ActRec* ar);
-
-[[noreturn]] void throwMissingArgument(const Func* func, int got);
-void raiseTooManyArguments(const Func* func, int got);
-void raiseTooManyArgumentsPrologue(const Func* func, ArrayData* unpackArgs);
-
-Class* lookupClsRDS(const StringData* name);
 
 /* Check if a method of the given name exists on the class. */
 bool methodExistsHelper(Class*, StringData*);
@@ -190,6 +179,17 @@ ArrayData* errorOnIsAsExpressionInvalidTypesHelper(ArrayData*);
  */
 ArrayData* recordReifiedGenericsAndGetTSList(ArrayData*);
 
+ArrayData* loadClsTypeCnsHelper(
+  const Class* cls,
+  const StringData* name,
+  bool no_throw_on_undefined
+);
+
+StringData* loadClsTypeCnsClsNameHelper(const Class* cls,
+                                        const StringData* name);
+
+void raiseCoeffectsCallViolationHelper(const Func*, uint64_t, uint64_t);
+
 [[noreturn]] void throwOOBException(TypedValue base, TypedValue key);
 [[noreturn]] void invalidArrayKeyHelper(const ArrayData* ad, TypedValue key);
 
@@ -202,13 +202,6 @@ TypedValue incDecElem(tv_lval base, TypedValue key, IncDecOp op);
 tv_lval elemVecIU(tv_lval base, int64_t key);
 }
 
-/*
- * Just calls tlsBase, but not inlined, so it can be called from the TC.
- */
-uintptr_t tlsBaseNoInline();
-
 //////////////////////////////////////////////////////////////////////
 
 }}
-
-#endif

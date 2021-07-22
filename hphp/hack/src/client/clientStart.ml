@@ -8,7 +8,6 @@
  *)
 
 open Hh_prelude
-module SMUtils = ServerMonitorUtils
 
 let get_hhserver () =
   let exe_name =
@@ -35,15 +34,47 @@ type env = {
   silent: bool;
   exit_on_failure: bool;
   ai_mode: string option;
-  debug_port: Unix.file_descr option;
   ignore_hh_version: bool;
+  save_64bit: string option;
   saved_state_ignore_hhconfig: bool;
   dynamic_view: bool;
   prechecked: bool option;
+  mini_state: string option;
   config: (string * string) list;
   custom_telemetry_data: (string * string) list;
   allow_non_opt_build: bool;
 }
+
+(* Sometimes systemd-run is available but we can't use it. For example, the
+ * systemd might not have a proper working user session, so we might not be
+ * able to run commands via systemd-run as a user process *)
+let can_run_systemd () =
+  if not Sys.unix then
+    false
+  else
+    (* if we're on Unix, verify systemd-run is in the path *)
+    let systemd_binary =
+      try
+        Unix.open_process_in "which systemd-run 2> /dev/null"
+        |> In_channel.input_line
+      with
+      | _ -> None
+    in
+    if is_none systemd_binary then
+      false
+    else
+      (* Use `timeout` in case it hangs mysteriously.
+       * `--quiet` only suppresses stdout. *)
+      let ic =
+        Unix.open_process_in
+          "timeout 1 systemd-run --scope --quiet --user -- true 2> /dev/null"
+      in
+      (* If all goes right, `systemd-run` will return immediately with exit code 0
+       * and run `true` asynchronously as a service. If it goes wrong, it will exit
+       * with a non-zero exit code *)
+      match Unix.close_process_in ic with
+      | Unix.WEXITED 0 -> true
+      | _ -> false
 
 let start_server (env : env) =
   let {
@@ -56,11 +87,12 @@ let start_server (env : env) =
     silent;
     exit_on_failure;
     ai_mode;
-    debug_port;
     ignore_hh_version;
+    save_64bit;
     saved_state_ignore_hhconfig;
     dynamic_view;
     prechecked;
+    mini_state;
     config;
     custom_telemetry_data;
     allow_non_opt_build;
@@ -89,26 +121,29 @@ let start_server (env : env) =
     Array.concat
       [
         [| hh_server; "-d"; Path.to_string root |];
-        ( if String.equal from "" then
+        (if String.equal from "" then
           [||]
         else
-          [| "--from"; from |] );
-        ( if no_load then
+          [| "--from"; from |]);
+        (match mini_state with
+        | None -> [||]
+        | Some state -> [| "--with-mini-state"; state |]);
+        (if no_load then
           [| "--no-load" |]
         else
-          [||] );
-        ( if watchman_debug_logging then
+          [||]);
+        (if watchman_debug_logging then
           [| "--watchman-debug-logging" |]
         else
-          [||] );
-        ( if log_inference_constraints then
+          [||]);
+        (if log_inference_constraints then
           [| "--log-inference-constraints" |]
         else
-          [||] );
-        ( if profile_log then
+          [||]);
+        (if profile_log then
           [| "--profile-log" |]
         else
-          [||] );
+          [||]);
         ai_options;
         (* If the client starts up a server monitor process, the output of that
          * bootup is passed to this FD - so this FD needs to be threaded
@@ -117,18 +152,21 @@ let start_server (env : env) =
          * Note: Yes, the FD is available in the monitor process as well, but
          * it doesn't, and shouldn't, use it. *)
         [| "--waiting-client"; string_of_int (Handle.get_handle out_fd) |];
-        ( if ignore_hh_version then
+        (if ignore_hh_version then
           [| "--ignore-hh-version" |]
         else
-          [||] );
-        ( if saved_state_ignore_hhconfig then
+          [||]);
+        (if saved_state_ignore_hhconfig then
           [| "--saved-state-ignore-hhconfig" |]
         else
-          [||] );
-        ( if dynamic_view then
+          [||]);
+        (match save_64bit with
+        | None -> [||]
+        | Some dest -> [| "--save-64bit"; dest |]);
+        (if dynamic_view then
           [| "--dynamic-view" |]
         else
-          [||] );
+          [||]);
         (match prechecked with
         | Some true -> [| "--prechecked" |]
         | _ -> [||]);
@@ -139,14 +177,10 @@ let start_server (env : env) =
         serialize_key_value_options
           "--custom-telemetry-data"
           custom_telemetry_data;
-        ( if allow_non_opt_build then
+        (if allow_non_opt_build then
           [| "--allow-non-opt-build" |]
         else
-          [||] );
-        (match debug_port with
-        | None -> [||]
-        | Some fd ->
-          [| "--debug-client"; string_of_int @@ Handle.get_handle fd |]);
+          [||]);
       ]
   in
   let (stdin, stdout, stderr) =
@@ -157,9 +191,33 @@ let start_server (env : env) =
       Unix.(stdin, stdout, stderr)
   in
   try
-    let server_pid =
-      Unix.create_process hh_server hh_server_args stdin stdout stderr
+    let (exe, args) =
+      if can_run_systemd () then
+        (* launch command
+         * systemd-run    (creates a transient cgroup)
+         *    --scope     (allows synchronous execution of hh_server)
+         *    --user      (specifies this to be a user instance)
+         *    --quiet     (suppresses output to stdout)
+         *    --slice=hack.slice   (puts created units under hack.slice)
+         *    hh_server <hh_server args>
+         *)
+        let systemd_exe = "systemd-run" in
+        let systemd_args =
+          [|
+            systemd_exe; "--scope"; "--user"; "--quiet"; "--slice=hack.slice";
+          |]
+        in
+        (systemd_exe, Array.concat [systemd_args; hh_server_args])
+      else
+        (hh_server, hh_server_args)
     in
+    if not silent then
+      Printf.eprintf
+        "Server launched with the following command:\n\t%s\n%!"
+        (String.concat
+           ~sep:" "
+           (Array.to_list (Array.map ~f:Filename.quote args)));
+    let server_pid = Unix.create_process exe args stdin stdout stderr in
     Unix.close out_fd;
 
     match Sys_utils.waitpid_non_intr [] server_pid with
@@ -175,7 +233,8 @@ let start_server (env : env) =
     | _ ->
       if not silent then Printf.eprintf "Could not start hh_server!\n";
       if exit_on_failure then exit 77
-  with _ ->
+  with
+  | _ ->
     if not silent then Printf.eprintf "Could not start hh_server!\n";
     if exit_on_failure then exit 77
 
@@ -193,20 +252,22 @@ let should_start env =
     "[%s] ClientStart.should_start"
     (Connection_tracker.log_id tracker);
   match
-    ServerUtils.connect_to_monitor ~tracker ~timeout:3 env.root handoff_options
+    MonitorConnection.connect_once ~tracker ~timeout:3 env.root handoff_options
   with
   | Ok _conn -> false
   | Error
-      ( SMUtils.Server_missing_exn _ | SMUtils.Server_missing_timeout _
-      | SMUtils.Build_id_mismatched _ | SMUtils.Server_died ) ->
+      ServerMonitorUtils.(
+        Connect_to_monitor_failure { server_exists = false; _ })
+  | Error (ServerMonitorUtils.Build_id_mismatched _)
+  | Error ServerMonitorUtils.Server_died ->
     true
-  | Error SMUtils.Server_dormant
-  | Error SMUtils.Server_dormant_out_of_retries ->
+  | Error ServerMonitorUtils.Server_dormant
+  | Error ServerMonitorUtils.Server_dormant_out_of_retries ->
     Printf.eprintf "Server already exists but is dormant";
     false
-  | Error (SMUtils.Monitor_socket_not_ready _)
-  | Error SMUtils.Monitor_establish_connection_timeout
-  | Error (SMUtils.Monitor_connection_failure _) ->
+  | Error
+      ServerMonitorUtils.(
+        Connect_to_monitor_failure { server_exists = true; _ }) ->
     Printf.eprintf "Replacing unresponsive server for %s\n%!" root_s;
     ClientStop.kill_server env.root env.from;
     true
@@ -244,7 +305,7 @@ let main (env : env) : Exit_status.t Lwt.t =
   (* above. In both cases the LSP client will see problem reports.            *)
   (*                                                                          *)
   (* The root problem is that should_start assumes an invariant that "if      *)
-  (* hh_server monitor is busy then it has failed and should be shut down."   *)
+     (* hh_server monitor is busy then it has failed and should be shut down." *)
   (* This invariant isn't true. Note that the reason we call should_start,    *)
   (* rather than just using the default ClientConnect.autorestart which calls *)
   (* into ClientStart.start_server, is because we do like its ability to kill *)

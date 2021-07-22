@@ -7,6 +7,7 @@
  * LICENSE file in the "hack" directory of this source tree.
  *
  */
+<<file:__EnableUnstableFeatures('readonly')>>
 
 /**
  * This file provides type information for some of HHVM's builtin classes.
@@ -28,7 +29,7 @@ namespace HH {
  * Construct it with a `Traversable`:
  *
  * ```
- * $a = array('a' => 1, 'b' => 2);
+ * $a = dict['a' => 1, 'b' => 2];
  * $fm = new ImmMap($a);
  * ```
  *
@@ -41,7 +42,7 @@ namespace HH {
  * @guide /hack/collections/introduction
  * @guide /hack/collections/classes
  */
-
+<<__SupportDynamicType>>
 final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
   /**
    * Creates an `ImmMap` from the given `KeyedTraversable`, or an empty
@@ -50,8 +51,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * @param $it - any `Traversable` object from which to create an `ImmMap`
    *             (e.g., `array`). If `null`, then an empty `ImmMap` is created.
    */
-  <<__Pure, __AtMostRxAsArgs>>
-  public function __construct(<<__MaybeMutable, __OnlyRxIfImpl(\HH\Rx\KeyedTraversable::class)>> ?KeyedTraversable<Tk, Tv> $it);
+  public function __construct(?KeyedTraversable<Tk, Tv> $it)[];
 
   /**
    * Returns an `array` containing the values from the current `ImmMap`.
@@ -59,8 +59,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * @return - an integer-indexed `array` containing the values from the
    *           current `ImmMap`.
    */
-  <<__Pure, __MaybeMutable>>
-  public function toValuesArray(): varray<Tv>;
+  public function toValuesArray()[]: varray<Tv>;
 
   /**
    * Returns an `array` whose values are the keys of the current `ImmMap`.
@@ -68,8 +67,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * @return - an integer-indexed `array` where the values are the keys from
    *           the current `ImmMap`.
    */
-  <<__Pure, __MaybeMutable>>
-  public function toKeysArray(): varray<Tk>;
+  public function toKeysArray()[]: varray<Tk>;
 
   /**
    * Returns an immutable vector (`ImmVector`) with the values of the current
@@ -77,16 +75,14 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    *
    * @return - an `ImmVector` that contains the values of the current `ImmMap`.
    */
-  <<__Pure, __MaybeMutable>>
-  public function toImmVector(): ImmVector<Tv>;
+  public function toImmVector()[]: ImmVector<Tv>;
 
   /**
    * Returns an immutable copy (`ImmMap`) of the current `ImmMap`.
    *
    * @return - an `ImmMap` that is a copy of the current `ImmMap`.
    */
-  <<__Pure, __MaybeMutable>>
-  public function toImmMap(): ImmMap<Tk, Tv>;
+  public function toImmMap()[]: ImmMap<Tk, Tv>;
 
   /**
    * Returns an immutable set (`ImmSet`) based on the values of the current
@@ -94,8 +90,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    *
    * @return - an `ImmSet` with the current values of the current `ImmMap`.
    */
-  <<__Pure, __MaybeMutable>>
-  public function toImmSet(): ImmSet<Tv> where Tv as arraykey;
+  public function toImmSet()[]: ImmSet<Tv> where Tv as arraykey;
 
   /**
    * Returns an immutable copy (`ImmMap`) of the current `ImmMap`.
@@ -104,8 +99,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    *
    * @return - an `ImmMap` representing a copy of the current `ImmMap`.
    */
-  <<__Pure, __MaybeMutable>>
-  public function immutable(): ImmMap<Tk, Tv>;
+  public function immutable()[]: ImmMap<Tk, Tv>;
 
   /**
    * Returns a lazy, access elements only when needed view of the current
@@ -120,8 +114,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    *
    * @guide /hack/collections/examples
    */
-  <<__Pure, __MutableReturn, __MaybeMutable>>
-  public function lazy(): \HH\Rx\KeyedIterable<Tk, Tv>;
+  public function lazy()[]: \HH\Rx\KeyedIterable<Tk, Tv>;
 
   /**
    * Returns an ImmVector containing the values of the current `ImmMap`.
@@ -130,8 +123,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    *
    * @return - an ImmVector containing the values of the current `ImmMap`.
    */
-  <<__Pure, __MutableReturn, __MaybeMutable>>
-  public function values(): ImmVector<Tv>;
+  public function values()[]: ImmVector<Tv>;
 
   /**
    * Returns an ImmVector containing, as values, the keys of the current `ImmMap`.
@@ -139,8 +131,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * @return - an ImmVector containing, as values, the keys of the current
    *           `ImmMap`.
    */
-  <<__Pure, __MutableReturn, __MaybeMutable>>
-  public function keys(): ImmVector<Tk>;
+  public readonly function keys()[]: ImmVector<Tk>;
 
   /**
    * Returns an `ImmMap` after an operation has been applied to each value in
@@ -152,7 +143,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    *
    * The keys will remain unchanged from this `ImmMap` to the returned `ImmMap`.
    *
-   * @param $callback - The callback containing the operation to apply to the
+   * @param $fn - The callback containing the operation to apply to the
    *                    current `ImmMap` values.
    *
    * @return - an `ImmMap` containing key/value pairs after a user-specified
@@ -160,8 +151,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    *
    * @guide /hack/collections/examples
    */
-  <<__Pure, __AtMostRxAsArgs, __MutableReturn, __MaybeMutable>>
-  public function map<Tu>(<<__AtMostRxAsFunc>>(function(Tv): Tu) $callback): ImmMap<Tk, Tu>;
+  public function map<Tu>((function(Tv)[_]: Tu) $fn)[ctx $fn]: ImmMap<Tk, Tu>;
 
   /**
    * Returns an `ImmMap` after an operation has been applied to each key and
@@ -174,14 +164,13 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * The keys will remain unchanged from the current `ImmMap` to the returned
    * `ImmMap`. The keys are only used to help in the operation.
    *
-   * @param $callback - The callback containing the operation to apply to the
+   * @param $fn - The callback containing the operation to apply to the
    *                    current `ImmMap` keys and values.
    *
    * @return - an `ImmMap` containing the values after a user-specified
    *           operation on the current `ImmMap`'s keys and values is applied.
    */
-  <<__Pure, __AtMostRxAsArgs, __MutableReturn, __MaybeMutable>>
-  public function mapWithKey<Tu>(<<__AtMostRxAsFunc>>(function(Tk, Tv): Tu) $callback):
+  public function mapWithKey<Tu>((function(Tk, Tv)[_]: Tu) $fn)[ctx $fn]:
     ImmMap<Tk, Tu>;
 
   /**
@@ -194,7 +183,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * The keys associated with the current `ImmMap` remain unchanged in the
    * returned `Map`.
    *
-   * @param $callback - The callback containing the condition to apply to the
+   * @param $fn - The callback containing the condition to apply to the
    *                    current `ImmMap` values.
    *
    * @return - an `ImmMap` containing the values after a user-specified
@@ -202,8 +191,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    *
    * @guide /hack/collections/examples
    */
-  <<__Pure, __AtMostRxAsArgs, __MutableReturn, __MaybeMutable>>
-  public function filter(<<__AtMostRxAsFunc>>(function(Tv): bool) $callback): ImmMap<Tk, Tv>;
+  public function filter((function(Tv)[_]: bool) $fn)[ctx $fn]: ImmMap<Tk, Tv>;
 
   /**
    * Returns an `ImmMap` containing the values of the current `ImmMap` that
@@ -216,7 +204,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * The keys associated with the current `ImmMap` remain unchanged in the
    * returned `ImmMap`; the keys will be used in the filtering process only.
    *
-   * @param $callback - The callback containing the condition to apply to the
+   * @param $fn - The callback containing the condition to apply to the
    *                    current `ImmMap` keys and values.
    *
    * @return - an `ImmMap` containing the values after a user-specified
@@ -224,8 +212,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    *           `ImmMap`.
    *
    */
-  <<__Pure, __AtMostRxAsArgs, __MutableReturn, __MaybeMutable>>
-  public function filterWithKey(<<__AtMostRxAsFunc>>(function(Tk, Tv): bool) $callback):
+  public function filterWithKey((function(Tk, Tv)[_]: bool) $fn)[ctx $fn]:
     ImmMap<Tk, Tv>;
 
   /**
@@ -246,8 +233,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * @return - The `ImmMap` that combines the values of the current `ImmMap`
    *           with the provided `Traversable`.
    */
-  <<__Pure, __AtMostRxAsArgs, __MutableReturn, __MaybeMutable>>
-  public function zip<Tu>(<<__MaybeMutable, __OnlyRxIfImpl(\HH\Rx\Traversable::class)>> Traversable<Tu> $traversable):
+  public function zip<Tu>(Traversable<Tu> $traversable)[]:
     ImmMap<Tk, Pair<Tv, Tu>>;
 
   /**
@@ -265,8 +251,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * @return - An `ImmMap` that is a proper subset of the current `ImmMap` up
    *           to `n` elements.
    */
-  <<__Pure, __MutableReturn, __MaybeMutable>>
-  public function take(int $n): ImmMap<Tk, Tv>;
+  public function take(int $n)[]: ImmMap<Tk, Tv>;
 
   /**
    * Returns an `ImmMap` containing the keys and values of the current `ImmMap`
@@ -281,8 +266,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * @return - An `ImmMap` that is a proper subset of the current `ImmMap` up
    *           until when the callback returns `false`.
    */
-  <<__Pure, __AtMostRxAsArgs, __MutableReturn, __MaybeMutable>>
-  public function takeWhile(<<__AtMostRxAsFunc>>(function(Tv): bool) $fn): ImmMap<Tk, Tv>;
+  public function takeWhile((function(Tv)[_]: bool) $fn)[ctx $fn]: ImmMap<Tk, Tv>;
 
   /**
    * Returns an `ImmMap` containing the values after the `n`-th element of the
@@ -299,8 +283,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * @return - An `ImmMap` that is a proper subset of the current `ImmMap`
    *           containing values after the specified `n`-th element.
    */
-  <<__Pure, __MutableReturn, __MaybeMutable>>
-  public function skip(int $n): ImmMap<Tk, Tv>;
+  public function skip(int $n)[]: ImmMap<Tk, Tv>;
 
   /**
    * Returns an `ImmMap` containing the values of the current `ImmMap` starting
@@ -316,8 +299,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * @return - An `ImmMap` that is a proper subset of the current `ImmMap`
    *           starting after the callback returns `true`.
    */
-  <<__Pure, __AtMostRxAsArgs, __MutableReturn, __MaybeMutable>>
-  public function skipWhile(<<__AtMostRxAsFunc>>(function(Tv): bool) $fn): ImmMap<Tk, Tv>;
+  public function skipWhile((function(Tv)[_]: bool) $fn)[ctx $fn]: ImmMap<Tk, Tv>;
 
   /**
    * Returns a subset of the current `ImmMap` starting from a given key
@@ -338,8 +320,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    *           starting at `$start` up to but not including the element
    *           `$start + $len`.
    */
-  <<__Pure, __MutableReturn, __MaybeMutable>>
-  public function slice(int $start, int $len): ImmMap<Tk, Tv>;
+  public function slice(int $start, int $len)[]: ImmMap<Tk, Tv>;
 
   /**
    * Returns an ImmVector that is the concatenation of the values of the
@@ -354,8 +335,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    *
    * @guide /hack/generics/constraints
    */
-  <<__Pure, __AtMostRxAsArgs, __MutableReturn, __MaybeMutable>>
-  public function concat<Tu super Tv>(<<__MaybeMutable, __OnlyRxIfImpl(\HH\Rx\Traversable::class)>> Traversable<Tu> $traversable):
+  public function concat<Tu super Tv>(Traversable<Tu> $traversable)[]:
     ImmVector<Tu>;
 
   /**
@@ -364,8 +344,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * @return - The first value in the current `ImmMap`, or `null` if the current
    *           `ImmMap` is empty.
    */
-  <<__Pure, __MaybeMutable>>
-  public function firstValue(): ?Tv;
+  public function firstValue()[]: ?Tv;
 
   /**
    * Returns the first key in the current `ImmMap`.
@@ -373,8 +352,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * @return - The first key in the current `ImmMap`, or `null` if the current
    *           `ImmMap` is empty.
    */
-  <<__Pure, __MaybeMutable>>
-  public function firstKey(): ?Tk;
+  public readonly function firstKey()[]: ?Tk;
 
   /**
    * Returns the last value in the current `ImmMap`.
@@ -382,8 +360,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * @return - The last value in the current `ImmMap`, or `null` if the current
    *           `ImmMap` is empty.
    */
-  <<__Pure, __MaybeMutable>>
-  public function lastValue(): ?Tv;
+  public function lastValue()[]: ?Tv;
 
   /**
    * Returns the last key in the current `ImmMap`.
@@ -391,24 +368,21 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * @return - The last key in the current `ImmMap`, or `null` if the current
    *           `ImmMap` is empty.
    */
-  <<__Pure, __MaybeMutable>>
-  public function lastKey(): ?Tk;
+  public readonly function lastKey()[]: ?Tk;
 
   /**
    * Checks if the current `ImmMap` is empty.
    *
    * @return - `true` if the current `ImmMap` is empty; `false` otherwise.
    */
-  <<__Pure, __MaybeMutable>>
-  public function isEmpty(): bool;
+  public readonly function isEmpty()[]: bool;
 
   /**
    * Provides the number of elements in the current `ImmMap`.
    *
    * @return - The number of elements in current `ImmMap`.
    */
-  <<__Pure, __MaybeMutable>>
-  public function count(): int;
+  public readonly function count()[]: int;
 
   /**
    * Returns the value at the specified key in the current `ImmMap`.
@@ -423,8 +397,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * @return - The value at the specified key; or an exception if the key does
    *           not exist.
    */
-  <<__Pure, __MaybeMutable>>
-  public function at(Tk $k): Tv;
+  public function at(Tk $k)[]: Tv;
 
   /**
    * Returns the value at the specified key in the current `ImmMap`.
@@ -437,8 +410,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * @return - The value at the specified key; or `null` if the key does not
    *           exist.
    */
-  <<__Pure, __MaybeMutable>>
-  public function get(Tk $k): ?Tv;
+  public function get(Tk $k)[]: ?Tv;
 
   /**
    * Determines if the specified key is in the current `ImmMap`.
@@ -452,8 +424,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    *
    * @guide /hack/generics/constraints
    */
-  <<__Pure, __MaybeMutable>>
-  public function contains(mixed $k): bool;
+  public readonly function contains(mixed $k)[]: bool;
 
   /**
    * Determines if the specified key is in the current `ImmMap`.
@@ -467,8 +438,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    *
    * @guide /hack/generics/constraints
    */
-  <<__Pure, __MaybeMutable>>
-  public function containsKey(mixed $k): bool;
+  public readonly function containsKey(mixed $k)[]: bool;
 
   /**
    * Returns a new `ImmMap` with the keys that are in the current `ImmMap`, but
@@ -479,10 +449,9 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * @return - An `ImmMap` containing the keys (and associated values) of the
    *           current `ImmMap` that are not in the `KeyedTraversable`.
    */
-  <<__Pure, __AtMostRxAsArgs, __MaybeMutable>>
   public function differenceByKey(
-    <<__MaybeMutable, __OnlyRxIfImpl(\HH\Rx\KeyedTraversable::class)>> KeyedTraversable<mixed, mixed> $traversable
-  ): ImmMap<Tk, Tv>;
+    KeyedTraversable<mixed, mixed> $traversable
+  )[]: ImmMap<Tk, Tv>;
 
   /**
    * Returns an iterator that points to beginning of the current `ImmMap`.
@@ -490,8 +459,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * @return - A `KeyedIterator` that allows you to traverse the current
    *           `ImmMap`.
    */
-  <<__Pure, __MutableReturn, __MaybeMutable>>
-  public function getIterator(): \HH\Rx\KeyedIterator<Tk, Tv>;
+  public function getIterator()[]: \HH\Rx\KeyedIterator<Tk, Tv>;
 
   /**
    * Creates an `ImmMap` from the given `Traversable`, or an empty `ImmMap`
@@ -507,8 +475,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    * @return - An `ImmMap` with the key/value pairs from the `Traversable`; or
    *           an empty `ImmMap` if the `Traversable` is `null`.
    */
-  <<__Pure, __AtMostRxAsArgs>>
-  public static function fromItems(<<__MaybeMutable, __OnlyRxIfImpl(\HH\Rx\Traversable::class)>> ?Traversable<Pair<Tk, Tv>> $items):
+  public static function fromItems(?Traversable<Pair<Tk, Tv>> $items)[]:
     ImmMap<Tk, Tv>;
 
   /**
@@ -516,8 +483,7 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    *
    * @return - The `string` `"ImmMap"`.
    */
-  <<__Pure, __MaybeMutable>>
-  public function __toString(): string;
+  public function __toString()[]: string;
 
   /**
    * Returns an `Iterable` view of the current `ImmMap`.
@@ -527,13 +493,10 @@ final class ImmMap<Tk as arraykey, +Tv> implements \ConstMap<Tk, Tv> {
    *
    * @return - The `Iterable` view of the current `ImmMap`.
    */
-  <<__Pure, __MutableReturn, __MaybeMutable>>
-  public function items(): \HH\Rx\Iterable<Pair<Tk, Tv>>;
-
-  <<__Pure, __MaybeMutable>> /* HH_FIXME[0002] */
-  public function toVArray(): varray<Tv>;
-  <<__Pure, __MaybeMutable>> /* HH_FIXME[0001] */
-  public function toDArray(): darray<Tk, Tv>;
+  public function items()[]: \HH\Rx\Iterable<Pair<Tk, Tv>>;
+ /* HH_FIXME[0002] */
+  public function toVArray()[]: varray<Tv>; /* HH_FIXME[0001] */
+  public function toDArray()[]: darray<Tk, Tv>;
 }
 
 } // namespace HH

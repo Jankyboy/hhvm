@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_RPC_REQUEST_HANDLER_H_
-#define incl_HPHP_RPC_REQUEST_HANDLER_H_
+#pragma once
 
 #include "hphp/runtime/server/access-log.h"
 #include "hphp/runtime/server/server.h"
@@ -34,6 +33,7 @@ struct RPCRequestHandler : RequestHandler {
   enum class ReturnEncodeType {
     Json      = 1,
     Serialize = 2,
+    Internal  = 3,
   };
 
   RPCRequestHandler(int timeout, bool info);
@@ -69,6 +69,8 @@ private:
 
   void initState();
   bool needReset() const;
+  bool ignoreParams() const;
+
   bool executePHPFunction(Transport *transport,
                           SourceRootInfo &sourceRootInfo,
                           ReturnEncodeType returnEncodeType);
@@ -86,5 +88,3 @@ private:
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif // incl_HPHP_RPC_REQUEST_HANDLER_H_

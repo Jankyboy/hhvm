@@ -20,6 +20,14 @@ module Reason = Typing_reason
 module TySet = Typing_set
 module Cls = Decl_provider.Class
 module Nast = Aast
+module ITySet = Internal_type_set
+
+(** For sake of typing_print, either we wish to print a locl_ty in which case we need
+the env to look up the typing environment and constraints and the like, or a decl_ty
+in which case we don't need anything. [penv] stands for "printing env". *)
+type penv =
+  | Loclenv of env
+  | Declenv
 
 let strip_ns id = id |> Utils.strip_ns |> Hh_autoimport.reverse_type
 
@@ -44,7 +52,10 @@ module Full = struct
 
   let debug_mode = ref false
 
-  let show_verbose env = Env.get_log_level env "show" > 1
+  let show_verbose penv =
+    match penv with
+    | Loclenv env -> Env.get_log_level env "show" > 1
+    | Declenv -> false
 
   let blank_tyvars = ref false
 
@@ -86,11 +97,11 @@ module Full = struct
     let compare (k1, _) (k2, _) =
       String.compare (Env.get_shape_field_name k1) (Env.get_shape_field_name k2)
     in
-    let fields = List.sort ~compare (Nast.ShapeMap.bindings fdm) in
-    List.map fields f_field
+    let fields = List.sort ~compare (TShapeMap.bindings fdm) in
+    List.map fields ~f:f_field
 
-  let rec fun_type ~ty to_doc st env ft =
-    let params = List.map ft.ft_params (fun_param ~ty to_doc st env) in
+  let rec fun_type ~ty to_doc st penv ft =
+    let params = List.map ft.ft_params ~f:(fun_param ~ty to_doc st penv) in
     let variadic_param =
       match ft.ft_arity with
       | Fstandard -> None
@@ -98,11 +109,11 @@ module Full = struct
         Some
           (Concat
              [
-               (match ty to_doc st env p.fp_type.et_type with
+               (match ty to_doc st penv p.fp_type.et_type with
                | Text ("_", 1) ->
                  (* Handle the case of missing a type by not printing it *)
                  Nothing
-               | _ -> fun_param ~ty to_doc st env p);
+               | _ -> fun_param ~ty to_doc st penv p);
                text "...";
              ])
     in
@@ -120,44 +131,48 @@ module Full = struct
         | (_, FTKtparams) ->
           Nothing
         | (l, FTKinstantiated_targs) ->
-          list "<" (tparam ~ty to_doc st env) l ">");
+          list "<" (tparam ~ty to_doc st penv) l ">");
         list "(" id params "):";
         Space;
-        possibly_enforced_ty ~ty to_doc st env ft.ft_ret;
+        possibly_enforced_ty ~ty to_doc st penv ft.ft_ret;
       ]
 
-  and possibly_enforced_ty ~ty to_doc st env { et_enforced; et_type } =
+  and possibly_enforced_ty ~ty to_doc st penv { et_enforced; et_type } =
     Concat
       [
-        ( if show_verbose env && et_enforced then
-          text "enforced" ^^ Space
+        (if show_verbose penv then
+          match et_enforced with
+          | Enforced -> text "enforced" ^^ Space
+          | PartiallyEnforced (_, (_, cn)) ->
+            text ("partially enforced " ^ cn) ^^ Space
+          | Unenforced -> Nothing
         else
-          Nothing );
-        ty to_doc st env et_type;
+          Nothing);
+        ty to_doc st penv et_type;
       ]
 
-  and fun_param ~ty to_doc st env ({ fp_name; fp_type; _ } as fp) =
+  and fun_param ~ty to_doc st penv ({ fp_name; fp_type; _ } as fp) =
     Concat
       [
         (match get_fp_mode fp with
         | FPinout -> text "inout" ^^ Space
         | _ -> Nothing);
-        (match (fp_name, ty to_doc st env fp_type.et_type) with
-        | (None, _) -> possibly_enforced_ty ~ty to_doc st env fp_type
+        (match (fp_name, ty to_doc st penv fp_type.et_type) with
+        | (None, _) -> possibly_enforced_ty ~ty to_doc st penv fp_type
         | (Some param_name, Text ("_", 1)) ->
           (* Handle the case of missing a type by not printing it *)
           text param_name
         | (Some param_name, _) ->
           Concat
             [
-              possibly_enforced_ty ~ty to_doc st env fp_type;
+              possibly_enforced_ty ~ty to_doc st penv fp_type;
               Space;
               text param_name;
             ]);
-        ( if get_fp_has_default fp then
+        (if get_fp_has_default fp then
           text "=_"
         else
-          Nothing );
+          Nothing);
       ]
 
   and tparam
@@ -178,7 +193,7 @@ module Full = struct
         list_sep ~split:false Space (tparam_constraint ~ty to_doc st env) cstrl;
       ]
 
-  and tparam_constraint ~ty to_doc st env (ck, cty) =
+  and tparam_constraint ~ty to_doc st penv (ck, cty) =
     Concat
       [
         Space;
@@ -188,15 +203,15 @@ module Full = struct
           | Ast_defs.Constraint_super -> "super"
           | Ast_defs.Constraint_eq -> "=");
         Space;
-        ty to_doc st env cty;
+        ty to_doc st penv cty;
       ]
 
   let terr () =
     text
-      ( if !debug_mode then
+      (if !debug_mode then
         "err"
       else
-        "_" )
+        "_")
 
   let tprim x =
     text
@@ -212,7 +227,6 @@ module Full = struct
     | Nast.Tresource -> "resource"
     | Nast.Tarraykey -> "arraykey"
     | Nast.Tnoreturn -> "noreturn"
-    | Nast.Tatom s -> ":@" ^ s
 
   let tdarray k x y = list "darray<" k [x; y] ">"
 
@@ -220,23 +234,16 @@ module Full = struct
 
   let tvarray_or_darray k x y = list "varray_or_darray<" k [x; y] ">"
 
-  let tarray k x y =
-    match (x, y) with
-    | (None, None) -> text "array"
-    | (Some x, None) -> list "array<" k [x] ">"
-    | (Some x, Some y) -> list "array<" k [x; y] ">"
-    | (None, Some _) -> assert false
-
-  let tfun ~ty to_doc st env ft =
+  let tfun ~ty to_doc st penv ft =
     Concat
       [
         text "(";
-        ( if get_ft_is_coroutine ft then
-          text "coroutine" ^^ Space
+        (if get_ft_readonly_this ft then
+          text "readonly "
         else
-          Nothing );
+          Nothing);
         text "function";
-        fun_type ~ty to_doc st env ft;
+        fun_type ~ty to_doc st penv ft;
         text ")";
       ]
 
@@ -247,15 +254,15 @@ module Full = struct
       let f_field (shape_map_key, { sft_optional; sft_ty }) =
         let key_delim =
           match shape_map_key with
-          | Ast_defs.SFlit_str _ -> text "'"
+          | Typing_defs.TSFlit_str _ -> text "'"
           | _ -> Nothing
         in
         Concat
           [
-            ( if sft_optional then
+            (if sft_optional then
               text "?"
             else
-              Nothing );
+              Nothing);
             key_delim;
             to_doc (Env.get_shape_field_name shape_map_key);
             key_delim;
@@ -273,8 +280,6 @@ module Full = struct
       | Open_shape -> fields @ [text "..."]
     in
     list "shape(" id fields ")"
-
-  let pu_concat k ty access = k ty ^^ text (":@" ^ access)
 
   let thas_member k hm =
     let { hm_name = (_, name); hm_type; hm_class_id = _; hm_explicit_targs } =
@@ -317,12 +322,12 @@ module Full = struct
     in
     Concat [prefix; list "(" id (e_required @ e_optional @ e_variadic) ")"]
 
-  let rec decl_ty to_doc st env x = decl_ty_ to_doc st env (get_node x)
+  let rec decl_ty to_doc st penv x = decl_ty_ to_doc st penv (get_node x)
 
   and decl_ty_ : _ -> _ -> _ -> decl_phase ty_ -> Doc.t =
-   fun to_doc st env x ->
+   fun to_doc st penv x ->
     let ty = decl_ty in
-    let k x = ty to_doc st env x in
+    let k x = ty to_doc st penv x in
     match x with
     | Tany _ -> text "_"
     | Terr -> terr ()
@@ -333,24 +338,15 @@ module Full = struct
     | Tdarray (x, y) -> tdarray k x y
     | Tvarray x -> tvarray k x
     | Tvarray_or_darray (x, y) -> tvarray_or_darray k x y
-    | Tarray (x, y) -> tarray k x y
+    | Tvec_or_dict (x, y) -> list "vec_or_dict<" k [x; y] ">"
     | Tapply ((_, s), []) -> to_doc s
     | Tgeneric (s, []) -> to_doc s
-    | Taccess (root_ty, ids) ->
-      Concat
-        [
-          k root_ty;
-          to_doc
-            (List.fold_left
-               ids
-               ~f:(fun acc (_, sid) -> acc ^ "::" ^ sid)
-               ~init:"");
-        ]
+    | Taccess (root_ty, id) -> Concat [k root_ty; text "::"; to_doc (snd id)]
     | Toption x -> Concat [text "?"; k x]
     | Tlike x -> Concat [text "~"; k x]
     | Tprim x -> tprim x
     | Tvar x -> text (Printf.sprintf "#%d" x)
-    | Tfun ft -> tfun ~ty to_doc st env ft
+    | Tfun ft -> tfun ~ty to_doc st penv ft
     (* Don't strip_ns here! We want the FULL type, including the initial slash.
       *)
     | Tapply ((_, s), tyl)
@@ -360,26 +356,58 @@ module Full = struct
     | Tunion tyl -> Concat [text "|"; ttuple k tyl]
     | Tintersection tyl -> Concat [text "&"; ttuple k tyl]
     | Tshape (shape_kind, fdm) -> tshape k to_doc shape_kind fdm
-    | Tpu_access (ty', (_, access)) -> pu_concat k ty' access
+
+  (* For a given type parameter, construct a list of its constraints *)
+  let get_constraints_on_tparam penv tparam =
+    let kind_opt = Env.get_pos_and_kind_of_generic penv tparam in
+    match kind_opt with
+    | None -> []
+    | Some (_pos, kind) ->
+      (* Use the names of the parameters themselves to present bounds
+         depending on other parameters *)
+      let param_names = Type_parameter_env.get_parameter_names kind in
+      let params =
+        List.map param_names ~f:(fun name ->
+            Typing_make_type.generic Reason.none name)
+      in
+      let lower = Env.get_lower_bounds penv tparam params in
+      let upper = Env.get_upper_bounds penv tparam params in
+      let equ = Env.get_equal_bounds penv tparam params in
+      (* If we have an equality we can ignore the other bounds *)
+      if not (TySet.is_empty equ) then
+        List.map (TySet.elements equ) ~f:(fun ty ->
+            (tparam, Ast_defs.Constraint_eq, ty))
+      else
+        List.map (TySet.elements lower) ~f:(fun ty ->
+            (tparam, Ast_defs.Constraint_super, ty))
+        @ List.map (TySet.elements upper) ~f:(fun ty ->
+              (tparam, Ast_defs.Constraint_as, ty))
 
   let rec locl_ty : _ -> _ -> _ -> locl_ty -> Doc.t =
-   fun to_doc st env ty ->
+   fun to_doc st penv ty ->
     let (r, x) = deref ty in
-    let d = locl_ty_ to_doc st env x in
+    let d = locl_ty_ to_doc st penv x in
     match r with
     | Typing_reason.Rsolve_fail _ -> Concat [text "{suggest:"; d; text "}"]
     | _ -> d
 
   and locl_ty_ : _ -> _ -> _ -> locl_phase ty_ -> Doc.t =
-   fun to_doc st env x ->
+   fun to_doc st penv x ->
     let ty = locl_ty in
-    let k x = ty to_doc st env x in
+    let verbose = show_verbose penv in
+    let env =
+      match penv with
+      | Declenv -> failwith "must provide a locl-env here"
+      | Loclenv env -> env
+    in
+    let k x = ty to_doc st (Loclenv env) x in
     match x with
     | Tany _ -> text "_"
     | Terr -> terr ()
     | Tdynamic -> text "dynamic"
     | Tnonnull -> text "nonnull"
     | Tvarray_or_darray (x, y) -> tvarray_or_darray k x y
+    | Tvec_or_dict (x, y) -> list "vec_or_dict<" k [x; y] ">"
     | Tvarray x -> tvarray k x
     | Tdarray (x, y) -> tdarray k x y
     | Tclass ((_, s), Exact, []) when !debug_mode ->
@@ -398,6 +426,8 @@ module Full = struct
         | _ -> Concat [text "?"; k ty]
       end
     | Tprim x -> tprim x
+    | Tneg (Neg_prim x) -> Concat [text "not "; tprim x]
+    | Tneg (Neg_class c) -> Concat [text "not "; to_doc (snd c)]
     | Tvar n ->
       let (_, ety) = Env.expand_type env (mk (Reason.Rnone, Tvar n)) in
       begin
@@ -416,22 +446,42 @@ module Full = struct
               text "[rec]"
             else if
               (* For hh_show_env we further show the type variable number *)
-              show_verbose env
+              show_verbose penv
             then
               text ("#" ^ string_of_int n)
             else
               Nothing
           in
           let st = ISet.add n st in
-          Concat [prepend; ty to_doc st env ety]
+          Concat [prepend; ty to_doc st penv ety]
       end
-    | Tfun ft -> tfun ~ty to_doc st env ft
+    | Tfun ft -> tfun ~ty to_doc st penv ft
     | Tclass ((_, s), exact, tyl) ->
       let d = to_doc s ^^ list "<" k tyl ">" in
       begin
         match exact with
         | Exact when !debug_mode -> Concat [text "exact"; Space; d]
         | _ -> d
+      end
+    | Tgeneric (s, []) when String.contains s '$' ->
+      (* Saves a call to is_prefix then chop_prefix_exn *)
+      begin
+        match String.chop_prefix ~prefix:"Tctx" s with
+        | Some var -> (* Tctx$f *) to_doc ("ctx " ^ var)
+        | None ->
+          begin
+            match String.rsplit2 s ~on:'@' with
+            | Some (tvar, cst) ->
+              (* T$x@C *) to_doc (String.drop_prefix tvar 1 ^ "::" ^ cst)
+            | None ->
+              (* T$x *)
+              begin
+                match get_constraints_on_tparam env s with
+                | [(_, Ast_defs.Constraint_as, ty)] ->
+                  locl_ty to_doc st (Loclenv env) ty
+                | _ -> (* this case shouldn't occur *) to_doc s
+              end
+          end
       end
     | Tunapplied_alias s
     | Tnewtype (s, [], _)
@@ -441,12 +491,7 @@ module Full = struct
     | Tgeneric (s, tyl) ->
       to_doc s ^^ list "<" k tyl ">"
     | Tdependent (dep, cstr) ->
-      let cstr_info =
-        if !debug_mode then
-          Concat [Space; text "as"; Space; k cstr]
-        else
-          Nothing
-      in
+      let cstr_info = Concat [Space; text "as"; Space; k cstr] in
       Concat [to_doc @@ DependentKind.to_string dep; cstr_info]
     (* Don't strip_ns here! We want the FULL type, including the initial slash.
       *)
@@ -471,7 +516,7 @@ module Full = struct
         | (false, false, []) -> text "nothing"
         (* type isn't nullable or dynamic *)
         | (false, false, [ty]) ->
-          if show_verbose env then
+          if verbose then
             Concat [text "("; k ty; text ")"]
           else
             k ty
@@ -479,37 +524,37 @@ module Full = struct
           delimited_list (Space ^^ text "|" ^^ Space) "(" k nonnull ")"
         (* Type only is null *)
         | (false, true, []) ->
-          if show_verbose env then
+          if verbose then
             text "(null)"
           else
             text "null"
         (* Type only is dynamic *)
         | (true, false, []) ->
-          if show_verbose env then
+          if verbose then
             text "(dynamic)"
           else
             text "dynamic"
         (* Type is nullable single type *)
         | (false, true, [ty]) ->
-          if show_verbose env then
+          if verbose then
             Concat [text "(null |"; k ty; text ")"]
           else
             Concat [text "?"; k ty]
         (* Type is like single type *)
         | (true, false, [ty]) ->
-          if show_verbose env then
+          if verbose then
             Concat [text "(dynamic |"; k ty; text ")"]
           else
             Concat [text "~"; k ty]
         (* Type is like null *)
         | (true, true, []) ->
-          if show_verbose env then
+          if verbose then
             text "(dynamic | null)"
           else
             text "~null"
         (* Type is like nullable single type *)
         | (true, true, [ty]) ->
-          if show_verbose env then
+          if verbose then
             Concat [text "(dynamic | null |"; k ty; text ")"]
           else
             Concat [text "~?"; k ty]
@@ -546,7 +591,7 @@ module Full = struct
         match (null, nonnull) with
         (* type isn't nullable *)
         | ([], [ty]) ->
-          if show_verbose env then
+          if verbose then
             Concat [text "("; k ty; text ")"]
           else
             k ty
@@ -554,13 +599,13 @@ module Full = struct
           delimited_list (Space ^^ text "|" ^^ Space) "(" k nonnull ")"
         (* Type only is null *)
         | (_, []) ->
-          if show_verbose env then
+          if verbose then
             text "(null)"
           else
             text "null"
         (* Type is nullable single type *)
         | (_, [ty]) ->
-          if show_verbose env then
+          if verbose then
             Concat [text "(null |"; k ty; text ")"]
           else
             Concat [text "?"; k ty]
@@ -577,13 +622,11 @@ module Full = struct
       delimited_list (Space ^^ text "&" ^^ Space) "(" k tyl ")"
     | Tobject -> text "object"
     | Tshape (shape_kind, fdm) -> tshape k to_doc shape_kind fdm
-    | Tpu (base, (_, enum)) -> pu_concat k base enum
-    | Tpu_type_access ((_, member), (_, tyname)) ->
-      text member ^^ text (":@" ^ tyname)
+    | Taccess (root_ty, id) -> Concat [k root_ty; text "::"; to_doc (snd id)]
 
-  let rec constraint_type_ to_doc st env x =
-    let k lty = locl_ty to_doc st env lty in
-    let k' cty = constraint_type to_doc st env cty in
+  let rec constraint_type_ to_doc st penv x =
+    let k lty = locl_ty to_doc st penv lty in
+    let k' cty = constraint_type to_doc st penv cty in
     match x with
     | Thas_member hm -> thas_member k hm
     | Tdestructure d -> tdestructure k d
@@ -591,101 +634,85 @@ module Full = struct
     | TCintersection (lty, cty) ->
       Concat [text "("; k lty; text "&"; k' cty; text ")"]
 
-  and constraint_type to_doc st env ty =
+  and constraint_type to_doc st penv ty =
     let (r, x) = deref_constraint_type ty in
-    let d = constraint_type_ to_doc st env x in
+    let d = constraint_type_ to_doc st penv x in
     match r with
     | Typing_reason.Rsolve_fail _ -> Concat [text "{suggest:"; d; text "}"]
     | _ -> d
 
-  let internal_type to_doc st env ty =
+  let internal_type to_doc st penv ty =
     match ty with
-    | LoclType ty -> locl_ty to_doc st env ty
-    | ConstraintType ty -> constraint_type to_doc st env ty
-
-  (* For a given type parameter, construct a list of its constraints *)
-  let get_constraints_on_tparam env tparam =
-    let kind_opt = Env.get_pos_and_kind_of_generic env tparam in
-    match kind_opt with
-    | None -> []
-    | Some (_pos, kind) ->
-      (* Use the names of the parameters themselves to present bounds
-         depending on other parameters *)
-      let param_names = Type_parameter_env.get_parameter_names kind in
-      let params =
-        List.map param_names (fun name ->
-            Typing_make_type.generic Reason.none name)
-      in
-      let lower = Env.get_lower_bounds env tparam params in
-      let upper = Env.get_upper_bounds env tparam params in
-      let equ = Env.get_equal_bounds env tparam params in
-      (* If we have an equality we can ignore the other bounds *)
-      if not (TySet.is_empty equ) then
-        List.map (TySet.elements equ) (fun ty ->
-            (tparam, Ast_defs.Constraint_eq, ty))
-      else
-        List.map (TySet.elements lower) (fun ty ->
-            (tparam, Ast_defs.Constraint_super, ty))
-        @ List.map (TySet.elements upper) (fun ty ->
-              (tparam, Ast_defs.Constraint_as, ty))
+    | LoclType ty -> locl_ty to_doc st penv ty
+    | ConstraintType ty -> constraint_type to_doc st penv ty
 
   let to_string ~ty to_doc env x =
     ty to_doc ISet.empty env x
     |> Libhackfmt.format_doc_unbroken format_env
     |> String.strip
 
+  (* Print a suffix for type parameters in typ that have constraints
+   * If the type itself is a type parameter with a single constraint, just
+   * represent this as `as t` or `super t`, otherwise use full `where` syntax
+   *)
   let constraints_for_type to_doc env typ =
     let tparams = SSet.elements (Env.get_tparams env typ) in
-    let constraints = List.concat_map tparams (get_constraints_on_tparam env) in
-    if List.is_empty constraints then
-      None
-    else
-      Some
-        (Concat
-           [
-             text "where";
-             Space;
-             WithRule
-               ( Rule.Parental,
-                 list_sep
-                   comma_sep
-                   begin
-                     fun (tparam, ck, typ) ->
-                     Concat
-                       [
-                         text tparam;
-                         tparam_constraint
-                           ~ty:locl_ty
-                           to_doc
-                           ISet.empty
-                           env
-                           (ck, typ);
-                       ]
-                   end
-                   constraints );
-           ])
+    let constraints =
+      List.concat_map tparams ~f:(get_constraints_on_tparam env)
+    in
+    let (_, typ) = Env.expand_type env typ in
+    let penv = Loclenv env in
+    match (get_node typ, constraints) with
+    | (_, []) -> Nothing
+    | (Tgeneric (tparam, []), [(tparam', ck, typ)])
+      when String.equal tparam tparam' ->
+      tparam_constraint ~ty:locl_ty to_doc ISet.empty penv (ck, typ)
+    | _ ->
+      Concat
+        [
+          Newline;
+          text "where";
+          Space;
+          WithRule
+            ( Rule.Parental,
+              list_sep
+                comma_sep
+                begin
+                  fun (tparam, ck, typ) ->
+                  Concat
+                    [
+                      text tparam;
+                      tparam_constraint
+                        ~ty:locl_ty
+                        to_doc
+                        ISet.empty
+                        penv
+                        (ck, typ);
+                    ]
+                end
+                constraints );
+        ]
 
-  let to_string_rec env n x =
-    locl_ty Doc.text (ISet.add n ISet.empty) env x
+  let to_string_rec penv n x =
+    locl_ty Doc.text (ISet.add n ISet.empty) penv x
     |> Libhackfmt.format_doc_unbroken format_env
     |> String.strip
 
   let to_string_strip_ns ~ty env x = to_string ~ty text_strip_ns env x
 
-  let to_string_decl ctx (x : decl_ty) =
+  let to_string_decl (x : decl_ty) =
     let ty = decl_ty in
-    let env = Typing_env.empty ctx Relative_path.default ~droot:None in
-    to_string ~ty Doc.text env x
+    to_string ~ty Doc.text Declenv x
 
-  let fun_to_string ctx (x : decl_fun_type) =
+  let fun_to_string (x : decl_fun_type) =
     let ty = decl_ty in
-    let env = Typing_env.empty ctx Relative_path.default ~droot:None in
-    fun_type ~ty Doc.text ISet.empty env x
+    fun_type ~ty Doc.text ISet.empty Declenv x
     |> Libhackfmt.format_doc_unbroken format_env
     |> String.strip
 
   let to_string_with_identity env x occurrence definition_opt =
     let ty = locl_ty in
+    let penv = Loclenv env in
     let prefix =
       SymbolDefinition.(
         let print_mod m = text (string_of_modifier m) ^^ Space in
@@ -697,35 +724,34 @@ module Full = struct
             | [] -> Nothing
             (* It looks weird if we line break after a single modifier. *)
             | [m] -> print_mod m
-            | ms -> Concat (List.map ms print_mod) ^^ SplitWith Cost.Base
+            | ms -> Concat (List.map ms ~f:print_mod) ^^ SplitWith Cost.Base
           end)
     in
     let body =
       SymbolOccurrence.(
         match (occurrence, get_node x) with
-        | ({ type_ = Class; name; _ }, _) ->
+        | ({ type_ = Class _; name; _ }, _) ->
           Concat [text "class"; Space; text_strip_ns name]
         | ({ type_ = Function; name; _ }, Tfun ft)
         | ({ type_ = Method (_, name); _ }, Tfun ft) ->
           (* Use short names for function types since they display a lot more
-           information to the user. *)
+             information to the user. *)
           Concat
             [
               text "function";
               Space;
               text_strip_ns name;
-              fun_type ~ty text_strip_ns ISet.empty env ft;
+              fun_type ~ty text_strip_ns ISet.empty penv ft;
             ]
         | ({ type_ = Property _; name; _ }, _)
+        | ({ type_ = XhpLiteralAttr _; name; _ }, _)
         | ({ type_ = ClassConst _; name; _ }, _)
-        | ({ type_ = GConst; name; _ }, _) ->
-          Concat [ty text_strip_ns ISet.empty env x; Space; text_strip_ns name]
-        | _ -> ty text_strip_ns ISet.empty env x)
+        | ({ type_ = GConst; name; _ }, _)
+        | ({ type_ = EnumClassLabel _; name; _ }, _) ->
+          Concat [ty text_strip_ns ISet.empty penv x; Space; text_strip_ns name]
+        | _ -> ty text_strip_ns ISet.empty penv x)
     in
-    let constraints =
-      constraints_for_type text_strip_ns env x
-      |> Option.value_map ~default:Nothing ~f:(fun x -> Concat [Newline; x])
-    in
+    let constraints = constraints_for_type text_strip_ns env x in
     Concat [prefix; body; constraints]
     |> Libhackfmt.format_doc format_env
     |> String.strip
@@ -756,7 +782,6 @@ module ErrorString = struct
     | Nast.Tresource -> "a resource"
     | Nast.Tarraykey -> "an array key (int | string)"
     | Nast.Tnoreturn -> "noreturn (throws or exits)"
-    | Nast.Tatom s -> "a PU atom " ^ s
 
   let varray = "a varray"
 
@@ -775,6 +800,7 @@ module ErrorString = struct
     | Tintersection [] -> "a mixed value"
     | Tintersection l -> intersection env l
     | Tvarray_or_darray _ -> varray_or_darray
+    | Tvec_or_dict _ -> "a vec_or_dict"
     | Tvarray _ -> varray
     | Tdarray (_, _) -> darray
     | Ttuple l -> "a tuple of size " ^ string_of_int (List.length l)
@@ -796,31 +822,22 @@ module ErrorString = struct
     | Tnewtype (x, _, _) when String.equal x SN.Classes.cTypename ->
       "a typename string"
     | Tnewtype (x, tyl, _) -> "a value of type " ^ strip_ns x ^ inst env tyl
-    | Tdependent (dep, cstr) -> dependent env dep cstr
+    | Tdependent (dep, _cstr) -> dependent dep
     | Tclass ((_, x), Exact, tyl) ->
       "an object of exactly the class " ^ strip_ns x ^ inst env tyl
     | Tclass ((_, x), Nonexact, tyl) ->
       "an object of type " ^ strip_ns x ^ inst env tyl
     | Tobject -> "an object"
     | Tshape _ -> "a shape"
-    | Tpu (ty, (_, enum)) ->
-      let ty =
-        match get_node ty with
-        | Tclass ((_, x), _, tyl) -> strip_ns x ^ inst env tyl
-        | _ -> "..."
-      in
-      "the pocket universe " ^ ty ^ ":@" ^ enum
-    | Tpu_type_access ((_, member), (_, tyname)) ->
-      "the projected Pocket Universe dependent type "
-      ^ tyname
-      ^ " associated with the type parameter"
-      ^ member
     | Tunapplied_alias _ ->
       (* FIXME it seems like this function is only for
          fully-applied types? Tunapplied_alias should only appear
          in a type argument position then, which inst below
-         prints with a different function (namely Full.locl_ty)  *)
+         prints with a different function (namely Full.locl_ty) *)
       failwith "Tunapplied_alias is not a type"
+    | Taccess (_ty, _id) -> "a type constant"
+    | Tneg (Neg_prim p) -> "anything but a " ^ tprim p
+    | Tneg (Neg_class (_, c)) -> "anything but a " ^ strip_ns c
 
   and inst env tyl =
     if List.is_empty tyl then
@@ -830,27 +847,22 @@ module ErrorString = struct
           "<"
           ^ String.concat
               ~sep:", "
-              (List.map tyl ~f:(Full.to_string_strip_ns ~ty:Full.locl_ty env))
+              (List.map
+                 tyl
+                 ~f:(Full.to_string_strip_ns ~ty:Full.locl_ty (Loclenv env)))
           ^ ">")
 
-  and dependent env dep cstr =
+  and dependent dep =
     let x = strip_ns @@ DependentKind.to_string dep in
     match dep with
-    | DTcls c ->
-      to_string env cstr
-      ^ " (known to be exactly the class '"
-      ^ strip_ns c
-      ^ "')"
-    | DTthis
-    | DTexpr _ ->
-      "the expression dependent type " ^ x
+    | DTexpr _ -> "the expression dependent type " ^ x
 
   and union env l =
     let (null, nonnull) =
-      List.partition_tf l (fun ty ->
+      List.partition_tf l ~f:(fun ty ->
           equal_locl_ty_ (get_node ty) (Tprim Nast.Tnull))
     in
-    let l = List.map nonnull (to_string env) in
+    let l = List.map nonnull ~f:(to_string env) in
     let s = List.fold_right l ~f:SSet.add ~init:SSet.empty in
     let l = SSet.elements s in
     if List.is_empty null then
@@ -900,7 +912,6 @@ module Json = struct
     | Nast.Tresource -> "resource"
     | Nast.Tarraykey -> "arraykey"
     | Nast.Tnoreturn -> "noreturn"
-    | Nast.Tatom s -> s
 
   let param_mode_to_string = function
     | FPnormal -> "normal"
@@ -914,10 +925,8 @@ module Json = struct
   let rec from_type : env -> locl_ty -> json =
    fun env ty ->
     (* Helpers to construct fields that appear in JSON rendering of type *)
-    let kind p k =
-      [("src_pos", Pos.json (Pos.to_absolute p)); ("kind", JSON_String k)]
-    in
-    let args tys = [("args", JSON_Array (List.map tys (from_type env)))] in
+    let kind p k = [("src_pos", Pos_or_decl.json p); ("kind", JSON_String k)] in
+    let args tys = [("args", JSON_Array (List.map tys ~f:(from_type env)))] in
     let typ ty = [("type", from_type env ty)] in
     let result ty = [("result", from_type env ty)] in
     let obj x = JSON_Object x in
@@ -928,9 +937,9 @@ module Json = struct
       let shape_field_name_to_json shape_field =
         (* TODO: need to update userland tooling? *)
         match shape_field with
-        | Ast_defs.SFlit_int (_, s) -> Hh_json.JSON_Number s
-        | Ast_defs.SFlit_str (_, s) -> Hh_json.JSON_String s
-        | Ast_defs.SFclass_const ((_, s1), (_, s2)) ->
+        | Typing_defs.TSFlit_int (_, s) -> Hh_json.JSON_Number s
+        | Typing_defs.TSFlit_str (_, s) -> Hh_json.JSON_String s
+        | Typing_defs.TSFclass_const ((_, s1), (_, s2)) ->
           Hh_json.JSON_Array [Hh_json.JSON_String s1; Hh_json.JSON_String s2]
       in
       obj
@@ -938,7 +947,7 @@ module Json = struct
       @ optional v.sft_optional
       @ typ v.sft_ty
     in
-    let fields fl = [("fields", JSON_Array (List.map fl make_field))] in
+    let fields fl = [("fields", JSON_Array (List.map fl ~f:make_field))] in
     let as_type ty = [("as", from_type env ty)] in
     match (get_pos ty, get_node ty) with
     | (_, Tvar n) ->
@@ -961,20 +970,10 @@ module Json = struct
       obj @@ kind p "enum" @ name s @ as_type ty
     | (p, Tnewtype (s, tys, ty)) ->
       obj @@ kind p "newtype" @ name s @ args tys @ as_type ty
-    | (p, Tdependent (DTcls c, ty)) ->
-      obj
-      @@ kind p "path"
-      @ [("type", obj @@ kind (get_pos ty) "class" @ name c @ args [])]
-      @ as_type ty
     | (p, Tdependent (DTexpr _, ty)) ->
       obj
       @@ kind p "path"
       @ [("type", obj @@ kind (get_pos ty) "expr")]
-      @ as_type ty
-    | (p, Tdependent (DTthis, ty)) ->
-      obj
-      @@ kind p "path"
-      @ [("type", obj @@ kind (get_pos ty) "this")]
       @ as_type ty
     | (p, Toption ty) ->
       begin
@@ -983,6 +982,8 @@ module Json = struct
         | _ -> obj @@ kind p "nullable" @ args [ty]
       end
     | (p, Tprim tp) -> obj @@ kind p "primitive" @ name (prim tp)
+    | (p, Tneg (Neg_prim tp)) -> obj @@ kind p "negation" @ name (prim tp)
+    | (p, Tneg (Neg_class (_, c))) -> obj @@ kind p "negation" @ name c
     | (p, Tclass ((_, cid), _, tys)) ->
       obj @@ kind p "class" @ name cid @ args tys
     | (p, Tobject) -> obj @@ kind p "object"
@@ -996,7 +997,7 @@ module Json = struct
       @@ kind p "shape"
       @ is_array false
       @ [("fields_known", JSON_Bool fields_known)]
-      @ fields (Nast.ShapeMap.bindings fl)
+      @ fields (TShapeMap.bindings fl)
     | (p, Tunion []) -> obj @@ kind p "nothing"
     | (_, Tunion [ty]) -> from_type env ty
     | (p, Tunion tyl) -> obj @@ kind p "union" @ args tyl
@@ -1004,31 +1005,23 @@ module Json = struct
     | (_, Tintersection [ty]) -> from_type env ty
     | (p, Tintersection tyl) -> obj @@ kind p "intersection" @ args tyl
     | (p, Tfun ft) ->
-      let fun_kind p =
-        if get_ft_is_coroutine ft then
-          kind p "coroutine"
-        else
-          kind p "function"
-      in
+      let fun_kind p = kind p "function" in
       let callconv cc =
         [("callConvention", JSON_String (param_mode_to_string cc))]
       in
       let param fp =
         obj @@ callconv (get_fp_mode fp) @ typ fp.fp_type.et_type
       in
-      let params fps = [("params", JSON_Array (List.map fps param))] in
+      let params fps = [("params", JSON_Array (List.map fps ~f:param))] in
       obj @@ fun_kind p @ params ft.ft_params @ result ft.ft_ret.et_type
     | (p, Tvarray_or_darray (ty1, ty2)) ->
       obj @@ kind p "varray_or_darray" @ args [ty1; ty2]
+    | (p, Tvec_or_dict (ty1, ty2)) ->
+      obj @@ kind p "vec_or_dict" @ args [ty1; ty2]
     | (p, Tdarray (ty1, ty2)) -> obj @@ kind p "darray" @ args [ty1; ty2]
     | (p, Tvarray ty) -> obj @@ kind p "varray" @ args [ty]
-    | (p, Tpu (base, enum)) ->
-      obj @@ kind p "pocket_universe" @ args [base] @ name (snd enum)
-    | (p, Tpu_type_access (member, typ)) ->
-      obj
-      @@ kind p "pocket_universe_type_access"
-      @ name (snd member)
-      @ name (snd typ)
+    (* TODO akenn *)
+    | (p, Taccess (ty, _id)) -> obj @@ kind p "type_constant" @ args [ty]
 
   type deserialized_result = (locl_ty, deserialization_error) result
 
@@ -1141,19 +1134,13 @@ module Json = struct
           ids >>= fun _ids ->
           begin
             match path_kind with
-            | "class" ->
-              get_string "name" (type_json, type_keytrace)
-              >>= fun (class_name, _class_name_keytrace) ->
-              aux_as json ~keytrace >>= fun as_ty ->
-              ty (Tdependent (DTcls class_name, as_ty))
             | "expr" ->
               not_supported
                 ~message:
                   "Cannot deserialize path-dependent type involving an expression"
                 ~keytrace
             | "this" ->
-              aux_as json ~keytrace >>= fun as_ty ->
-              ty (Tdependent (DTthis, as_ty))
+              aux_as json ~keytrace >>= fun _as_ty -> ty (Tgeneric ("this", []))
             | path_kind ->
               deserialization_error
                 ~message:("Unknown path kind: " ^ path_kind)
@@ -1272,12 +1259,12 @@ module Json = struct
             | Some class_ty -> Cls.pos class_ty
             | None ->
               (* Class may not exist (such as in non-strict modes). *)
-              Pos.none
+              Pos_or_decl.none
           in
           get_array "args" (json, keytrace) >>= fun (args, _args_keytrace) ->
           aux_args args ~keytrace >>= fun tyl ->
           (* NB: "class" could have come from either a `Tapply` or a `Tclass`. Right
-      now, we always return a `Tclass`. *)
+           * now, we always return a `Tclass`. *)
           ty (Tclass ((class_pos, name), Nonexact, tyl))
         | "object" -> ty Tobject
         | "shape" ->
@@ -1286,25 +1273,25 @@ module Json = struct
           get_bool "is_array" (json, keytrace)
           >>= fun (is_array, _is_array_keytrace) ->
           let unserialize_field field_json ~keytrace :
-              ( Ast_defs.shape_field_name
+              ( Typing_defs.tshape_field_name
                 * locl_phase Typing_defs.shape_field_type,
                 deserialization_error )
               result =
             get_val "name" (field_json, keytrace)
             >>= fun (name, name_keytrace) ->
             (* We don't need position information for shape field names. They're
-        only used for error messages and the like. *)
-            let dummy_pos = Pos.none in
+             * only used for error messages and the like. *)
+            let dummy_pos = Pos_or_decl.none in
             begin
               match name with
               | Hh_json.JSON_Number name ->
-                Ok (Ast_defs.SFlit_int (dummy_pos, name))
+                Ok (Typing_defs.TSFlit_int (dummy_pos, name))
               | Hh_json.JSON_String name ->
-                Ok (Ast_defs.SFlit_str (dummy_pos, name))
+                Ok (Typing_defs.TSFlit_str (dummy_pos, name))
               | Hh_json.JSON_Array
                   [Hh_json.JSON_String name1; Hh_json.JSON_String name2] ->
                 Ok
-                  (Ast_defs.SFclass_const
+                  (Typing_defs.TSFclass_const
                      ((dummy_pos, name1), (dummy_pos, name2)))
               | _ ->
                 deserialization_error
@@ -1334,7 +1321,7 @@ module Json = struct
           >>= fun fields ->
           if is_array then
             (* We don't have enough information to perfectly reconstruct shape-like
-        arrays. We're missing the keys in the shape map of the shape fields. *)
+             * arrays. We're missing the keys in the shape map of the shape fields. *)
             not_supported
               ~message:"Cannot deserialize shape-like array type"
               ~keytrace
@@ -1348,10 +1335,8 @@ module Json = struct
                 Open_shape
             in
             let fields =
-              List.fold
-                fields
-                ~init:Nast.ShapeMap.empty
-                ~f:(fun shape_map (k, v) -> Nast.ShapeMap.add k v shape_map)
+              List.fold fields ~init:TShapeMap.empty ~f:(fun shape_map (k, v) ->
+                  TShapeMap.add k v shape_map)
             in
             ty (Tshape (shape_kind, fields))
         | "union" ->
@@ -1360,8 +1345,7 @@ module Json = struct
         | "intersection" ->
           get_array "args" (json, keytrace) >>= fun (args, keytrace) ->
           aux_args args ~keytrace >>= fun tyl -> ty (Tintersection tyl)
-        | ("function" | "coroutine") as kind ->
-          let _ft_is_coroutine = String.equal kind "coroutine" in
+        | "function" ->
           get_array "params" (json, keytrace)
           >>= fun (params, params_keytrace) ->
           let params =
@@ -1386,17 +1370,19 @@ module Json = struct
                 >>= fun param_type ->
                 Ok
                   {
-                    fp_type = { et_type = param_type; et_enforced = false };
+                    fp_type = { et_type = param_type; et_enforced = Unenforced };
                     fp_flags =
                       make_fp_flags
                         ~mode:callconv
                         ~accept_disposable:false
-                        ~mutability:None
-                        ~has_default:false;
+                        ~has_default:false
+                        ~ifc_external:false
+                        ~ifc_can_call:false
+                        ~via_label:false
+                        ~readonly:false;
                     (* Dummy values: these aren't currently serialized. *)
-                    fp_pos = Pos.none;
+                    fp_pos = Pos_or_decl.none;
                     fp_name = None;
-                    fp_rx_annotation = None;
                   })
           in
           params >>= fun ft_params ->
@@ -1407,17 +1393,14 @@ module Json = struct
                {
                  ft_params;
                  ft_implicit_params =
-                   {
-                     capability =
-                       Typing_make_type.default_capability Reason.Rnone;
-                   };
-                 ft_ret = { et_type = ft_ret; et_enforced = false };
+                   { capability = CapDefaults Pos_or_decl.none };
+                 ft_ret = { et_type = ft_ret; et_enforced = Unenforced };
                  (* Dummy values: these aren't currently serialized. *)
                  ft_arity = Fstandard;
                  ft_tparams = [];
                  ft_where_constraints = [];
                  ft_flags = 0;
-                 ft_reactive = Nonreactive;
+                 ft_ifc_decl = default_ifc_fun_decl;
                })
         | _ ->
           deserialization_error
@@ -1457,8 +1440,8 @@ module Json = struct
         | Error access_failure ->
           deserialization_error
             ~message:
-              ( "Invalid as-constraint: "
-              ^ Hh_json.Access.access_failure_to_string access_failure )
+              ("Invalid as-constraint: "
+              ^ Hh_json.Access.access_failure_to_string access_failure)
             ~keytrace)
     in
     aux json ~keytrace
@@ -1483,12 +1466,8 @@ module PrintClass = struct
     let contents = SSet.fold (fun x acc -> x ^ " " ^ acc) s "" in
     Printf.sprintf "Set( %s)" contents
 
-  let sseq s =
-    let contents = Sequence.fold s ~init:"" ~f:(fun acc x -> x ^ " " ^ acc) in
-    Printf.sprintf "Seq( %s)" contents
-
-  let pos p =
-    let (line, start, end_) = Pos.info_pos p in
+  let pos_or_decl p =
+    let (line, start, end_) = Pos_or_decl.line_start_end_columns p in
     Printf.sprintf "(line %d: chars %d-%d)" line start end_
 
   let class_kind = function
@@ -1498,10 +1477,10 @@ module PrintClass = struct
     | Ast_defs.Ctrait -> "Ctrait"
     | Ast_defs.Cenum -> "Cenum"
 
-  let constraint_ty tcopt = function
-    | (Ast_defs.Constraint_as, ty) -> "as " ^ Full.to_string_decl tcopt ty
-    | (Ast_defs.Constraint_eq, ty) -> "= " ^ Full.to_string_decl tcopt ty
-    | (Ast_defs.Constraint_super, ty) -> "super " ^ Full.to_string_decl tcopt ty
+  let constraint_ty = function
+    | (Ast_defs.Constraint_as, ty) -> "as " ^ Full.to_string_decl ty
+    | (Ast_defs.Constraint_eq, ty) -> "= " ^ Full.to_string_decl ty
+    | (Ast_defs.Constraint_super, ty) -> "super " ^ Full.to_string_decl ty
 
   let variance = function
     | Ast_defs.Covariant -> "+"
@@ -1509,7 +1488,6 @@ module PrintClass = struct
     | Ast_defs.Invariant -> ""
 
   let rec tparam
-      tcopt
       {
         tp_variance = var;
         tp_name = (position, name);
@@ -1522,17 +1500,17 @@ module PrintClass = struct
       if List.is_empty params then
         ""
       else
-        "<" ^ tparam_list tcopt params ^ ">"
+        "<" ^ tparam_list params ^ ">"
     in
     variance var
-    ^ pos position
+    ^ pos_or_decl position
     ^ " "
     ^ name
     ^ params_string
     ^ " "
     ^ List.fold_right
         cstrl
-        ~f:(fun x acc -> constraint_ty tcopt x ^ " " ^ acc)
+        ~f:(fun x acc -> constraint_ty x ^ " " ^ acc)
         ~init:""
     ^
     match reified with
@@ -1540,15 +1518,16 @@ module PrintClass = struct
     | Nast.SoftReified -> " soft reified"
     | Nast.Reified -> " reified"
 
-  and tparam_list ctx l =
-    List.fold_right l ~f:(fun x acc -> tparam ctx x ^ ", " ^ acc) ~init:""
+  and tparam_list l =
+    List.fold_right l ~f:(fun x acc -> tparam x ^ ", " ^ acc) ~init:""
 
-  let class_elt ctx ({ ce_visibility; ce_type = (lazy ty); _ } as ce) =
+  let class_elt ({ ce_visibility; ce_type = (lazy ty); _ } as ce) =
     let vis =
       match ce_visibility with
       | Vpublic -> "public"
       | Vprivate _ -> "private"
       | Vprotected _ -> "protected"
+      | Vinternal _ -> "internal"
     in
     let synth =
       if get_ce_synthesized ce then
@@ -1556,18 +1535,18 @@ module PrintClass = struct
       else
         ""
     in
-    let type_ = Full.to_string_decl ctx ty in
+    let type_ = Full.to_string_decl ty in
     synth ^ vis ^ " " ^ type_
 
-  let class_elts tcopt m =
+  let class_elts m =
     List.fold m ~init:"" ~f:(fun acc (field, v) ->
-        "(" ^ field ^ ": " ^ class_elt tcopt v ^ ") " ^ acc)
+        "(" ^ field ^ ": " ^ class_elt v ^ ") " ^ acc)
 
-  let class_elts_with_breaks tcopt m =
+  let class_elts_with_breaks m =
     List.fold m ~init:"" ~f:(fun acc (field, v) ->
-        "\n" ^ indent ^ field ^ ": " ^ class_elt tcopt v ^ acc)
+        "\n" ^ indent ^ field ^ ": " ^ class_elt v ^ acc)
 
-  let class_consts tcopt m =
+  let class_consts m =
     List.fold m ~init:"" ~f:(fun acc (field, cc) ->
         let synth =
           if cc.cc_synthesized then
@@ -1575,56 +1554,56 @@ module PrintClass = struct
           else
             ""
         in
-        "("
-        ^ field
-        ^ ": "
-        ^ synth
-        ^ Full.to_string_decl tcopt cc.cc_type
-        ^ ") "
-        ^ acc)
+        "(" ^ field ^ ": " ^ synth ^ Full.to_string_decl cc.cc_type ^ ") " ^ acc)
 
   let typeconst
-      tcopt
       {
-        ttc_abstract = _;
+        ttc_synthesized = synthetic;
         ttc_name = tc_name;
-        ttc_constraint = tc_constraint;
-        ttc_type = tc_type;
+        ttc_kind = kind;
         ttc_origin = origin;
         ttc_enforceable = (_, enforceable);
         ttc_reifiable = reifiable;
+        ttc_concretized = _;
+        ttc_is_ctx = _;
       } =
     let name = snd tc_name in
-    let ty x = Full.to_string_decl tcopt x in
-    let constraint_ =
-      match tc_constraint with
-      | None -> ""
-      | Some x -> " as " ^ ty x
-    in
-    let type_ =
-      match tc_type with
-      | None -> ""
-      | Some x -> " = " ^ ty x
+    let ty x = Full.to_string_decl x in
+    let type_info =
+      match kind with
+      | TCConcrete { tc_type = t } -> Printf.sprintf " = %s" (ty t)
+      | TCPartiallyAbstract { patc_constraint = c; patc_type = t } ->
+        Printf.sprintf " as %s = %s" (ty c) (ty t)
+      | TCAbstract
+          { atc_as_constraint = a; atc_super_constraint = s; atc_default = d }
+        ->
+        let m = Option.value_map ~default:"" in
+        let a = m a ~f:(fun x -> Printf.sprintf " as %s" (ty x)) in
+        let s = m s ~f:(fun x -> Printf.sprintf " super %s" (ty x)) in
+        let d = m d ~f:(fun x -> Printf.sprintf " = %s" (ty x)) in
+        a ^ s ^ d
     in
     name
-    ^ constraint_
-    ^ type_
+    ^ type_info
     ^ " (origin:"
     ^ origin
     ^ ")"
-    ^ ( if enforceable then
+    ^ (if synthetic then
+        " (synthetic)"
+      else
+        "")
+    ^ (if enforceable then
         " (enforceable)"
       else
-        "" )
+        "")
     ^
     if Option.is_some reifiable then
       " (reifiable)"
     else
       ""
 
-  let typeconsts tcopt m =
-    List.fold m ~init:"" ~f:(fun acc (_, v) ->
-        "\n(" ^ typeconst tcopt v ^ ")" ^ acc)
+  let typeconsts m =
+    List.fold m ~init:"" ~f:(fun acc (_, v) -> "\n(" ^ typeconst v ^ ")" ^ acc)
 
   let ancestors ctx m =
     (* Format is as follows:
@@ -1639,32 +1618,30 @@ module PrintClass = struct
           match Decl_provider.get_class ctx field with
           | None -> ("!", "")
           | Some cls ->
-            ( ( if Cls.members_fully_known cls then
+            ( (if Cls.members_fully_known cls then
                 " "
               else
-                "~" ),
+                "~"),
               " (" ^ class_kind (Cls.kind cls) ^ ")" )
         in
-        let ty_str = Full.to_string_decl ctx v in
+        let ty_str = Full.to_string_decl v in
         "\n" ^ indent ^ sigil ^ " " ^ ty_str ^ kind ^ acc)
 
-  let constructor tcopt (ce_opt, consist) =
-    let consist_str =
-      Format.asprintf "(%a)" Pp_type.pp_consistent_kind consist
-    in
+  let constructor (ce_opt, (consist : consistent_kind)) =
+    let consist_str = Format.asprintf "(%a)" pp_consistent_kind consist in
     let ce_str =
       match ce_opt with
       | None -> ""
-      | Some ce -> class_elt tcopt ce
+      | Some ce -> class_elt ce
     in
     ce_str ^ consist_str
 
-  let req_ancestors tcopt xs =
+  let req_ancestors xs =
     List.fold xs ~init:"" ~f:(fun acc (_p, x) ->
-        acc ^ Full.to_string_decl tcopt x ^ ", ")
+        acc ^ Full.to_string_decl x ^ ", ")
 
   let class_type ctx c =
-    let tenv = Typing_env.empty ctx (Pos.filename (Cls.pos c)) None in
+    let tenv = Typing_env.empty ctx Relative_path.default ~droot:None in
     let tc_need_init = bool (Cls.need_init c) in
     let tc_members_fully_known = bool (Cls.members_fully_known c) in
     let tc_abstract = bool (Cls.abstract c) in
@@ -1680,18 +1657,19 @@ module PrintClass = struct
     in
     let tc_kind = class_kind (Cls.kind c) in
     let tc_name = Cls.name c in
-    let tc_tparams = tparam_list ctx (Cls.tparams c) in
-    let tc_consts = class_consts ctx (Cls.consts c) in
-    let tc_typeconsts = typeconsts ctx (Cls.typeconsts c) in
-    let tc_props = class_elts ctx (Cls.props c) in
-    let tc_sprops = class_elts ctx (Cls.sprops c) in
-    let tc_methods = class_elts_with_breaks ctx (Cls.methods c) in
-    let tc_smethods = class_elts_with_breaks ctx (Cls.smethods c) in
-    let tc_construct = constructor ctx (Cls.construct c) in
+    let tc_tparams = tparam_list (Cls.tparams c) in
+    let tc_consts = class_consts (Cls.consts c) in
+    let tc_typeconsts = typeconsts (Cls.typeconsts c) in
+    let tc_props = class_elts (Cls.props c) in
+    let tc_sprops = class_elts (Cls.sprops c) in
+    let tc_methods = class_elts_with_breaks (Cls.methods c) in
+    let tc_smethods = class_elts_with_breaks (Cls.smethods c) in
+    let tc_construct = constructor (Cls.construct c) in
     let tc_ancestors = ancestors ctx (Cls.all_ancestors c) in
-    let tc_req_ancestors = req_ancestors ctx (Cls.all_ancestor_reqs c) in
-    let tc_req_ancestors_extends = sseq (Cls.all_ancestor_req_names c) in
-    let tc_extends = sseq (Cls.all_extends_ancestors c) in
+    let tc_req_ancestors = req_ancestors (Cls.all_ancestor_reqs c) in
+    let tc_req_ancestors_extends =
+      String.concat ~sep:" " (Cls.all_ancestor_req_names c)
+    in
     "tc_need_init: "
     ^ tc_need_init
     ^ "\n"
@@ -1737,9 +1715,6 @@ module PrintClass = struct
     ^ "tc_ancestors: "
     ^ tc_ancestors
     ^ "\n"
-    ^ "tc_extends: "
-    ^ tc_extends
-    ^ "\n"
     ^ "tc_req_ancestors: "
     ^ tc_req_ancestors
     ^ "\n"
@@ -1750,16 +1725,25 @@ module PrintClass = struct
 end
 
 module PrintTypedef = struct
-  let typedef tcopt = function
-    | { td_pos; td_vis = _; td_tparams; td_constraint; td_type } ->
-      let tparaml_s = PrintClass.tparam_list tcopt td_tparams in
+  let typedef = function
+    | {
+        td_pos;
+        td_module = _;
+        td_vis = _;
+        td_tparams;
+        td_constraint;
+        td_type;
+        td_is_ctx;
+      } ->
+      let tparaml_s = PrintClass.tparam_list td_tparams in
       let constr_s =
         match td_constraint with
         | None -> "[None]"
-        | Some constr -> Full.to_string_decl tcopt constr
+        | Some constr -> Full.to_string_decl constr
       in
-      let ty_s = Full.to_string_decl tcopt td_type in
-      let pos_s = PrintClass.pos td_pos in
+      let ty_s = Full.to_string_decl td_type in
+      let pos_s = PrintClass.pos_or_decl td_pos in
+      let is_ctx_s = Bool.to_string td_is_ctx in
       "ty: "
       ^ ty_s
       ^ "\n"
@@ -1772,6 +1756,9 @@ module PrintTypedef = struct
       ^ "pos: "
       ^ pos_s
       ^ "\n"
+      ^ "is_ctx: "
+      ^ is_ctx_s
+      ^ "\n"
       ^ ""
 end
 
@@ -1782,18 +1769,21 @@ end
 let error ?(ignore_dynamic = false) env ty =
   ErrorString.to_string ~ignore_dynamic env ty
 
-let full env ty = Full.to_string ~ty:Full.locl_ty Doc.text env ty
+let full env ty = Full.to_string ~ty:Full.locl_ty Doc.text (Loclenv env) ty
 
-let full_i env ty = Full.to_string ~ty:Full.internal_type Doc.text env ty
+let full_i env ty =
+  Full.to_string ~ty:Full.internal_type Doc.text (Loclenv env) ty
 
-let full_rec env n ty = Full.to_string_rec env n ty
+let full_rec env n ty = Full.to_string_rec (Loclenv env) n ty
 
-let full_strip_ns env ty = Full.to_string_strip_ns ~ty:Full.locl_ty env ty
+let full_strip_ns env ty =
+  Full.to_string_strip_ns ~ty:Full.locl_ty (Loclenv env) ty
 
 let full_strip_ns_i env ty =
-  Full.to_string_strip_ns ~ty:Full.internal_type env ty
+  Full.to_string_strip_ns ~ty:Full.internal_type (Loclenv env) ty
 
-let full_strip_ns_decl env ty = Full.to_string_strip_ns ~ty:Full.decl_ty env ty
+let full_strip_ns_decl env ty =
+  Full.to_string_strip_ns ~ty:Full.decl_ty (Loclenv env) ty
 
 let full_with_identity = Full.to_string_with_identity
 
@@ -1819,20 +1809,26 @@ let debug_i env ty =
 
 let class_ ctx c = PrintClass.class_type ctx c
 
-let gconst ctx gc = Full.to_string_decl ctx (fst gc)
+let gconst gc = Full.to_string_decl gc.cd_type
 
-let fun_ ctx { fe_type; _ } = Full.to_string_decl ctx fe_type
+let fun_ { fe_type; _ } = Full.to_string_decl fe_type
 
-let fun_type ctx f = Full.fun_to_string ctx f
+let fun_type f = Full.fun_to_string f
 
-let typedef ctx td = PrintTypedef.typedef ctx td
+let typedef td = PrintTypedef.typedef td
 
 let constraints_for_type env ty =
-  Full.constraints_for_type Doc.text env ty
-  |> Option.map ~f:(Libhackfmt.format_doc_unbroken Full.format_env)
-  |> Option.map ~f:String.strip
+  Full.constraints_for_type Full.text_strip_ns env ty
+  |> Libhackfmt.format_doc_unbroken Full.format_env
+  |> String.strip
 
 let class_kind c_kind final = ErrorString.class_kind c_kind final
+
+let coercion_direction cd =
+  match cd with
+  | CoerceToDynamic -> "to"
+  | CoerceFromDynamic -> "from"
+  | PartialCoerceFromDynamic (_, (_, cn)) -> "partial from " ^ cn
 
 let subtype_prop env prop =
   let rec subtype_prop = function
@@ -1843,7 +1839,80 @@ let subtype_prop env prop =
     | Disj (_, ps) ->
       "(" ^ String.concat ~sep:" || " (List.map ~f:subtype_prop ps) ^ ")"
     | IsSubtype (ty1, ty2) -> debug_i env ty1 ^ " <: " ^ debug_i env ty2
-    | Coerce (ty1, ty2) -> debug env ty1 ^ " ~> " ^ debug env ty2
+    | Coerce (cd, ty1, ty2) ->
+      debug env ty1 ^ " " ^ coercion_direction cd ^ "~> " ^ debug env ty2
   in
   let p_str = subtype_prop prop in
   p_str
+
+let coeffects env ty =
+  let to_string ty =
+    with_blank_tyvars (fun () ->
+        Full.to_string
+          ~ty:Full.locl_ty
+          (fun s -> Doc.text (Utils.strip_all_ns s))
+          (Loclenv env)
+          ty)
+  in
+  let exception UndesugarableCoeffect of locl_ty in
+  let rec desugar_simple_intersection (ty : locl_ty) : string list =
+    match snd @@ deref ty with
+    | Tvar v ->
+      (* We are interested in the upper bounds because coeffects are parameters (contravariant).
+       * Similar to Typing_subtype.describe_ty_super, we ignore Tvars appearing in bounds *)
+      let upper_bounds =
+        ITySet.elements (Typing_env.get_tyvar_upper_bounds env v)
+        |> List.filter_map ~f:(function
+               | LoclType lty ->
+                 (match deref lty with
+                 | (_, Tvar _) -> None
+                 | _ -> Some lty)
+               | ConstraintType _ -> None)
+      in
+      List.concat_map ~f:desugar_simple_intersection upper_bounds
+    | Tintersection tyl -> List.concat_map ~f:desugar_simple_intersection tyl
+    | Tunion [ty] -> desugar_simple_intersection ty
+    | Tunion _
+    | Tnonnull
+    | Tdynamic ->
+      raise (UndesugarableCoeffect ty)
+    | Toption ty' ->
+      begin
+        match deref ty' with
+        | (_, Tnonnull) -> [] (* another special case of `mixed` *)
+        | _ -> raise (UndesugarableCoeffect ty)
+      end
+    | _ -> [to_string ty]
+  in
+
+  try
+    let (env, ty) = Typing_env.expand_type env ty in
+    let ty =
+      match deref ty with
+      | (r, Tvar v) ->
+        (* We are interested in the upper bounds because coeffects are parameters (contravariant).
+         * Similar to Typing_subtype.describe_ty_super, we ignore Tvars appearing in bounds *)
+        let upper_bounds =
+          ITySet.elements (Typing_env.get_tyvar_upper_bounds env v)
+          |> List.filter_map ~f:(function
+                 | LoclType lty ->
+                   (match deref lty with
+                   | (_, Tvar _) -> None
+                   | _ -> Some lty)
+                 | ConstraintType _ -> None)
+        in
+        (match upper_bounds with
+        | [] -> raise (UndesugarableCoeffect ty)
+        | _ -> Typing_make_type.intersection r upper_bounds)
+      | _ -> ty
+    in
+    match desugar_simple_intersection ty with
+    | [cap] -> "the capability " ^ cap
+    | caps ->
+      "the capability set {"
+      ^ (caps
+        |> List.dedup_and_sort ~compare:String.compare
+        |> String.concat ~sep:", ")
+      ^ "}"
+  with
+  | UndesugarableCoeffect _ -> to_string ty

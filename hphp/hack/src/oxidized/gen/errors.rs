@@ -3,12 +3,14 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the "hack" directory of this source tree.
 //
-// @generated SignedSource<<caa89e7892df09061a41d221e88b084d>>
+// @generated SignedSource<<e2d069f70bdfaf3485339730d42e014b>>
 //
 // To regenerate this file, run:
-//   hphp/hack/src/oxidized/regen.sh
+//   hphp/hack/src/oxidized_regen.sh
 
 use arena_trait::TrivialDrop;
+use eq_modulo_pos::EqModuloPos;
+use no_pos_hash::NoPosHash;
 use ocamlrep_derive::FromOcamlRep;
 use ocamlrep_derive::FromOcamlRepIn;
 use ocamlrep_derive::ToOcamlRep;
@@ -25,8 +27,8 @@ pub use crate::error_codes::Typing;
 
 pub type ErrorCode = isize;
 
-/// We use `Pos.t message` on the server and convert to `Pos.absolute message`
-/// before sending it to the client
+/// We use `Pos.t message` and `Pos_or_decl.t message` on the server
+/// and convert to `Pos.absolute message` before sending it to the client
 pub type Message<A> = (A, String);
 
 #[derive(
@@ -35,9 +37,11 @@ pub type Message<A> = (A, String);
     Debug,
     Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRep,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -52,6 +56,7 @@ pub enum Phase {
     Typing,
 }
 impl TrivialDrop for Phase {}
+arena_deserializer::impl_deserialize_in_arena!(Phase);
 
 #[derive(
     Clone,
@@ -59,9 +64,11 @@ impl TrivialDrop for Phase {}
     Debug,
     Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRep,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -73,6 +80,7 @@ pub enum Severity {
     Error,
 }
 impl TrivialDrop for Severity {}
+arena_deserializer::impl_deserialize_in_arena!(Severity);
 
 #[derive(
     Clone,
@@ -80,9 +88,11 @@ impl TrivialDrop for Severity {}
     Debug,
     Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRep,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -95,6 +105,7 @@ pub enum Format {
     Highlighted,
 }
 impl TrivialDrop for Format {}
+arena_deserializer::impl_deserialize_in_arena!(Format);
 
 #[derive(
     Clone,
@@ -102,9 +113,11 @@ impl TrivialDrop for Format {}
     Debug,
     Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRep,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -121,6 +134,7 @@ pub enum NameContext {
     RecordContext,
 }
 impl TrivialDrop for NameContext {}
+arena_deserializer::impl_deserialize_in_arena!(NameContext);
 
 /// Results of single file analysis.
 pub type FileT<A> = phase_map::PhaseMap<Vec<A>>;
@@ -133,27 +147,31 @@ pub type FilesT<A> = relative_path::map::Map<FileT<A>>;
     Debug,
     Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     PartialEq,
     Serialize,
     ToOcamlRep
 )]
-pub struct Error_<A> {
+pub struct Error_<PrimPos, Pos> {
     pub code: ErrorCode,
-    pub claim: Message<A>,
-    pub reasons: Vec<Message<A>>,
+    pub claim: Message<PrimPos>,
+    pub reasons: Vec<Message<Pos>>,
 }
 
-pub type Error = Error_<pos::Pos>;
+pub type Error = Error_<pos::Pos, pos_or_decl::PosOrDecl>;
 
 #[derive(
     Clone,
     Debug,
     Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -162,13 +180,17 @@ pub type Error = Error_<pos::Pos>;
 )]
 pub struct AppliedFixme(pub pos::Pos, pub isize);
 
+pub type PerFileErrors = FileT<Error>;
+
 #[derive(
     Clone,
     Debug,
     Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,

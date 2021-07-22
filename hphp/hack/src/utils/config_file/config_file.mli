@@ -70,9 +70,6 @@ module Getters : sig
     string SMap.t ->
     string list
 
-  val bool_if_version :
-    string -> ?prefix:string option -> default:bool -> string SMap.t -> bool
-
   val bool_if_min_version :
     string ->
     ?prefix:string option ->
@@ -80,4 +77,9 @@ module Getters : sig
     current_version:version ->
     string SMap.t ->
     bool
+end
+
+module Utils : sig
+  val parse_hhconfig_and_hh_conf_to_json :
+    root:Path.t -> server_local_config_path:string -> Hh_json.json
 end

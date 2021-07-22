@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_PROXYGEN_SERVER_TRANSPORT_H_
-#define incl_HPHP_PROXYGEN_SERVER_TRANSPORT_H_
+#pragma once
 
 #include "hphp/runtime/server/transport.h"
 #include <algorithm>
@@ -156,6 +155,8 @@ struct ProxygenTransport final
    */
   std::string getHeader(const char *name) override;
   const HeaderMap& getHeaders() override;
+
+  const proxygen::HTTPHeaders* getProxygenHeaders() override;
 
   /**
    * Get a description of the type of transport.
@@ -361,16 +362,16 @@ struct ProxygenTransport final
   // access m_bodyData and m_clientComplete at one time.
   folly::IOBufQueue m_bodyData{folly::IOBufQueue::cacheChainLength()};
   bool m_clientComplete{false};
-
   bool m_firstBody{false};
   bool m_enqueued{false};
   // Set to true when sending a partial post back to
   // the slb due to impending server death
   bool m_reposting{false};
   bool m_shouldRepost{false};
+  bool m_sendStarted{false};
+  bool m_egressError{false};
   std::unique_ptr<folly::IOBuf> m_currentBodyBuf;
   proxygen::HTTPMessage m_response;
-  bool m_sendStarted{false};
   Method m_method{Method::GET};
   const char *m_extended_method{nullptr};
   HeaderMap m_requestHeaders;
@@ -379,8 +380,8 @@ struct ProxygenTransport final
   uint16_t m_localPort{0};
   int64_t m_nextPushId{1};
   std::map<uint64_t, PushTxnHandler*> m_pushHandlers; // locked
-  bool m_egressError{false};
   int64_t m_maxPost{-1};
+  const proxygen::HTTPHeaders* m_proxygenHeaders = nullptr;
 
  public:
   // List of ProxygenTransport not yet handed to the server will sit
@@ -402,5 +403,3 @@ using ProxygenTransportList =
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif

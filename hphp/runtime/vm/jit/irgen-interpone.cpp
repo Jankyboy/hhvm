@@ -38,7 +38,6 @@ Type arithOpResult(Type t1, Type t2) {
 
   auto both = t1 | t2;
   if (both.maybe(TDbl)) return TDbl;
-  if (both.maybe(TArr)) return TArr;
   if (both.maybe(TVec)) return TVec;
   if (both.maybe(TDict)) return TDict;
   if (both.maybe(TKeyset)) return TKeyset;
@@ -100,8 +99,8 @@ uint32_t localInputId(SrcKey sk) {
   }
 }
 
-folly::Optional<Type> interpOutputType(IRGS& env,
-                                       folly::Optional<Type>& checkTypeType) {
+Optional<Type> interpOutputType(IRGS& env,
+                                       Optional<Type>& checkTypeType) {
   using namespace jit::InstrFlags;
   auto const sk = curSrcKey(env);
   auto localType = [&]{
@@ -123,9 +122,6 @@ folly::Optional<Type> interpOutputType(IRGS& env,
     case OutPredBool:
     case OutBooleanImm:  return TBool;
     case OutInt64:       return TInt;
-    case OutArrayImm:    return TArr; // Should be StaticArr/Vec/Dict: t2124292
-    case OutVArray:      return RuntimeOption::EvalHackArrDVArrs ? TVec : TVArr;
-    case OutDArray:      return RuntimeOption::EvalHackArrDVArrs ? TDict : TDArr;
     case OutVec:         return TVec;
     case OutVecImm:      return TVec;
     case OutDict:        return TDict;
@@ -137,7 +133,7 @@ folly::Optional<Type> interpOutputType(IRGS& env,
     case OutRecord:      return TRecord;
     case OutResource:    return TRes;
 
-    case OutFDesc:       return folly::none;
+    case OutFDesc:       return std::nullopt;
     case OutCns:         return TCell;
 
     case OutSameAsInput1: return topType(env, BCSPRelOffset{0});
@@ -164,7 +160,7 @@ folly::Optional<Type> interpOutputType(IRGS& env,
       auto ty = localType();
       return ty <= TDbl ? ty : TCell;
     }
-    case OutNone:       return folly::none;
+    case OutNone:       return std::nullopt;
 
     case OutCInput: {
       return topType(env, BCSPRelOffset{0});
@@ -191,7 +187,7 @@ folly::Optional<Type> interpOutputType(IRGS& env,
 jit::vector<InterpOneData::LocalType>
 interpOutputLocals(IRGS& env,
                    bool& smashesAllLocals,
-                   folly::Optional<Type> pushedType) {
+                   Optional<Type> pushedType) {
   using namespace jit::InstrFlags;
   auto const sk = curSrcKey(env);
   auto const& info = getInstrInfo(sk.op());
@@ -224,10 +220,6 @@ interpOutputLocals(IRGS& env,
       break;
     }
 
-    case OpInitThisLoc:
-      setImmLocType(0, TCell);
-      break;
-
     case OpSetL:
     case OpPopL: {
       auto stackType = topType(env, BCSPRelOffset{0});
@@ -253,6 +245,7 @@ interpOutputLocals(IRGS& env,
     case OpSetM:
     case OpIncDecM:
     case OpSetOpM:
+    case OpSetRangeM:
     case OpUnsetM:
       smashesAllLocals = true;
       break;
@@ -293,7 +286,7 @@ interpOutputLocals(IRGS& env,
 }
 
 void interpOne(IRGS& env) {
-  folly::Optional<Type> checkTypeType;
+  Optional<Type> checkTypeType;
   auto const sk = curSrcKey(env);
   auto stackType = interpOutputType(env, checkTypeType);
   auto popped = getStackPopped(sk.pc());
@@ -313,16 +306,16 @@ void interpOne(IRGS& env) {
     auto const out = getInstrInfo(sk.op()).out;
     auto const checkIdx = BCSPRelOffset{
       (out & InstrFlags::StackIns1) ? 1 : 0
-    }.to<FPInvOffset>(env.irb->fs().bcSPOff());
+    }.to<SBInvOffset>(env.irb->fs().bcSPOff());
 
     auto const loc = Location::Stack { checkIdx };
-    checkType(env, loc, *checkTypeType, nextBcOff(env));
+    checkType(env, loc, *checkTypeType, nextSrcKey(env));
   }
 }
 
 void interpOne(IRGS& env, int popped) {
   InterpOneData idata { spOffBCFromIRSP(env) };
-  interpOne(env, folly::none, popped, 0, idata);
+  interpOne(env, std::nullopt, popped, 0, idata);
 }
 
 void interpOne(IRGS& env, Type outType, int popped) {
@@ -331,7 +324,7 @@ void interpOne(IRGS& env, Type outType, int popped) {
 }
 
 void interpOne(IRGS& env,
-               folly::Optional<Type> outType,
+               Optional<Type> outType,
                int popped,
                int pushed,
                InterpOneData& idata) {
@@ -375,7 +368,6 @@ void emitChainFaults(IRGS& env)               { interpOne(env); }
 void emitContGetReturn(IRGS& env)             { interpOne(env); }
 void emitResolveClass(IRGS& env, const StringData*)
                                               { interpOne(env); }
-
 //////////////////////////////////////////////////////////////////////
 
 }}}

@@ -50,8 +50,8 @@ let convert_facts ~(path : Relative_path.t) ~(facts : Facts.facts) : si_capture
         let (kind, is_abstract, is_final) = get_details_from_info info_opt in
         {
           (* We need to strip away the preceding backslash for hack classes
-            * but leave intact the : for xhp classes. The preceding : symbol
-            * is needed to distinguish which type of a class you want. *)
+             * but leave intact the : for xhp classes. The preceding : symbol
+             * is needed to distinguish which type of a class you want. *)
           sif_name = Utils.strip_ns key;
           sif_kind = kind;
           sif_filepath = relative_path_str;
@@ -113,6 +113,7 @@ let parse_one_file ~(path : Relative_path.t) : si_capture =
       ~disable_legacy_attribute_syntax:false
       ~enable_xhp_class_modifier:false
       ~disable_xhp_element_mangling:false
+      ~disallow_hash_comments:true
       ~filename:path
       ~text
   in
@@ -147,7 +148,8 @@ let parse_batch
       try
         let res = (parse_file ctxt) file in
         List.append res acc
-      with exn ->
+      with
+      | exn ->
         error_count := !error_count + 1;
         Hh_logger.log
           "IndexBuilder exception: %s. Failed to parse [%s]"
@@ -167,7 +169,7 @@ let parallel_parse
     ~next:(MultiWorker.next workers files)
 
 let entry =
-  WorkerController.register_entry_point ~restore:(fun () ~(worker_id : int) ->
+  WorkerControllerEntryPoint.register ~restore:(fun () ~(worker_id : int) ->
       Hh_logger.set_id (Printf.sprintf "indexBuilder %d" worker_id))
 
 (* Create one worker per cpu *)
@@ -178,9 +180,10 @@ let init_workers () =
   let heap_handle = SharedMem.init config ~num_workers:nbr_procs in
   MultiWorker.make
     ?call_wrapper:None
+    ~longlived_workers:false
     ~saved_state:()
     ~entry
-    ~nbr_procs
+    nbr_procs
     ~gc_control
     ~heap_handle
 
@@ -272,7 +275,7 @@ let go (ctxt : index_builder_context) (workers : MultiWorker.worker list option)
     let hhconfig_path = Path.concat (Path.make ctxt.repo_folder) ".hhconfig" in
     let files =
       (* Sanity test.  If the folder does not have an .hhconfig file, this is probably
-        * an integration test that's using a fake repository.  Don't do anything! *)
+         * an integration test that's using a fake repository.  Don't do anything! *)
       if Disk.file_exists (Path.to_string hhconfig_path) then
         measure_time
           ~silent:ctxt.silent

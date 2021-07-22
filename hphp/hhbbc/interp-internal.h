@@ -13,12 +13,9 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_INTERP_INTERNAL_H_
-#define incl_HPHP_INTERP_INTERNAL_H_
+#pragma once
 
 #include <algorithm>
-
-#include <folly/Optional.h>
 
 #include "hphp/runtime/base/type-string.h"
 #include "hphp/runtime/base/array-provenance.h"
@@ -68,6 +65,7 @@ struct ISS {
     , bid(bag.bid)
     , blk(*bag.blk)
     , state(bag.state)
+    , undo(bag.undo)
     , propagate(propagate)
     , analyzeDepth(options.StrengthReduce ? 0 : 1)
   {}
@@ -78,11 +76,12 @@ struct ISS {
   const BlockId bid;
   const php::Block& blk;
   State& state;
+  StateMutationUndo* undo;
   StepFlags flags;
   PropagateFn propagate;
   bool recordUsedParams{true};
 
-  folly::Optional<State> stateBefore;
+  Optional<State> stateBefore;
 
   // If we're inside an impl (as opposed to reduce) this will be > 0
   uint32_t analyzeDepth{0};
@@ -164,10 +163,6 @@ void impl(ISS& env, Ts&&... ts) {
  * a given bytecode could be replaced by some other bytecode
  * sequence.  Ensure that if you call reduce(), it is before any
  * state-affecting operations (like popC()).
- *
- * If env.collect.propagate_constants is set, the reduced bytecodes
- * will have been constant-propagated, and the canConstProp flag will
- * be clear; otherwise canConstProp will be set as for impl.
  */
 void reduce(ISS& env, BytecodeVec&& bcs) {
   impl_vec(env, true, std::move(bcs));
@@ -250,7 +245,7 @@ void doRet(ISS& env, Type t, bool hasEffects) {
   IgnoreUsedParams _{env};
 
   readAllLocals(env);
-  assert(env.state.stack.empty());
+  assertx(env.state.stack.empty());
   env.flags.retParam = NoLocalId;
   env.flags.returned = t;
   if (!hasEffects) {
@@ -266,47 +261,46 @@ void hasInvariantIterBase(ISS& env) {
 // eval stack
 
 Type popT(ISS& env) {
-  assert(!env.state.stack.empty());
+  assertx(!env.state.stack.empty());
   auto const ret = env.state.stack.back().type;
   FTRACE(2, "    pop:  {}\n", show(ret));
-  assert(ret.subtypeOf(BCell));
+  assertx(ret.subtypeOf(BCell));
   env.state.stack.pop_elem();
+  if (env.undo) env.undo->onPop(ret);
   return ret;
 }
 
 Type popC(ISS& env) {
   auto const v = popT(env);
-  assert(v.subtypeOf(BInitCell));
+  assertx(v.subtypeOf(BInitCell));
   return v;
 }
 
 Type popU(ISS& env) {
   auto const v = popT(env);
-  assert(v.subtypeOf(BUninit));
+  assertx(v.subtypeOf(BUninit));
   return v;
 }
 
 Type popCU(ISS& env) {
   auto const v = popT(env);
-  assert(v.subtypeOf(BCell));
+  assertx(v.subtypeOf(BCell));
   return v;
 }
 
 Type popCV(ISS& env) { return popT(env); }
 
 void discard(ISS& env, int n) {
-  for (auto i = 0; i < n; ++i) {
-    popT(env);
-  }
+  for (auto i = 0; i < n; ++i) popT(env);
 }
 
 const Type& topT(ISS& env, uint32_t idx = 0) {
-  assert(idx < env.state.stack.size());
+  assertx(idx < env.state.stack.size());
   return env.state.stack[env.state.stack.size() - idx - 1].type;
 }
 
 const Type& topC(ISS& env, uint32_t i = 0) {
-  assert(topT(env, i).subtypeOf(BInitCell));
+  assertx(topT(env, i).subtypeOf(BInitCell));
   return topT(env, i);
 }
 
@@ -316,6 +310,7 @@ void push(ISS& env, Type t) {
   FTRACE(2, "    push: {}\n", show(t));
   env.state.stack.push_elem(std::move(t), NoLocalId,
                             env.unchangedBcs + env.replacedBcs.size());
+  if (env.undo) env.undo->onPush();
 }
 
 void push(ISS& env, Type t, LocalId l) {
@@ -326,17 +321,7 @@ void push(ISS& env, Type t, LocalId l) {
   FTRACE(2, "    push: {} (={})\n", show(t), local_string(*env.ctx.func, l));
   env.state.stack.push_elem(std::move(t), l,
                             env.unchangedBcs + env.replacedBcs.size());
-}
-
-void discardAR(ISS& env, uint32_t idx) {
-  assert(topT(env, idx).subtypeOf(BUninit));
-  assert(topT(env, idx + 1).subtypeOf(BUninit));
-  assert(topT(env, idx + 2).subtypeOf(BCell));
-  auto& stack = env.state.stack;
-  stack.erase(stack.end() - idx - 3, stack.end() - idx);
-  if (idx && stack[stack.size() - idx].equivLoc == StackDupId) {
-    stack[stack.size() - idx].equivLoc = NoLocalId;
-  }
+  if (env.undo) env.undo->onPush();
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -352,8 +337,8 @@ void setThisAvailable(ISS& env) {
       !env.state.thisType.subtypeOf(BOptObj)) {
     return unreachable(env);
   }
-  if (is_opt(env.state.thisType)) {
-    env.state.thisType = unopt(env.state.thisType);
+  if (env.state.thisType.couldBe(BInitNull)) {
+    env.state.thisType = unopt(std::move(env.state.thisType));
   }
 }
 
@@ -365,9 +350,9 @@ bool thisAvailable(ISS& env) {
 // Returns the type $this would have if it's not null.  Generally
 // you have to check thisAvailable() before assuming it can't be
 // null.
-folly::Optional<Type> thisTypeFromContext(const Index& index, Context ctx) {
+Optional<Type> thisTypeFromContext(const Index& index, Context ctx) {
   if (auto rcls = index.selfCls(ctx)) return setctx(subObj(*rcls));
-  return folly::none;
+  return std::nullopt;
 }
 
 Type thisType(ISS& env) {
@@ -376,33 +361,48 @@ Type thisType(ISS& env) {
 
 Type thisTypeNonNull(ISS& env) {
   if (!env.state.thisType.couldBe(TObj)) return TBottom;
-  if (is_opt(env.state.thisType)) return unopt(env.state.thisType);
+  if (env.state.thisType.couldBe(BInitNull)) return unopt(env.state.thisType);
   return env.state.thisType;
 }
 
-folly::Optional<Type> selfCls(ISS& env) {
+Optional<Type> selfCls(ISS& env) {
   if (auto rcls = env.index.selfCls(env.ctx)) return subCls(*rcls);
-  return folly::none;
+  return std::nullopt;
 }
 
-folly::Optional<Type> selfClsExact(ISS& env) {
+Optional<Type> selfClsExact(ISS& env) {
   if (auto rcls = env.index.selfCls(env.ctx)) return clsExact(*rcls);
-  return folly::none;
+  return std::nullopt;
 }
 
-folly::Optional<Type> parentCls(ISS& env) {
+Optional<Type> parentCls(ISS& env) {
   if (auto rcls = env.index.parentCls(env.ctx)) return subCls(*rcls);
-  return folly::none;
+  return std::nullopt;
 }
 
-folly::Optional<Type> parentClsExact(ISS& env) {
+Optional<Type> parentClsExact(ISS& env) {
   if (auto rcls = env.index.parentCls(env.ctx)) return clsExact(*rcls);
-  return folly::none;
+  return std::nullopt;
 }
 
 //////////////////////////////////////////////////////////////////////
 // folding
 
+bool canDefinitelyCallWithoutCoeffectViolation(const php::Func* caller,
+                                               const php::Func* callee) {
+  if (!caller->coeffectRules.empty() || !callee->coeffectRules.empty()) {
+    return false;
+  }
+  // TODO(oulgen): We can actually be smarter here and actually check for
+  // bits matching but HHBBC currently does not know about the bit patterns
+  // and enforcement levels, so just check for coeffects matching identically
+  return std::is_permutation(caller->staticCoeffects.begin(),
+                             caller->staticCoeffects.end(),
+                             callee->staticCoeffects.begin(),
+                             callee->staticCoeffects.end());
+}
+
+const StaticString s___NEVER_INLINE("__NEVER_INLINE");
 bool shouldAttemptToFold(ISS& env, const php::Func* func, const FCallArgs& fca,
              Type context, bool maybeDynamic) {
   if (!func ||
@@ -412,8 +412,7 @@ bool shouldAttemptToFold(ISS& env, const php::Func* func, const FCallArgs& fca,
       !options.ConstantFoldBuiltins ||
       !will_reduce(env) ||
       any(env.collect.opts & CollectionOpts::Speculating) ||
-      (!env.collect.propagate_constants &&
-       any(env.collect.opts & CollectionOpts::Optimizing))) {
+      any(env.collect.opts & CollectionOpts::Optimizing)) {
     return false;
   }
 
@@ -427,11 +426,20 @@ bool shouldAttemptToFold(ISS& env, const php::Func* func, const FCallArgs& fca,
     return false;
   }
 
+  if (func->userAttributes.count(s___NEVER_INLINE.get())) {
+    return false;
+  }
+
   // Reified functions may have a mismatch of arity or reified generics
   // so we cannot fold them
   // TODO(T31677864): Detect the arity mismatch at HHBBC and enable them to
   // be foldable
   if (func->isReified) return false;
+
+  // Coeffect violation may raise warning or throw an exception
+  if (!canDefinitelyCallWithoutCoeffectViolation(env.ctx.func, func)) {
+    return false;
+  }
 
   // We only fold functions when numRets == 1
   if (func->hasInOutArgs) return false;
@@ -462,14 +470,14 @@ bool shouldAttemptToFold(ISS& env, const php::Func* func, const FCallArgs& fca,
   // The function has no args. Check if it's effect free and returns
   // a literal.
   if (env.index.is_effect_free(func) &&
-      is_scalar(env.index.lookup_return_type_raw(func))) {
+      is_scalar(env.index.lookup_return_type_raw(func).first)) {
     return true;
   }
 
   if (!(func->attrs & AttrStatic) && func->cls) {
     // May be worth trying to fold if the method returns a scalar,
     // assuming its only "effect" is checking for existence of $this.
-    if (is_scalar(env.index.lookup_return_type_raw(func))) return true;
+    if (is_scalar(env.index.lookup_return_type_raw(func).first)) return true;
 
     // The method may be foldable if we know more about $this.
     if (is_specialized_obj(context)) {
@@ -498,7 +506,7 @@ void mayReadLocal(ISS& env, uint32_t id) {
 // Find a local which is equivalent to the given local
 LocalId findLocEquiv(ISS& env, LocalId l) {
   if (l >= env.state.equivLocals.size()) return NoLocalId;
-  assert(env.state.equivLocals[l] == NoLocalId ||
+  assertx(env.state.equivLocals[l] == NoLocalId ||
          !is_volatile_local(env.ctx.func, l));
   return env.state.equivLocals[l];
 }
@@ -551,7 +559,7 @@ void killLocEquiv(State& state, LocalId l) {
   do {
     loc = state.equivLocals[loc];
   } while (state.equivLocals[loc] != l);
-  assert(loc != l);
+  assertx(loc != l);
   if (state.equivLocals[l] == loc) {
     state.equivLocals[loc] = NoLocalId;
   } else {
@@ -592,7 +600,7 @@ void addLocEquiv(ISS& env,
 
 // Obtain a local which is equivalent to the given stack value
 LocalId topStkLocal(const State& state, uint32_t idx = 0) {
-  assert(idx < state.stack.size());
+  assertx(idx < state.stack.size());
   auto const equiv = state.stack[state.stack.size() - idx - 1].equivLoc;
   return equiv > MaxLocalId ? NoLocalId : equiv;
 }
@@ -602,7 +610,7 @@ LocalId topStkLocal(ISS& env, uint32_t idx = 0) {
 
 // Obtain a location which is equivalent to the given stack value
 LocalId topStkEquiv(ISS& env, uint32_t idx = 0) {
-  assert(idx < env.state.stack.size());
+  assertx(idx < env.state.stack.size());
   return env.state.stack[env.state.stack.size() - idx - 1].equivLoc;
 }
 
@@ -712,22 +720,14 @@ void setLocRaw(ISS& env, LocalId l, Type t) {
     always_assert_flog(current == TCell, "volatile local was not TCell");
     return;
   }
+  if (env.undo) env.undo->onLocalWrite(l, std::move(env.state.locals[l]));
   env.state.locals[l] = std::move(t);
 }
 
-// Read a local type in the sense of CGetL.  (TUninits turn into
-// TInitNull, and potentially reffy types return the "inner" type,
-// which is always a subtype of InitCell.)
+// Read a local type in the sense of CGetL. (TUninits turn into
+// TInitNull)
 Type locAsCell(ISS& env, LocalId l) {
   return to_cell(locRaw(env, l));
-}
-
-// Read a local type, dereferencing refs, but without converting
-// potential TUninits to TInitNull.
-Type derefLoc(ISS& env, LocalId l) {
-  auto v = locRaw(env, l);
-  if (v.subtypeOf(BCell)) return v;
-  return v.couldBe(BUninit) ? TCell : TInitCell;
 }
 
 bool peekLocCouldBeUninit(ISS& env, LocalId l) {
@@ -746,6 +746,7 @@ bool locCouldBeUninit(ISS& env, LocalId l) {
 void refineLocHelper(ISS& env, LocalId l, Type t) {
   auto v = peekLocRaw(env, l);
   if (!is_volatile_local(env.ctx.func, l) && v.subtypeOf(BCell)) {
+    if (env.undo) env.undo->onLocalWrite(l, std::move(env.state.locals[l]));
     env.state.locals[l] = std::move(t);
   }
 }
@@ -768,14 +769,16 @@ bool refineLocation(ISS& env, LocalId l, F fun) {
     return r1;
   };
   if (l == StackDupId) {
-    auto stk = env.state.stack.end();
+    auto stkIdx = env.state.stack.size();
     while (true) {
-      --stk;
-      stk->type = refine(std::move(stk->type));
-      if (stk->equivLoc != StackDupId) break;
-      assertx(stk != env.state.stack.begin());
+      --stkIdx;
+      auto& stk = env.state.stack[stkIdx];
+      if (env.undo) env.undo->onStackWrite(stkIdx, stk.type);
+      stk.type = refine(std::move(stk.type));
+      if (stk.equivLoc != StackDupId) break;
+      assertx(stkIdx > 0);
     }
-    l = stk->equivLoc;
+    l = env.state.stack[stkIdx].equivLoc;
   }
   if (l == StackThisId) {
     if (env.state.thisLoc != NoLocalId) {
@@ -842,7 +845,10 @@ LocalId findLocal(ISS& env, SString name) {
 void killLocals(ISS& env) {
   FTRACE(2, "    killLocals\n");
   readUnknownLocals(env);
-  for (auto& l : env.state.locals) l = TCell;
+  for (size_t l = 0; l < env.state.locals.size(); ++l) {
+    if (env.undo) env.undo->onLocalWrite(l, std::move(env.state.locals[l]));
+    env.state.locals[l] = TCell;
+  }
   killAllLocEquiv(env);
   killAllStkEquiv(env);
   killAllIterEquivs(env);
@@ -880,48 +886,43 @@ bool iterIsDead(ISS& env, IterId iter) {
  * here actually just union the new type into what we already had.
  */
 
-PropStateElem<>* thisPropRaw(ISS& env, SString name) {
-  auto& privateProperties = env.collect.props.privateProperties();
-  auto const it = privateProperties.find(name);
-  if (it != end(privateProperties)) {
-    return &it->second;
+Optional<Type> thisPropType(ISS& env, SString name) {
+  if (auto const elem = env.collect.props.readPrivateProp(name)) {
+    return elem->ty;
   }
-  return nullptr;
+  return std::nullopt;
 }
 
-bool isTrackedThisProp(ISS& env, SString name) {
-  return thisPropRaw(env, name);
+bool isMaybeThisPropAttr(ISS& env, SString name, Attr attr) {
+  auto const& raw = env.collect.props.privatePropertiesRaw();
+  auto const it = raw.find(name);
+  // Prop either doesn't exist, or is on an unflattened trait. Be
+  // conservative.
+  if (it == raw.end()) return true;
+  return it->second.attrs & attr;
 }
 
-bool isMaybeLateInitThisProp(ISS& env, SString name) {
-  if (!env.ctx.cls) return false;
-  for (auto const& prop : env.ctx.cls->properties) {
-    if (prop.name == name &&
-        (prop.attrs & AttrPrivate) &&
-        !(prop.attrs & AttrStatic)
-       ) {
-      return prop.attrs & AttrLateInit;
-    }
-  }
-  // Prop either doesn't exist, or is on an unflattened trait. Be conservative.
-  return true;
+bool isDefinitelyThisPropAttr(ISS& env, SString name, Attr attr) {
+  auto const& raw = env.collect.props.privatePropertiesRaw();
+  auto const it = raw.find(name);
+  // Prop either doesn't exist, or is on an unflattened trait. Be
+  // conservative.
+  if (it == raw.end()) return false;
+  return it->second.attrs & attr;
 }
 
 void killThisProps(ISS& env) {
   FTRACE(2, "    killThisProps\n");
-  for (auto& kv : env.collect.props.privateProperties()) {
-    kv.second.ty |=
-      adjust_type_for_prop(env.index, *env.ctx.cls, kv.second.tc, TCell);
-  }
+  env.collect.props.mergeInAllPrivateProps(env.index, TCell);
 }
 
 /*
  * This function returns a type that includes all the possible types
  * that could result from reading a property $this->name.
  */
-folly::Optional<Type> thisPropAsCell(ISS& env, SString name) {
-  auto const elem = thisPropRaw(env, name);
-  if (!elem) return folly::none;
+Optional<Type> thisPropAsCell(ISS& env, SString name) {
+  auto const elem = env.collect.props.readPrivateProp(name);
+  if (!elem) return std::nullopt;
   if (elem->ty.couldBe(BUninit) && !is_specialized_obj(thisType(env))) {
     return TInitCell;
   }
@@ -939,12 +940,11 @@ folly::Optional<Type> thisPropAsCell(ISS& env, SString name) {
  * property type.
  */
 void mergeThisProp(ISS& env, SString name, Type type) {
-  auto const elem = thisPropRaw(env, name);
-  if (!elem) return;
-  auto const adjusted = adjust_type_for_prop(
-    env.index, *env.ctx.cls, elem->tc,
-    loosen_all(loosen_dvarrayness(type)));
-  elem->ty |= adjusted;
+  env.collect.props.mergeInPrivateProp(
+    env.index,
+    name,
+    loosen_vec_or_dict(loosen_all(std::move(type)))
+  );
 }
 
 /*
@@ -954,10 +954,12 @@ void mergeThisProp(ISS& env, SString name, Type type) {
  * The types given to the map function are the raw tracked types
  * (i.e. could be TUninit).
  */
-template<class MapFn>
+template<typename MapFn>
 void mergeEachThisPropRaw(ISS& env, MapFn fn) {
-  for (auto& kv : env.collect.props.privateProperties()) {
-    mergeThisProp(env, kv.first, fn(kv.second.ty));
+  for (auto const& kv : env.collect.props.privatePropertiesRaw()) {
+    auto const ty = thisPropType(env, kv.first);
+    assertx(ty.has_value());
+    mergeThisProp(env, kv.first, fn(*ty));
   }
 }
 
@@ -966,9 +968,7 @@ void unsetThisProp(ISS& env, SString name) {
 }
 
 void unsetUnknownThisProp(ISS& env) {
-  for (auto& kv : env.collect.props.privateProperties()) {
-    mergeThisProp(env, kv.first, TUninit);
-  }
+  env.collect.props.mergeInAllPrivateProps(env.index, TUninit);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -977,124 +977,13 @@ void unsetUnknownThisProp(ISS& env) {
 // Similar to $this properties above, we only track control-flow
 // insensitive types for these.
 
-PropStateElem<>* selfPropRaw(ISS& env, SString name) {
-  auto& privateStatics = env.collect.props.privateStatics();
-  auto it = privateStatics.find(name);
-  if (it != end(privateStatics)) {
-    return &it->second;
-  }
-  return nullptr;
-}
-
-void killSelfProps(ISS& env) {
-  FTRACE(2, "    killSelfProps\n");
-  for (auto& kv : env.collect.props.privateStatics()) {
-    kv.second.ty |=
-      adjust_type_for_prop(env.index, *env.ctx.cls, kv.second.tc, TCell);
-  }
-}
-
-void killSelfProp(ISS& env, SString name) {
-  FTRACE(2, "    killSelfProp {}\n", name->data());
-  if (auto elem = selfPropRaw(env, name)) {
-    elem->ty |= adjust_type_for_prop(env.index, *env.ctx.cls, elem->tc, TCell);
-  }
-}
-
-// TODO(#3684136): self::$foo can't actually ever be uninit.  Right
-// now uninits may find their way into here though.
-folly::Optional<Type> selfPropAsCell(ISS& env, SString name) {
-  auto const elem = selfPropRaw(env, name);
-  if (!elem) return folly::none;
-  return to_cell(elem->ty);
-}
-
-/*
- * Merges a type into tracked static properties on self, in the
- * sense of tvSet (i.e. setting the inner type on possible refs).
- */
-void mergeSelfProp(ISS& env, SString name, Type type) {
-  auto const elem = selfPropRaw(env, name);
-  if (!elem) return;
-  // Context types might escape to other contexts here.
-  auto const adjusted =
-    adjust_type_for_prop(env.index, *env.ctx.cls, elem->tc, unctx(type));
-  elem->ty |= adjusted;
-}
-
-/*
- * Similar to mergeEachThisPropRaw, but for self props.
- */
-template<class MapFn>
-void mergeEachSelfPropRaw(ISS& env, MapFn fn) {
-  for (auto& kv : env.collect.props.privateStatics()) {
-    mergeSelfProp(env, kv.first, fn(kv.second.ty));
-  }
-}
-
-bool isMaybeLateInitSelfProp(ISS& env, SString name) {
-  if (!env.ctx.cls) return false;
-  for (auto const& prop : env.ctx.cls->properties) {
-    if (prop.name == name &&
-        (prop.attrs & AttrPrivate) &&
-        (prop.attrs & AttrStatic)
-       ) {
-      return prop.attrs & AttrLateInit;
-    }
-  }
-  // Prop either doesn't exist, or is on an unflattened trait. Be conservative.
-  return true;
-}
-
-/*
- * Determines whether we can skip expanding the type of a
- * const property.
- * Requires propName is the value of a TypedValue with type
- * KindOfPersistentString
- */
-bool canSkipMergeOnConstProp(ISS&env, Type tcls, SString propName) {
-    if (is_specialized_cls(tcls)) {
-      DCls cls = dcls_of(tcls);
-      if (cls.type == DCls::Exact && cls.cls.resolved()) {
-          for (auto& prop : cls.cls.cls()->properties) {
-            if (prop.name == propName &&
-               (prop.attrs & AttrIsConst)) {
-                 return true;
-            }
-          }
-       }
-    }
-    return false;
+void killPrivateStatics(ISS& env) {
+  FTRACE(2, "    killPrivateStatics\n");
+  env.collect.props.mergeInAllPrivateStatics(env.index, TInitCell, true, false);
 }
 
 //////////////////////////////////////////////////////////////////////
 // misc
-
-ProvTag provTagHere(ISS& env) {
-  if (!RuntimeOption::EvalArrayProvenance) return arrprov::Tag{};
-  auto const idx = env.srcLoc;
-  // We might have a negative index into the srcLoc table if the
-  // bytecode was copied from another unit, e.g. from a trait ${X}inits
-  if (idx < 0) return arrprov::Tag::TraitMerge(env.ctx.unit->filename);
-  auto const unit = env.ctx.func && env.ctx.func->originalUnit
-    ? env.ctx.func->originalUnit
-    : env.ctx.unit;
-  return arrprov::Tag::Known(
-    unit->filename,
-    static_cast<int>(unit->srcLocs[idx].past.line)
-  );
-}
-
-/*
- * Check whether the class given by the type might raise when initialized.
- */
-bool classInitMightRaise(ISS& env, const Type& cls) {
-  if (RuntimeOption::EvalCheckPropTypeHints <= 0) return false;
-  if (!is_specialized_cls(cls)) return true;
-  auto const dcls = dcls_of(cls);
-  if (dcls.type != DCls::Exact) return true;
-  return env.index.lookup_class_init_might_raise(env.ctx, dcls.cls);
-}
 
 void badPropInitialValue(ISS& env) {
   FTRACE(2, "    badPropInitialValue\n");
@@ -1109,5 +998,3 @@ void badPropInitialValue(ISS& env) {
 //////////////////////////////////////////////////////////////////////
 
 }}
-
-#endif

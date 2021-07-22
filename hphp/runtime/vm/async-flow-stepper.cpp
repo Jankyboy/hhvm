@@ -75,31 +75,28 @@ void AsyncFlowStepper::setup() {
 
   auto const pc = vmpc();
   SourceLoc source_loc;
-  if (!unit->getSourceLoc(func->offsetOf(pc), source_loc)) {
+  if (!func->getSourceLoc(func->offsetOf(pc), source_loc)) {
     TRACE(5, "Could not grab the current line number\n");
     return;
   }
   auto const line = source_loc.line1;
 
-  OffsetRangeVec curLineRanges;
+  OffsetFuncRangeVec curLineRanges;
   if (!unit->getOffsetRanges(line, curLineRanges)) {
     curLineRanges.clear();
   }
 
   auto const awaitOpcodeFilter = [](Op op) { return op == OpAwait; };
   m_stepRangeFlowFilter.addRanges(
-    unit,
     curLineRanges
   );
   m_awaitOpcodeBreakpointFilter.addRanges(
-    unit,
     curLineRanges,
     awaitOpcodeFilter
   );
   // So that we can get notified when hitting await instruction.
   auto bpFilter = getBreakPointFilter();
   bpFilter->addRanges(
-    unit,
     curLineRanges,
     awaitOpcodeFilter
   );

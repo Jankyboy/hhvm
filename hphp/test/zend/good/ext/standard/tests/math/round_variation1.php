@@ -5,16 +5,9 @@
  * Source code: ext/standard/math.c
  */
 
-// get a class
-class classA
-{
-}
 <<__EntryPoint>> function main(): void {
 echo "*** Testing round() : usage variations ***\n";
 
-//get an unset variable
-$unset_var = 10;
-unset ($unset_var);
 
 // heredoc string
 $heredoc = <<<EOT
@@ -60,17 +53,8 @@ $inputs = varray[
        'abcxyz',
        $heredoc,
 
-       // object data
-/*23*/ new classA(),
-
-       // undefined data
-/*24*/ @$undefined_var,
-
-       // unset data
-/*25*/ @$unset_var,
-
        // resource variable
-/*26*/ $fp
+/*24*/ $fp
 ];
 
 // loop through each element of $inputs to check the behaviour of round()

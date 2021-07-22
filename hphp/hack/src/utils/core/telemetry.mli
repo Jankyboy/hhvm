@@ -10,7 +10,7 @@ type t [@@deriving show]
 
 val create : unit -> t
 
-val to_string : t -> string
+val to_string : ?pretty:bool -> t -> string
 
 val to_json : t -> Hh_json.json
 
@@ -20,7 +20,9 @@ then we only see the current element, but if they're different then we see both.
 (If you pass ~all:true then it hides elements that have remained the same.)
 It works with nested telemetry objects. In places where the structure differs,
 only `current` is kept. *)
-val diff : all:bool -> t -> prev:t -> t
+val diff : all:bool -> ?suffix_keys:bool -> t -> prev:t -> t
+
+val add : t -> t -> t
 
 val string_ : ?truncate:int -> key:string -> value:string -> t -> t
 
@@ -41,6 +43,8 @@ val bool_ : key:string -> value:bool -> t -> t
 val int_ : key:string -> value:int -> t -> t
 
 val int_opt : key:string -> value:int option -> t -> t
+
+val int_list : ?truncate_elems:int -> key:string -> value:int list -> t -> t
 
 val object_ : key:string -> value:t -> t -> t
 

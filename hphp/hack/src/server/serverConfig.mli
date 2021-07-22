@@ -7,7 +7,7 @@
  *
  *)
 
-open Core_kernel
+open Hh_prelude
 
 type t [@@deriving show]
 
@@ -35,8 +35,6 @@ val ignored_paths : t -> string list
 
 val extra_paths : t -> Path.t list
 
-val coroutine_whitelist_paths : t -> string list
-
 val gc_control : t -> Gc.control
 
 val sharedmem_config : t -> SharedMem.config
@@ -58,3 +56,6 @@ val version : t -> Config_file.version
 val warn_on_non_opt_build : t -> bool
 
 val convert_auto_namespace_to_map : string -> (string * string) list
+
+val make_sharedmem_config :
+  string SMap.t -> ServerArgs.options -> ServerLocalConfig.t -> SharedMem.config

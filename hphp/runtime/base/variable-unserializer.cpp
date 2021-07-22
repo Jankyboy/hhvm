@@ -43,8 +43,8 @@
 #include "hphp/runtime/ext/std/ext_std_classobj.h"
 
 #include "hphp/runtime/vm/native-data.h"
+#include "hphp/runtime/vm/repo-file.h"
 #include "hphp/runtime/vm/repo-global-data.h"
-#include "hphp/runtime/vm/repo.h"
 
 #include "hphp/runtime/vm/jit/perf-counters.h"
 
@@ -341,8 +341,10 @@ Variant VariableUnserializer::unserialize() {
     StructuredLog::logSerDes(fmt.c_str(), "des", ser, v);
   }
 
+  auto const providedCoeffects =
+    m_pure ? RuntimeCoeffects::pure() : RuntimeCoeffects::defaults();
   for (auto& obj : m_sleepingObjects) {
-    obj->invokeWakeup();
+    obj->invokeWakeup(providedCoeffects);
   }
 
   return v;
@@ -562,7 +564,7 @@ void VariableUnserializer::unserializeProp(ObjectData* obj,
 
   unserializePropertyValue(t, nProp);
   if (!RuntimeOption::RepoAuthoritative) return;
-  if (!Repo::get().global().HardPrivatePropInference) return;
+  if (!RepoFile::globalData().HardPrivatePropInference) return;
 
   /*
    * We assume for performance reasons in repo authoriative mode that
@@ -623,7 +625,7 @@ void VariableUnserializer::unserializeRemainingProps(
       String k(kdata + subLen, ksize - subLen, CopyString);
       Class* ctx = (Class*)-1;
       if (kdata[1] != '*') {
-        ctx = Unit::lookupClass(
+        ctx = Class::lookup(
           String(kdata + 1, subLen - 2, CopyString).get());
       }
       unserializeProp(obj.get(), k, ctx, key,
@@ -685,7 +687,7 @@ const StringData* getAlternateCollectionName(const StringData* clsName) {
 
 Class* tryAlternateCollectionClass(const StringData* clsName) {
   auto altName = getAlternateCollectionName(clsName);
-  return altName ? Unit::getClass(altName, /* autoload */ false) : nullptr;
+  return altName ? Class::get(altName, /* autoload */ false) : nullptr;
 }
 
 /*
@@ -820,12 +822,21 @@ void VariableUnserializer::unserializeVariant(
   case 'l':
     {
       String c = unserializeString();
-      tvMove(
-        make_tv<KindOfLazyClass>(
-          LazyClassData::create(makeStaticString(c.get()))
-        ),
-        self
-      );
+      if (mode == UnserializeMode::Value) {
+        tvMove(
+          make_tv<KindOfLazyClass>(
+            LazyClassData::create(makeStaticString(c.get()))
+          ),
+          self
+        );
+      } else {
+        if (RuntimeOption::EvalRaiseClassConversionWarning) {
+          raise_warning(Strings::CLASS_TO_STRING);
+        }
+        tvMove(
+          make_tv<KindOfPersistentString>(makeStaticString(c.get())), self
+        );
+      }
     }
     break;
   case 's':
@@ -948,7 +959,7 @@ void VariableUnserializer::unserializeVariant(
             // In order to support the legacy {O|V}:{Set|Vector|Map}
             // serialization, we defer autoloading until we know that there's
             // no alternate (builtin) collection class.
-            cls = Unit::getClass(clsName.get(), /* autoload */ false);
+            cls = Class::get(clsName.get(), /* autoload */ false);
             if (!cls) {
               cls = tryAlternateCollectionClass(clsName.get());
             }
@@ -959,12 +970,12 @@ void VariableUnserializer::unserializeVariant(
             if (!is_valid_class_name(clsName.slice())) {
               throwInvalidClassName();
             }
-            cls = Unit::loadClass(clsName.get()); // with autoloading
+            cls = Class::load(clsName.get()); // with autoloading
           }
         }
       } else {
         // Collections are CPP builtins; don't attempt to autoload
-        cls = Unit::getClass(clsName.get(), /* autoload */ false);
+        cls = Class::get(clsName.get(), /* autoload */ false);
         if (!cls) {
           cls = tryAlternateCollectionClass(clsName.get());
         }
@@ -1003,7 +1014,7 @@ void VariableUnserializer::unserializeVariant(
             if (!TypeStructure::coerceToTypeStructureList_SERDE_ONLY(t)) {
               throwInvalidOFormat(clsName);
             }
-            assertx(tvIsHAMSafeVArray(t));
+            assertx(tvIsVec(t));
             obj = Object{cls, t.val().parr};
           } else {
             obj = Object{cls};
@@ -1032,7 +1043,7 @@ void VariableUnserializer::unserializeVariant(
           bool hasSerializedNativeData = false;
           bool checkRepoAuthType =
             RuntimeOption::RepoAuthoritative &&
-            Repo::get().global().HardPrivatePropInference;
+            RepoFile::globalData().HardPrivatePropInference;
           Class* objCls = obj->getVMClass();
           // Try fast case.
           if (remainingProps >= objCls->numDeclProperties() -
@@ -1161,12 +1172,12 @@ void VariableUnserializer::unserializeVariant(
       auto obj = [&]() -> Object {
         if (whitelistCheck(clsName)) {
           // Try loading without the autoloader first
-          auto cls = Unit::getClass(clsName.get(), /* autoload */ false);
+          auto cls = Class::get(clsName.get(), /* autoload */ false);
           if (!cls) {
             if (!is_valid_class_name(clsName.slice())) {
               throwInvalidClassName();
             }
-            cls = Unit::loadClass(clsName.get());
+            cls = Class::load(clsName.get());
           }
           if (cls) {
             return Object::attach(g_context->createObject(cls, init_null_variant,
@@ -1188,7 +1199,7 @@ void VariableUnserializer::unserializeVariant(
         raise_warning("Class %s has no unserializer",
                       obj->getClassName().data());
       } else {
-        obj->o_invoke_few_args(s_unserialize, 1, serialized);
+        obj->o_invoke_few_args(s_unserialize, RuntimeCoeffects::fixme(), 1, serialized);
       }
 
       tvMove(make_tv<KindOfObject>(obj.detach()), self);
@@ -1209,15 +1220,11 @@ Array VariableUnserializer::unserializeArray() {
     throwArraySizeOutOfBounds();
   }
 
-  auto const provTag = unserializeProvenanceTag();
+  unserializeProvenanceTag();
 
   if (size == 0) {
     expectChar('}');
-    auto arr =  m_forceDArrays || type() == Type::Serialize
-      ? Array::CreateDArray()
-      : Array::Create();
-    if (provTag) arrprov::setTag<arrprov::Mode::Emplace>(arr.get(), provTag);
-    return arr;
+    return Array::CreateDict();
   }
   // For large arrays, do a naive pre-check for OOM.
   auto const allocsz = MixedArray::computeAllocBytesFromMaxElms(size);
@@ -1228,8 +1235,8 @@ Array VariableUnserializer::unserializeArray() {
   // Pre-allocate an ArrayData of the given size, to avoid escalation in the
   // middle, which breaks references.
   auto arr = m_forceDArrays || type() == Type::Serialize
-    ? DArrayInit(size).toArray()
-    : MixedArrayInit(size).toArray();
+    ? DictInit(size).toArray()
+    : DictInit(size).toArray();
   reserveForAdd(size);
 
   for (int64_t i = 0; i < size; i++) {
@@ -1242,15 +1249,23 @@ Array VariableUnserializer::unserializeArray() {
 
   check_non_safepoint_surprise();
   expectChar('}');
-  if (provTag) arrprov::setTag<arrprov::Mode::Emplace>(arr.get(), provTag);
   return arr;
 }
 
-arrprov::Tag VariableUnserializer::unserializeProvenanceTag() {
+void VariableUnserializer::unserializeProvenanceTag() {
   if (type() != VariableUnserializer::Type::Internal &&
       type() != VariableUnserializer::Type::Serialize) {
-    return {};
+    return;
   }
+
+  auto const read_line = [&]() -> int {
+    expectChar(':');
+    expectChar('i');
+    expectChar(':');
+    auto const line = static_cast<int>(readInt());
+    expectChar(';');
+    return line;
+  };
 
   auto const read_name = [&]() -> const StringData* {
     if (peek() == 't') {
@@ -1264,59 +1279,28 @@ arrprov::Tag VariableUnserializer::unserializeProvenanceTag() {
     }
   };
 
-  // Used for arrprov::Tag kinds that are defined by their name alone.
-  auto const expect_name = [&]() -> const StringData* {
-    readChar();
-    expectChar(':');
-    auto const name = read_name();
-    expectChar(';');
-    return name;
-  };
-
-  if (peek() != 'p') {
-    return {};
-  }
+  if (peek() != 'p') return;
   expectChar('p');
 
-  // We assert that we don't construct a non-trivial arrprov::Tag when arrprov
-  // is disabled, because doing so is expensive. We must construct them lazily.
-#define FINISH(x) (RO::EvalArrayProvenance ? arrprov::Tag::x : arrprov::Tag{})
-
-  if (peek() == ':') {
+  auto const peeked = peek();
+  if (peeked == ':') {
+    read_line();
+    read_name();
+    expectChar(';');
+  } else if (peeked == 'f') {
+    readChar();
+    read_line();
+    read_name();
+    expectChar(';');
+  } else if (peeked == 'c' || peeked == 'e' || peeked == 'r' || peeked == 'z') {
+    readChar();
     expectChar(':');
-    expectChar('i');
-    expectChar(':');
-    auto const line = static_cast<int>(readInt());
+    read_name();
     expectChar(';');
-    auto const name = read_name();
-    expectChar(';');
-    return FINISH(Known(name, line));
-  } else if (peek() == 'u') {
-    expectChar('u');
-    expectChar(';');
-    return FINISH(RepoUnion());
-  } else if (peek() == 'r') {
-    auto const name = expect_name();
-    return FINISH(TraitMerge(name));
-  } else if (peek() == 'e') {
-    auto const name = expect_name();
-    return FINISH(LargeEnum(name));
-  } if (peek() == 'c') {
-    auto const name = expect_name();
-    return FINISH(RuntimeLocation(name));
-  } if (peek() == 'z') {
-    auto const name = expect_name();
-    return FINISH(RuntimeLocationPoison(name));
-  } else {
-    return {};
   }
-
-#undef FINISH
 }
 
 Array VariableUnserializer::unserializeDict() {
-  if (m_dvOverrides) m_dvOverrides->push_back(false);
-
   int64_t size = readInt();
   expectChar(':');
   expectChar('{');
@@ -1353,8 +1337,6 @@ Array VariableUnserializer::unserializeDict() {
 }
 
 Array VariableUnserializer::unserializeVec() {
-  if (m_dvOverrides) m_dvOverrides->push_back(false);
-
   int64_t size = readInt();
   expectChar(':');
   expectChar('{');
@@ -1390,8 +1372,6 @@ Array VariableUnserializer::unserializeVec() {
 }
 
 Array VariableUnserializer::unserializeVArray() {
-  if (m_dvOverrides) m_dvOverrides->push_back(true);
-
   int64_t size = readInt();
   expectChar(':');
   expectChar('{');
@@ -1400,25 +1380,12 @@ Array VariableUnserializer::unserializeVArray() {
     throwArraySizeOutOfBounds();
   }
 
-  auto const provTag = unserializeProvenanceTag();
+  unserializeProvenanceTag();
 
   if (size == 0) {
     expectChar('}');
-    if (m_type != Type::Serialize) {
-      return Array::attach(provTag
-        ? arrprov::tagStaticArr(staticEmptyVArray(), provTag)
-        : staticEmptyVArray()
-      );
-    }
-    return m_forceDArrays
-      ? Array::attach(provTag
-          ? arrprov::tagStaticArr(staticEmptyDArray(), provTag)
-          : staticEmptyDArray()
-        )
-      : Array::attach(provTag
-          ? arrprov::tagStaticArr(staticEmptyVArray(), provTag)
-          : staticEmptyVArray()
-        );
+    if (m_type != Type::Serialize) return Array::CreateVec();
+    return m_forceDArrays ? Array::CreateDict() : Array::CreateVec();
   }
 
   auto const oomCheck = [&](size_t allocsz) {
@@ -1433,7 +1400,7 @@ Array VariableUnserializer::unserializeVArray() {
     // Deserialize to vector-ish darray. Use direct calls to MixedArray.
     oomCheck(MixedArray::computeAllocBytesFromMaxElms(size));
 
-    arr = DArrayInit(size).toArray();
+    arr = DictInit(size).toArray();
     reserveForAdd(size);
 
     for (int64_t i = 0; i < size; i++) {
@@ -1445,7 +1412,7 @@ Array VariableUnserializer::unserializeVArray() {
     auto const index = PackedArray::capacityToSizeIndex(size);
     oomCheck(MemoryManager::sizeIndex2Size(index));
 
-    arr = VArrayInit(size).toArray();
+    arr = VecInit(size).toArray();
     reserveForAdd(size);
 
     for (int64_t i = 0; i < size; i++) {
@@ -1456,13 +1423,10 @@ Array VariableUnserializer::unserializeVArray() {
 
   check_non_safepoint_surprise();
   expectChar('}');
-  if (provTag) arrprov::setTag<arrprov::Mode::Emplace>(arr.get(), provTag);
   return arr;
 }
 
 Array VariableUnserializer::unserializeDArray() {
-  if (m_dvOverrides) m_dvOverrides->push_back(true);
-
   int64_t size = readInt();
   expectChar(':');
   expectChar('{');
@@ -1471,14 +1435,11 @@ Array VariableUnserializer::unserializeDArray() {
     throwArraySizeOutOfBounds();
   }
 
-  auto const provTag = unserializeProvenanceTag();
+  unserializeProvenanceTag();
 
   if (size == 0) {
     expectChar('}');
-    return Array::attach(provTag
-      ? arrprov::tagStaticArr(staticEmptyDArray(), provTag)
-      : staticEmptyDArray()
-    );
+    return Array::CreateDict();
   }
 
   // For large arrays, do a naive pre-check for OOM.
@@ -1487,7 +1448,7 @@ Array VariableUnserializer::unserializeDArray() {
     check_non_safepoint_surprise();
   }
 
-  auto arr = DArrayInit(size).toArray();
+  auto arr = DictInit(size).toArray();
   reserveForAdd(size);
 
   for (int64_t i = 0; i < size; i++) {
@@ -1500,7 +1461,6 @@ Array VariableUnserializer::unserializeDArray() {
 
   check_non_safepoint_surprise();
   expectChar('}');
-  if (provTag) arrprov::setTag<arrprov::Mode::Emplace>(arr.get(), provTag);
   return arr;
 }
 
@@ -1737,19 +1697,9 @@ void VariableUnserializer::unserializeSet(ObjectData* obj, int64_t sz,
     Variant k;
     unserializeVariant(k.asTypedValue(), UnserializeMode::ColKey);
     if (k.isInteger()) {
-      auto h = k.toInt64();
-      auto tv = set->findForUnserialize(h);
-      // Be robust against manually crafted inputs with conflicting elements
-      if (UNLIKELY(!tv)) continue;
-      tv->m_type = KindOfInt64;
-      tv->m_data.num = h;
+      set->add(k.toInt64());
     } else if (k.isString()) {
-      auto key = k.getStringData();
-      auto tv = set->findForUnserialize(key);
-      if (UNLIKELY(!tv)) continue;
-      // This increments the string's refcount twice, once for
-      // the key and once for the value
-      tvDup(make_tv<KindOfString>(key), *tv);
+      set->add(k.getStringData());
     } else {
       throwInvalidHashKey(obj);
     }

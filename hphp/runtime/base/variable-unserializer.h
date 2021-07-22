@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VARIABLE_UNSERIALIZER_H_
-#define incl_HPHP_VARIABLE_UNSERIALIZER_H_
+#pragma once
 
 #include "hphp/runtime/base/type-variant.h"
 #include "hphp/runtime/base/variable-serializer.h"
@@ -80,22 +79,21 @@ struct VariableUnserializer {
    */
   void set(const char* buf, const char* end);
 
-  void setDVOverrides(VariableSerializer::DVOverrides* overrides) {
-    m_dvOverrides = overrides;
-  }
-
   void setUnitFilename(const StringData* name) {
     assertx(name->isStatic());
     assertx(m_type == Type::Internal);
     m_unitFilename = name;
   }
 
+  // Should we be calling the pure callbacks
+  void setPure() { m_pure = true; }
+
  private:
   /*
    * Used to object property values that are overwritten by later entries.
    * For array element values, later values for the key override earlier ones.
    */
-  Array m_overwrittenList;
+  Array m_overwrittenList = Array::CreateVec();
 
   bool readOnly() const { return m_readOnly; }
 
@@ -173,16 +171,16 @@ private:
   const char* const m_begin;
   bool m_forceDArrays;
   bool m_markLegacyArrays;
+  bool m_pure{false};            // should we call the pure callbacks?
   /* unitFilename should be set when we are deserializing
    * an adata from the repo--it is needed to *re*construct the
    * correct provenance tag */
   const StringData* m_unitFilename{nullptr};
-  VariableSerializer::DVOverrides* m_dvOverrides = nullptr;
 
   void unserializeVariant(tv_lval self,
                           UnserializeMode mode = UnserializeMode::Value);
   Array unserializeArray();
-  arrprov::Tag unserializeProvenanceTag();
+  void unserializeProvenanceTag();
   Array unserializeDict();
   Array unserializeVec();
   Array unserializeKeyset();
@@ -208,4 +206,3 @@ private:
 
 }
 
-#endif // incl_HPHP_VARIABLE_UNSERIALIZER_H_

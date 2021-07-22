@@ -74,10 +74,6 @@ ArrayData* debug_backtrace_jit(int64_t options) {
   return HHVM_FN(debug_backtrace)(options).detach();
 }
 
-ResourceHdr* debug_backtrace_fast() {
-  return createCompactBacktrace().detach()->hdr();
-}
-
 /**
  * hphp_debug_caller_info - returns an array of info about the "caller"
  *
@@ -90,7 +86,7 @@ ResourceHdr* debug_backtrace_fast() {
  * class name (if in class context) where the "caller" called the "callee".
  */
 Array HHVM_FUNCTION(hphp_debug_caller_info) {
-  Array ret = empty_darray();
+  Array ret = empty_dict_array();
   bool skipped = false;
   walkStack([&] (const ActRec* fp, Offset pc) {
     if (!skipped && fp->func()->isSkipFrame()) return false;
@@ -100,20 +96,20 @@ Array HHVM_FUNCTION(hphp_debug_caller_info) {
     }
     if (fp->func()->name()->isame(s_call_user_func.get())) return false;
     if (fp->func()->name()->isame(s_call_user_func_array.get())) return false;
-    auto const line = fp->func()->unit()->getLineNumber(pc);
+    auto const line = fp->func()->getLineNumber(pc);
     if (line == -1) return false;
     auto const cls = fp->func()->cls();
     auto const path = fp->func()->originalFilename() ?
       fp->func()->originalFilename() : fp->func()->unit()->filepath();
     if (cls && !fp->func()->isClosureBody()) {
-      ret = make_darray(
+      ret = make_dict_array(
         s_class, const_cast<StringData*>(cls->name()),
         s_file, const_cast<StringData*>(path),
         s_function, const_cast<StringData*>(fp->func()->name()),
         s_line, line
       );
     } else {
-      ret = make_darray(
+      ret = make_dict_array(
         s_file, const_cast<StringData*>(path),
         s_function, const_cast<StringData*>(fp->func()->name()),
         s_line, line
@@ -136,14 +132,8 @@ void HHVM_FUNCTION(debug_print_backtrace, int64_t options /* = 0 */,
   g_context->write(debug_string_backtrace(false, ignore_args, limit));
 }
 
-String debug_string_backtrace(bool skip, bool ignore_args /* = false */,
-                              int64_t limit /* = 0 */) {
-  Array bt;
+String stringify_backtrace(const Array& bt, bool ignore_args) {
   StringBuffer buf;
-  bt = createBacktrace(BacktraceArgs()
-                       .skipTop(skip)
-                       .ignoreArgs(ignore_args)
-                       .setLimit(limit));
   int i = 0;
   for (ArrayIter it = bt.begin(); !it.end(); it.next(), i++) {
     Array frame = it.second().toArray();
@@ -187,12 +177,22 @@ String debug_string_backtrace(bool skip, bool ignore_args /* = false */,
   return buf.detach();
 }
 
+String debug_string_backtrace(bool skip, bool ignore_args /* = false */,
+                              int64_t limit /* = 0 */) {
+  Array bt;
+  bt = createBacktrace(BacktraceArgs()
+                       .skipTop(skip)
+                       .ignoreArgs(ignore_args)
+                       .setLimit(limit));
+  return stringify_backtrace(bt, ignore_args);
+}
+
 Array HHVM_FUNCTION(error_get_last) {
   String lastError = g_context->getLastError();
   if (lastError.isNull()) {
     return null_array;
   }
-  return make_darray(
+  return make_dict_array(
     s_type, g_context->getLastErrorNumber(),
     s_message, g_context->getLastError(),
     s_file, g_context->getLastErrorPath(),
@@ -375,7 +375,7 @@ Array HHVM_FUNCTION(SL_extract_trace, const Resource& handle) {
     raise_invalid_argument_warning(
         "__SystemLib\\extract_trace() expects parameter 1 "
         "to be a CompactTrace resource.");
-    return Array::CreateVArray();
+    return Array::CreateVec();
   }
 
   return bt->extract();

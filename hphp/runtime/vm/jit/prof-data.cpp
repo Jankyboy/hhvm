@@ -26,6 +26,7 @@
 #include "hphp/runtime/vm/jit/normalized-instruction.h"
 #include "hphp/runtime/vm/jit/region-selection.h"
 #include "hphp/runtime/vm/jit/translator.h"
+#include "hphp/runtime/vm/jit/vasm-block-counters.h"
 #include "hphp/runtime/vm/treadmill.h"
 #include "hphp/runtime/vm/verifier/cfg.h"
 
@@ -35,22 +36,22 @@ TRACE_SET_MOD(pgo);
 
 ////////////////////////////////////////////////////////////////////////////////
 
-ProfTransRec::ProfTransRec(Offset lastBcOff, SrcKey sk, RegionDescPtr region,
+ProfTransRec::ProfTransRec(SrcKey lastSk, SrcKey sk, RegionDescPtr region,
                            uint32_t asmSize)
     : m_kind(TransKind::Profile)
-    , m_lastBcOff(lastBcOff)
+    , m_asmSize(asmSize)
+    , m_lastSk(lastSk)
     , m_sk(sk)
-    , m_region(region)
-    , m_asmSize(asmSize){
+    , m_region(region) {
   assertx(region != nullptr && !region->empty() && region->start() == sk);
 }
 
 ProfTransRec::ProfTransRec(SrcKey sk, int nArgs, uint32_t asmSize)
     : m_kind(TransKind::ProfPrologue)
+    , m_asmSize(asmSize)
     , m_prologueArgs(nArgs)
     , m_sk(sk)
     , m_callers{}
-    , m_asmSize(asmSize)
 {
   m_callers = std::make_unique<CallerRec>();
 }
@@ -78,9 +79,8 @@ ProfData::ProfData()
   : m_counters(RuntimeOption::ServerExecutionMode()
                  ? std::numeric_limits<int64_t>::max()
                  : RuntimeOption::EvalJitPGOThreshold)
-  , m_profilingFuncs(RuntimeOption::EvalFuncCountHint, false)
-  , m_optimizedFuncs(RuntimeOption::EvalFuncCountHint, false)
-  , m_queuedFuncs(RuntimeOption::EvalFuncCountHint, false)
+  , m_profilingFuncs(RuntimeOption::EvalPGOFuncCountHint,
+                     makeAHMConfig<decltype(m_profilingFuncs)>())
   , m_optimizedSKs(RuntimeOption::EvalPGOFuncCountHint,
                    makeAHMConfig<decltype(m_optimizedSKs)>())
   , m_proflogueDB(RuntimeOption::EvalPGOFuncCountHint * 2,
@@ -122,7 +122,7 @@ void ProfData::addTransProfile(TransID transID,
                                const RegionDescPtr& region,
                                const PostConditions& pconds,
                                uint32_t asmSize) {
-  auto const lastBcOff = region->lastSrcKey().offset();
+  auto const lastSk = region->lastSrcKey();
 
   assertx(region);
   DEBUG_ONLY auto const nBlocks = region->blocks().size();
@@ -149,7 +149,7 @@ void ProfData::addTransProfile(TransID transID,
 
   {
     folly::SharedMutex::WriteHolder lock{m_transLock};
-    m_transRecs[transID].reset(new ProfTransRec(lastBcOff, startSk, region,
+    m_transRecs[transID].reset(new ProfTransRec(lastSk, startSk, region,
                                                 asmSize));
   }
 
@@ -185,7 +185,7 @@ void ProfData::addProfTrans(TransID transID,
 }
 
 bool ProfData::anyBlockEndsAt(const Func* func, Offset offset) {
-  auto it = m_blockEndOffsets.find(func->getFuncId());
+  auto it = m_blockEndOffsets.find(func->getFuncId().toInt());
   if (it == m_blockEndOffsets.end()) {
     Arena arena;
     Verifier::GraphBuilder builder{arena, func};
@@ -193,11 +193,12 @@ bool ProfData::anyBlockEndsAt(const Func* func, Offset offset) {
     jit::fast_set<Offset> offsets;
 
     for (auto blocks = linearBlocks(cfg); !blocks.empty(); ) {
-      auto last = blocks.popFront()->last - func->unit()->entry();
+      auto last = blocks.popFront()->last - func->entry();
       offsets.insert(last);
     }
 
-    it = m_blockEndOffsets.emplace(func->getFuncId(), std::move(offsets)).first;
+    it = m_blockEndOffsets.emplace(func->getFuncId().toInt(),
+                                   std::move(offsets)).first;
   }
 
   return it->second.count(offset);
@@ -232,6 +233,7 @@ std::atomic_bool ProfData::s_wasDeserialized{false};
 std::atomic<StringData*> ProfData::s_buildHost{nullptr};
 std::atomic<StringData*> ProfData::s_tag{nullptr};
 std::atomic<int64_t> ProfData::s_buildTime{0};
+std::atomic<size_t> ProfData::s_prevProfSize{0};
 
 RDS_LOCAL_NO_CHECK(ProfData*, rl_profData)(nullptr);
 
@@ -267,6 +269,7 @@ void discardProfData() {
     }
     Treadmill::enqueue(ProfDataTreadmillDeleter{std::move(data)});
   }
+  Treadmill::enqueue(VasmBlockCounters::free);
 }
 
 void ProfData::maybeResetCounters() {

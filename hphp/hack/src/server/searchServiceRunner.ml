@@ -11,7 +11,7 @@ open Hh_prelude
 open ServerEnv
 
 module SearchServiceRunner = struct
-  type t = Relative_path.t * SearchUtils.info
+  type t = Relative_path.t * FileInfo.t
 
   (* Chosen so that multiworker takes about ~2.5 seconds *)
   let chunk_size genv = genv.local_config.ServerLocalConfig.search_chunk_size
@@ -31,18 +31,25 @@ module SearchServiceRunner = struct
         iter (x :: acc) (n - 1)
     in
     let fast = iter [] num_files in
-    let sienv = SymbolIndex.update_files ~ctx ~sienv ~paths:fast in
-
-    if List.length fast > 0 then (
-      let str =
-        Printf.sprintf
-          "Updated search index for symbols in %d files:"
-          (List.length fast)
+    let len = List.length fast in
+    if len = 0 then
+      sienv
+    else begin
+      Hh_logger.log "UPDATE_SEARCH start";
+      if len > 10 then ServerProgress.send_progress "indexing %d files" len;
+      let sienv = SymbolIndexCore.update_files ~ctx ~sienv ~paths:fast in
+      let telemetry =
+        Telemetry.create ()
+        |> Telemetry.int_ ~key:"files" ~value:len
+        |> Telemetry.int_ ~key:"remaining" ~value:(Queue.length queue)
       in
-      ignore (Hh_logger.log_duration str t);
-      if Queue.is_empty queue then Hh_logger.log "Done updating search index"
-    );
-    sienv
+      Hh_logger.log
+        "UPDATE_SEARCH_END %fs %s"
+        (Unix.gettimeofday () -. t)
+        (Telemetry.to_string telemetry);
+      HackEventLogger.update_search_end t telemetry;
+      sienv
+    end
 
   (* Completely clears the queue *)
   let run_completely (ctx : Provider_context.t) (sienv : SearchUtils.si_env) :
@@ -64,7 +71,7 @@ module SearchServiceRunner = struct
 
   let internal_ssr_update
       (fn : Relative_path.t)
-      (info : SearchUtils.info)
+      (info : FileInfo.t)
       ~(source : SearchUtils.file_source) =
     Queue.enqueue queue (fn, info, source)
 
@@ -78,6 +85,6 @@ module SearchServiceRunner = struct
       (fast : Naming_table.t) ~(source : SearchUtils.file_source) : unit =
     let i = ref 0 in
     Naming_table.iter fast ~f:(fun fn info ->
-        internal_ssr_update fn (SearchUtils.Full info) source;
+        internal_ssr_update fn info ~source;
         i := !i + 1)
 end

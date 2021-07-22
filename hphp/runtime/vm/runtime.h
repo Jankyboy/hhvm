@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_VM_RUNTIME_H_
-#define incl_HPHP_VM_RUNTIME_H_
+#pragma once
 
 #include "hphp/runtime/ext/generator/ext_generator.h"
 #include "hphp/runtime/ext/asio/ext_async-function-wait-handle.h"
@@ -53,13 +52,24 @@ void raiseNotice(const StringData* sd);
 [[noreturn]] void throwArrayIndexException(const ArrayData *ad, int64_t index);
 [[noreturn]] void throwArrayKeyException(const ArrayData *ad, const StringData* key);
 std::string formatParamInOutMismatch(const char* fname, uint32_t index,
-                                   bool funcByRef);
+                                     bool funcByRef);
 [[noreturn]] void throwParamInOutMismatch(const Func* func, uint32_t index);
 [[noreturn]] void throwParamInOutMismatchRange(const Func* func,
                                                unsigned firstBit, uint64_t mask,
                                                uint64_t vals);
 [[noreturn]] void throwInvalidUnpackArgs();
-void raiseRxCallViolation(const ActRec* caller, const Func* callee);
+[[noreturn]] void throwMissingArgument(const Func* func, int got);
+[[noreturn]] void throwMustBeMutableException(const Class* cls, const StringData* propName);
+[[noreturn]] void throwMustBeReadOnlyException(const Class* cls, const StringData* propName);
+void raiseTooManyArguments(const Func* func, int got);
+void raiseTooManyArgumentsPrologue(const Func* func, ArrayData* unpackArgs);
+
+void raiseCoeffectsCallViolation(const Func* callee,
+                                 RuntimeCoeffects provided,
+                                 RuntimeCoeffects required);
+
+void raiseCoeffectsFunParamTypeViolation(TypedValue, int32_t);
+void raiseCoeffectsFunParamCoeffectRulesViolation(const Func*);
 
 inline Iter*
 frame_iter(const ActRec* fp, int i) {
@@ -117,7 +127,8 @@ frame_free_locals_helper_inl(ActRec* fp, int numLocals) {
 }
 
 void ALWAYS_INLINE
-frame_free_locals_inl_no_hook(ActRec* fp, int numLocals) {
+frame_free_locals_inl_no_hook(ActRec* fp,
+                              int numLocals) {
   frame_free_locals_helper_inl(fp, numLocals);
   if (fp->func()->cls() && fp->hasThis()) {
     decRefObj(fp->getThis());
@@ -125,15 +136,21 @@ frame_free_locals_inl_no_hook(ActRec* fp, int numLocals) {
 }
 
 void ALWAYS_INLINE
-frame_free_locals_inl(ActRec* fp, int numLocals, TypedValue* rv) {
+frame_free_locals_inl(ActRec* fp,
+                      int numLocals,
+                      TypedValue* rv,
+                      EventHook::Source sourceType) {
   frame_free_locals_inl_no_hook(fp, numLocals);
-  EventHook::FunctionReturn(fp, *rv);
+  EventHook::FunctionReturn(fp, *rv, sourceType);
 }
 
 void ALWAYS_INLINE
-frame_free_locals_no_this_inl(ActRec* fp, int numLocals, TypedValue* rv) {
+frame_free_locals_no_this_inl(ActRec* fp,
+                              int numLocals,
+                              TypedValue* rv,
+                              EventHook::Source sourceType) {
   frame_free_locals_helper_inl(fp, numLocals);
-  EventHook::FunctionReturn(fp, *rv);
+  EventHook::FunctionReturn(fp, *rv, sourceType);
 }
 
 // Helper for iopFCallBuiltin.
@@ -146,4 +163,3 @@ int64_t zero_error_level();
 void restore_error_level(int64_t oldLevel);
 
 }
-#endif

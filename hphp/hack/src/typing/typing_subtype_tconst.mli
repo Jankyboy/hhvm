@@ -7,7 +7,7 @@ val make_all_type_consts_equal :
   env ->
   Ident.t ->
   internal_type ->
-  on_error:Errors.typing_error_callback ->
+  on_error:Errors.error_from_reasons_callback ->
   as_tyvar_with_cnstr:bool ->
   env
 
@@ -16,4 +16,9 @@ environment.
 If that type constant is not present, make a fresh invariant
 type variable and add it as the type of the type constant in the environment.
 *)
-val get_tyvar_type_const : env -> Ident.t -> Aast.sid -> env * locl_ty
+val get_tyvar_type_const :
+  env ->
+  Ident.t ->
+  pos_id ->
+  on_error:Errors.error_from_reasons_callback ->
+  env * locl_ty

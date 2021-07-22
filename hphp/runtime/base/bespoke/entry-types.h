@@ -45,7 +45,7 @@ enum class ValueTypes : uint8_t {
 };
 
 struct EntryTypes {
-  static EntryTypes ForArray(ArrayData* ad);
+  static EntryTypes ForArray(const ArrayData* ad);
 
   EntryTypes(KeyTypes keyTypes, ValueTypes valueTypes,
              DataType valueDatatype)
@@ -60,9 +60,9 @@ struct EntryTypes {
    , valueDatatype(static_cast<DataType>(static_cast<int8_t>(val & 0xFF)))
   { assertx(checkInvariants()); }
 
-  EntryTypes withKV(TypedValue k, TypedValue v) const;
-  EntryTypes withV(TypedValue v) const;
+  EntryTypes with(TypedValue k, TypedValue v) const;
   EntryTypes pessimizeValueTypes() const;
+  bool isMonotypeState() const;
   std::string toString() const;
 
   uint16_t asInt16() const {
@@ -87,6 +87,8 @@ struct EntryTypes {
   ValueTypes valueTypes;
   DataType valueDatatype;
 };
+
+const char* show(KeyTypes kt);
 
 }}
 

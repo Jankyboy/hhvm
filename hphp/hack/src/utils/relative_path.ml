@@ -8,7 +8,6 @@
  *)
 
 open Hh_prelude
-open Hh_core
 open Reordered_argument_collections
 open Utils
 open String_utils
@@ -100,8 +99,8 @@ let storage_of_string str =
     let (a, a') = (0, idx) in
     let b = idx + 1 in
     let b' = String.length str - b in
-    let prefix = String.sub str a a' in
-    let content = String.sub str b b' in
+    let prefix = String.sub str ~pos:a ~len:a' in
+    let content = String.sub str ~pos:b ~len:b' in
     let prefix =
       match prefix with
       | "root" -> Root
@@ -130,16 +129,37 @@ let to_root (_, rest) = (Root, rest)
 module Set = struct
   include Reordered_argument_set (Caml.Set.Make (S))
 
-  let pp fmt x =
+  let pp_limit ?(max_items = None) fmt x =
     Format.fprintf fmt "@[<2>{";
     ignore
-    @@ List.fold_left (elements x) ~init:false ~f:(fun sep s ->
-           if sep then Format.fprintf fmt ";@ ";
-           pp fmt s;
-           true);
+    @@ List.fold_left (elements x) ~init:0 ~f:(fun i s ->
+           (match max_items with
+           | Some max_items when i >= max_items -> ()
+           | _ ->
+             if i > 0 then Format.fprintf fmt ";@ ";
+             pp fmt s);
+           i + 1);
     Format.fprintf fmt "@,}@]"
 
+  let pp = pp_limit ~max_items:None
+
   let show x = Format.asprintf "%a" pp x
+
+  let pp_large ?(max_items = 5) fmt sset =
+    let l = cardinal sset in
+    if l <= max_items then
+      pp fmt sset
+    else
+      Format.fprintf
+        fmt
+        "<only showing %d of %d elems: %a>"
+        max_items
+        l
+        (pp_limit ~max_items:(Some max_items))
+        sset
+
+  let show_large ?(max_items = 5) sset =
+    Format.asprintf "%a" (pp_large ~max_items) sset
 end
 
 module Map = struct
@@ -157,7 +177,7 @@ let create prefix s =
     Printf.eprintf "%s is not a prefix of %s" prefix_s s;
     assert_false_log_backtrace None
   );
-  (prefix, String.sub s prefix_len (String.length s - prefix_len))
+  (prefix, String.sub s ~pos:prefix_len ~len:(String.length s - prefix_len))
 
 let create_detect_prefix s =
   let file_prefix =
@@ -179,7 +199,7 @@ let strip_root_if_possible s =
   if not (string_starts_with s prefix_s) then
     None
   else
-    Some (String.sub s prefix_len (String.length s - prefix_len))
+    Some (String.sub s ~pos:prefix_len ~len:(String.length s - prefix_len))
 
 let from_root ~(suffix : string) : t = (Root, suffix)
 

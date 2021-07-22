@@ -27,9 +27,9 @@ val full_strip_ns_i : env -> Typing_defs.internal_type -> string
 
 val full_strip_ns_decl : env -> Typing_defs.decl_ty -> string
 
-val full_decl : Provider_context.t -> Typing_defs.decl_ty -> string
+val full_decl : Typing_defs.decl_ty -> string
 
-val fun_type : Provider_context.t -> Typing_defs.decl_fun_type -> string
+val fun_type : Typing_defs.decl_fun_type -> string
 
 (** Pretty print a type and all of its associated declaration information. *)
 val full_with_identity :
@@ -49,17 +49,19 @@ val with_blank_tyvars : (unit -> 'a) -> 'a
 
 val class_ : Provider_context.t -> Decl_provider.class_decl -> string
 
-val gconst : Provider_context.t -> Decl_provider.gconst_decl -> string
+val gconst : Decl_provider.gconst_decl -> string
 
-val fun_ : Provider_context.t -> Decl_provider.fun_decl -> string
+val fun_ : Decl_provider.fun_decl -> string
 
-val typedef : Provider_context.t -> Decl_provider.typedef_decl -> string
+val typedef : Decl_provider.typedef_decl -> string
 
-val constraints_for_type : env -> Typing_defs.locl_ty -> string option
+val constraints_for_type : env -> Typing_defs.locl_ty -> string
 
 val class_kind : Ast_defs.class_kind -> bool -> string
 
 val subtype_prop : env -> Typing_logic.subtype_prop -> string
+
+val coeffects : env -> Typing_defs.locl_ty -> string
 
 (* Convert a type to a structured JSON value, as follows:
  * <prim> ::= "int" | "bool" | "float" | "string" | "num" | "arraykey"

@@ -8,7 +8,7 @@
  *
  *)
 
-open Hh_core
+open Hh_prelude
 
 let test_valid () =
   let examples =
@@ -69,7 +69,7 @@ let test_valid () =
   in
   let do_example (uri, expected) =
     let actual = File_url.parse uri in
-    if actual <> expected then
+    if not (String.equal actual expected) then
       failwith
         (Printf.sprintf "Expected '%s' -> '%s', not '%s'" uri expected actual)
   in
@@ -134,7 +134,8 @@ let test_invalid_parse () =
       try
         let _ = File_url.parse uri in
         false
-      with _ -> true
+      with
+      | _ -> true
     in
     if not did_raise then
       failwith (Printf.sprintf "Expected '%s' not to parse" uri)
@@ -168,7 +169,7 @@ let test_create () =
   in
   let do_example (file, expected) =
     let actual = File_url.create file in
-    if actual <> expected then
+    if not (String.equal actual expected) then
       failwith
         (Printf.sprintf "Expected '%s' -> '%s', not '%s'" file expected actual)
   in

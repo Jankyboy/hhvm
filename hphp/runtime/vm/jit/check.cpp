@@ -413,16 +413,25 @@ bool checkOperandTypes(const IRInstruction* inst, const IRUnit* /*unit*/) {
     return true;
   };
 
-  auto checkArr = [&] (bool is_kv, bool is_const) {
+  auto checkBespokeArr = [&] {
     auto const t = src()->type();
-    auto const cond_type = RuntimeOption::EvalHackArrDVArrs
-      ? (is_kv ? TDict : TVec)
-      : (is_kv ? TDArr : TVArr);
-    if (is_const) {
-      auto expected = folly::sformat("constant {}", t.toString());
-      check(src()->hasConstVal(cond_type), t, expected.c_str());
-    } else {
-      check(src()->isA(cond_type), t, nullptr);
+    if (t != TBottom) check(t.arrSpec().bespoke(), Type(), "TArrLike=Bespoke");
+    ++curSrc;
+  };
+
+  auto checkMonotypeArr = [&](Type type) {
+    auto const t = src()->type();
+    if (t != TBottom) {
+      check(t <= type, type, "");
+      check(t.arrSpec().monotype(), Type(), "TArrLike=Monotype");
+    }
+    ++curSrc;
+  };
+
+  auto checkStructDict = [&]() {
+    auto const t = src()->type();
+    if (t != TBottom) {
+      check(t.arrSpec().is_struct(), Type(), "TArrLike=StructDict");
     }
     ++curSrc;
   };
@@ -494,9 +503,10 @@ using TypeNames::TCA;
                           checkMultiple(src(), types, names);               \
                         }                                                   \
                       }
-#define SVArr         checkArr(false /* is_kv */, false /* is_const */);
-#define SDArr         checkArr(true  /* is_kv */, false /* is_const */);
-#define CDArr         checkArr(true  /* is_kv */, true  /* is_const */);
+#define SBespokeArr   checkBespokeArr();
+#define SMonotypeVec  checkMonotypeArr(TVec);
+#define SMonotypeDict checkMonotypeArr(TDict);
+#define SStructDict   checkStructDict();
 #define ND
 #define DMulti
 #define DSetElem
@@ -504,6 +514,7 @@ using TypeNames::TCA;
 #define DBuiltin
 #define DCall
 #define DGenIter
+#define DEscalateToVanilla
 #define DSubtract(src, t)checkDst(src < inst->numSrcs(),  \
                              "invalid src num");
 #define DofS(src)   checkDst(src < inst->numSrcs(),  \
@@ -511,36 +522,34 @@ using TypeNames::TCA;
 #define DRefineS(src) checkDst(src < inst->numSrcs(),  \
                                "invalid src num");     \
                       requireTypeParam(Top);
-#define DParamMayRelax(t) requireTypeParam(t);
-#define DParam(t)         requireTypeParam(t);
+#define DParam(t)      requireTypeParam(t);
 #define DUnion(...)    forEachSrcIdx(                                          \
                          [&](uint32_t idx) {                                   \
                            checkDst(idx < inst->numSrcs(), "invalid src num"); \
                          },                                                    \
                          IdxSeq<__VA_ARGS__>{}                                 \
                        );
+#define DBespokeElemLval
 #define DLdObjCls
 #define DAllocObj
+#define DBespokeElemUninit
+#define DBespokeElem
+#define DBespokePosKey
+#define DBespokePosVal
 #define DVecElem
 #define DDictElem
-#define DDictSet
-#define DVecSet
+#define DModified(n)
+#define DArrLikeSet
+#define DArrLikeAppend
 #define DKeysetElem
-#define DVecFirstElem
-#define DVecLastElem
 #define DVecKey
-#define DDictFirstElem
-#define DDictLastElem
-#define DDictFirstKey
-#define DDictLastKey
-#define DKeysetFirstElem
-#define DKeysetLastElem
+#define DFirstElem
+#define DLastElem
+#define DFirstKey
+#define DLastKey
 #define DLoggingArrLike
-#define DVArr
-#define DDArr
-#define DStaticDArr
+#define DStructDict
 #define DCol
-#define DCns
 #define DMemoKey
 #define DLvalOfPtr
 #define DPtrIter
@@ -561,11 +570,11 @@ using TypeNames::TCA;
 #undef AK
 #undef C
 #undef CStr
-#undef SVar
-#undef SVArr
-#undef SVArrOrNull
-#undef SDArr
-#undef CDArr
+#undef SBespokeArr
+#undef SMonotypeVec
+#undef SMonotypeDict
+#undef SStructDict
+#undef SKnownArrLike
 
 #undef ND
 #undef D
@@ -577,14 +586,20 @@ using TypeNames::TCA;
 #undef DSetElem
 #undef DofS
 #undef DRefineS
-#undef DParamMayRelax
+#undef DEscalateToVanilla
 #undef DParam
+#undef DBespokeElemLval
 #undef DLdObjCls
 #undef DAllocObj
+#undef DBespokeElemUninit
+#undef DBespokeElem
+#undef DBespokePosKey
+#undef DBespokePosVal
 #undef DVecElem
 #undef DDictElem
-#undef DDictSet
-#undef DVecSet
+#undef DModified
+#undef DArrLikeSet
+#undef DArrLikeAppend
 #undef DKeysetElem
 #undef DVecFirstElem
 #undef DVecLastElem
@@ -596,11 +611,8 @@ using TypeNames::TCA;
 #undef DKeysetFirstElem
 #undef DKeysetLastElem
 #undef DLoggingArrLike
-#undef DVArr
-#undef DDArr
-#undef DStaticDArr
+#undef DStructDict
 #undef DCol
-#undef DCns
 #undef DUnion
 #undef DMemoKey
 #undef DLvalOfPtr

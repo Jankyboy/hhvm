@@ -50,11 +50,11 @@ let lookup local_id gamma =
    * (Tast.annotation = Pos.t * ty). Ignore the expression id.
    * TODO Avoid this conversion? Do we need the expression ids? *)
   let local_to_pos_ty (ty, _pos, _expr_id) = (Typing_defs.get_pos ty, ty) in
-  Option.map tyopt local_to_pos_ty
+  Option.map tyopt ~f:local_to_pos_ty
 
-let add_to_gamma local_id ty gamma =
+let add_to_gamma local_id p ty gamma =
   let local_id = dummify_local_id local_id in
-  let pos_ty_to_local (p, ty) =
+  let pos_ty_to_local ty =
     Typing_defs.(mk (Reason.Rwitness p, get_node ty), Pos.none, 0)
   in
   let ty = pos_ty_to_local ty in

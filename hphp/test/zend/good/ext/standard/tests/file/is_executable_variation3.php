@@ -7,9 +7,6 @@
 <<__EntryPoint>> function main(): void {
 echo "*** Testing is_executable(): usage variations ***\n";
 
-$file_handle = fopen(__FILE__, "r");
-unset($file_handle);
-
 echo "\n*** Testing is_executable() on invalid files ***\n";
 $invalid_files = varray[
   0,
@@ -19,10 +16,9 @@ $invalid_files = varray[
   FALSE,
   NULL,
   " ",
-  @varray[],
-  @$file_handle
+  varray[],
 ];
-/* loop through to test each element in the above array 
+/* loop through to test each element in the above array
    is an executable file */
 foreach( $invalid_files as $invalid_file ) {
   try { var_dump( is_executable($invalid_file) ); } catch (Exception $e) { echo "\n".'Warning: '.$e->getMessage().' in '.__FILE__.' on line '.__LINE__."\n"; }

@@ -26,7 +26,12 @@ module Infix = struct
       ~init:acc
       ~f:(fun acc (a, b) -> op ~pos a b acc)
 
-  let ( < ) ~pos a b acc = Cflow (PosSet.singleton pos, a, b) :: acc
+  let ( < ) ~pos a b acc =
+    match (a, b) with
+    | (Pbot _, _) -> acc
+    | (_, Ptop _) -> acc
+    | _ when equal_policy a b -> acc
+    | _ -> Cflow (PosSet.singleton pos, a, b) :: acc
 
   let ( <* ) ~pos al bl = on_lists ~pos al bl ~op:( < )
 
@@ -37,20 +42,20 @@ module Infix = struct
 
   let ( =* ) ~pos al bl = on_lists ~pos al bl ~op:( = )
 
-  let ( && ) c1 c2 env = c2 (c1 env)
+  let ( && ) ~pos c1 c2 env = c2 ~pos (c1 ~pos env)
 end
 
 (* Compute the meet of two policies, returns None if
    one of the two policies is a variable. *)
 let policy_meet p1 p2 =
-  let pos = PosSet.union (pos_of p1) (pos_of p2) in
+  let pos = PosSet.union (pos_set_of_policy p1) (pos_set_of_policy p2) in
   match (p1, p2) with
   | (Ptop _, p)
   | (p, Ptop _) ->
-    Some (set_pos pos p)
+    Some (set_pos_set_of_policy pos p)
   | (Ppurpose (_, n1), Ppurpose (_, n2)) ->
     if String.equal n1 n2 then
-      Some (set_pos pos p1)
+      Some (set_pos_set_of_policy pos p1)
     else
       Some (Pbot pos)
   | (Pbot _, _)
@@ -59,17 +64,17 @@ let policy_meet p1 p2 =
   | _ -> None
 
 let policy_join p1 p2 =
-  let pos = PosSet.union (pos_of p1) (pos_of p2) in
+  let pos = PosSet.union (pos_set_of_policy p1) (pos_set_of_policy p2) in
   match (p1, p2) with
   | (Ptop _, _)
   | (_, Ptop _) ->
     Some (Ptop pos)
   | (Pbot _, p)
   | (p, Pbot _) ->
-    Some (set_pos pos p)
+    Some (set_pos_set_of_policy pos p)
   | (Ppurpose (_, n1), Ppurpose (_, n2)) ->
     if String.equal n1 n2 then
-      Some (set_pos pos p1)
+      Some (set_pos_set_of_policy pos p1)
     else
       Some (Ptop pos)
   | _ -> None
@@ -168,7 +173,7 @@ let simplify (c : prop) =
   in
   let dedup l =
     let cpol = compare_policy in
-    let compare = Tuple3.compare ~cmp1:PosSet.compare ~cmp2:cpol ~cmp3:cpol in
+    let compare = Tuple3.compare ~cmp1:(fun _ _ -> 0) ~cmp2:cpol ~cmp3:cpol in
     List.filter
       ~f:(fun (_, p1, p2) -> not (equal_policy p1 p2))
       (List.dedup_and_sort ~compare l)

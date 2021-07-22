@@ -14,13 +14,19 @@ clean it up manually, and then delete this comment once the interface is in
 shape. *)
 
 type t = {
-  pos_lnum: int;
+  pos_lnum: int;  (** line number. Starts at 1. *)
   pos_bol: int;
+      (** character number of the beginning of line of this position.
+          The column number is therefore cnum - bol.
+          Starts at 0. *)
   pos_cnum: int;
+      (** character number. Count starts at beginning of file, not at beginning of line. Starts at 0. *)
 }
 [@@deriving eq]
 
 val pp : Format.formatter -> t -> unit
+
+val show : t -> string
 
 val compare : t -> t -> int
 

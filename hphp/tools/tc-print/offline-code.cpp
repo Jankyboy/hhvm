@@ -155,7 +155,7 @@ folly::dynamic OfflineCode::getDisasm(TCA startAddr,
                                       const vector<TransBCMapping>& bcMap,
                                       const PerfEventsMap<TCA>& perfEvents,
                                       bool hostOpcodes,
-                                      folly::Optional<printir::Unit> unit) {
+                                      Optional<printir::Unit> unit) {
   auto const tcr = findTCRegionContaining(startAddr);
   auto mappingInfo = BCMappingInfo(tcr, bcMap);
 
@@ -295,19 +295,17 @@ void OfflineCode::printRangeInfo(std::ostream& os,
                                  const bool printAddr,
                                  const bool printBinary) {
   if (rangeInfo.disasm.empty()) return;
-  if (rangeInfo.bc && rangeInfo.disasm[0].ip == rangeInfo.start) {
-    auto const currBC = *rangeInfo.bc;
-    if (rangeInfo.unit) {
-      auto const currUnit = *rangeInfo.unit;
-      auto const func = currUnit->getFunc(currBC);
-      func->prettyPrintInstruction(os, currBC);
+  if (rangeInfo.sk && rangeInfo.disasm[0].ip == rangeInfo.start) {
+    auto const sk = *rangeInfo.sk;
+    if (rangeInfo.instrStr) {
+      os << std::setw(4) << sk.printableOffset() << ": "
+         << *rangeInfo.instrStr << std::endl;
     } else {
-      auto const currSha1 = rangeInfo.sha1 ?
-        rangeInfo.sha1->toString() :
-        "\"missing SHA1\"";
+      auto const currSha1 = rangeInfo.sha1
+        ? rangeInfo.sha1->toString() : "\"missing SHA1\"";
       os << folly::format(
             "<<< couldn't find unit {} to print bytecode at offset {} >>>\n",
-            currSha1, currBC);
+            currSha1, sk.printableOffset());
     }
   }
   for (auto const& disasmInfo : rangeInfo.disasm) {
@@ -436,17 +434,16 @@ OfflineCode::getRanges(const BCMappingInfo& bcMappingInfo,
 }
 
 TCRangeInfo OfflineCode::getRangeInfo(const TransBCMapping& transBCMap,
-                                       const TCA start,
-                                       const TCA end) {
-  TCRangeInfo rangeInfo{start, end, transBCMap.bcStart, transBCMap.sha1};
-
-  if (auto const currUnit = g_repo->getUnit(transBCMap.sha1)) {
-   rangeInfo.unit = currUnit;
-   auto const func = currUnit->getFunc(transBCMap.bcStart);
-   rangeInfo.func = func;
-   rangeInfo.instrStr = instrToString(func->at(transBCMap.bcStart), func);
-   auto const lineNum = currUnit->getLineNumber(transBCMap.bcStart);
-   if (lineNum != -1) rangeInfo.lineNum = lineNum;
+                                      const TCA start,
+                                      const TCA end) {
+  TCRangeInfo rangeInfo{start, end, transBCMap.sk, transBCMap.sha1};
+  auto const sk = transBCMap.sk;
+  if (sk.valid()) {
+    rangeInfo.unit = sk.func()->unit();
+    rangeInfo.func = sk.func();
+    rangeInfo.instrStr = sk.showInst();
+    auto const lineNum = sk.lineNumber();
+    if (lineNum != -1) rangeInfo.lineNum = lineNum;
   }
 
   return rangeInfo;

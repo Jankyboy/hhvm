@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_VASM_SIMPLIFY_INTERNAL_H_
-#define incl_HPHP_JIT_VASM_SIMPLIFY_INTERNAL_H_
+#pragma once
 
 #include "hphp/runtime/vm/jit/containers.h"
 #include "hphp/runtime/vm/jit/vasm.h"
@@ -112,10 +111,8 @@ inline bool simplify_impl(Env& env, Vlabel b, size_t i, const Vinstr& instr) {
 
 namespace x64   { bool simplify(Env& env, Vlabel b, size_t i); }
 namespace arm   { bool simplify(Env& env, Vlabel b, size_t i); }
-namespace ppc64 { bool simplify(Env& env, Vlabel b, size_t i); }
 
 ///////////////////////////////////////////////////////////////////////////////
 
 }}
 
-#endif

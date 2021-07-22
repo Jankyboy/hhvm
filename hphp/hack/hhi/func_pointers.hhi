@@ -59,7 +59,7 @@ function fun(string $func_name); // becomes:
 * to an instance method on the specified class.  This method can then be used
 * to execute across a collection of objects of that class.
 *
-* To identify the class for the fucntion, use a class reference of the format
+* To identify the class for the function, use a class reference of the format
 * `MyClassName::class`.
 *
 * Hack provides a variety of methods that allow you to construct references to
@@ -177,11 +177,10 @@ function inst_meth($inst, string $meth_name); // becomes:
 /**
  * See http://docs.hhvm.com/hack/reference/function/HH.invariant/
  */
-<<__Pure>>
 function invariant(
   $condition, // e.g. is_int($x) or ($y instanceof SomeClass)
   FormatString<\PlainSprintf> $f, ...$f_args
-): void; // becomes:
+)[]: void; // becomes:
 // if (!(<condition>)) { // an Exception is thrown
 //   invariant_violation('sprintf format: %s', 'string', ...);
 // }

@@ -20,6 +20,7 @@ type member_class =
 
 type action_internal =
   | IClass of string
+  | IExplicitClass of string
   | IRecord of string
   | IMember of member_class * member
   | IFunction of string
@@ -33,6 +34,7 @@ let member_class_to_string (mc : member_class) : string =
 let action_internal_to_string (action : action_internal) : string =
   match action with
   | IClass s -> "IClass " ^ s
+  | IExplicitClass s -> "IExplicitClass " ^ s
   | IRecord s -> "IRecord " ^ s
   | IFunction s -> "IFunction " ^ s
   | IGConst s -> "IGConst " ^ s
@@ -82,14 +84,15 @@ let process_member_id
   else
     Pos.Map.empty
 
-let process_class_id target_class cid mid_option =
-  if String.equal target_class (snd cid) then
-    let class_name =
-      match mid_option with
-      | None -> snd cid
-      | Some n -> snd cid ^ "::" ^ snd n
-    in
-    Pos.Map.singleton (fst cid) class_name
+let process_class_id
+    target_class
+    (pos, class_name)
+    (class_id_type : SymbolOccurrence.class_id_type)
+    (include_all_ci_types : bool) =
+  if String.equal target_class class_name then
+    match (include_all_ci_types, class_id_type) with
+    | (false, SymbolOccurrence.Other) -> Pos.Map.empty
+    | _ -> Pos.Map.singleton pos class_name
   else
     Pos.Map.empty
 
@@ -124,7 +127,8 @@ let find_child_classes ctx target_class_name naming_table files =
         in
         List.fold_left classes ~init:acc ~f:(fun acc cid ->
             add_if_extends_class ctx target_class_name (snd cid) acc)
-      with Caml.Not_found -> acc)
+      with
+      | Naming_table.File_info_not_found -> acc)
 
 let get_origin_class_name ctx class_name member =
   let origin =
@@ -155,17 +159,22 @@ let get_origin_class_name ctx class_name member =
 let get_child_classes_files ctx class_name =
   match Naming_provider.get_type_kind ctx class_name with
   | Some Naming_types.TClass ->
+    let deps_mode = Provider_context.get_deps_mode ctx in
     (* Find the files that contain classes that extend class_ *)
-    let cid_hash = Typing_deps.Dep.make (Typing_deps.Dep.Class class_name) in
+    let cid_hash =
+      Typing_deps.(Dep.make (hash_mode deps_mode) (Dep.Type class_name))
+    in
     let extend_deps =
       Decl_compare.get_extend_deps
+        deps_mode
         cid_hash
-        (Typing_deps.DepSet.singleton cid_hash)
+        (Typing_deps.DepSet.singleton deps_mode cid_hash)
     in
-    Typing_deps.get_files extend_deps
+    Typing_deps.Files.get_files extend_deps
   | _ -> Relative_path.Set.empty
 
 let get_deps_set ctx classes =
+  let deps_mode = Provider_context.get_deps_mode ctx in
   SSet.fold
     classes
     ~f:
@@ -174,9 +183,9 @@ let get_deps_set ctx classes =
         match Naming_provider.get_type_path ctx class_name with
         | None -> acc
         | Some fn ->
-          let dep = Typing_deps.Dep.Class class_name in
-          let ideps = Typing_deps.get_ideps dep in
-          let files = Typing_deps.get_files ideps in
+          let dep = Typing_deps.Dep.Type class_name in
+          let ideps = Typing_deps.get_ideps deps_mode dep in
+          let files = Typing_deps.Files.get_files ideps in
           let files = Relative_path.Set.add files fn in
           Relative_path.Set.union files acc
       end
@@ -185,18 +194,20 @@ let get_deps_set ctx classes =
 let get_deps_set_function ctx f_name =
   match Naming_provider.get_fun_path ctx f_name with
   | Some fn ->
+    let deps_mode = Provider_context.get_deps_mode ctx in
     let dep = Typing_deps.Dep.Fun f_name in
-    let ideps = Typing_deps.get_ideps dep in
-    let files = Typing_deps.get_files ideps in
+    let ideps = Typing_deps.get_ideps deps_mode dep in
+    let files = Typing_deps.Files.get_files ideps in
     Relative_path.Set.add files fn
   | None -> Relative_path.Set.empty
 
 let get_deps_set_gconst ctx cst_name =
   match Naming_provider.get_const_path ctx cst_name with
   | Some fn ->
+    let deps_mode = Provider_context.get_deps_mode ctx in
     let dep = Typing_deps.Dep.GConst cst_name in
-    let ideps = Typing_deps.get_ideps dep in
-    let files = Typing_deps.get_files ideps in
+    let ideps = Typing_deps.get_ideps deps_mode dep in
+    let files = Typing_deps.Files.get_files ideps in
     Relative_path.Set.add files fn
   | None -> Relative_path.Set.empty
 
@@ -210,7 +221,8 @@ let fold_one_tast ctx target acc symbol =
     process_taccess ctx classes tc (c_name, tc_name, pos)
   | (IMember (classes, member), SO.Method (c_name, m_name))
   | (IMember (classes, member), SO.ClassConst (c_name, m_name))
-  | (IMember (classes, member), SO.Property (c_name, m_name)) ->
+  | (IMember (classes, member), SO.Property (c_name, m_name))
+  | (IMember (classes, member), SO.XhpLiteralAttr (c_name, m_name)) ->
     let mid = (pos, m_name) in
     let is_method =
       match type_ with
@@ -224,7 +236,12 @@ let fold_one_tast ctx target acc symbol =
     in
     process_member_id ctx classes member c_name mid ~is_method ~is_const
   | (IFunction fun_name, SO.Function) -> process_fun_id fun_name (pos, name)
-  | (IClass c, SO.Class) -> process_class_id c (pos, name) None
+  | (IClass c, SO.Class class_id_type) ->
+    let include_all_ci_types = true in
+    process_class_id c (pos, name) class_id_type include_all_ci_types
+  | (IExplicitClass c, SO.Class class_id_type) ->
+    let include_all_ci_types = false in
+    process_class_id c (pos, name) class_id_type include_all_ci_types
   | (IGConst cst_name, SO.GConst) -> process_gconst_id cst_name (pos, name)
   | _ -> Pos.Map.empty
 
@@ -241,18 +258,27 @@ let find_refs
     |> List.filter ~f:(fun symbol -> not symbol.SymbolOccurrence.is_declaration)
     |> List.fold ~init:Pos.Map.empty ~f:(fold_one_tast ctx target)
   in
+  (* [files] can legitimately refer to non-existent files, e.g.
+     if they've been deleted since the depgraph was created.
+     This is how we'll filter them out. *)
+  let is_entry_valid entry =
+    entry |> Provider_context.get_file_contents_if_present |> Option.is_some
+  in
   (* These are the tasts for all the 'fileinfo_l' passed in *)
   let tasts_of_files : (Relative_path.t * Tast.program) list =
-    List.map files ~f:(fun path ->
+    List.filter_map files ~f:(fun path ->
         let (_ctx, entry) = Provider_context.add_entry_if_missing ~ctx ~path in
-        let { Tast_provider.Compute_tast.tast; _ } =
-          Tast_provider.compute_tast_unquarantined ~ctx ~entry
-        in
-        (path, tast))
+        try
+          let { Tast_provider.Compute_tast.tast; _ } =
+            Tast_provider.compute_tast_unquarantined ~ctx ~entry
+          in
+          Some (path, tast)
+        with
+        | _ when not (is_entry_valid entry) -> None)
   in
   Hh_logger.debug "find_refs.target: %s" (action_internal_to_string target);
   if Hh_logger.Level.passes_min_level Hh_logger.Level.Debug then
-    List.iter tasts_of_files (fun (file, tast) ->
+    List.iter tasts_of_files ~f:(fun (file, tast) ->
         let fn = Relative_path.to_absolute file in
         let tast = Tast.show_program tast in
         let len = String.length tast in
@@ -293,7 +319,11 @@ let parallel_find_refs workers files target ctx =
     ~merge:List.rev_append
     ~next:(MultiWorker.next workers files)
 
-let get_definitions ctx = function
+let get_definitions ctx action =
+  List.map ~f:(fun (name, pos) ->
+      (name, Naming_provider.resolve_position ctx pos))
+  @@
+  match action with
   | IMember (Class_set classes, Method method_name) ->
     SSet.fold classes ~init:[] ~f:(fun class_name acc ->
         match Decl_provider.get_class ctx class_name with
@@ -324,6 +354,7 @@ let get_definitions ctx = function
           let acc = add_class_const (Cls.get_const class_) acc in
           acc
         | None -> acc)
+  | IExplicitClass class_name
   | IClass class_name ->
     Option.value
       ~default:[]

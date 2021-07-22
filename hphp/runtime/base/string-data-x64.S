@@ -1,14 +1,13 @@
 #include "hphp/runtime/base/string-data-macros.h"
 #include "hphp/util/etch-helpers.h"
 
-#if defined(__SSE4_2__) && !defined(NO_HWCRC) && defined(NO_M_DATA) && \
-    !defined(_MSC_VER)
+#ifdef USE_X86_STRING_HELPERS
 
         .file     "hphp/runtime/base/string-data-x64.S"
 
 /*
- * HPHP::StringData::hashHelper() is defined here only when SSE4.2 is explicitly
- * specified, and NO_M_DATA is used in StringData.
+ * HPHP::StringData::hashHelper() is defined here only when SSE4.2 is
+ * explicitly specified via __SSE4_2__.
  */
 
 ETCH_SECTION(_ZNK4HPHP10StringData10hashHelperEv)

@@ -6,6 +6,8 @@
  *
  *)
 
+module Option = Base.Option
+
 type finale_data = {
   exit_status: Exit_status.t;
   msg: string option;
@@ -20,36 +22,27 @@ let show_finale_data (data : finale_data) : string =
     (Option.value data.msg ~default:"")
     (Exception.clean_stack stack)
 
-let finale_file_for_eventual_exit : string option ref = ref None
+let hook_upon_clean_exit : (finale_data -> unit) list ref = ref []
 
-let set_finale_file_for_eventual_exit (finale_file : string) : unit =
-  begin
-    try Unix.unlink finale_file with _ -> ()
-  end;
-  finale_file_for_eventual_exit := Some finale_file
+let add_hook_upon_clean_exit (hook : finale_data -> unit) : unit =
+  hook_upon_clean_exit := hook :: !hook_upon_clean_exit
 
 let exit
     ?(msg : string option)
     ?(stack : string option)
     (exit_status : Exit_status.t) : 'a =
-  let exit_code = Exit_status.exit_code exit_status in
-  match !finale_file_for_eventual_exit with
-  | None -> Stdlib.exit exit_code
-  | Some finale_file ->
-    let stack =
-      Option.value
-        ~default:
-          (Exception.get_current_callstack_string 99 |> Exception.clean_stack)
-        stack
-    in
-    let finale_data = { exit_status; msg; stack = Utils.Callstack stack } in
-    let finale_file = finale_file in
-    begin
-      try
-        Sys_utils.with_umask 0o000 (fun () ->
-            let oc = Stdlib.open_out_bin finale_file in
-            Marshal.to_channel oc finale_data [];
-            Stdlib.close_out oc)
-      with _ -> ()
-    end;
-    Stdlib.exit exit_code
+  let stack =
+    Option.value
+      ~default:
+        (Exception.get_current_callstack_string 99 |> Exception.clean_stack)
+      stack
+  in
+  let server_finale_data =
+    { exit_status; msg; stack = Utils.Callstack stack }
+  in
+  List.iter
+    (fun hook ->
+      try hook server_finale_data with
+      | _ -> ())
+    !hook_upon_clean_exit;
+  Stdlib.exit (Exit_status.exit_code exit_status)

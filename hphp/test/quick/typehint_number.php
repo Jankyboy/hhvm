@@ -29,9 +29,9 @@ function main() {
   try_takes_num('10.5'); // nope: no strings, even numeric
   try_takes_num('foo');  // nope: string
   try_takes_num(new NumericallyStringable()); // nope: object
-  try_takes_num(new StdClass()); // nope: object
+  try_takes_num(new stdClass()); // nope: object
 }
 <<__EntryPoint>> function main_entry(): void {
-set_error_handler(fun('my_handler'));
+set_error_handler(my_handler<>);
 main();
 }

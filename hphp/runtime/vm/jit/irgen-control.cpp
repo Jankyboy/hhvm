@@ -35,14 +35,14 @@ void surpriseCheck(IRGS& env) {
 }
 
 void surpriseCheck(IRGS& env, Offset relOffset) {
-  if (relOffset <= 0) {
+  if (relOffset <= 0 && !env.skipSurpriseCheck) {
     surpriseCheck(env);
   }
 }
 
 void surpriseCheckWithTarget(IRGS& env, Offset targetBcOff) {
   auto const ptr = resumeMode(env) != ResumeMode::None ? sp(env) : fp(env);
-  auto const exit = makeExitSurprise(env, targetBcOff);
+  auto const exit = makeExitSurprise(env, SrcKey{curSrcKey(env), targetBcOff});
   gen(env, CheckSurpriseFlags, exit, ptr);
 }
 
@@ -51,23 +51,30 @@ void surpriseCheckWithTarget(IRGS& env, Offset targetBcOff) {
  * may be a side exit or a normal IR block, depending on whether or not the
  * offset is in the current RegionDesc.
  */
-Block* getBlock(IRGS& env, Offset offset) {
-  SrcKey sk(curSrcKey(env), offset);
+Block* getBlock(IRGS& env, SrcKey sk) {
   // If hasBlock returns true, then IRUnit already has a block for that offset
   // and makeBlock will just return it.  This will be the proper successor
   // block set by setSuccIRBlocks.  Otherwise, the given offset doesn't belong
   // to the region, so we just create an exit block.
-  if (!env.irb->hasBlock(sk)) return makeExit(env, offset);
+  if (!env.irb->hasBlock(sk)) return makeExit(env, sk);
 
   return env.irb->makeBlock(sk, curProfCount(env));
 }
 
+Block* getBlock(IRGS& env, Offset offset) {
+  return getBlock(env, SrcKey{curSrcKey(env), offset});
+}
+
 //////////////////////////////////////////////////////////////////////
 
-void jmpImpl(IRGS& env, Offset offset) {
-  auto target = getBlock(env, offset);
+void jmpImpl(IRGS& env, SrcKey sk) {
+  auto target = getBlock(env, sk);
   assertx(target != nullptr);
   gen(env, Jmp, target);
+}
+
+void jmpImpl(IRGS& env, Offset offset) {
+  return jmpImpl(env, SrcKey{curSrcKey(env), offset});
 }
 
 void implCondJmp(IRGS& env, Offset taken, bool negate, SSATmp* src) {
@@ -81,8 +88,8 @@ void implCondJmp(IRGS& env, Offset taken, bool negate, SSATmp* src) {
 //////////////////////////////////////////////////////////////////////
 
 void emitJmp(IRGS& env, Offset relOffset) {
-  auto const offset = bcOff(env) + relOffset;
-  jmpImpl(env, offset);
+  surpriseCheck(env, relOffset);
+  jmpImpl(env, bcOff(env) + relOffset);
 }
 
 void emitJmpNS(IRGS& env, Offset relOffset) {
@@ -90,11 +97,13 @@ void emitJmpNS(IRGS& env, Offset relOffset) {
 }
 
 void emitJmpZ(IRGS& env, Offset relOffset) {
+  surpriseCheck(env, relOffset);
   auto const takenOff = bcOff(env) + relOffset;
   implCondJmp(env, takenOff, true, popC(env));
 }
 
 void emitJmpNZ(IRGS& env, Offset relOffset) {
+  surpriseCheck(env, relOffset);
   auto const takenOff = bcOff(env) + relOffset;
   implCondJmp(env, takenOff, false, popC(env));
 }
@@ -113,10 +122,14 @@ void emitSwitch(IRGS& env, SwitchKind kind, int64_t base,
   assertx(IMPLIES(!(type <= TInt), bounded));
   assertx(IMPLIES(bounded, iv.size() > 2));
   SSATmp* index;
-  SSATmp* ssabase = cns(env, base);
-  SSATmp* ssatargets = cns(env, nTargets);
 
   Offset defaultOff = bcOff(env) + iv.vec32()[iv.size() - 1];
+
+  if (!(type <= TInt) && useStrictEquality()) {
+    if (type <= TArrLike) decRef(env, switchVal);
+    gen(env, Jmp, getBlock(env, defaultOff));
+  }
+
   Offset zeroOff = 0;
   if (base <= 0 && (base + nTargets) > 0) {
     zeroOff = bcOff(env) + iv.vec32()[0 - base];
@@ -124,13 +137,30 @@ void emitSwitch(IRGS& env, SwitchKind kind, int64_t base,
     zeroOff = defaultOff;
   }
 
+  const auto emitConvNotice = [&] {
+    const auto level = flagToConvNoticeLevel(RuntimeOption::EvalNoticeOnCoerceForEq);
+    if (level == ConvNoticeLevel::None) return;
+    // give it an int RHS for message generation
+    const auto rhs = cns(env, 42);
+    gen(env, RaiseBadComparisonViolation, BadComparisonData{true}, switchVal, rhs);
+  };
+
   if (type <= TNull) {
+    if (zeroOff != defaultOff) emitConvNotice();
     gen(env, Jmp, getBlock(env, zeroOff));
     return;
   }
   if (type <= TBool) {
     Offset nonZeroOff = bcOff(env) + iv.vec32()[iv.size() - 2];
-    gen(env, JmpNZero, getBlock(env, nonZeroOff), switchVal);
+    ifThen(
+      env,
+      [&] (Block* taken) { gen(env, JmpNZero, taken, switchVal); },
+      [&] {
+        if (nonZeroOff != defaultOff) emitConvNotice();
+        gen(env, Jmp, getBlock(env, nonZeroOff));
+      }
+    );
+    if (zeroOff != defaultOff) emitConvNotice();
     gen(env, Jmp, getBlock(env, zeroOff));
     return;
   }
@@ -143,20 +173,12 @@ void emitSwitch(IRGS& env, SwitchKind kind, int64_t base,
   if (type <= TInt) {
     // No special treatment needed
     index = switchVal;
-  } else if (type <= TDbl) {
-    // switch(Double|String|Obj)Helper do bounds-checking for us, so we need to
-    // make sure the default case is in the jump table, and don't emit our own
-    // bounds-checking code.
-    bounded = false;
-    index = gen(env, LdSwitchDblIndex, switchVal, ssabase, ssatargets);
-  } else if (type <= TStr) {
-    bounded = false;
-    index = gen(env, LdSwitchStrIndex, switchVal, ssabase, ssatargets);
-  } else if (type <= TObj) {
-    // switchObjHelper can throw exceptions and reenter the VM so we use the
-    // catch block here.
-    bounded = false;
-    index = gen(env, LdSwitchObjIndex, switchVal, ssabase, ssatargets);
+  } else if (type <= TDbl || type <= TStr || type <= TObj) {
+    // determining whether we'll hit a coercion is too complicated for the jit
+    // so just punt to the interpreter. These cases should be pretty cold so
+    // it shouldn't be a major issue, hopefully. If it is an issue, we should
+    // be able to just fix www.
+    PUNT(Switch-MaybeCoercingType);
   } else {
     PUNT(Switch-UnknownType);
   }
@@ -173,10 +195,10 @@ void emitSwitch(IRGS& env, SwitchKind kind, int64_t base,
     gen(env, JmpZero, getBlock(env, defaultOff), ok);
     bounded = false;
   };
-  auto const offsets = iv.range32();
 
   // We lower Switch to a series of comparisons if any of the successors are in
   // included in the region.
+  auto const offsets = iv.range32();
   auto const shouldLower =
     std::any_of(offsets.begin(), offsets.end(), [&](Offset o) {
       SrcKey sk(curSrcKey(env), bcOff(env) + o);
@@ -232,7 +254,7 @@ void emitSwitch(IRGS& env, SwitchKind kind, int64_t base,
   auto data = JmpSwitchData{};
   data.cases = iv.size();
   data.targets = &targets[0];
-  data.spOffBCFromFP = spOffBCFromFP(env);
+  data.spOffBCFromStackBase = spOffBCFromStackBase(env);
   data.spOffBCFromIRSP = spOffBCFromIRSP(env);
 
   gen(env, JmpSwitchDest, data, index, sp(env), fp(env));
@@ -270,7 +292,7 @@ void emitSSwitch(IRGS& env, const ImmVector& iv) {
   data.cases      = &cases[0];
   data.defaultSk  = SrcKey{curSrcKey(env),
                            bcOff(env) + iv.strvec()[iv.size() - 1].dest};
-  data.bcSPOff    = spOffBCFromFP(env);
+  data.bcSPOff    = spOffBCFromStackBase(env);
 
   auto const dest = gen(env,
                         fastPath ? LdSSwitchDestFast
@@ -288,20 +310,8 @@ void emitSSwitch(IRGS& env, const ImmVector& iv) {
   );
 }
 
-const StaticString s_nonexhaustive_switch(Strings::NONEXHAUSTIVE_SWITCH);
-
 void emitThrowNonExhaustiveSwitch(IRGS& env) {
-  switch (RuntimeOption::EvalThrowOnNonExhaustiveSwitch) {
-    case 0:
-      return;
-    case 1:
-      gen(env, RaiseWarning, cns(env, s_nonexhaustive_switch.get()));
-      return;
-    default:
-      interpOne(env);
-      return;
-  }
-  not_reached();
+  interpOne(env);
 }
 
 const StaticString s_class_to_string(Strings::CLASS_TO_STRING);
@@ -323,18 +333,18 @@ void emitSelect(IRGS& env) {
     env,
     [&] (Block* taken) { gen(env, JmpZero, taken, boolSrc); },
     [&] { // True case
-      auto const val = popC(env, DataTypeCountness);
-      popDecRef(env, DataTypeCountness);
+      auto const val = popC(env, DataTypeGeneric);
+      popDecRef(env, DataTypeGeneric);
       push(env, val);
     },
-    [&] { popDecRef(env, DataTypeCountness); } // False case
+    [&] { popDecRef(env, DataTypeGeneric); } // False case
   );
 }
 
 //////////////////////////////////////////////////////////////////////
 
 void emitThrow(IRGS& env) {
-  auto const stackEmpty = spOffBCFromFP(env) == spOffEmpty(env) + 1;
+  auto const stackEmpty = spOffBCFromStackBase(env) == spOffEmpty(env) + 1;
   auto const offset = findCatchHandler(curFunc(env), bcOff(env));
   auto const srcTy = topC(env)->type();
   auto const maybeThrowable =
@@ -348,10 +358,9 @@ void emitThrow(IRGS& env) {
     // There are no more catch blocks in this function, we are at the top
     // level throw
     auto const exn = popC(env);
-    auto const spOff = IRSPRelOffsetData { spOffBCFromIRSP(env) };
-    gen(env, EagerSyncVMRegs, spOff, fp(env), sp(env));
     updateMarker(env);
-    gen(env, EnterTCUnwind, EnterTCUnwindData { true }, exn);
+    auto const etcData = EnterTCUnwindData { spOffBCFromIRSP(env), true };
+    gen(env, EnterTCUnwind, etcData, sp(env), fp(env), exn);
   };
 
   if (srcTy <= Type::SubObj(SystemLib::s_ThrowableClass)) return handleThrow();

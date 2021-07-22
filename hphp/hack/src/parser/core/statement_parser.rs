@@ -9,28 +9,28 @@ use crate::expression_parser::ExpressionParser;
 use crate::lexer::Lexer;
 use crate::parser_env::ParserEnv;
 use crate::parser_trait::{Context, ExpectedTokens, ParserTrait};
-use crate::smart_constructors::{NodeType, SmartConstructors};
+use crate::smart_constructors::{NodeType, SmartConstructors, Token};
 use crate::type_parser::TypeParser;
 use parser_core_types::lexable_token::LexableToken;
 use parser_core_types::syntax_error::{self as Errors, SyntaxError};
 use parser_core_types::token_kind::TokenKind;
 use parser_core_types::trivia_kind::TriviaKind;
 
-pub struct StatementParser<'a, S, T>
+pub struct StatementParser<'a, S>
 where
-    S: SmartConstructors<'a, T>,
+    S: SmartConstructors,
     S::R: NodeType,
 {
-    lexer: Lexer<'a, S::Token>,
+    lexer: Lexer<'a, S::TF>,
     env: ParserEnv,
-    context: Context<'a, S::Token>,
+    context: Context<'a, Token<S>>,
     errors: Vec<SyntaxError>,
     sc: S,
 }
 
-impl<'a, S, T: Clone> Clone for StatementParser<'a, S, T>
+impl<'a, S> Clone for StatementParser<'a, S>
 where
-    S: SmartConstructors<'a, T>,
+    S: SmartConstructors,
     S::R: NodeType,
 {
     fn clone(&self) -> Self {
@@ -44,15 +44,15 @@ where
     }
 }
 
-impl<'a, S, T: Clone> ParserTrait<'a, S, T> for StatementParser<'a, S, T>
+impl<'a, S> ParserTrait<'a, S> for StatementParser<'a, S>
 where
-    S: SmartConstructors<'a, T>,
+    S: SmartConstructors,
     S::R: NodeType,
 {
     fn make(
-        lexer: Lexer<'a, S::Token>,
+        lexer: Lexer<'a, S::TF>,
         env: ParserEnv,
-        context: Context<'a, S::Token>,
+        context: Context<'a, Token<S>>,
         errors: Vec<SyntaxError>,
         sc: S,
     ) -> Self {
@@ -65,29 +65,19 @@ where
         }
     }
 
-    fn into_parts(
-        self,
-    ) -> (
-        Lexer<'a, S::Token>,
-        Context<'a, S::Token>,
-        Vec<SyntaxError>,
-        S,
-    ) {
+    fn into_parts(self) -> (Lexer<'a, S::TF>, Context<'a, Token<S>>, Vec<SyntaxError>, S) {
         (self.lexer, self.context, self.errors, self.sc)
     }
 
-    fn lexer(&self) -> &Lexer<'a, S::Token> {
+    fn lexer(&self) -> &Lexer<'a, S::TF> {
         &self.lexer
     }
 
-    fn lexer_mut(&mut self) -> &mut Lexer<'a, S::Token> {
+    fn lexer_mut(&mut self) -> &mut Lexer<'a, S::TF> {
         &mut self.lexer
     }
 
-    fn continue_from<P: ParserTrait<'a, S, T>>(&mut self, other: P)
-    where
-        T: Clone,
-    {
+    fn continue_from<P: ParserTrait<'a, S>>(&mut self, other: P) {
         let (lexer, context, errors, sc) = other.into_parts();
         self.lexer = lexer;
         self.context = context;
@@ -107,33 +97,33 @@ where
         &mut self.sc
     }
 
-    fn drain_skipped_tokens(&mut self) -> std::vec::Drain<S::Token> {
+    fn drain_skipped_tokens(&mut self) -> std::vec::Drain<Token<S>> {
         self.context.skipped_tokens.drain(..)
     }
 
-    fn skipped_tokens(&self) -> &[S::Token] {
+    fn skipped_tokens(&self) -> &[Token<S>] {
         &self.context.skipped_tokens
     }
 
-    fn context_mut(&mut self) -> &mut Context<'a, S::Token> {
+    fn context_mut(&mut self) -> &mut Context<'a, Token<S>> {
         &mut self.context
     }
 
-    fn context(&self) -> &Context<'a, S::Token> {
+    fn context(&self) -> &Context<'a, Token<S>> {
         &self.context
     }
 }
 
-impl<'a, S, T: Clone> StatementParser<'a, S, T>
+impl<'a, S> StatementParser<'a, S>
 where
-    S: SmartConstructors<'a, T>,
+    S: SmartConstructors,
     S::R: NodeType,
 {
     fn with_type_parser<F, U>(&mut self, f: F) -> U
     where
-        F: Fn(&mut TypeParser<'a, S, T>) -> U,
+        F: Fn(&mut TypeParser<'a, S>) -> U,
     {
-        let mut type_parser: TypeParser<S, T> = TypeParser::make(
+        let mut type_parser: TypeParser<S> = TypeParser::make(
             self.lexer.clone(),
             self.env.clone(),
             self.context.clone(),
@@ -146,14 +136,14 @@ where
     }
 
     fn parse_type_specifier(&mut self) -> S::R {
-        self.with_type_parser(|x: &mut TypeParser<'a, S, T>| x.parse_type_specifier(false, true))
+        self.with_type_parser(|x: &mut TypeParser<'a, S>| x.parse_type_specifier(false, true))
     }
 
     fn with_expression_parser<F, U>(&mut self, f: F) -> U
     where
-        F: Fn(&mut ExpressionParser<'a, S, T>) -> U,
+        F: Fn(&mut ExpressionParser<'a, S>) -> U,
     {
-        let mut expression_parser: ExpressionParser<S, T> = ExpressionParser::make(
+        let mut expression_parser: ExpressionParser<S> = ExpressionParser::make(
             self.lexer.clone(),
             self.env.clone(),
             self.context.clone(),
@@ -167,9 +157,9 @@ where
 
     fn with_decl_parser<F, U>(&mut self, f: F) -> U
     where
-        F: Fn(&mut DeclarationParser<'a, S, T>) -> U,
+        F: Fn(&mut DeclarationParser<'a, S>) -> U,
     {
-        let mut decl_parser: DeclarationParser<S, T> = DeclarationParser::make(
+        let mut decl_parser: DeclarationParser<S> = DeclarationParser::make(
             self.lexer.clone(),
             self.env.clone(),
             self.context.clone(),
@@ -217,6 +207,15 @@ where
             TokenKind::Break => self.parse_break_statement(),
             TokenKind::Continue => self.parse_continue_statement(),
             TokenKind::Return => self.parse_return_statement(),
+            TokenKind::Yield => {
+                match self.peek_token_kind_with_lookahead(1) {
+                    // yield break;
+                    TokenKind::Break => self.parse_yield_break_statement(),
+                    // yield;
+                    // yield some_expression;
+                    _ => self.parse_expression_statement(),
+                }
+            }
             TokenKind::Throw => self.parse_throw_statement(),
             TokenKind::LeftBrace => self.parse_compound_statement(),
             TokenKind::Static => self.parse_expression_statement(),
@@ -237,10 +236,6 @@ where
                 self.with_error(Errors::error2004);
                 result
             }
-            TokenKind::Name if self.peek_token_kind_with_lookahead(1) == TokenKind::Colon => {
-                self.parse_goto_label()
-            }
-            TokenKind::Goto => self.parse_goto_statement(),
             TokenKind::Semicolon => self.parse_expression_statement(),
             // ERROR RECOVERY: when encountering a token that's invalid now but the
             // context says is expected later, make the whole statement missing
@@ -302,7 +297,7 @@ where
             | (TokenKind::Async, TokenKind::LeftBrace) // Async block
                 => self.parse_expression_statement(),
             | _ => {
-                let missing = self.with_decl_parser(|x: &mut DeclarationParser<'a, S, T>| {
+                let missing = self.with_decl_parser(|x: &mut DeclarationParser<'a, S>| {
                     let missing = S!(make_missing, x, x.pos());
                     x.parse_function_declaration(missing)
                 });
@@ -328,9 +323,13 @@ where
         //   for   (   for-initializer-opt   ;   for-control-opt   ;    \
         //     for-end-of-loop-opt   )   statement
         //
-        // Each clause is an optional, comma-separated list of expressions.
+        // The initialize and end-of-loop clauses are optional,
+        // comma-separated lists of expressions. The control clause is
+        // an optional single expression.
+        //
         // Note that unlike most such lists in Hack, it may *not* have a trailing
         // comma.
+        //
         // TODO: There is no compelling reason to not allow a trailing comma
         // from the grammatical point of view. Each clause unambiguously ends in
         // either a semi or a paren, so we can allow a trailing comma without
@@ -342,10 +341,10 @@ where
                 x.parse_expression()
             });
         let for_first_semicolon = self.require_semicolon();
-        let for_control_expr =
-            self.parse_comma_list_opt(TokenKind::Semicolon, Errors::error1015, |x| {
-                x.parse_expression()
-            });
+        let for_control_expr = match self.peek_token_kind() {
+            TokenKind::Semicolon => S!(make_missing, self, self.pos()),
+            _ => self.parse_expression(),
+        };
         let for_second_semicolon = self.require_semicolon();
         let for_end_of_loop_expr =
             self.parse_comma_list_opt(TokenKind::RightParen, Errors::error1015, |x| {
@@ -373,7 +372,7 @@ where
         let foreach_left_paren = self.require_left_paren();
         self.expect_in_new_scope(ExpectedTokens::RightParen);
         let foreach_collection_name =
-            self.with_expression_parser(|x: &mut ExpressionParser<'a, S, T>| {
+            self.with_expression_parser(|x: &mut ExpressionParser<'a, S>| {
                 x.with_as_expressions(false, |x| x.parse_expression())
             });
         let await_token = self.optional_token(TokenKind::Await);
@@ -476,7 +475,7 @@ where
         //
         let mut parser1 = self.clone();
         let expr = if token_kind == TokenKind::LeftParen {
-            parser1.with_expression_parser(|p: &mut ExpressionParser<'a, S, T>| {
+            parser1.with_expression_parser(|p: &mut ExpressionParser<'a, S>| {
                 p.parse_cast_or_parenthesized_or_lambda_expression()
             })
         } else {
@@ -930,27 +929,26 @@ where
         }
     }
 
-    fn parse_goto_label(&mut self) -> S::R {
-        let goto_label_name = self.next_token_non_reserved_as_name();
-        let goto_label_name = S!(make_token, self, goto_label_name);
-        let colon = self.require_colon();
-        S!(make_goto_label, self, goto_label_name, colon)
-    }
-
-    fn parse_goto_statement(&mut self) -> S::R {
-        let goto = self.assert_token(TokenKind::Goto);
-        let goto_label_name = self.next_token_non_reserved_as_name();
-        let goto_label_name = S!(make_token, self, goto_label_name);
-        let semicolon = self.require_semicolon();
-        S!(make_goto_statement, self, goto, goto_label_name, semicolon)
-    }
-
     fn parse_throw_statement(&mut self) -> S::R {
         let throw_token = self.assert_token(TokenKind::Throw);
         let expr = self.parse_expression();
         let semi_token = self.require_semicolon();
         S!(make_throw_statement, self, throw_token, expr, semi_token)
     }
+
+    fn parse_yield_break_statement(&mut self) -> S::R {
+        let yield_token = self.assert_token(TokenKind::Yield);
+        let break_token = self.assert_token(TokenKind::Break);
+        let semi_token = self.require_semicolon();
+        S!(
+            make_yield_break_statement,
+            self,
+            yield_token,
+            break_token,
+            semi_token
+        )
+    }
+
     fn parse_default_label(&mut self) -> S::R {
         //
         // See comments under parse_switch_statement for the grammar.
@@ -1086,6 +1084,6 @@ where
     }
 
     fn parse_expression(&mut self) -> S::R {
-        self.with_expression_parser(|p: &mut ExpressionParser<'a, S, T>| p.parse_expression())
+        self.with_expression_parser(|p: &mut ExpressionParser<'a, S>| p.parse_expression())
     }
 }

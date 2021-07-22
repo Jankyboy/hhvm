@@ -1,4 +1,5 @@
 <?hh
+<<__EntryPoint>> function main(): void {
 echo "Test 2: Transform To HTML String";
 include("prepare.inc");
 // changing output method to html
@@ -13,7 +14,6 @@ $res->item(0)->value = "html";
 $proc = XSLTPrepare::getProc();
 $proc->importStylesheet($xsl);
 print "\n";
-print $proc->transformToXml(XSLTPrepare::getDOM());
+print $proc->transformToXML(XSLTPrepare::getDOM());
 print "\n";
-
-
+}

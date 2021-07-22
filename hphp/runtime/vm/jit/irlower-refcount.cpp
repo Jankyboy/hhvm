@@ -39,6 +39,7 @@
 #include "hphp/runtime/vm/jit/incref-profile.h"
 #include "hphp/runtime/vm/jit/ir-instruction.h"
 #include "hphp/runtime/vm/jit/ir-opcode.h"
+#include "hphp/runtime/vm/jit/irlower-bespoke.h"
 #include "hphp/runtime/vm/jit/ssa-tmp.h"
 #include "hphp/runtime/vm/jit/tc.h"
 #include "hphp/runtime/vm/jit/target-profile.h"
@@ -53,7 +54,6 @@
 #include "hphp/util/trace.h"
 
 #include <folly/Format.h>
-#include <folly/Optional.h>
 
 namespace HPHP { namespace jit { namespace irlower {
 
@@ -67,11 +67,6 @@ namespace {
 
 template<class Then>
 void ifNonPersistent(Vout& v, Vout& vtaken, Type ty, Vloc loc, Then then) {
-  always_assert(
-    !one_bit_refcount &&
-    "ifNonPersistent is too coarse to be used in one-bit refcount mode"
-  );
-
   if (!ty.maybe(TPersistent)) {
     then(v); // non-persistent check below will always succeed
     return;
@@ -125,7 +120,7 @@ void incrementProfile(Vout& v, const TargetProfile<T>& profile,
 }
 
 inline bool useAddrForCountedCheck() {
-  return addr_encodes_persistency && !one_bit_refcount &&
+  return addr_encodes_persistency &&
     RuntimeOption::EvalJitPGOUseAddrCountedCheck;
 }
 
@@ -200,29 +195,6 @@ void cgIncRef(IRLS& env, const IRInstruction* inst) {
     [&] (Vout& v) {
       incrementProfile(v, profile, incr, offsetof(IncRefProfile, refcounted));
 
-      if (one_bit_refcount) {
-        if (unconditional_one_bit_incref && !ty.maybe(TPersistent)) {
-          incrementProfile(v, profile, incr,
-                           offsetof(IncRefProfile, incremented));
-          emitIncRef(v, loc.reg(), TRAP_REASON);
-        } else {
-          // if (m_count == OneReference) m_count = MultiReference;
-          // This combines the persistence check and an attempt to
-          // reduce memory traffic, depending on why we ended up in
-          // this branch.
-          auto const sf = emitCmpRefCount(v, OneReference, loc.reg());
-          ifThen(
-            v, vcold(env), CC_E, sf,
-            [&](Vout& v) {
-              incrementProfile(v, profile, incr,
-                               offsetof(IncRefProfile, incremented));
-              emitIncRef(v, loc.reg(), TRAP_REASON);
-            },
-            unlikelyIncrement);
-        }
-        return;
-      }
-
       auto& vtaken = unlikelyIncrement ? vcold(env) : v;
       ifNonPersistent(
         v, vtaken, ty, loc,
@@ -235,7 +207,6 @@ void cgIncRef(IRLS& env, const IRInstruction* inst) {
     }
   );
 }
-
 
 namespace {
 
@@ -263,11 +234,9 @@ float decRefDestroyedPercent(Vout& v, IRLS& /*env*/,
 
 CallSpec makeDtorCall(Vout& v, Type ty, Vloc loc, ArgGroup& args) {
   // Even if allowBespokeArrayLikes() is true, we can optimize destructors
-  // if the value being destructed is a vanilla array-like.
-  if (ty.arrSpec().vanilla()) {
-    if (ty <= (TVArr|TVec))  return CallSpec::direct(PackedArray::Release);
-    if (ty <= (TDArr|TDict)) return CallSpec::direct(MixedArray::Release);
-    if (ty <= TKeyset)       return CallSpec::direct(SetArray::Release);
+  // if we have some layout information about the given array-like.
+  if (ty <= TArrLike && allowBespokeArrayLikes()) {
+    return destructorForArrayLike(ty);
   }
 
   if (ty <= TObj) {
@@ -350,11 +319,6 @@ void emitDecRefOptDestroy(Vout& v, Vout& vcold, Vreg data,
                           bool unlikelySurvive) {
   auto const sf = emitCmpRefCount(v, OneReference, data);
 
-  if (one_bit_refcount) {
-    ifThen(v, CC_E, sf, destroy, tag_from_string("decref-is-one"));
-    return;
-  }
-
   ifThenElse(
     v, vcold, CC_NE, sf,
     [&] (Vout& v) {
@@ -381,14 +345,6 @@ void emitDecRefOptSurvive(Vout& v, Vout& vcold, Vreg data,
                           bool unlikelyPersist) {
   auto const sf = emitCmpRefCount(v, OneReference, data);
 
-  if (one_bit_refcount) {
-    ifThen(
-      v, vcold, CC_E, sf, destroy, unlikelyDestroy,
-      tag_from_string("decref-is-one")
-    );
-    return;
-  }
-
   ifThenElse(
     v, vcold, CC_LE, sf,
     [&] (Vout& v) {
@@ -414,14 +370,6 @@ void emitDecRefOptPersist(Vout& v, Vout& vcold, Vreg data,
                           Destroy destroy, bool unlikelyDestroy,
                           bool unlikelySurvive) {
   auto const sf = emitCmpRefCount(v, OneReference, data);
-
-  if (one_bit_refcount) {
-    ifThen(
-      v, vcold, CC_E, sf, destroy, unlikelyDestroy,
-      tag_from_string("decref-is-one")
-    );
-    return;
-  }
 
   ifThen(
     v, vcold, CC_GE, sf,
@@ -683,11 +631,6 @@ void cgDecRef(IRLS& env, const IRInstruction *inst) {
 }
 
 void cgDecRefNZ(IRLS& env, const IRInstruction* inst) {
-  if (one_bit_refcount) {
-    // Nothing to do here.
-    return;
-  }
-
   // Redundant, but might save profiling code.
   auto const ty = inst->src(0)->type();
   if (!ty.maybe(TCounted)) return;

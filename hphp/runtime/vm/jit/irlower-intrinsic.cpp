@@ -16,10 +16,13 @@
 
 #include "hphp/runtime/vm/jit/irlower-internal.h"
 
+#include "hphp/runtime/base/file-util.h"
 #include "hphp/runtime/base/stats.h"
 #include "hphp/runtime/base/string-data.h"
 #include "hphp/runtime/base/tv-mutate.h"
+
 #include "hphp/runtime/ext/hh/ext_hh.h"
+
 #include "hphp/runtime/vm/bytecode.h"
 #include "hphp/runtime/vm/memo-cache.h"
 #include "hphp/runtime/vm/resumable.h"
@@ -70,7 +73,7 @@ void cgDefFrameRelSP(IRLS& env, const IRInstruction* inst) {
   auto const fp = srcLoc(env, inst, 0).reg();
   auto const sp = dstLoc(env, inst, 0).reg();
   auto& v = vmain(env);
-  v << lea{fp[-cellsToBytes(inst->extra<DefFrameRelSP>()->offset.offset)], sp};
+  v << copy{fp, sp};
 }
 
 void cgDefRegSP(IRLS& env, const IRInstruction* inst) {
@@ -183,7 +186,7 @@ void getMemoKeyImpl(IRLS& env, const IRInstruction* inst, bool sync) {
 
   auto args = argGroup(env, inst);
   if (s->isA(TKeyset) || s->isA(TArrLike) || s->isA(TObj) || s->isA(TStr) ||
-      s->isA(TDbl)) {
+      s->isA(TDbl) || s->isA(TLazyCls)) {
     args.ssa(0, s->isA(TDbl));
   } else {
     args.typedValue(0);
@@ -192,7 +195,10 @@ void getMemoKeyImpl(IRLS& env, const IRInstruction* inst, bool sync) {
   auto const target = [&]{
     if (s->isA(TKeyset))  return CallSpec::direct(serialize_memoize_param_set);
     if (s->isA(TArrLike)) return CallSpec::direct(serialize_memoize_param_arr);
-    if (s->isA(TStr))     return CallSpec::direct(serialize_memoize_param_str);
+    if (s->isA(TStr)) return CallSpec::direct(serialize_memoize_param_str);
+    if (s->isA(TLazyCls)) {
+      return CallSpec::direct(serialize_memoize_param_lazycls);
+    }
     if (s->isA(TDbl))     return CallSpec::direct(serialize_memoize_param_dbl);
     if (s->isA(TObj)) {
       auto const ty = s->type();
@@ -281,7 +287,14 @@ void doMemoGetValue(
   auto& v = vmain(env);
   auto const sf = checkRDSHandleInitialized(v, handle);
   fwdJcc(v, env, CC_NE, sf, inst->taken());
-  loadTV(v, inst->dst(), dstLoc(env, inst, 0), getHandleAddr(handle), loadAux);
+  markRDSAccess(v, handle);
+  loadTV(
+    v,
+    inst->dst(),
+    dstLoc(env, inst, 0),
+    getHandleAddr(handle),
+    loadAux
+  );
 }
 
 template<typename HandleT>
@@ -291,20 +304,21 @@ void doMemoSetValue(
   HandleT handle,
   Type memoTy,
   uint32_t valIndex,
-  folly::Optional<bool> asyncEager
+  Optional<bool> asyncEager
 ) {
   auto& v = vmain(env);
   auto const val = inst->src(valIndex);
   auto const valLoc = srcLoc(env, inst, valIndex);
 
-  auto const aux = [&] () -> folly::Optional<AuxUnion> {
-    if (!asyncEager) return folly::none;
+  auto const aux = [&] () -> Optional<AuxUnion> {
+    if (!asyncEager) return std::nullopt;
     return *asyncEager
       ? AuxUnion{std::numeric_limits<uint32_t>::max()}
       : AuxUnion{0};
   }();
 
   auto const store = [&] {
+    markRDSAccess(v, handle);
     if (!aux) return storeTV(v, getHandleAddr(handle), valLoc, val);
     storeTVWithAux(v, getHandleAddr(handle), valLoc, val, *aux);
   };
@@ -321,6 +335,7 @@ void doMemoSetValue(
   unlikelyIfThenElse(
     v, vcold(env), CC_E, sf,
     [&](Vout& v) {
+      markRDSAccess(v, handle);
       auto const handleAddr = v.makeReg();
       v << lea{getHandleAddr(handle), handleAddr};
       cgCallHelper(
@@ -360,6 +375,7 @@ void doMemoGetCache(
   auto const sf = checkRDSHandleInitialized(v, handle);
   fwdJcc(v, env, CC_NE, sf, inst->taken());
 
+  markRDSAccess(v, handle);
   auto const cachePtr = v.makeReg();
   v << load{getHandleAddr(handle), cachePtr};
 
@@ -432,16 +448,18 @@ void doMemoSetCache(
   ifThen(
     v, CC_NE, sf,
     [&](Vout& v) {
+      markRDSAccess(v, handle);
       v << storeqi{0, getHandleAddr(handle)};
       markRDSHandleInitialized(v, handle);
     }
   );
 
+  markRDSAccess(v, handle);
   auto const handleAddr = v.makeReg();
   v << lea{getHandleAddr(handle), handleAddr};
 
-  auto const aux = [&] () -> folly::Optional<AuxUnion> {
-    if (!extra->asyncEager) return folly::none;
+  auto const aux = [&] () -> Optional<AuxUnion> {
+    if (!extra->asyncEager) return std::nullopt;
     return *extra->asyncEager
       ? AuxUnion{std::numeric_limits<uint32_t>::max()}
       : AuxUnion{0};
@@ -612,8 +630,8 @@ void cgMemoSetInstanceValue(IRLS& env, const IRInstruction* inst) {
 
   // Store it (overwriting any previous value).
 
-  auto const aux = [&] () -> folly::Optional<AuxUnion> {
-    if (!extra->asyncEager) return folly::none;
+  auto const aux = [&] () -> Optional<AuxUnion> {
+    if (!extra->asyncEager) return std::nullopt;
     return *extra->asyncEager
       ? AuxUnion{std::numeric_limits<uint32_t>::max()}
       : AuxUnion{0};
@@ -627,7 +645,6 @@ void cgMemoSetInstanceValue(IRLS& env, const IRInstruction* inst) {
   auto const memoTy =
     typeFromRAT(extra->func->repoReturnType(), extra->func->cls()) & TInitCell;
   if (!memoTy.maybe(TCounted)) {
-    assertx(!val->type().maybe(TCounted));
     store();
     return;
   }
@@ -705,7 +722,7 @@ void cgMemoGetInstanceCache(IRLS& env, const IRInstruction* inst) {
         .reg(cache)
         .imm(
           getter
-            ? funcId
+            ? funcId.toInt()
             : GenericMemoId{funcId, extra->keys.count}.asParam()
         );
       addKeysAddr(args);
@@ -782,8 +799,8 @@ void cgMemoSetInstanceCache(IRLS& env, const IRInstruction* inst) {
     obj[slotOff + TVOFF(m_type)]
   };
 
-  auto const aux = [&] () -> folly::Optional<AuxUnion> {
-    if (!extra->asyncEager) return folly::none;
+  auto const aux = [&] () -> Optional<AuxUnion> {
+    if (!extra->asyncEager) return std::nullopt;
     return *extra->asyncEager
       ? AuxUnion{std::numeric_limits<uint32_t>::max()}
       : AuxUnion{0};
@@ -821,7 +838,7 @@ void cgMemoSetInstanceCache(IRLS& env, const IRInstruction* inst) {
         .addr(obj, slotOff + TVOFF(m_data))
         .imm(
           setter
-            ? funcId
+            ? funcId.toInt()
             : GenericMemoId{funcId, extra->keys.count}.asParam()
         );
       addKeysAddr(args);
@@ -934,6 +951,46 @@ void cgCheckCold(IRLS& env, const IRInstruction* inst) {
   } else {
     v << jcc{CC_LE, sf, {label(env, inst->next()), label(env, inst->taken())}};
   }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+void cgLdUnitPerRequestFilepath(IRLS& env, const IRInstruction* inst) {
+  assertx(!RuntimeOption::RepoAuthoritative);
+  assertx(RuntimeOption::EvalReuseUnitsByHash);
+
+  auto const handle = inst->extra<LdUnitPerRequestFilepath>()->handle;
+  assertx(rds::isNormalHandle(handle));
+
+  auto& v = vmain(env);
+  auto const dst = dstLoc(env, inst, 0).reg();
+
+  // During a request, the per-request filepath should always be
+  // initialized. Verify that this is the case in debug builds.
+  if (debug) {
+    auto const sf = checkRDSHandleInitialized(v, handle);
+    unlikelyIfThen(
+      v, vcold(env), CC_NE, sf,
+      [&] (Vout& v) { v << trap{TRAP_REASON}; }
+    );
+  }
+  emitLdLowPtr(v, rvmtl()[handle], dst, sizeof(LowStringPtr));
+}
+
+static StringData* dirFromFilepathImpl(const StringData* filepath) {
+  assertx(filepath->isStatic());
+  return makeStaticString(FileUtil::dirname(StrNR{filepath}));
+}
+
+void cgDirFromFilepath(IRLS& env, const IRInstruction* inst) {
+  cgCallHelper(
+    vmain(env),
+    env,
+    CallSpec::direct(dirFromFilepathImpl),
+    callDest(env, inst),
+    SyncOptions::None,
+    argGroup(env, inst).ssa(0)
+  );
 }
 
 ///////////////////////////////////////////////////////////////////////////////

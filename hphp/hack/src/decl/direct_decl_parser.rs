@@ -6,39 +6,46 @@
 
 use bumpalo::Bump;
 
-use arena_collections::AssocListMut;
 use ocamlrep::rc::RcOc;
 use oxidized::relative_path::RelativePath;
-use oxidized_by_ref::direct_decl_parser::Decls;
-use parser_core_types::{parser_env::ParserEnv, source_text::SourceText};
+use oxidized_by_ref::{
+    decl_parser_options::DeclParserOptions, direct_decl_parser::Decls, file_info,
+};
+use parser_core_types::source_text::SourceText;
+use stack_limit::StackLimit;
 
-pub fn parse_decls<'a>(filename: RelativePath, text: &'a [u8], arena: &'a Bump) -> Decls<'a> {
+pub fn parse_decls_and_mode<'a>(
+    opts: &'a DeclParserOptions<'a>,
+    filename: RelativePath,
+    text: &'a [u8],
+    arena: &'a Bump,
+    stack_limit: Option<&'a StackLimit>,
+) -> (Decls<'a>, Option<file_info::Mode>) {
     let text = SourceText::make(RcOc::new(filename), text);
-    let (_, _errors, state) =
-        direct_decl_parser::parse_script(&text, ParserEnv::default(), arena, None);
-    let decls = state.decls;
+    let (_, _errors, state, mode) =
+        direct_decl_parser::parse_script(opts, &text, arena, stack_limit);
+    (state.decls, mode)
+}
 
-    let mut classes = AssocListMut::new_in(arena);
-    for (name, decl) in decls.classes {
-        classes.insert(*name, decl.clone());
-    }
-    let mut funs = AssocListMut::new_in(arena);
-    for (name, decl) in decls.funs {
-        funs.insert(*name, decl.clone());
-    }
-    let mut typedefs = AssocListMut::new_in(arena);
-    for (name, decl) in decls.typedefs {
-        typedefs.insert(*name, decl.clone());
-    }
-    let mut consts = AssocListMut::new_in(arena);
-    for &(name, decl) in decls.consts {
-        consts.insert(name, decl);
-    }
+pub fn parse_decls<'a>(
+    opts: &'a DeclParserOptions<'a>,
+    filename: RelativePath,
+    text: &'a [u8],
+    arena: &'a Bump,
+    stack_limit: Option<&'a StackLimit>,
+) -> Decls<'a> {
+    parse_decls_and_mode(opts, filename, text, arena, stack_limit).0
+}
 
-    Decls {
-        classes: classes.into(),
-        funs: funs.into(),
-        typedefs: typedefs.into(),
-        consts: consts.into(),
-    }
+pub fn parse_decls_without_reference_text<'a, 'text>(
+    opts: &'a DeclParserOptions<'a>,
+    filename: RelativePath,
+    text: &'text [u8],
+    arena: &'a Bump,
+    stack_limit: Option<&'a StackLimit>,
+) -> Decls<'a> {
+    let text = SourceText::make(RcOc::new(filename), text);
+    let (_, _errors, state, _mode) =
+        direct_decl_parser::parse_script_without_reference_text(opts, &text, arena, stack_limit);
+    state.decls
 }

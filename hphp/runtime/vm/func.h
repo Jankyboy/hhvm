@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VM_FUNC_H_
-#define incl_HPHP_VM_FUNC_H_
+#pragma once
 
 #include "hphp/runtime/base/atomic-countable.h"
 #include "hphp/runtime/base/attr.h"
@@ -26,10 +25,11 @@
 #include "hphp/runtime/base/typed-value.h"
 #include "hphp/runtime/base/user-attributes.h"
 
+#include "hphp/runtime/vm/coeffects.h"
 #include "hphp/runtime/vm/indexed-string-map.h"
 #include "hphp/runtime/vm/iter.h"
 #include "hphp/runtime/vm/reified-generics-info.h"
-#include "hphp/runtime/vm/rx.h"
+#include "hphp/runtime/vm/repo-file.h"
 #include "hphp/runtime/vm/type-constraint.h"
 #include "hphp/runtime/vm/unit.h"
 
@@ -66,6 +66,8 @@ using ArFunction = TypedValue* (*)(ActRec* ar);
 struct NativeArgs; // never defined
 using NativeFunction = void(*)(NativeArgs*);
 
+using StaticCoeffectNamesMap = CompactVector<LowStringPtr>;
+
 ///////////////////////////////////////////////////////////////////////////////
 // EH table.
 
@@ -93,6 +95,11 @@ struct EHEnt {
 };
 
 ///////////////////////////////////////////////////////////////////////////////
+
+template <typename T, size_t Expected, size_t Actual = sizeof(T)>
+constexpr bool CheckSize() { static_assert(Expected == Actual); return true; };
+
+///////////////////////////////////////////////////////////////////////////////
 /*
  * Metadata about a PHP function or method.
  *
@@ -114,11 +121,13 @@ struct EHEnt {
  */
 struct Func final {
   friend struct FuncEmitter;
+  friend struct UnitEmitter;
 
+#ifndef USE_LOWPTR
   // DO NOT access it directly, instead use Func::getFuncVec()
   // Exposed in the header file for gdb python macros
   static AtomicLowPtrVector<const Func> s_funcVec;
-
+#endif
   /////////////////////////////////////////////////////////////////////////////
   // Types.
 
@@ -148,7 +157,7 @@ struct Func final {
     template<class SerDe> void serde(SerDe& sd);
 
     // Typehint for builtins.
-    MaybeDataType builtinType{folly::none};
+    MaybeDataType builtinType{std::nullopt};
     // Flags as defined by the Flags enum.
     uint8_t flags{0};
     // DV initializer funclet offset.
@@ -169,6 +178,7 @@ struct Func final {
   using EHEntVec = VMFixedVector<EHEnt>;
   using UpperBoundVec = VMCompactVector<TypeConstraint>;
   using ParamUBMap = vm_flat_map<uint32_t, UpperBoundVec>;
+  using CoeffectRules = VMFixedVector<CoeffectRule>;
 
   /////////////////////////////////////////////////////////////////////////////
   // Creation and destruction.
@@ -242,16 +252,18 @@ struct Func final {
    */
   FuncId getFuncId() const;
 
+private:
   /*
    * Reserve the next available FuncId for `this', and add `this' to the
    * function table.
    */
   void setNewFuncId();
 
+public:
   /*
-   * The next available FuncId.  For observation only; does not reserve.
+   * The max FuncId num.
    */
-  static FuncId nextFuncId();
+  static FuncId::Int maxFuncIdNum();
 
   /*
    * Lookup a Func* by its ID.
@@ -315,16 +327,25 @@ struct Func final {
   Class* baseCls() const;
   Class* implCls() const;
 
+  int sn() const;
+
   /*
    * The function's short name (e.g., foo).
    */
   const StringData* name() const;
+  String nameWithClosureName() const;
   StrNR nameStr() const;
+
+  /*
+   * A hash for this func that will remain constant across process restarts.
+   */
+  size_t stableHash() const;
 
   /*
    * The function's fully class-qualified, name (e.g., C::foo).
    */
   const StringData* fullName() const;
+  String fullNameWithClosureName() const;
   StrNR fullNameStr() const;
 
   /*
@@ -378,13 +399,7 @@ struct Func final {
    * Get the function's main entrypoint.
    */
   PC entry() const;
-
-  /*
-   * Get the offsets of the start (base) and end (past) of the function's
-   * bytecode, relative to the start of the unit.
-   */
-  Offset base() const;
-  Offset past() const;
+  Offset bclen() const;
 
   /*
    * Whether a given PC or Offset (from the beginning of the unit) is within
@@ -436,12 +451,12 @@ struct Func final {
   // Return type.                                                       [const]
 
   /*
-   * CPP builtin's return type. Returns folly::none if function is not a CPP
+   * CPP builtin's return type. Returns std::nullopt if function is not a CPP
    * builtin.
    *
    * There are a number of caveats regarding this value:
    *
-   *    - If the return type is folly::none, the return is a Variant.
+   *    - If the return type is std::nullopt, the return is a Variant.
    *
    *    - If the return type is a string, array-like, object, ref, or resource
    *      type, null may also be returned.
@@ -558,6 +573,13 @@ struct Func final {
   Id lookupVarId(const StringData* name) const;
 
   /*
+   * Returns the ID of coeffects and reified generics locals.
+   * Requires hasCoeffectRules() and hasReifiedGenerics() respectively
+   */
+  Id coeffectsLocalId() const;
+  Id reifiedGenericsLocalId() const;
+
+  /*
    * Find the name of the local with the given ID.
    */
   const StringData* localVarName(Id id) const;
@@ -643,11 +665,6 @@ struct Func final {
   bool hasThisInBody() const;
 
   /*
-   * Does this function have the __NoContext attribute?
-   */
-  bool hasNoContextAttr() const;
-
-  /*
    * Is this Func owned by a PreClass?
    *
    * A PreFunc may be "adopted" by a Class when clone() is called, but only the
@@ -689,6 +706,11 @@ struct Func final {
    * where the actual Func* is not available.
    */
   static const StringData* genMemoizeImplName(const StringData*);
+
+  /*
+   * Returns the number of local slots used for the memoization key calculation.
+   */
+  size_t numKeysForMemoize() const;
 
   /*
    * Given a meth_caller, return the class name or method name
@@ -788,23 +810,39 @@ struct Func final {
   bool isResumable() const;
 
   /////////////////////////////////////////////////////////////////////////////
-  // Reactivity.                                                        [const]
+  // Coeffects.                                                        [const]
 
   /*
-   * What is the level of reactivity of this function?
+   * Returns the runtime representation of coeffects
    */
-  RxLevel rxLevel() const;
+  RuntimeCoeffects requiredCoeffects() const;
+  RuntimeCoeffects coeffectEscapes() const;
 
   /*
-   * Is this the version of the function body with reactivity disabled via
-   * if (Rx\IS_ENABLED) ?
+   * Sets required coeffects
    */
-  bool isRxDisabled() const;
+  void setRequiredCoeffects(RuntimeCoeffects);
 
   /*
-   * Is this function conditionally reactive?
+   * Names of the static coeffects on the function
+   * Used for reflection
    */
-  bool isRxConditional() const;
+  StaticCoeffectNamesMap staticCoeffectNames() const;
+
+  /*
+   * Does this function use coeffects local to store its ambient coeffects?
+   */
+  bool hasCoeffectsLocal() const;
+
+  /*
+   * Does this function have coeffect rules?
+   */
+  bool hasCoeffectRules() const;
+
+  /*
+   * List of rules for enforcing coeffects
+   */
+  const CoeffectRules& getCoeffectRules() const;
 
   /////////////////////////////////////////////////////////////////////////////
   // Methods.                                                           [const]
@@ -871,7 +909,7 @@ struct Func final {
   // Other attributes.                                                  [const]
 
   /*
-   * Get the system attributes of the function.
+   * Get the system and coeffect attributes of the function.
    */
   Attr attrs() const;
 
@@ -919,7 +957,7 @@ struct Func final {
    * N.B. When errors are enabled for dynamic calls this overrides that behavior
    *      for functions which specify it.
    */
-  folly::Optional<int64_t> dynCallSampleRate() const;
+  Optional<int64_t> dynCallSampleRate() const;
 
   /*
    * Is this a meth_caller func?
@@ -1053,8 +1091,6 @@ struct Func final {
 
   void prettyPrint(std::ostream& out, const PrintOpts& = PrintOpts()) const;
 
-  void prettyPrintInstruction(std::ostream& out, Offset offset) const;
-
   /*
    * Print function attributes to out.
    */
@@ -1076,13 +1112,42 @@ struct Func final {
   /*
    * Intercept hook flag.
    */
-  int8_t& maybeIntercepted() const;
+  bool maybeIntercepted() const;
+  void setMaybeIntercepted();
 
   /*
-   * Access to the global vector of funcs.  This maps FuncID's back to Func*'s.
+   * When function call based coverage is enabled for the current request,
+   * records a call to `this`. The no check version asserts that function
+   * coverage has already been enabled and the function is both eligible to be
+   * covered and has not yet been seen.
    */
-  static const AtomicLowPtrVector<const Func>& getFuncVec();
+  void recordCall() const;
+  void recordCallNoCheck() const;
 
+  /*
+   * EnableCoverage enables recording of called functions for the current
+   * request.
+   */
+  static void EnableCoverage();
+
+  /*
+   * GetCoverage returns a keyset of called functions and disables further
+   * coverage for the current request until reenabled by EnableCoverage.
+   */
+  static Array GetCoverage();
+
+  /*
+   * RDS based counter (uint32_t) that when zero indicates coverage is disabled
+   * and when non-zero indicates an index which can be used to short circuit
+   * tests that functions have been covered.
+   */
+  static rds::Handle GetCoverageIndex();
+
+  /*
+   * Get an RDS counter (uint32_t) that can be compared against GetCoverageIndex
+   * to determine if the function has been covered in the current request.
+   */
+  rds::Handle getCoverageHandle() const;
 
   /////////////////////////////////////////////////////////////////////////////
   // Public setters.
@@ -1095,14 +1160,9 @@ struct Func final {
 
   void setAttrs(Attr attrs);
   void setBaseCls(Class* baseCls);
-  void setFuncHandle(rds::Link<LowPtr<Func>, rds::Mode::NonLocal> l);
   void setHasPrivateAncestor(bool b);
   void setMethodSlot(Slot s);
   void setGenerated(bool b);
-
-  // Return true, and set the m_serialized flag, iff this Func hasn't
-  // been serialized yet (see prof-data-serialize.cpp).
-  bool serialize() const;
 
   /////////////////////////////////////////////////////////////////////////////
   // Offset accessors.                                                 [static]
@@ -1112,9 +1172,9 @@ struct Func final {
     return offsetof(Func, m_##f);       \
   }
   OFF(attrs)
+  OFF(requiredCoeffects)
   OFF(name)
   OFF(maxStackCells)
-  OFF(maybeIntercepted)
   OFF(paramCounts)
   OFF(prologueTable)
   OFF(inoutBitVal)
@@ -1131,12 +1191,8 @@ struct Func final {
     return offsetof(Func, m_u);
   }
 
-  static constexpr ptrdiff_t sharedBaseOff() {
-    return offsetof(SharedData, m_base);
-  }
-
-  static constexpr ptrdiff_t sharedInOutBitPtrOff() {
-    return offsetof(SharedData, m_inoutBitPtr);
+  static constexpr ptrdiff_t extSharedInOutBitPtrOff() {
+    return offsetof(ExtendedSharedData, m_inoutBitPtr);
   }
 
   static constexpr ptrdiff_t sharedAllFlags() {
@@ -1156,7 +1212,7 @@ struct Func final {
   /*
    * Define `func' for this request by initializing its RDS handle.
    */
-  static void def(Func* func, bool debugger);
+  static void def(Func* func);
 
   /*
    * Look up the defined Func in this request with name `name', or with the name
@@ -1177,12 +1233,6 @@ struct Func final {
   static Func* load(const StringData* name);
 
   /*
-   * bind (or rebind) a func to the NamedEntity corresponding to its
-   * name.
-   */
-  static void bind(Func* func);
-
-  /*
    * Lookup the builtin in this request with name `name', or nullptr if none
    * exists. This does not access RDS so it is safe to use from within the
    * compiler. Note that does not mean imply that the name binding for the
@@ -1194,7 +1244,10 @@ struct Func final {
   // SharedData.
 
 private:
-  using NamedLocalsMap = IndexedStringMap<LowStringPtr, true, Id>;
+  using NamedLocalsMap = IndexedStringMap<LowStringPtr, Id>;
+
+  using BCPtr = TokenOrPtr<unsigned char>;
+  using LineTablePtr = TokenOrPtr<LineTable>;
 
   // Some 16-bit values in SharedData are stored as small deltas if they fit
   // under this limit.  If not, they're set to the limit value and an
@@ -1205,9 +1258,8 @@ private:
    * Properties shared by all clones of a Func.
    */
   struct SharedData : AtomicCountable {
-    SharedData(PreClass* preClass, Offset base, Offset past,
-               int line1, int line2, bool isPhpLeafFn,
-               const StringData* docComment);
+    SharedData(BCPtr bc, Offset bclen, PreClass* preClass,
+               int sn, int line1, int line2, bool isPhpLeafFn);
     ~SharedData();
 
     /*
@@ -1215,26 +1267,23 @@ private:
      */
     void atomicRelease();
 
+    Offset bclen() const;
+
     /*
      * Data fields are packed to minimize size.  Try not to add anything new
      * here or reorder anything.
      */
     // (There's a 32-bit integer in the AtomicCountable base class here.)
-    Offset m_base;
+    LockFreePtrWrapper<BCPtr> m_bc;
     PreClass* m_preClass;
-    Id m_numLocals;
-    Id m_numIterators;
     int m_line1;
-    LowStringPtr m_docComment;
-    // Bits 64 and up of the inout-ness guards (the first 64 bits are in
-    // Func::m_inoutBitVal for faster access).
-    uint64_t* m_inoutBitPtr;
     ParamInfoVec m_params;
     NamedLocalsMap m_localNames;
     EHEntVec m_ehtab;
+    StaticCoeffectNamesMap m_staticCoeffectNames;
 
     /*
-     * Up to 32 bits.
+     * Up to 16 bits.
      */
     union Flags {
       struct {
@@ -1249,17 +1298,16 @@ private:
         bool m_isMemoizeWrapperLSB : true;
         bool m_isPhpLeafFn : true;
         bool m_hasReifiedGenerics : true;
-        bool m_isRxDisabled : true;
         bool m_hasParamsWithMultiUBs : true;
         bool m_hasReturnWithMultiUBs : true;
       };
-      uint32_t m_allFlags;
+      uint16_t m_allFlags;
     };
-    static_assert(sizeof(Flags) == sizeof(uint32_t));
+    static_assert(sizeof(Flags) == sizeof(uint16_t));
 
     Flags m_allFlags;
 
-    // 16 bits of padding here in LOWPTR builds
+    uint16_t m_sn;
 
     LowStringPtr m_retUserType;
     UserAttributeMap m_userAttributes;
@@ -1269,9 +1317,8 @@ private:
     RepoAuthType m_repoAwaitedReturnType;
 
     /*
-     * The `past' offset and `line2' are likely to be small, particularly
-     * relative to m_base and m_line1, so we encode each as a 16-bit
-     * difference.
+     * The `line2' are likely to be small, particularly relative to m_line1,
+     * so we encode each as a 16-bit difference.
      *
      * If the delta doesn't fit, we need to have an ExtendedSharedData to hold
      * the real values---in that case, the field here that overflowed is set to
@@ -1279,12 +1326,26 @@ private:
      * be valid.
      */
     uint16_t m_line2Delta;
-    uint16_t m_pastDelta;
+
+    /**
+     * bclen is likely to be small. So we encode each as a 16-bit value
+     *
+     * If the value doesn't fit, we need to have an ExtendedSharedData to hold
+     * the real values---in that case, the field here that overflowed is set to
+     * kSmallDeltaLimit and the corresponding field in ExtendedSharedData will
+     * be valid.
+     */
+    uint16_t m_bclenSmall;
 
     std::atomic<Offset> m_cti_base; // relative to CodeCache cti section
     uint32_t m_cti_size; // size of cti code
-    // 32 bits free here.
+    uint16_t m_numLocals;
+    uint16_t m_numIterators;
+
+    mutable LockFreePtrWrapper<VMCompactVector<LineInfo>> m_lineMap;
+    mutable LockFreePtrWrapper<LineTablePtr> m_lineTable;
   };
+  static_assert(CheckSize<SharedData, use_lowptr ? 152 : 176>(), "");
 
   /*
    * If this Func represents a native function or is exceptionally large
@@ -1301,17 +1362,26 @@ private:
     }
     ExtendedSharedData(const ExtendedSharedData&) = delete;
     ExtendedSharedData(ExtendedSharedData&&) = delete;
+    ~ExtendedSharedData();
 
-    MaybeDataType m_hniReturnType;
     ArFunction m_arFuncPtr;
     NativeFunction m_nativeFuncPtr;
     ReifiedGenericsInfo m_reifiedGenericsInfo;
     ParamUBMap m_paramUBs;
     UpperBoundVec m_returnUBs;
-    Offset m_past;  // Only read if SharedData::m_pastDelta is kSmallDeltaLimit
+    CoeffectRules m_coeffectRules;
+    Offset m_bclen;  // Only read if SharedData::m_bclen is kSmallDeltaLimit
     int m_line2;    // Only read if SharedData::m_line2 is kSmallDeltaLimit
+    int m_sn;       // Only read if SharedData::m_sn is kSmallDeltaLimit
+    MaybeDataType m_hniReturnType;
+    RuntimeCoeffects m_coeffectEscapes{RuntimeCoeffects::none()};
     int64_t m_dynCallSampleRate;
+    // Bits 64 and up of the inout-ness guards (the first 64 bits are in
+    // Func::m_inoutBitVal for faster access).
+    uint64_t* m_inoutBitPtr = nullptr;
+    LowStringPtr m_docComment;
   };
+  static_assert(CheckSize<ExtendedSharedData, use_lowptr ? 288 : 312>(), "");
 
   /*
    * SharedData accessors for internal use.
@@ -1325,6 +1395,39 @@ private:
   const ExtendedSharedData* extShared() const;
         ExtendedSharedData* extShared();
 
+  /*
+  * We store 'detailed' line number information on a table on the side, because
+  * in production modes for HHVM it's generally not useful (which keeps Func
+  * smaller in that case)---this stuff is only used for the debugger, where we
+  * can afford the lookup here.  The normal Func m_lineMap is capable of
+  * producing enough line number information for things needed in production
+  * modes (backtraces, warnings, etc).
+  */
+
+  struct ExtendedLineInfo {
+    SourceLocTable sourceLocTable;
+
+    /*
+    * Map from source lines to a collection of all the bytecode ranges the line
+    * encompasses.
+    *
+    * The value type of the map is a list of offset ranges, so a single line
+    * with several sub-statements may correspond to the bytecodes of all of the
+    * sub-statements.
+    *
+    * May not be initialized.  Lookups need to check if it's empty() and if so
+    * compute it from sourceLocTable.
+    */
+    LineToOffsetRangeVecMap lineToOffsetRange;
+  };
+
+  using ExtendedLineInfoCache = tbb::concurrent_hash_map<
+    const SharedData*,
+    ExtendedLineInfo,
+    pointer_hash<SharedData>
+  >;
+
+  static ExtendedLineInfoCache s_extendedLineInfo;
 
   /////////////////////////////////////////////////////////////////////////////
   // Internal methods.
@@ -1341,6 +1444,8 @@ private:
                    std::vector<ParamInfo>& pBuilder);
   void finishedEmittingParams(std::vector<ParamInfo>& pBuilder);
   void setNamedEntity(const NamedEntity*);
+
+  PC loadBytecode();
 
   /////////////////////////////////////////////////////////////////////////////
   // Internal types.
@@ -1453,6 +1558,92 @@ private:
   }
 
   /////////////////////////////////////////////////////////////////////////////
+  // Atomic Flags.
+
+public:
+  enum Flags : uint8_t {
+    None             = 0,
+    Optimized        = 1 << 0,
+    Locked           = 1 << 1,
+    MaybeIntercepted = 1 << 2,
+  };
+
+ /*
+  * Wrapper around std::atomic<uint8_t> that enables it to be
+  * copy constructable,
+  */
+  struct AtomicFlags {
+    AtomicFlags() {}
+
+    AtomicFlags(const AtomicFlags&) {}
+    AtomicFlags& operator=(const AtomicFlags&) = delete;
+
+    bool set(Flags flags) {
+      auto const prev = m_flags.fetch_or(flags, std::memory_order_release);
+      return prev & flags;
+    }
+
+    bool unset(Flags flags) {
+      auto const prev =
+        m_flags.fetch_and(~uint8_t(flags), std::memory_order_release);
+      return prev & flags;
+    }
+
+    bool check(Flags flags) const {
+      return m_flags.load(std::memory_order_acquire) & flags;
+    }
+
+    std::atomic<uint8_t> m_flags{Flags::None};
+  };
+
+  inline AtomicFlags& atomicFlags() const {
+    return m_atomicFlags;
+  }
+
+  inline AtomicFlags& atomicFlags() {
+    return m_atomicFlags;
+  }
+
+  /////////////////////////////////////////////////////////////////////////////
+  // Code locations.                                                    [const]
+
+  /*
+   * Get the line number corresponding to `offset'.
+   *
+   * Return -1 if not found.
+   */
+  int getLineNumber(Offset offset) const;
+
+  /*
+   * Get the SourceLoc corresponding to `offset'.
+   *
+   * Return false if not found, else true.
+   */
+  bool getSourceLoc(Offset offset, SourceLoc& sLoc) const;
+
+  /*
+   * Get the Offset range(s) corresponding to `offset'.
+   *
+   * Return false if not found, else true.
+   */
+  bool getOffsetRange(Offset offset, OffsetRange& range) const;
+
+  void setLineTable(LineTable);
+  void setLineTable(LineTablePtr::Token);
+
+  void stashExtendedLineTable(SourceLocTable table) const;
+
+  const SourceLocTable& getLocTable() const;
+
+  LineToOffsetRangeVecMap getLineToOffsetRangeVecMap() const;
+
+  const LineTable* getLineTable() const;
+  LineTable getOrLoadLineTableCopy() const;
+
+private:
+  const LineTable& getOrLoadLineTable() const;
+
+  /////////////////////////////////////////////////////////////////////////////
   // Constants.
 
 private:
@@ -1480,9 +1671,10 @@ private:
   // For asserts only.
   int m_magic;
 #endif
-  AtomicLowPtr<uint8_t> m_funcBody;
-  mutable rds::Link<LowPtr<Func>, rds::Mode::NonLocal> m_cachedFunc;
-  FuncId m_funcId{InvalidFuncId};
+  AtomicLowPtr<uint8_t> m_funcBody{nullptr};
+#ifndef USE_LOWPTR
+  FuncId m_funcId{FuncId::Invalid};
+#endif
   mutable AtomicLowPtr<const StringData> m_fullName{nullptr};
   LowStringPtr m_name{nullptr};
 
@@ -1503,17 +1695,16 @@ private:
     Slot m_methodSlot{0};
     LowPtr<const NamedEntity>::storage_type m_namedEntity;
   };
-  // Atomically-accessed intercept flag.  -1, 0, or 1.
-  // TODO(#1114385) intercept should work via invalidation.
-  mutable int8_t m_maybeIntercepted;
   mutable ClonedFlag m_cloned;
+  mutable AtomicFlags m_atomicFlags;
   bool m_isPreFunc : 1;
   bool m_hasPrivateAncestor : 1;
   bool m_shouldSampleJit : 1;
-  bool m_serialized : 1;
   bool m_hasForeignThis : 1;
   bool m_registeredInDataMap : 1;
-  int m_maxStackCells{0};
+  // 3 free bits + 1 free byte
+  RuntimeCoeffects m_requiredCoeffects{RuntimeCoeffects::none()};
+  int16_t m_maxStackCells{0};
   uint64_t m_inoutBitVal{0};
   Unit* const m_unit;
   AtomicSharedPtr<SharedData> m_shared;
@@ -1526,6 +1717,9 @@ private:
   // should not be inherited from.
   AtomicLowPtr<uint8_t> m_prologueTable[1];
 };
+static constexpr size_t kFuncSize = debug ? (use_lowptr ? 80 : 112)
+                                          : (use_lowptr ? 72 : 104);
+static_assert(CheckSize<Func, kFuncSize>(), "");
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -1555,16 +1749,25 @@ struct PrologueID {
     return m_funcId == other.m_funcId && m_nargs == other.m_nargs;
   }
 
+  struct Eq {
+    bool operator()(const PrologueID& pid1,
+                    const PrologueID& pid2) const {
+      return pid1 == pid2;
+    }
+  };
+
   struct Hasher {
     size_t operator()(PrologueID pid) const {
-      return pid.funcId() + (size_t(pid.nargs()) << 32);
+      return pid.funcId().toInt() + (size_t(pid.nargs()) << 32);
     }
   };
 
  private:
-  FuncId   m_funcId{InvalidFuncId};
+  FuncId   m_funcId{FuncId::Invalid};
   uint32_t m_nargs{0xffffffff};
 };
+
+std::string show(PrologueID pid);
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -1585,11 +1788,22 @@ inline tracing::Props traceProps(const Func* f) {
 [[noreturn]] void invalidFuncConversion(const char* type);
 
 ///////////////////////////////////////////////////////////////////////////////
+// Bytecode
+
+/*
+ * Report capacity of RepoAuthoritative mode bytecode arena.
+ *
+ * Returns 0 if !RuntimeOption::RepoAuthoritative.
+ */
+size_t hhbc_arena_capacity();
+
+unsigned char* allocateBCRegion(const unsigned char* bc, size_t bclen);
+void freeBCRegion(const unsigned char* bc, size_t bclen);
+
+///////////////////////////////////////////////////////////////////////////////
 
 }
 
 #define incl_HPHP_VM_FUNC_INL_H_
 #include "hphp/runtime/vm/func-inl.h"
 #undef incl_HPHP_VM_FUNC_INL_H_
-
-#endif // incl_HPHP_VM_FUNC_H_

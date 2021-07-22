@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_REQUEST_INJECTION_DATA_H_
-#define incl_HPHP_REQUEST_INJECTION_DATA_H_
+#pragma once
 
 #include "hphp/runtime/base/rds-header.h"
 #include "hphp/runtime/base/surprise-flags.h"
@@ -132,10 +131,6 @@ struct RequestInjectionData {
 
   ~RequestInjectionData() = default;
 
-  static constexpr uint32_t debuggerReadOnlyOffset() {
-    return offsetof(RequestInjectionData, m_debuggerAttached);
-  }
-
   void reset();
 
   void onSessionInit();
@@ -210,6 +205,14 @@ struct RequestInjectionData {
   bool shouldOOMAbort() const {
     return m_OOMAbort;
   }
+  /*
+   * Flags for request memory exceeded.  To differentiate from the above host
+   * level OOMs.
+   */
+  void setRequestOOMFlag() { m_requestOOM = true; }
+  void clearRequestOOMFlag() { m_requestOOM = false; }
+  bool requestOOMFlag() const { return m_requestOOM; }
+
 
   /*
    * Whether the JIT is enabled.
@@ -339,8 +342,8 @@ struct RequestInjectionData {
   const std::string& getUserAgent() const;
   void setUserAgent(const std::string&);
 
-  const std::string& getTimeZone() const;
-  void setTimeZone(const std::string&);
+  const std::string& getTimezone() const;
+  void setTimezone(const std::string&);
 
   bool setAllowedDirectories(const std::string& value);
 
@@ -410,6 +413,9 @@ private:
   std::atomic<bool> m_hostOutOfMemory{false};
   bool m_OOMAbort{false};
 
+  /* To differentiate request OOMs from host OOMs */
+  bool m_requestOOM{false};
+
   /* Pointer to surprise flags stored in RDS. */
   std::atomic<size_t>* m_sflagsAndStkPtr{nullptr};
 
@@ -444,7 +450,6 @@ private:
   int64_t m_errorReportingLevel;
   int64_t m_socketDefaultTimeout;
   int64_t m_maxMemoryNumeric;
-  int64_t m_zendAssertions;
   int64_t m_brotliLgWindowSize;
   int64_t m_brotliQuality;
   int64_t m_zstdLevel;
@@ -479,4 +484,3 @@ private:
 #include "hphp/runtime/base/request-injection-data-inl.h"
 #undef incl_HPHP_REQUEST_INJECTION_DATA_INL_H_
 
-#endif

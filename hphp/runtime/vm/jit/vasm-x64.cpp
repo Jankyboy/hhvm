@@ -72,6 +72,7 @@ struct Vgen {
 
   static void emitVeneers(Venv& env) {}
   static void handleLiterals(Venv& env) {}
+  static void retargetBinds(Venv& env);
   static void patch(Venv& env);
   static void pad(CodeBlock& cb);
 
@@ -83,6 +84,7 @@ struct Vgen {
   }
 
   // intrinsics
+  void emit(const prefetch& i) { a.prefetch(i.m.mr()); }
   void emit(const copy& i);
   void emit(const copy2& i);
   void emit(const debugtrap& /*i*/) { a.int3(); }
@@ -185,6 +187,7 @@ struct Vgen {
   void emit(decq i) { unary(i); a.decq(i.d); }
   void emit(const decqm& i) { a.prefix(i.m.mr()).decq(i.m); }
   void emit(const decqmlock& i) { a.prefix(i.m.mr()).decqlock(i.m); }
+  void emit(const decqmlocknosf&);
   void emit(divsd i) { noncommute(i); a.divsd(i.s0, i.d); }
   void emit(imul i) { commuteSF(i); a.imul(i.s0, i.d); }
   void emit(const idiv& i) { a.idiv(i.s); }
@@ -199,6 +202,7 @@ struct Vgen {
   void emit(const jmpr& i) { a.jmp(i.target); }
   void emit(const jmpm& i) { a.prefix(i.target.mr()).jmp(i.target); }
   void emit(const jmpi& i);
+  void emit(const ldbindretaddr& i);
   void emit(const lea& i);
   void emit(const leap& i) { a.lea(i.s, i.d); }
   void emit(const leav& i);
@@ -215,6 +219,7 @@ struct Vgen {
   void emit(const loadzbl& i) { a.prefix(i.s.mr()).loadzbl(i.s, i.d); }
   void emit(const loadzbq& i) { a.prefix(i.s.mr()).loadzbl(i.s, Reg32(i.d)); }
   void emit(const loadsbq& i) { a.prefix(i.s.mr()).loadsbq(i.s, i.d); }
+  void emit(const loadzwq& i) { a.prefix(i.s.mr()).loadzwl(i.s, Reg32(i.d)); }
   void emit(const loadzlq& i) { a.prefix(i.s.mr()).loadl(i.s, Reg32(i.d)); }
   void emit(const movb& i) { a.movb(i.s, i.d); }
   void emit(const movl& i) { a.movl(i.s, i.d); }
@@ -269,6 +274,7 @@ struct Vgen {
   void emit(subli i) { binary(i); a.subl(i.s0, i.d); }
   void emit(subq i) { noncommute(i); a.subq(i.s0, i.d); }
   void emit(subqi i) { binary(i); a.subq(i.s0, i.d); }
+  void emit(const subqim& i);
   void emit(subsd i) { noncommute(i); a.subsd(i.s0, i.d); }
   void emit(const testb& i) { a.testb(i.s0, i.s1); }
   void emit(const testbi& i) { a.testb(i.s0, i.s1); }
@@ -291,6 +297,8 @@ struct Vgen {
   void emit(unpcklpd i) { noncommute(i); a.unpcklpd(i.s0, i.d); }
   void emit(xorb i) { commuteSF(i); a.xorb(i.s0, i.d); }
   void emit(xorbi i) { binary(i); a.xorb(i.s0, i.d); }
+  void emit(xorw i) { commuteSF(i); a.xorw(i.s0, i.d); }
+  void emit(xorwi i) { binary(i); a.xorw(i.s0, i.d); }
   void emit(xorl i) { commuteSF(i); a.xorl(i.s0, i.d); }
   void emit(xorq i);
   void emit(xorqi i) { binary(i); a.xorq(i.s0, i.d); }
@@ -395,19 +403,6 @@ bool ccImplies(ConditionCode a, ConditionCode b) {
   always_assert(false);
 }
 
-static CodeAddress toReal(Venv& env, CodeAddress a) {
-  if (env.text.main().code.contains(a)) {
-    return env.text.main().code.toDestAddress(a);
-  }
-  if (env.text.cold().code.contains(a)) {
-    return env.text.cold().code.toDestAddress(a);
-  }
-  if (env.text.frozen().code.contains(a)) {
-    return env.text.frozen().code.toDestAddress(a);
-  }
-  return a;
-}
-
 /*
  * When two jccs go to the same destination, the cc of the first is compatible
  * with the cc of the second, and they're within a one-byte offset of each
@@ -415,15 +410,18 @@ static CodeAddress toReal(Venv& env, CodeAddress a) {
  * relocator to shrink the first one, and the extra jmp shouldn't matter since
  * we try to only do this to rarely taken jumps.
  */
-void retargetJumps(Venv& env,
-                   const jit::hash_map<TCA, jit::vector<TCA>>& jccs) {
+template<typename Key, typename Hash>
+jit::hash_set<TCA> retargetJumps(
+  Venv& env,
+  const jit::hash_map<Key, jit::vector<TCA>, Hash>& jccs
+) {
   jit::hash_set<TCA> retargeted;
   for (auto& pair : jccs) {
     auto const& jmps = pair.second;
     if (jmps.size() < 2) continue;
 
     for (size_t i = 0; i < jmps.size(); ++i) {
-      DecodedInstruction di(toReal(env, jmps[i]), jmps[i]);
+      DecodedInstruction di(env.text.toDestAddress(jmps[i]), jmps[i]);
       // Don't bother if the jump is already a short jump.
       if (di.size() != 6) continue;
 
@@ -433,7 +431,7 @@ void retargetJumps(Venv& env,
         // dest that's more than a one-byte offset away.
         if (delta < 0 || !deltaFits(delta, sz::byte)) continue;
 
-        DecodedInstruction dj(toReal(env, jmps[j]), jmps[j]);
+        DecodedInstruction dj(env.text.toDestAddress(jmps[j]), jmps[j]);
         if (!ccImplies(di.jccCondCode(), dj.jccCondCode())) continue;
 
         di.setPicAddress(jmps[j]);
@@ -458,39 +456,78 @@ void retargetJumps(Venv& env,
     }
   }
 
-  // Finally, remove any retargeted jmps from inProgressTailJumps.
-  if (!retargeted.empty()) {
-    GrowableVector<IncomingBranch> newTailJumps;
-    for (auto& jmp : env.meta.inProgressTailJumps) {
-      if (retargeted.count(jmp.toSmash()) == 0) {
-        newTailJumps.push_back(jmp);
-      }
+  return retargeted;
+}
+
+namespace {
+  struct SrcKeyBoolTupleHasher {
+    size_t operator()(std::tuple<SrcKey, bool> v) const {
+      return folly::hash::hash_combine(
+        std::get<0>(v).toAtomicInt(),
+        std::get<1>(v)
+      );
     }
-    env.meta.inProgressTailJumps.swap(newTailJumps);
-  }
-  // If the retarged jumps were smashable, now they aren't anymore, so remove
-  // them from smashableJumpData.
-  for (auto jmp : retargeted) {
-    if (env.meta.smashableJumpData.erase(jmp) > 0) {
-      FTRACE(3, "retargetJumps: removed {} from smashableJumpData\n", jmp);
+  };
+}
+
+template<class X64Asm>
+void Vgen<X64Asm>::retargetBinds(Venv& env) {
+  if (RuntimeOption::EvalJitRetargetJumps < 1) return;
+
+  // The target is unique per the SrcKey and the fallback flag.
+  jit::hash_map<
+    std::pair<SrcKey, bool>,
+    jit::vector<TCA>,
+    SrcKeyBoolTupleHasher
+  > binds;
+
+  for (auto const& b : env.meta.smashableBinds) {
+    if (b.smashable.type() == IncomingBranch::Tag::JCC) {
+      binds[std::make_pair(b.sk, b.fallback)]
+        .emplace_back(b.smashable.toSmash());
     }
   }
+
+  auto const retargeted = retargetJumps(env, std::move(binds));
+  if (retargeted.empty()) return;
+
+  // Finally, remove any retargeted jmps from inProgressTailJumps and
+  // smashableBinds.
+  GrowableVector<IncomingBranch> newTailJumps;
+  for (auto& jmp : env.meta.inProgressTailJumps) {
+    if (retargeted.count(jmp.toSmash()) == 0) {
+      newTailJumps.push_back(jmp);
+    }
+  }
+  env.meta.inProgressTailJumps.swap(newTailJumps);
+
+  decltype(env.meta.smashableBinds) newBinds;
+  for (auto& bind : env.meta.smashableBinds) {
+    if (retargeted.count(bind.smashable.toSmash()) == 0) {
+      newBinds.push_back(bind);
+    } else {
+      FTRACE(3, "retargetBinds: removed {} from smashableBinds\n",
+             bind.smashable.toSmash());
+    }
+  }
+  env.meta.smashableBinds.swap(newBinds);
 }
 
 template<class X64Asm>
 void Vgen<X64Asm>::patch(Venv& env) {
   for (auto const& p : env.jmps) {
     assertx(env.addrs[p.target]);
-    X64Asm::patchJmp(toReal(env, p.instr), p.instr, env.addrs[p.target]);
+    X64Asm::patchJmp(
+      env.text.toDestAddress(p.instr), p.instr, env.addrs[p.target]);
   }
 
   auto const optLevel = RuntimeOption::EvalJitRetargetJumps;
   jit::hash_map<TCA, jit::vector<TCA>> jccs;
   for (auto const& p : env.jccs) {
     assertx(env.addrs[p.target]);
-    X64Asm::patchJcc(toReal(env, p.instr), p.instr, env.addrs[p.target]);
-    if (optLevel >= 2 ||
-        (optLevel == 1 && p.target >= env.unit.blocks.size())) {
+    X64Asm::patchJcc(
+      env.text.toDestAddress(p.instr), p.instr, env.addrs[p.target]);
+    if (optLevel >= 2) {
       jccs[env.addrs[p.target]].emplace_back(p.instr);
     }
   }
@@ -499,7 +536,7 @@ void Vgen<X64Asm>::patch(Venv& env) {
 
   for (auto const& p : env.leas) {
     assertx(env.vaddrs[p.target]);
-    DecodedInstruction di(toReal(env, p.instr), p.instr);
+    DecodedInstruction di(env.text.toDestAddress(p.instr), p.instr);
     assertx(di.hasPicOffset());
     di.setPicAddress(env.vaddrs[p.target]);
   }
@@ -680,7 +717,7 @@ void Vgen<X64Asm>::emit(const calls& i) {
 template<class X64Asm>
 void Vgen<X64Asm>::emit(const stubret& i) {
   if (i.saveframe) {
-    a.pop(rvmfp());
+    a.pop(x64::rvmfp());
   } else {
     a.addq(8, reg::rsp);
   }
@@ -716,7 +753,7 @@ template<class X64Asm>
 void Vgen<X64Asm>::emit(const phpret& i) {
   a.push(i.fp[AROFF(m_savedRip)]);
   if (!i.noframe) {
-    a.loadq(i.fp[AROFF(m_sfp)], rvmfp());
+    a.loadq(i.fp[AROFF(m_sfp)], x64::rvmfp());
   }
   a.ret();
 }
@@ -747,8 +784,7 @@ void Vgen<X64Asm>::emit(const nothrow& /*i*/) {
 
 template<class X64Asm>
 void Vgen<X64Asm>::emit(const syncpoint& i) {
-  FTRACE(5, "IR recordSyncPoint: {} {} {}\n", a.frontier(),
-         i.fix.pcOffset, i.fix.spOffset);
+  FTRACE(5, "IR recordSyncPoint: {} {}\n", a.frontier(), i.fix.show());
   env.meta.fixups.emplace_back(a.frontier(), i.fix);
   env.record_inline_stack(a.frontier());
 }
@@ -803,6 +839,12 @@ template<class X64Asm>
 void Vgen<X64Asm>::emit(const addqim& i) {
   auto mref = i.m.mr();
   a.prefix(mref).addq(i.s0, mref);
+}
+
+template<class X64Asm>
+void Vgen<X64Asm>::emit(const subqim& i) {
+  auto mref = i.m.mr();
+  a.prefix(mref).subq(i.s0, mref);
 }
 
 template<class X64Asm>
@@ -865,7 +907,6 @@ void Vgen<X64Asm>::emit(const jcc& i) {
 template<class X64Asm>
 void Vgen<X64Asm>::emit(const jcci& i) {
   a.jcc(i.cc, i.taken);
-  emit(jmp{i.target});
 }
 
 template<class X64Asm>
@@ -887,6 +928,13 @@ void Vgen<X64Asm>::emit(const jmpi& i) {
 }
 
 template<class X64Asm>
+void Vgen<X64Asm>::emit(const ldbindretaddr& i) {
+  auto const addr = a.frontier();
+  emit(leap{reg::rip[(intptr_t)addr], i.d});
+  env.ldbindretaddrs.push_back({addr, i.target, i.spOff});
+}
+
+template<class X64Asm>
 void Vgen<X64Asm>::emit(const lea& i) {
   assertx(i.s.seg == Segment::DS);
   // could do this in a simplify pass
@@ -900,7 +948,7 @@ void Vgen<X64Asm>::emit(const lea& i) {
 template<class X64Asm>
 void Vgen<X64Asm>::emit(const leav& i) {
   auto const addr = a.frontier();
-  emit(leap{reg::rip[0xdeadbeef], i.d});
+  emit(leap{reg::rip[(intptr_t)addr], i.d});
   env.leas.push_back({addr, i.s});
 }
 
@@ -1008,6 +1056,13 @@ void Vgen<X64Asm>::emit(const crc32q& i) {
   a.crc32q(i.s0, i.d);
 }
 
+template<typename X64Asm>
+void Vgen<X64Asm>::emit(const decqmlocknosf& i) {
+  a.pushf();
+  a.prefix(i.m.mr()).decqlock(i.m);
+  a.popf();
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 
 template<typename Lower>
@@ -1052,7 +1107,7 @@ void lower(Vunit& unit, pushpm& inst, Vlabel b, size_t i) {
 
 void lower(Vunit& unit, stublogue& inst, Vlabel b, size_t i) {
   if (inst.saveframe) {
-    unit.blocks[b].code[i] = push{rvmfp()};
+    unit.blocks[b].code[i] = push{x64::rvmfp()};
   } else {
     unit.blocks[b].code[i] = lea{reg::rsp[-8], reg::rsp};
   }
@@ -1168,37 +1223,6 @@ void lowerForX64(Vunit& unit) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-void stressTestLiveness(Vunit& unit) {
-  auto const blocks = sortBlocks(unit);
-  auto const livein = computeLiveness(unit, abi(), blocks);
-  auto const gp_regs = abi().gpUnreserved;
-
-  for (auto b : blocks) {
-    auto& block = unit.blocks[b];
-    auto const& live_set = livein[b];
-    jit::vector<Vinstr> new_insts;
-    const uint64_t trash = 0xbad;
-    gp_regs.forEach([&](PhysReg r) {
-                      if (!live_set[Vreg(r)]) {
-                        new_insts.insert(new_insts.end(), ldimmq{trash, r});
-                      }
-                    });
-
-    // set irctx for the newly added instructions
-    auto const irctx = block.code.front().irctx();
-    for (auto& ni : new_insts) {
-      ni.set_irctx(irctx);
-    }
-
-    // insert new instructions in the beginning of the block, but after any
-    // existing phidef
-    auto insertPt = block.code.begin();
-    while (insertPt->op == Vinstr::phidef) insertPt++;
-    block.code.insert(insertPt, new_insts.begin(), new_insts.end());
-  }
-}
-
-///////////////////////////////////////////////////////////////////////////////
 }
 
 void optimizeX64(Vunit& unit, const Abi& abi, bool regalloc) {
@@ -1214,15 +1238,14 @@ void optimizeX64(Vunit& unit, const Abi& abi, bool regalloc) {
     fun(unit);
   };
 
-  doPass("VOPT_NOP",    removeTrivialNops);
+  doPass("VOPT_DCE",    removeDeadCode);
   doPass("VOPT_PHI",    optimizePhis);
   doPass("VOPT_BRANCH", fuseBranches);
-  doPass("VOPT_JMP",    [] (Vunit& u) { optimizeJmps(u); });
-  doPass("VOPT_EXIT",   [] (Vunit& u) { optimizeExits(u); });
+  doPass("VOPT_JMP",    [] (Vunit& u) { optimizeJmps(u, false); });
 
   assertx(checkWidths(unit));
 
-  if (unit.context && !isProfiling(unit.context->kind) && abi.canSpill &&
+  if (unit.context && unit.context->kind == TransKind::Optimize &&
       RuntimeOption::EvalProfBranchSampleFreq > 0) {
     // Even when branch profiling is on, we still only want to profile
     // non-profiling translations of PHP functions.  We also require that we
@@ -1239,13 +1262,21 @@ void optimizeX64(Vunit& unit, const Abi& abi, bool regalloc) {
     doPass("VOPT_FOLD_IMM", foldImms<x64::ImmFolder>);
   }
 
-  doPass("VOPT_COPY", [&] (Vunit& u) { optimizeCopies(u, abi); });
+  doPass("VOPT_COPY",   [&] (Vunit& u) { optimizeCopies(u, abi); });
+  doPass("VOPT_DCE",    removeDeadCode);
+  doPass("VOPT_BRANCH", fuseBranches);
 
   if (unit.needsRegAlloc()) {
-    doPass("VOPT_DCE", [] (Vunit& u) { removeDeadCode(u); });
-    doPass("VOPT_JMP", [] (Vunit& u) { optimizeJmps(u); });
-    doPass("VOPT_DCE", [] (Vunit& u) { removeDeadCode(u); });
+    doPass("VOPT_JMP", [] (Vunit& u) { optimizeJmps(u, false); });
+    doPass("VOPT_DCE", removeDeadCode);
+
     if (regalloc) {
+      // vasm-block-counts and register allocation require edges to
+      // be pre-split.
+      splitCriticalEdges(unit);
+
+      doPass("VOPT_BLOCK_WEIGHTS", VasmBlockCounters::profileGuidedUpdate);
+
       if (RuntimeOption::EvalUseGraphColor &&
           unit.context &&
           (unit.context->kind == TransKind::Optimize ||
@@ -1260,19 +1291,10 @@ void optimizeX64(Vunit& unit, const Abi& abi, bool regalloc) {
       doPass("VOPT_POST_RA_SIMPLIFY", postRASimplify);
     }
   }
-  if (unit.needsRegAlloc() && regalloc) {
-    if (RuntimeOption::EvalJitStressTestLiveness && unit.context &&
-        (unit.context->kind == TransKind::Live ||
-         unit.context->kind == TransKind::Profile ||
-         unit.context->kind == TransKind::Optimize)) {
-      doPass("STRESS_TEST_LIVENESS", stressTestLiveness);
-    }
-    doPass("VOPT_BLOCK_WEIGHTS",
-           [] (Vunit& u) { VasmBlockCounters::profileGuidedUpdate(u); });
-  }
-  if (unit.blocks.size() > 1) {
-    doPass("VOPT_JMP", [] (Vunit& u) { optimizeJmps(u); });
-  }
+
+  // We can add side-exiting instructions now
+  doPass("VOPT_EXIT", optimizeExits);
+  doPass("VOPT_JMP", [] (Vunit& u) { optimizeJmps(u, true); });
 }
 
 void emitX64(Vunit& unit, Vtext& text, CGMeta& fixups,

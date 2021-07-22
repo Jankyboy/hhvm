@@ -28,8 +28,6 @@
 #include "hphp/runtime/ext/std/ext_std_math.h"
 #include "hphp/runtime/ext/string/ext_string.h"
 
-#include <folly/Optional.h>
-
 #include <set>
 #include <utility>
 #include <vector>
@@ -38,9 +36,11 @@ namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 // compositions
 
-Variant ArrayUtil::Splice(const Array& input, int offset, int64_t length /* = 0 */,
-                          const Variant& replacement /* = uninit_variant */,
-                          Array *removed /* = NULL */) {
+Variant ArrayUtil::Splice(const Array& input, int offset, int64_t length,
+                          const Variant& replacement, Array& removed) {
+  assertx(!removed.isNull());
+  assertx(removed.empty());
+
   int num_in = input.size();
   if (offset > num_in) {
     offset = num_in;
@@ -54,28 +54,30 @@ Variant ArrayUtil::Splice(const Array& input, int offset, int64_t length /* = 0 
     length = num_in - offset;
   }
 
-  Array out_hash = Array::CreateDArray();
+  auto const ad = ArrayData::CreateDict(input->isLegacyArray());
+  auto out_hash = Array::attach(ad);
+
   int pos = 0;
+  int64_t nextKI = 0;
   ArrayIter iter(input);
   for (; pos < offset && iter; ++pos, ++iter) {
     Variant key(iter.first());
     auto const v = iter.secondVal();
     if (key.isNumeric()) {
-      out_hash.append(v);
+      out_hash.set(nextKI++, v);
     } else {
       out_hash.set(key, v, true);
     }
   }
 
+  int64_t removedNextKI = 0;
   for (; pos < offset + length && iter; ++pos, ++iter) {
-    if (removed) {
-      Variant key(iter.first());
-      auto const v = iter.secondVal();
-      if (key.isNumeric()) {
-        removed->append(v);
-      } else {
-        removed->set(key, v, true);
-      }
+    Variant key(iter.first());
+    auto const v = iter.secondVal();
+    if (key.isNumeric()) {
+      removed.set(removedNextKI++, v);
+    } else {
+      removed.set(key, v, true);
     }
   }
 
@@ -83,7 +85,7 @@ Variant ArrayUtil::Splice(const Array& input, int offset, int64_t length /* = 0 
   if (!arr.empty()) {
     for (ArrayIter iterb(arr); iterb; ++iterb) {
       auto const v = iterb.secondVal();
-      out_hash.append(v);
+      out_hash.set(nextKI++, v);
     }
   }
 
@@ -91,7 +93,7 @@ Variant ArrayUtil::Splice(const Array& input, int offset, int64_t length /* = 0 
     Variant key(iter.first());
     auto const v = iter.secondVal();
     if (key.isNumeric()) {
-      out_hash.append(v);
+      out_hash.set(nextKI++, v);
     } else {
       out_hash.set(key, v, true);
     }
@@ -122,10 +124,10 @@ Variant ArrayUtil::PadLeft(const Array& input, const Variant& pad_value,
   }
 
   ArrayData* data;
-  if (input->isVecType() || input->isVArray()) {
-    data = PackedArray::MakeReserveVArray(pad_size);
+  if (input->isVecType()) {
+    data = PackedArray::MakeReserveVec(pad_size);
   } else {
-    data = MixedArray::MakeReserveDArray(pad_size);
+    data = MixedArray::MakeReserveDict(pad_size);
   }
   auto ret = Array::attach(data);
   for (int i = input_size; i < pad_size; i++) {
@@ -150,7 +152,7 @@ Variant ArrayUtil::Range(unsigned char low, unsigned char high,
     return false;
   }
 
-  auto ret = Array::CreateVArray();
+  auto ret = Array::CreateVec();
   if (low > high) { // Negative Steps
     for (; low >= high; low -= (unsigned int)step) {
       ret.append(String::FromChar(low));
@@ -192,7 +194,7 @@ void rangeCheckAlloc(double estNumSteps) {
 }
 
 Variant ArrayUtil::Range(double low, double high, double step /* = 1.0 */) {
-  auto ret = Array::CreateVArray();
+  auto ret = Array::CreateVec();
   double element;
   int64_t i;
   if (low > high) { // Negative steps
@@ -222,7 +224,7 @@ Variant ArrayUtil::Range(double low, double high, double step /* = 1.0 */) {
 }
 
 Variant ArrayUtil::Range(int64_t low, int64_t high, int64_t step /* = 1 */) {
-  auto ret = Array::CreateVArray();
+  auto ret = Array::CreateVec();
   if (low > high) { // Negative steps
     if (low - high < step || step <= 0) {
       raise_invalid_argument_warning("step exceeds the specified range");
@@ -251,7 +253,7 @@ Variant ArrayUtil::Range(int64_t low, int64_t high, int64_t step /* = 1 */) {
 // information and calculations
 
 Variant ArrayUtil::CountValues(const Array& input) {
-  Array ret = Array::CreateDArray();
+  Array ret = Array::CreateDict();
   for (ArrayIter iter(input); iter; ++iter) {
     auto const inner = iter.secondVal();
     if (isIntType(type(inner)) || isStringType(type(inner)) ||
@@ -274,7 +276,7 @@ Variant ArrayUtil::CountValues(const Array& input) {
 // manipulations
 
 Variant ArrayUtil::ChangeKeyCase(const Array& input, bool lower) {
-  Array ret = Array::CreateDArray();
+  Array ret = Array::CreateDict();
   for (ArrayIter iter(input); iter; ++iter) {
     Variant key(iter.first());
     if (key.isString()) {
@@ -292,18 +294,19 @@ Variant ArrayUtil::ChangeKeyCase(const Array& input, bool lower) {
 
 Variant ArrayUtil::Reverse(const Array& input, bool preserve_keys /* = false */) {
   if (input.empty()) {
-    return empty_darray();
+    return empty_dict_array();
   }
 
-  auto ret = Array::CreateDArray();
+  auto ret = Array::CreateDict();
   auto pos_limit = input->iter_end();
+  int64_t nextKI = 0;
   for (ssize_t pos = input->iter_last(); pos != pos_limit;
        pos = input->iter_rewind(pos)) {
     auto const key = input->nvGetKey(pos);
     if (preserve_keys || isStringType(key.m_type)) {
       ret.set(key, input->nvGetVal(pos), true);
     } else {
-      ret.append(input->nvGetVal(pos));
+      ret.set(nextKI++, input->nvGetVal(pos));
     }
   }
   return ret;
@@ -325,11 +328,7 @@ static void php_array_data_shuffle(std::vector<ssize_t> &indices) {
 }
 
 Variant ArrayUtil::Shuffle(const Array& input) {
-  int count = input.size();
-  if (count == 0) {
-    return input;
-  }
-
+  auto const count = input.size();
   std::vector<ssize_t> indices;
   indices.reserve(count);
   auto pos_limit = input->iter_end();
@@ -360,21 +359,8 @@ Variant ArrayUtil::Shuffle(const Array& input) {
       ret.add(input->nvGetVal(pos));
     }
     return ret.toVariant();
-  } else if (input.isVArray()) {
-    VArrayInit ret(count);
-    for (int i = 0; i < count; i++) {
-      ssize_t pos = indices[i];
-      ret.append(input->nvGetVal(pos));
-    }
-    return ret.toVariant();
-  } else {
-    DArrayInit ret(count);
-    for (int i = 0; i < count; i++) {
-      ssize_t pos = indices[i];
-      ret.append(input->nvGetVal(pos));
-    }
-    return ret.toVariant();
   }
+  always_assert(false);
 }
 
 Variant ArrayUtil::RandomKeys(const Array& input, int num_req /* = 1 */) {
@@ -408,7 +394,7 @@ Variant ArrayUtil::RandomKeys(const Array& input, int num_req /* = 1 */) {
   }
   php_array_data_shuffle(indices);
 
-  VArrayInit ret(num_req);
+  VecInit ret(num_req);
   for (int i = 0; i < num_req; i++) {
     ssize_t pos = indices[i];
     ret.append(input->getKey(pos));
@@ -418,7 +404,7 @@ Variant ArrayUtil::RandomKeys(const Array& input, int num_req /* = 1 */) {
 
 Variant ArrayUtil::StringUnique(const Array& input) {
   Array seenValues = Array::CreateKeyset();
-  Array ret = Array::CreateDArray();
+  Array ret = Array::CreateDict();
   for (ArrayIter iter(input); iter; ++iter) {
     auto const str = tvCastToString(iter.secondVal());
     if (!seenValues.exists(str)) {
@@ -432,7 +418,7 @@ Variant ArrayUtil::StringUnique(const Array& input) {
 
 Variant ArrayUtil::NumericUnique(const Array& input) {
   std::set<double> seenValues;
-  Array ret = Array::CreateDArray();
+  Array ret = Array::CreateDict();
   for (ArrayIter iter(input); iter; ++iter) {
     auto const value = tvCastToDouble(iter.secondVal());
     std::pair<std::set<double>::iterator, bool> res =
@@ -478,7 +464,7 @@ Variant ArrayUtil::RegularSortUnique(const Array& input) {
     last = current;
   }
 
-  ArrayInit ret(indices.size() - duplicates_count, ArrayInit::Map{});
+  DictInit ret(indices.size() - duplicates_count);
   int i = 0;
   for (ArrayIter iter(input); iter; ++iter, ++i) {
     if (!duplicates[i]) {

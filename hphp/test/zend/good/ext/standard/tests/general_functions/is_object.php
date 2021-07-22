@@ -70,7 +70,7 @@ function main(): void {
   $concreteClass_object = new concreteClass();
 
   $valid_objects = varray[
-    new stdclass,
+    new stdClass,
     new foo,
     new concreteClass,
     new Value,
@@ -98,10 +98,6 @@ function main(): void {
   $fp = fopen(__FILE__, "r");
   $dfp = opendir(dirname(__FILE__));
 
-  // unset object
-  $unset_object = new foo();
-  unset($unset_object);
-
   // other types in a array
   $not_objects = varray[
     0,
@@ -120,9 +116,7 @@ function main(): void {
     "",
     true,
     NULL,
-    null,
-    @$unset_object, // unset object
-    @$undefined_var, // undefined variable
+    null
   ];
   /* loop through the $not_objects to see working of
      is_object() on non object types, expected output: bool(false) */

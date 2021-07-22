@@ -7,7 +7,7 @@ namespace {
  *
  * @return int - thread type. Returns -1 if unknown.
  */
-<<__HipHopSpecific, __Native>>
+<<__Native>>
 function hphp_thread_type(): int;
 
 /**
@@ -17,7 +17,7 @@ function hphp_thread_type(): int;
  * @return bool - TRUE if it's enabled, FALSE otherwise.
  *
  */
-<<__HipHopSpecific, __Native>>
+<<__Native>>
 function pagelet_server_is_enabled(): bool;
 
 /**
@@ -32,7 +32,7 @@ function pagelet_server_is_enabled(): bool;
  *   pagelet_server_task_status() or pagelet_server_task_result().
  *
  */
-<<__HipHopSpecific, __Native>>
+<<__Native>>
 function pagelet_server_task_start(string $url,
                                    darray $headers = darray[],
                                    string $post_data = "",
@@ -50,7 +50,7 @@ function pagelet_server_task_start(string $url,
  *   and PAGELET_DONE if the pagelet request is done.
  *
  */
-<<__HipHopSpecific, __Native>>
+<<__Native>>
 function pagelet_server_task_status(resource $task): int;
 
 /**
@@ -67,7 +67,7 @@ function pagelet_server_task_status(resource $task): int;
  * @return string - HTTP response from the pagelet.
  *
  */
-<<__HipHopSpecific, __Native>>
+<<__Native("NoFCallBuiltin")>>
 function pagelet_server_task_result(
   resource $task,
   <<__OutOnly('varray')>>
@@ -82,7 +82,7 @@ function pagelet_server_task_result(
  *
  * @return int - Number of pagelet tasks started.
  */
-<<__HipHopSpecific, __Native>>
+<<__Native>>
 function pagelet_server_tasks_started(): int;
 
 /**
@@ -91,47 +91,15 @@ function pagelet_server_tasks_started(): int;
  *   thread.
  *
  */
-<<__HipHopSpecific, __Native>>
+<<__Native>>
 function pagelet_server_flush(): void;
 
 /**
  * Determine whether or not the pagelet thread we are executing on has finished
  * and closed its output buffer.
  */
-<<__HipHopSpecific, __Native>>
+<<__Native>>
 function pagelet_server_is_done(): bool;
-
-/**
- * Sends an xbox message and waits for response. Please read server
- *   documentation for what an xbox is.
- *
- * @param string $msg - The message.
- * @param mixed $ret - The response.
- * @param int $timeout_ms - How many milli-seconds to wait.
- * @param string $host - Which machine to send to.
- *
- * @return bool - TRUE if successful, FALSE otherwise.
- *
- */
-<<__HipHopSpecific, __Native>>
-function xbox_send_message(string $msg,
-                           <<__OutOnly('darray')>>
-                           inout mixed $ret,
-                           int $timeout_ms,
-                           string $host = "localhost"): bool;
-
-/**
- * Posts an xbox message without waiting. Please read server documentation for
- *   more details.
- *
- * @param string $msg - The response.
- * @param string $host - Which machine to post to.
- *
- * @return bool - TRUE if successful, FALSE otherwise.
- *
- */
-<<__HipHopSpecific, __Native>>
-function xbox_post_message(string $msg, string $host = "localhost"): bool;
 
 /**
  * Starts a local xbox task.
@@ -143,7 +111,7 @@ function xbox_post_message(string $msg, string $host = "localhost"): bool;
  *   can use.
  *
  */
-<<__HipHopSpecific, __Native>>
+<<__Native>>
 function xbox_task_start(string $message): resource;
 
 /**
@@ -154,7 +122,7 @@ function xbox_task_start(string $message): resource;
  * @return bool - TRUE if finished, FALSE otherwise.
  *
  */
-<<__HipHopSpecific, __Native>>
+<<__Native>>
 function xbox_task_status(resource $task): bool;
 
 /**
@@ -168,7 +136,7 @@ function xbox_task_status(resource $task): bool;
  *   for success and 500 for server error.
  *
  */
-<<__HipHopSpecific, __Native>>
+<<__Native>>
 function xbox_task_result(
   resource $task,
   int $timeout_ms,
@@ -184,48 +152,8 @@ function xbox_task_result(
  * @return mixed - The return value of the xbox call task.
  *
  */
-<<__HipHopSpecific, __Native>>
+<<__Native>>
 function xbox_process_call_message(string $msg): mixed;
-
-/**
- * Gets the timeout (maximum duration), in seconds, of the current xbox
- *   thread. Throws for non-xbox threads.
- *
- * @return int - The current timeout (maximum duration).
- *
- */
-<<__HipHopSpecific, __Native>>
-function xbox_get_thread_timeout(): int;
-
-/**
- * Sets the timeout (maximum duration), in seconds, of the current xbox
- *   thread. The xbox thread would reset when this amount of time has passed
- *   since the previous reset. Throws for non-xbox threads.
- *
- * @param int $timeout - The new timeout (maximum duration).
- *
- */
-<<__HipHopSpecific, __Native>>
-function xbox_set_thread_timeout(int $timeout): void;
-
-/**
- * Schedules a reset of the current xbox thread, when the next request comes
- *   in. Throws for non-xbox threads.
- *
- */
-<<__HipHopSpecific, __Native>>
-function xbox_schedule_thread_reset(): void;
-
-/**
- * Returns the time that the current xbox thread has been running without a
- *   reset, in seconds, and throws for non-xbox threads.
- *
- * @return int - The time that the current xbox thread has been running
- *   without a reset.
- *
- */
-<<__HipHopSpecific, __Native>>
-function xbox_get_thread_time(): int;
 
 } // root namespace
 
@@ -237,7 +165,7 @@ namespace HH {
  * server is not running, or is running without a schedule to stop.
  *
  */
-<<__HipHopSpecific, __Native>>
+<<__Native>>
 function server_is_stopping(): bool;
 
 /**
@@ -253,7 +181,7 @@ function server_is_stopping(): bool;
  * stop.
  *
  */
-<<__HipHopSpecific, __Native>>
+<<__Native>>
 function server_is_prepared_to_stop(): bool;
 
 /**
@@ -263,7 +191,7 @@ function server_is_prepared_to_stop(): bool;
  * server should not receive any more request.
  *
  */
-<<__HipHopSpecific, __Native>>
+<<__Native>>
 function server_health_level(): int;
 
 /**
@@ -273,7 +201,7 @@ function server_health_level(): int;
  * server is not started.
  *
  */
-<<__HipHopSpecific, __Native>>
+<<__Native>>
 function server_uptime(): int;
 
 /**
@@ -283,7 +211,7 @@ function server_uptime(): int;
  * server is not started.
  *
  */
-<<__HipHopSpecific, __Native>>
+<<__Native>>
 function server_process_start_time(): int;
 
 }

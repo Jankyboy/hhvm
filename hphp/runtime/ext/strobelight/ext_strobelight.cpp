@@ -51,25 +51,30 @@ std::mutex usdt_mutex;
 void onStrobelightSignal(int signo) {
   if (!RuntimeOption::StrobelightEnabled) {
     // Handle the signal so we don't crash, but do nothing.
-    TRACE(1, "Strobelight signaled, but disabled\n");
     return;
   }
 
   if (signo == strobelight::kSignumCurrent) {
     // sets on only current thread
-    if (rds::header()) {
+    if (rds::isFullyInitialized()) {
       // Ignore threads that are not serving requests, otherwise this segfaults
       if (!Strobelight::isXenonActive()) {
         // Do not set the flag if Xenon is actively profiling this request
         setSurpriseFlag(XenonSignalFlag);
       }
     }
-  } else if (signo == strobelight::kSignumAll) {
-    // sets on ALL threads
-    Strobelight::getInstance().surpriseAll();
   }
 
-  FOLLY_SDT(hhvm, hhvm_surprise);
+  // surpriseAll currently has an issue where the isXenonActive() check will
+  // try to access s_xenonData->getIsProfiledRequest() to check if the current
+  // request is profiling. The problem is that you really want to check if the
+  // request t is profiling. The current thread may not even be a request thread.
+  // If we ever want to start using this signal for profiling,
+  // we will need to figure out how to work around that problem.
+  // if (signo == strobelight::kSignumAll) {
+  //  // sets on ALL threads
+  //  Strobelight::getInstance().surpriseAll();
+  // }
 }
 
 /**
@@ -82,10 +87,9 @@ bool logToUSDT(const Array& bt) {
   memset(&bt_slab, 0, sizeof(bt_slab));
 
   int i = 0;
-  IterateVNoInc(
+  IterateV(
     bt.get(),
     [&](TypedValue tv) -> bool {
-
       if (i >= strobelight::kMaxStackframes) {
         return true;
       }
@@ -100,33 +104,22 @@ bool logToUSDT(const Array& bt) {
         frame->line = val(line).num;
       }
 
-      auto const file_name = bt_frame->get(s_file.get());
-      if (file_name.is_init()) {
-        assertx(isStringType(type(file_name)));
-        strncpy(frame->file_name,
-                val(file_name).pstr->data(),
-                std::min(val(file_name).pstr->size(), strobelight::kFileNameMax));
-        frame->file_name[strobelight::kFileNameMax - 1] = '\0';
-      }
+      auto addString = [bt_frame](const StaticString& var,
+                                  char* dest,
+                                  int32_t maxLen) {
+        auto const value = bt_frame->get(var.get());
+        if (value.is_init()) {
+          assertx(isStringType(type(value)));
+          strncpy(dest,
+                  val(value).pstr->data(),
+                  std::min<int64_t>(val(value).pstr->size(), maxLen));
+          dest[maxLen - 1] = '\0';
+        }
+      };
 
-      auto const class_name = bt_frame->get(s_class.get());
-      if (class_name.is_init()) {
-        assertx(isStringType(type(class_name)));
-        strncpy(frame->class_name,
-                val(class_name).pstr->data(),
-                std::min(val(class_name).pstr->size(), strobelight::kClassNameMax));
-        frame->class_name[strobelight::kClassNameMax - 1] = '\0';
-      }
-
-      auto const function_name = bt_frame->get(s_function.get());
-      if (function_name.is_init()) {
-        assertx(isStringType(type(function_name)));
-        strncpy(frame->function,
-                val(function_name).pstr->data(),
-                std::min(val(function_name).pstr->size(),
-                         strobelight::kFunctionMax));
-        frame->function[strobelight::kFunctionMax - 1] = '\0';
-      }
+      addString(s_file, frame->file_name, strobelight::kFileNameMax);
+      addString(s_class, frame->class_name, strobelight::kClassNameMax);
+      addString(s_function, frame->function, strobelight::kFunctionMax);
 
       i++;
       return false;
@@ -158,7 +151,7 @@ void Strobelight::init() {
 }
 
 bool Strobelight::active() {
-  if (rds::header() && isXenonActive()) {
+  if (rds::isFullyInitialized() && isXenonActive()) {
     // if Xenon owns this request, back off
     return false;
   }
@@ -168,23 +161,20 @@ bool Strobelight::active() {
 }
 
 bool Strobelight::isXenonActive() {
-  TRACE(1, "Strobelight::isXenonActive\n");
   if (RuntimeOption::XenonForceAlwaysOn) {
-    TRACE(2, "Strobelight::isXenonActive => true, forced\n");
     return true;
   }
 
   bool xenonProfiled = Xenon::getInstance().getIsProfiledRequest();
   if (xenonProfiled) {
-    TRACE(2, "Strobelight::isXenonActive => true, profiled\n");
     return true;
   }
 
-  TRACE(2, "Strobelight::isXenonActive => false\n");
   return false;
 }
 
-void Strobelight::log(c_WaitableWaitHandle* wh) const {
+void Strobelight::log(Xenon::SampleType t,
+                      c_WaitableWaitHandle* wh) const {
   if (RuntimeOption::XenonForceAlwaysOn) {
     // Disable strobelight if Xenon forced on
     // TODO remove this when strobelight has its own surpriseFlag
@@ -202,6 +192,8 @@ void Strobelight::log(c_WaitableWaitHandle* wh) const {
     // caused a PMU event to fire. This is doable by storing hhvm
     // request IDs in a bpf map and checking for an entry here.
     auto bt = createBacktrace(BacktraceArgs()
+                              .skipTop(t == Xenon::EnterSample)
+                              .skipInlined(t == Xenon::EnterSample)
                               .fromWaitHandle(wh)
                               // TODO
                               // .withMetadata()
@@ -211,12 +203,12 @@ void Strobelight::log(c_WaitableWaitHandle* wh) const {
 }
 
 void Strobelight::surpriseAll() {
-  TRACE(1, "Strobelight::surpriseAll\n");
-
   RequestInfo::ExecutePerRequest(
     [] (RequestInfo* t) {
       // TODO: get a dedicated surprise flag to avoid colliding with xenon
       // Set the strobelight flag to collect a sample
+      // TODO: isXenonActive() needs to check the request thread and not the
+      // current thread (which may not even be a request)
       if (!isXenonActive()) {
         // Xenon has first crack at profiling requests. If a request
         // is marked as being profiled, we do not allow strobelight to
@@ -226,6 +218,10 @@ void Strobelight::surpriseAll() {
       }
     }
   );
+}
+
+void Strobelight::shutdown() {
+  RuntimeOption::StrobelightEnabled = false;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

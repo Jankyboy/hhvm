@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VSDEBUG_TRANSPORT_H_
-#define incl_HPHP_VSDEBUG_TRANSPORT_H_
+#pragma once
 
 #include <folly/dynamic.h>
 #include <folly/json.h>
@@ -125,6 +124,9 @@ protected:
 
 private:
 
+  // Internal counter of the message seq for responses and events
+  std::atomic<unsigned long> m_responseSeqId {1};
+
   static constexpr int ReadBufferDefaultSize = 1024;
 
   static bool tryProcessMessage(
@@ -166,4 +168,3 @@ private:
 }
 }
 
-#endif // incl_HPHP_VSDEBUG_TRANSPORT_H_

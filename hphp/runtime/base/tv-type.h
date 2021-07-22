@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_TV_TYPE_H_
-#define incl_HPHP_TV_TYPE_H_
+#pragma once
 
 #include "hphp/runtime/base/datatype.h"
 #include "hphp/runtime/base/typed-value.h"
@@ -32,19 +31,6 @@ ALWAYS_INLINE bool tvIsNull(const TypedValue* tv) {
   return tvIsNull(*tv);
 }
 
-// We don't expose isVArrayType or isDArrayType. They shouldn't be used.
-ALWAYS_INLINE bool isHAMSafeDArrayType(DataType t) {
-  return RO::EvalHackArrDVArrs ? isDictType(t) : dt_with_rc(t) == KindOfDArray;
-}
-ALWAYS_INLINE bool isHAMSafeVArrayType(DataType t) {
-  return RO::EvalHackArrDVArrs ? isVecType(t) : dt_with_rc(t) == KindOfVArray;
-}
-ALWAYS_INLINE bool isHAMSafeDVArrayType(DataType t) {
-  if (RO::EvalHackArrDVArrs) return isVecType(t) || isDictType(t);
-  auto const dtrc = dt_with_rc(t);
-  return dtrc == KindOfVArray || dtrc == KindOfDArray;
-}
-
 #define CASE(ty)                                                        \
   template<typename T>                                                  \
   ALWAYS_INLINE enable_if_tv_val_t<T&&, bool> tvIs##ty(T&& tv) {        \
@@ -56,14 +42,7 @@ CASE(Bool)
 CASE(Int)
 CASE(Double)
 CASE(String)
-CASE(Array)
-CASE(VecOrVArray)
-CASE(DictOrDArray)
-CASE(HAMSafeVArray)
-CASE(HAMSafeDArray)
-CASE(HAMSafeDVArray)
 CASE(ArrayLike)
-CASE(HackArray)
 CASE(Vec)
 CASE(Dict)
 CASE(Keyset)
@@ -72,6 +51,7 @@ CASE(Resource)
 CASE(Func)
 CASE(RFunc)
 CASE(Class)
+CASE(LazyClass)
 CASE(ClsMeth)
 CASE(RClsMeth)
 CASE(Record)
@@ -94,4 +74,3 @@ ALWAYS_INLINE double tvAssertDouble(T&& tv) {
 
 }
 
-#endif

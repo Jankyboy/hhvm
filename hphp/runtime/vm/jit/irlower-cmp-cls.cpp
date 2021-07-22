@@ -55,6 +55,17 @@ void cgEqCls(IRLS& env, const IRInstruction* inst) {
   v << setcc{CC_E, sf, dst};
 }
 
+void cgEqLazyCls(IRLS& env, const IRInstruction* inst) {
+  auto const dst  = dstLoc(env, inst, 0).reg();
+  auto const src1 = srcLoc(env, inst, 0).reg();
+  auto const src2 = srcLoc(env, inst, 1).reg();
+  auto& v = vmain(env);
+
+  auto const sf = v.makeReg();
+  v << cmpq{src2, src1, sf};
+  v << setcc{CC_E, sf, dst};
+}
+
 // Check whether `lhs' is a subclass of `rhs', given that its classvec is
 // at least as long as rhs's.
 template <typename Cls, typename Len>
@@ -285,6 +296,7 @@ void cgIsTypeStructCached(IRLS& env, const IRInstruction* inst) {
   };
 
   auto const ch = rds::bindTSCache(inst->func());
+  markRDSAccess(v, ch.handle());
   auto const sf = v.makeReg();
   v << cmpqm{arr, offset[rvmtl() + ch.handle()], sf};
   ifThen(v, CC_NE, sf, branch);
@@ -296,6 +308,7 @@ void cgIsTypeStructCached(IRLS& env, const IRInstruction* inst) {
     return;
   }
 
+  markRDSAccess(v, ch.handle());
   auto const rhs = v.makeReg();
   emitLdLowPtr(v, offset[rvmtl() + ch.handle() + sizeof(ArrayData*)],
                rhs, sizeof(LowPtr<const Class>));

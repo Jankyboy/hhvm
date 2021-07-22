@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_TC_H_
-#define incl_HPHP_JIT_TC_H_
+#pragma once
 
 #include "hphp/runtime/vm/func.h"
 #include "hphp/runtime/vm/resumable.h"
@@ -26,9 +25,9 @@
 #include "hphp/runtime/vm/jit/stack-offsets.h"
 #include "hphp/runtime/vm/jit/types.h"
 #include "hphp/runtime/vm/jit/unique-stubs.h"
+#include "hphp/runtime/vm/jit/vm-protect.h"
+#include "hphp/runtime/vm/jit/write-lease.h"
 #include "hphp/util/growable-vector.h"
-
-#include <folly/Optional.h>
 
 #include <memory>
 #include <string>
@@ -37,7 +36,6 @@
 namespace HPHP { namespace jit {
 
 struct AsmInfo;
-struct FPInvOffset;
 struct IncomingBranch;
 struct IRUnit;
 struct ProfTransRec;
@@ -45,11 +43,13 @@ struct TransEnv;
 struct TransLoc;
 struct Vunit;
 
-using OptView = folly::Optional<CodeCache::View>;
+using OptView = Optional<CodeCache::View>;
 
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace tc {
+
+extern __thread bool tl_is_jitting;
 
 struct TransRange {
   TcaRange main;
@@ -58,33 +58,6 @@ struct TransRange {
   TcaRange data;
 
   TransLoc loc() const;
-};
-
-using CodeViewPtr = std::unique_ptr<CodeCache::View>;
-
-struct TransMetaInfo {
-  SrcKey sk;
-  CodeCache::View emitView; // View code was emitted into (may be thread local)
-  TransKind   viewKind; // TransKind used to select code view
-  TransKind   transKind; // TransKind used for translation
-  TransRange  range;
-  CodeViewPtr finalView; // View where code finally ended up (after relocation)
-  TransLoc    loc; // final location of translation (after relocation)
-  CGMeta      meta;
-  TransRec    transRec;
-  GrowableVector<IncomingBranch> tailBranches;
-};
-
-struct PrologueMetaInfo {
-  PrologueMetaInfo(ProfTransRec* rec)
-    : transRec(rec)
-  { }
-  ProfTransRec* transRec{nullptr};
-  TransID       transID{kInvalidTransID};
-  TCA           start{0};
-  TransLoc      loc;
-  CGMeta        meta;
-  CodeViewPtr   finalView;
 };
 
 struct LocalTCBuffer {
@@ -102,6 +75,156 @@ private:
   CodeBlock m_frozen;
   DataBlock m_data;
 };
+
+struct Translator {
+  // Live translation is achieved through the following steps (things annotated
+  // with a * are generic and do not need to be implemented by individual
+  // translator types):
+  //   0) Initialize the kind and check if we should translate.  This includes
+  //      actions like verifying there isn't already a suitable translation
+  //   *) Acquiring a suitable lock for translation
+  //   *) Repeat step 0 now that we have the lock
+  //   1) Generate machine code into code buffers (these may be thread local)
+  //      this takes several steps, generally:
+  //        - Generate IR (possibly selecting a region to translate first)
+  //        - Optimize
+  //        - Lower to vasm
+  //        - Optimize
+  //        - Emit
+  //   *) Relocate the machine code into its final resting place (this is
+  //      necessarily done sequentially as code space is bump allocated).  This
+  //      step is a noop if it was emitted into the global code cache directly.
+  //   3) Publish the translations to the owning stores (ie. future
+  //      translation checks should find them)
+  //   *) Lock released
+  //
+  // This is slightly different for an optimized translation which might get
+  // emitted into local buffers and then relocated.  Optimized translation also
+  // make use of some of the internal publishing methods so they can hold the
+  // code and metadata locks across multiple operations.
+
+  static constexpr size_t kTranslationAlign = 16;
+  // The following members are the inputs to the translation pipeline.
+  SrcKey sk;
+  TransKind kind;
+  // The TransID for this translation.  This is always set for Profile and
+  // ProfPrologue translations, and holds their ID in ProfData.  For other
+  // translations, this is only valid if the TransDB is enabled, and it's their
+  // ID in the TransDB.
+  TransID transId{kInvalidTransID};
+  // For OptPrologues, this holds the corresponding ProfPrologue's ID.  This is
+  // used to smash the callers of the ProfPrologue.
+  TransID proflogueTransId{kInvalidTransID};
+  explicit Translator(SrcKey sk, TransKind kind = TransKind::Invalid);
+  virtual ~Translator();
+
+  virtual Optional<TranslationResult> getCached() = 0;
+  virtual void resetCached() = 0;
+  virtual void setCachedForProcessFail() = 0;
+  virtual void smashBackup() = 0;
+
+  // Returns a TCA for already translated code if found, this can be nullptr if
+  // the desired behavior is to trigger use of non jited code.  If none is
+  // returned the locks for translation were successfully acquired.
+  Optional<TranslationResult> acquireLeaseAndRequisitePaperwork();
+  // Check on tc sizes and make sure we are looking to translate more
+  // translations of the specified type.
+  TranslationResult::Scope shouldTranslate(bool noSizeLimit = false);
+  // Generate and emit machine code into the provided view (if given) otherwise
+  // the default view.
+  Optional<TranslationResult>
+  translate(Optional<CodeCache::View> view = std::nullopt);
+
+  bool translateSuccess() const;
+
+  // Relocate the generated machine code to its final location.  This may be a
+  // no-op if it was initially emitted into the correct location.
+  Optional<TranslationResult> relocate(bool alignMain);
+
+  // Bind the outgoing edges either directly to already existing translations,
+  // or to a service request stub requesting a translation.
+  Optional<TranslationResult> bindOutgoingEdges();
+
+  // Publish the translation starts, ends etc. into the required metadata
+  // structures.  This includes publishing them as debug info, but also caching
+  // the translation start in a manner that would be detected in
+  // acquireLeaseAndRequisitePaperwork.  When publishing finishes the locks may
+  // be released, and if the translation isn't properly recorded in the SrcKey
+  // database (or other equivalent structure) we may end up with duplicate
+  // translations.
+  TranslationResult publish();
+  void publishMetaInternal();
+  void publishCodeInternal();
+  TCA entry() const {
+    if (!transMeta) return nullptr;
+    assertx(!transMeta->view.isLocal());
+    return transMeta->range.loc().entry();
+  }
+  TransRange range() const {
+    if (!transMeta) return TransRange{};
+    return transMeta->range;
+  }
+  CGMeta& meta() {
+    assertx(transMeta.has_value());
+    return transMeta->fixups;
+  }
+  void reset() {
+    transMeta.reset();
+  }
+
+  // The gen method is responsible for building the vunit.  It may
+  // optionally set the IR unit, which was used for generation.
+  // This will enable the printir functionality during vasm emit,
+  // and relocation phases.
+  std::unique_ptr<IRUnit> unit;
+  std::unique_ptr<Vunit> vunit;
+
+protected:
+  Optional<LeaseHolder> m_lease{};
+
+  struct TransMeta {
+    explicit TransMeta(CodeCache::View view)
+      : view(view)
+    {}
+    // Relocation and publication metadata.
+    // This info is generated from stage 1 (generation of machine code), and
+    // contains the info relevant to stages 2 and 3 (relocation and
+    // publication).  It holds TC address ranges, CGMeta fixup information, and
+    // anything else needed.
+
+    // The translation range holds the present location of the translation.  It
+    // is initially set during translation, and is updated during relocation.
+    // The same applies to the view.  It is set during translation, and updated
+    // during relocation.
+    TransRange range;
+    CodeCache::View view;
+    // The fixups are generated during translation, and used during relocation.
+    CGMeta fixups;
+  };
+
+  // The translation metadata is written during translation.  It will be none
+  // until successful translation.  This metadata is the output of the
+  // translation pipeline.  Publishing uses this info to write start addresses
+  // and ranges to make the code executable.
+  Optional<TransMeta> transMeta{};
+
+  virtual void computeKind() = 0;
+  virtual Annotations* getAnnotations() = 0;
+  // This function is charged with producing the code to generate.
+  virtual void gen() = 0;
+  virtual void publishMetaImpl() = 0;
+  virtual void publishCodeImpl() = 0;
+
+private:
+  // This local buffer is only used in ReusableTC mode where the buffer is
+  // owned by the translator rather than the FuncMetaInfo.
+  std::unique_ptr<LocalTCBuffer> m_localTCBuffer;
+  std::unique_ptr<uint8_t[]> m_localBuffer;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
+using CodeViewPtr = std::unique_ptr<CodeCache::View>;
 
 struct FuncMetaInfo {
   enum class Kind : uint8_t {
@@ -123,56 +246,19 @@ struct FuncMetaInfo {
   Func* func;
   LocalTCBuffer tcBuf;
 
-  void add(ProfTransRec* p) {
-    prologues.emplace_back(p);
-    order.emplace_back(Kind::Prologue);
+  void add(std::unique_ptr<Translator>&& p) {
+    translators.emplace_back(std::move(p));
   }
 
-  void add(TransMetaInfo&& t) {
-    translations.emplace_back(std::move(t));
-    order.emplace_back(Kind::Translation);
+  void clear() {
+    translators.clear();
   }
 
-  // We rebuild a variant type here because using boosts fails on opensource
-  // builds because it at some point requires a copy construction.
-  // This vector has one entry per prologue/translation stored in the two
-  // vectors above, and it encodes the order in which they should be published.
-  std::vector<Kind> order;
-
-  std::vector<PrologueMetaInfo> prologues;
-  std::vector<TransMetaInfo>    translations;
+  // For now these are prolgoue translators.
+  std::vector<std::unique_ptr<Translator>> translators;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-
-/*
- * Returns true iff we already have Eval.JitMaxTranslations translations
- * recorded in srcRec.
- */
-bool reachedTranslationLimit(TransKind kind, SrcKey sk, const SrcRec& srcRec);
-
-/*
- * Emit machine code for env. Returns folly::none if the global translation
- * limit has been reached, generates an interp request if vunit is null or
- * codegen fails. If optDst is set it must be a thread local view and the
- * code lock will not be acquired while writing to it.
- *
- * The resulting translation will not yet be live.
- */
-folly::Optional<TransMetaInfo> emitTranslation(
-  TransEnv env,
-  OptView optDst = folly::none
-);
-
-/*
- * Make a translation generated by emitTranslation live. If the translation was
- * emitted into a per-thread buffer then optSrcView must be the view into which
- * it was emitted, it will be relocated at the end of the live TC.
- */
-folly::Optional<TransLoc> publishTranslation(
-  TransMetaInfo info,
-  OptView optSrcView = folly::none
-);
 
 /*
  * Publish a set of optimized translations associated with a particular
@@ -191,20 +277,6 @@ void publishOptFunc(FuncMetaInfo info);
  */
 void relocatePublishSortedOptFuncs(std::vector<FuncMetaInfo> infos);
 
-/*
- * Emit a new prologue for func-- returns nullptr if the global translation
- * limit has been reached.
- */
-TCA emitFuncPrologue(Func* func, int argc, TransKind kind);
-
-/*
- * Emits an optimized prologue for rec.
- *
- * Smashes the callers of the prologue for rec and updates the cached func
- * prologue.
- */
-void emitFuncPrologueOpt(ProfTransRec* rec);
-
 ////////////////////////////////////////////////////////////////////////////////
 
 /*
@@ -216,12 +288,12 @@ bool canTranslate();
  * Whether we should emit a translation of kind for sk, ignoring the cap on
  * overall TC size.
  */
-bool shouldTranslateNoSizeLimit(SrcKey sk, TransKind kind);
+TranslationResult::Scope shouldTranslateNoSizeLimit(SrcKey sk, TransKind kind);
 
 /*
  * Whether we should emit a translation of kind for sk.
  */
-bool shouldTranslate(SrcKey sk, TransKind kind);
+TranslationResult::Scope shouldTranslate(SrcKey sk, TransKind kind);
 
 /*
  * Whether we are still profiling new functions.
@@ -252,9 +324,10 @@ void freeProfCode();
 SrcRec* findSrcRec(SrcKey sk);
 
 /*
- * Create a SrcRec for sk with an sp offset of spOff.
+ * Create a SrcRec for sk with an sp offset of spOff if it doesn't exist and
+ * return it. If there's not enough TC space for any stubs, return nullptr.
  */
-void createSrcRec(SrcKey sk, FPInvOffset spOff);
+SrcRec* createSrcRec(SrcKey sk, SBInvOffset spOff);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -263,7 +336,7 @@ void createSrcRec(SrcKey sk, FPInvOffset spOff);
  *
  * Must be held even if the current thread owns the global write lease.
  */
-void assertOwnsCodeLock(OptView v = folly::none);
+void assertOwnsCodeLock(OptView v = std::nullopt);
 
 /*
  * Assert ownership of the tc metadata by this thread.
@@ -351,20 +424,6 @@ void reclaimFunction(const Func* func);
  * replaceOldTranslations() on a SrcRec
  */
 void reclaimTranslations(GrowableVector<TransLoc>&& trans);
-
-/*
- * Free an ephemeral stub.
- */
-void freeTCStub(TCA stub);
-
-////////////////////////////////////////////////////////////////////////////////
-
-/*
- * Emit checks for (and hooks into) an attached debugger in front of each
- * translation in `unit' or for `SrcKey{func, offset, resumed}'.
- */
-bool addDbgGuards(const Func* func);
-bool addDbgGuard(const Func* func, Offset offset, ResumeMode resumeMode);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -481,24 +540,9 @@ int recordedFuncs();
 void recordJump(TCA toSmash, SrcRec* sr);
 
 /*
- * Insert a jump to destSk at toSmash. If no top translation for destSk exists
- * no action is performed. On return, the value of smashed indicated whether a
- * new address was written into the TC.
- */
-TCA bindJmp(TCA toSmash, SrcKey destSk, TransFlags trflags, bool& smashed);
-
-/*
- * Insert the address for branches to destSk at toSmash. Upon return, the value
- * of smashed indicates whether an address was written into the TC.
- */
-TCA bindAddr(TCA toSmash, SrcKey destSk, TransFlags trflags, bool& smashed);
-
-/*
  * Bind a call to start at toSmash, where start is the prologue for callee, when
  * invoked with nArgs.
  */
 void bindCall(TCA toSmash, TCA start, Func* callee, int nArgs);
 
 }}}
-
-#endif

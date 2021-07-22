@@ -42,6 +42,13 @@ const StaticString s_root_name("root_name");
 const StaticString s_alias("alias");
 const StaticString s_hh_this("HH\\this");
 
+// Fixed error messages
+const StaticString s_reified_type_must_be_ts(
+  "Reified type must be a type structure");
+const StaticString s_new_instance_of_not_string(
+  "You cannot create a new instance of this type as it is not a string");
+
+
 ///////////////////////////////////////////////////////////////////////////////
 
 namespace detail {
@@ -55,14 +62,14 @@ ALWAYS_INLINE bool is_ts_bool(const ArrayData* ts, const String& s) {
 ALWAYS_INLINE const ArrayData* get_ts_varray(const ArrayData* ts,
                                              const String& s) {
   auto const field = ts->get(s.get());
-  assertx(tvIsHAMSafeVArray(field));
+  assertx(tvIsVec(field));
   return field.val().parr;
 }
 
 ALWAYS_INLINE const ArrayData* get_ts_darray(const ArrayData* ts,
                                              const String& s) {
   auto const field = ts->get(s.get());
-  assertx(tvIsHAMSafeDArray(field));
+  assertx(tvIsDict(field));
   return field.val().parr;
 }
 
@@ -70,7 +77,7 @@ ALWAYS_INLINE const ArrayData* get_ts_darray_opt(const ArrayData* ts,
                                                  const String& s) {
   auto const field = ts->get(s.get());
   if (!field.is_init()) return nullptr;
-  assertx(tvIsHAMSafeDArray(field));
+  assertx(tvIsDict(field));
   return field.val().parr;
 }
 
@@ -156,7 +163,7 @@ ALWAYS_INLINE const TypeStructure::Kind get_ts_kind(const ArrayData* ts) {
 }
 
 ALWAYS_INLINE bool isValidTSType(TypedValue c, bool error) {
-  if (!tvIsHAMSafeDArray(c)) {
+  if (!tvIsDict(c)) {
     if (error) raise_error("Type structure must be a darray");
     return false;
   }
@@ -167,6 +174,19 @@ ALWAYS_INLINE bool isWildCard(const ArrayData* ts) {
   return get_ts_kind(ts) == TypeStructure::Kind::T_typevar &&
          ts->exists(s_name.get()) &&
          get_ts_name(ts)->equal(s_wildcard.get());
+}
+
+ALWAYS_INLINE
+const StringData* get_ts_this_type_access(const ArrayData* ts) {
+  if (get_ts_kind(ts) != TypeStructure::Kind::T_typeaccess ||
+      !get_ts_root_name(ts)->isame(s_hh_this.get())) {
+    return nullptr;
+  }
+  auto const accList = get_ts_access_list(ts);
+  if (accList->size() != 1) return nullptr;
+  auto const name = accList->at(int64_t(0));
+  if (!tvIsString(&name)) return nullptr;
+  return name.m_data.pstr;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

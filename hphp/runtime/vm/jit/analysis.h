@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_ANALYSIS_H_
-#define incl_HPHP_ANALYSIS_H_
+#pragma once
 
 #include "hphp/runtime/vm/jit/cfg.h"
 
@@ -89,9 +88,12 @@ bool is_tmp_usable(const IdomVector&, const SSATmp* tmp, const Block* where);
  */
 SSATmp* least_common_ancestor(SSATmp*, SSATmp*);
 
+/*
+ * If a frame specified by its frame pointer lives on the stack and its offset
+ * is known, return its offset relative to SP.
+ */
+Optional<IRSPRelOffset> offsetOfFrame(SSATmp *fp);
+
 //////////////////////////////////////////////////////////////////////
 
 }}
-
-
-#endif

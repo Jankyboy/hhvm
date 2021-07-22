@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_REPO_AUTH_TYPE_CODEC_INL_H_
-#define incl_HPHP_REPO_AUTH_TYPE_CODEC_INL_H_
+#pragma once
 
 namespace HPHP {
 
@@ -51,18 +50,23 @@ size_t encodedRATSize(const unsigned char* pc) {
   case T::Null:
   case T::Int:
   case T::OptInt:
+  case T::UninitInt:
   case T::Dbl:
   case T::OptDbl:
   case T::Res:
   case T::OptRes:
   case T::Bool:
   case T::OptBool:
+  case T::UninitBool:
   case T::SStr:
   case T::OptSStr:
+  case T::UninitSStr:
   case T::Str:
   case T::OptStr:
+  case T::UninitStr:
   case T::Obj:
   case T::OptObj:
+  case T::UninitObj:
   case T::Func:
   case T::OptFunc:
   case T::ClsMeth:
@@ -85,24 +89,16 @@ size_t encodedRATSize(const unsigned char* pc) {
   case T::ArrKeyCompat:
   case T::OptUncArrKeyCompat:
   case T::OptArrKeyCompat:
+  case T::Num:
+  case T::OptNum:
+  case T::InitPrim:
   case T::InitUnc:
   case T::Unc:
+  case T::NonNull:
   case T::InitCell:
   case T::Cell:
     assertx(!highBitSet);
     return tagSize;
-  case T::SArr:
-  case T::OptSArr:
-  case T::Arr:
-  case T::OptArr:
-  case T::SVArr:
-  case T::OptSVArr:
-  case T::VArr:
-  case T::OptVArr:
-  case T::SDArr:
-  case T::OptSDArr:
-  case T::DArr:
-  case T::OptDArr:
   case T::SVec:
   case T::OptSVec:
   case T::Vec:
@@ -115,12 +111,14 @@ size_t encodedRATSize(const unsigned char* pc) {
   case T::OptSKeyset:
   case T::Keyset:
   case T::OptKeyset:
-  case T::VArrCompat:
+  case T::SArrLike:
+  case T::ArrLike:
+  case T::OptSArrLike:
+  case T::OptArrLike:
   case T::VecCompat:
-  case T::OptVArrCompat:
   case T::OptVecCompat:
-  case T::ArrCompat:
-  case T::OptArrCompat:
+  case T::ArrLikeCompat:
+  case T::OptArrLikeCompat:
     if (highBitSet) {
       return ((int8_t(nextPcVal) < 0) ? 4 : 1) + tagSize;
     }
@@ -129,6 +127,8 @@ size_t encodedRATSize(const unsigned char* pc) {
   case T::SubObj:
   case T::OptExactObj:
   case T::OptSubObj:
+  case T::UninitExactObj:
+  case T::UninitSubObj:
   case T::ExactCls:
   case T::SubCls:
   case T::OptExactCls:
@@ -146,5 +146,3 @@ size_t encodedRATSize(const unsigned char* pc) {
 //////////////////////////////////////////////////////////////////////
 
 }
-
-#endif

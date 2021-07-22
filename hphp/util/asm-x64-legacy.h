@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_UTIL_ASM_X64_LEGACY_H_
-#define incl_HPHP_UTIL_ASM_X64_LEGACY_H_
+#pragma once
 
 namespace HPHP { namespace jit {
 
@@ -158,7 +157,7 @@ const X64Instr instr_int3 =    { { 0xF1,0xF1,0xF1,0x00,0xF1,0xCC }, 0x0500  };
 const X64Instr instr_roundsd = { { 0xF1,0xF1,0x0b,0x00,0xF1,0xF1 }, 0x64112 };
 const X64Instr instr_cmpsd =   { { 0xF1,0xF1,0xC2,0xF1,0xF1,0xF1 }, 0x10112 };
 const X64Instr instr_crc32 =   { { 0xF1,0xF1,0xF1,0x00,0xF1,0xF1 }, 0x30001 };
-
+const X64Instr instr_prefetch ={ { 0x18,0xF1,0xF1,0x02,0xF1,0xF1 }, 0x0002  };
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -310,6 +309,7 @@ public:
   // exactly the same as movzbl but takes an extra byte.
   void loadzbl(MemoryRef m, Reg32 r)        { instrMR(instr_movzbx,
                                                       m, rbyte(r)); }
+  void loadzwl(MemoryRef m, Reg32 r)        { instrMR(instr_movzwx, m, r); }
   void movzbl(Reg8 src, Reg32 dest)         { emitRR32(instr_movzbx,
                                                        rn(src), rn(dest)); }
   void movsbl(Reg8 src, Reg32 dest)         { emitRR(instr_movsbx,
@@ -358,6 +358,7 @@ public:
 
   void push(MemoryRef m) { instrM(instr_push, m); }
   void pop (MemoryRef m) { instrM(instr_pop,  m); }
+  void prefetch(MemoryRef m) { instrM(instr_prefetch, m); }
   void incq(MemoryRef m) { instrM(instr_inc,  m); }
   void incl(MemoryRef m) { instrM32(instr_inc, m); }
   void incw(MemoryRef m) { instrM16(instr_inc, m); }
@@ -1050,6 +1051,7 @@ public:
     if (dispSize == sz::dword) {
       if (ripRelative) {
         disp -= (int64_t)codeBlock.frontier() + immSize + dispSize;
+        always_assert(deltaFits(disp, sz::dword));
       }
       dword(disp);
     } else if (dispSize == sz::byte) {
@@ -1397,4 +1399,3 @@ private:
 
 }}
 
-#endif

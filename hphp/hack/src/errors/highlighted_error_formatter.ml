@@ -110,17 +110,17 @@ let pos_contains (pos : Pos.absolute) ?(col_num : int option) (line_num : int) :
      zero-width positions. Line_num is 1-indexed, col_num is 0-indexed. *)
   if first_line = last_line then
     first_line = line_num
-    && is_col_okay (fun cn -> first_col <= cn && cn < last_col)
+    && is_col_okay ~f:(fun cn -> first_col <= cn && cn < last_col)
   else if line_num = first_line then
-    is_col_okay (fun cn -> first_col <= cn)
+    is_col_okay ~f:(fun cn -> first_col <= cn)
   else if line_num = last_line then
     (* When only checking for a line's inclusion in a position
-      (i.e. when col_num = None), special care must be taken when
-      the line we're checking is the last line of the position:
-      since the end_column is exclusive, the end_column's value
-      must be non-zero signifying there is at least one character
-      on it to be highlighted. *)
-    last_col > 0 && is_col_okay (fun cn -> cn < last_col)
+       (i.e. when col_num = None), special care must be taken when
+       the line we're checking is the last line of the position:
+       since the end_column is exclusive, the end_column's value
+       must be non-zero signifying there is at least one character
+       on it to be highlighted. *)
+    last_col > 0 && is_col_okay ~f:(fun cn -> cn < last_col)
   else
     first_line < line_num && line_num < last_line
 
@@ -167,11 +167,11 @@ let markers_string
 
 let line_margin_highlighted position_group line_num col_width_raw : string =
   (* Separate the margin into several sections:
-    |markers|space(s)|line_num|space|vertical_bar|
-    i.e.
-    [1,2]  9 |
-    [3]   10 |
-    We need to do this because each has its own color and length
+     |markers|space(s)|line_num|space|vertical_bar|
+     i.e.
+     [1,2]  9 |
+     [3]   10 |
+     We need to do this because each has its own color and length
   *)
   let nspaces =
     let markers_raw_len =
@@ -206,8 +206,8 @@ let line_highlighted position_group ~(line_num : int) ~(line : string option) =
       in
       let color_column ms c =
         (* Prefer shorter smaller positions so the boundaries between overlapping
-          positions are visible. Take the lowest-number (presumably more important)
-          to break ties. *)
+           positions are visible. Take the lowest-number (presumably more important)
+           to break ties. *)
         let ((_, color), _) =
           List.stable_sort ms ~compare:(fun ((m1, _), p1) ((m2, _), p2) ->
               match Int.compare (Pos.length p1) (Pos.length p2) with
@@ -225,7 +225,7 @@ let line_highlighted position_group ~(line_num : int) ~(line : string option) =
             | ms -> color_column ms (Char.to_string c))
       in
       (* Add extra column when position spans multiple lines and we're on the last line. Handles
-        the case where a position exists for after file but there is no character to highlight *)
+         the case where a position exists for after file but there is no character to highlight *)
       let extra_column =
         let (end_line, end_col) =
           Pos.end_line_column position_group.aggregate_position
@@ -271,7 +271,7 @@ let load_context_lines_for_highlighted ~before ~after ~(pos : Pos.absolute) :
   | lines ->
     let numbered_lines = List.mapi lines ~f:(fun i l -> (i + 1, Some l)) in
     let original_lines =
-      List.filter numbered_lines (fun (i, _) ->
+      List.filter numbered_lines ~f:(fun (i, _) ->
           i >= start_line - before && i <= end_line + after)
     in
     let additional_line =
@@ -326,7 +326,7 @@ let col_width_for_highlighted (position_groups : position_group list) =
       |> List.concat_no_order
       |> List.map ~f:Pos.end_line
     in
-    List.max_elt line_nums Int.compare
+    List.max_elt line_nums ~compare:Int.compare
     |> Option.value ~default:0
     |> Errors.num_digits
   in
@@ -344,7 +344,7 @@ let col_width_for_highlighted (position_groups : position_group list) =
       |> List.concat
       |> List.map ~f:String.length
     in
-    List.max_elt marker_lens Int.compare |> Option.value ~default:0
+    List.max_elt marker_lens ~compare:Int.compare |> Option.value ~default:0
   in
   (* +1 for the space between them *)
   let col_width = max_marker_prefix_length + 1 + largest_line_length in
@@ -363,7 +363,7 @@ let position_groups_by_file marker_and_msgs : position_group list list =
     (* Must make sure list of positions is ordered *)
     |> List.map ~f:(fun msgs ->
            List.sort
-             (fun mm1 mm2 ->
+             ~compare:(fun mm1 mm2 ->
                let p1 = Errors.get_message_pos mm1.message in
                let p2 = Errors.get_message_pos mm2.message in
                Int.compare (Pos.line p1) (Pos.line p2))
@@ -374,31 +374,31 @@ let position_groups_by_file marker_and_msgs : position_group list list =
     let line2_begin = Pos.line curr_pos in
 
     (* Example:
-      line1_end = 10:
-      [3] 10 |   $z = 3 * $x;
-          11 |   if ($z is int) {
-          12 |     echo 'int';
+       line1_end = 10:
+       [3] 10 |   $z = 3 * $x;
+           11 |   if ($z is int) {
+           12 |     echo 'int';
 
-      line2_begin = 16
-          14 |     echo 'not int';
-          15 |   }
-      [1] 16 |   return $z;
+       line2_begin = 16
+           14 |     echo 'not int';
+           15 |   }
+       [1] 16 |   return $z;
 
-      Then they should be conjoined as such:
-      [3] 10 |   $z = 3 * $x;
-          11 |   if ($z is int) {
-          12 |     echo 'int';
-          13 |   } else
-          14 |     echo 'not int';
-          15 |   }
-      [1] 16 |   return $z;
+       Then they should be conjoined as such:
+       [3] 10 |   $z = 3 * $x;
+           11 |   if ($z is int) {
+           12 |     echo 'int';
+           13 |   } else
+           14 |     echo 'not int';
+           15 |   }
+       [1] 16 |   return $z;
 
-      If they were any farther away, the line
-          13 |   } else
-      would be replaced with
-             :
-      to signify more than one interposing line.
-     *)
+       If they were any farther away, the line
+           13 |   } else
+       would be replaced with
+              :
+       to signify more than one interposing line.
+    *)
     line1_end + n_extra_lines_hl + 2 >= line2_begin - n_extra_lines_hl
   in
   (* Group marked messages that are sufficiently close. *)
@@ -465,10 +465,10 @@ let format_all_contexts_highlighted (marker_and_msgs : marked_message list) =
       (background_highlighted ":")
   in
   let contexts =
-    List.map position_groups (fun pgl ->
+    List.map position_groups ~f:(fun pgl ->
         (* Each position_groups list (pgl) is for a single file, so separate each with ':' *)
         let fn_pos = format_file_name_and_pos pgl in
-        let ctx_strs = List.map pgl (format_context_highlighted col_width) in
+        let ctx_strs = List.map pgl ~f:(format_context_highlighted col_width) in
         fn_pos ^ "\n" ^ String.concat ~sep ctx_strs)
   in
   String.concat ~sep:"\n\n" contexts ^ "\n\n"
@@ -562,11 +562,11 @@ let mark_messages
       in
       ((next_marker_n, existing_markers), { original_index; marker; message }))
 
-let to_string (error : Pos.absolute Errors.error_) : string =
+let to_string (error : Errors.finalized_error) : string =
   let error_code = Errors.get_code error in
   (* Assign messages markers according to order of original error list
-    and then sort these marked messages such that messages in the same
-    file are together. Does not reorder the files or messages within a file. *)
+     and then sort these marked messages such that messages in the same
+     file are together. Does not reorder the files or messages within a file. *)
   let marked_messages =
     Errors.get_messages error
     |> mark_messages error_code
@@ -592,7 +592,7 @@ let to_string (error : Pos.absolute Errors.error_) : string =
           error_code
           mm.marker
           (Errors.get_message_str mm.message),
-        List.map msgs format_reason_highlighted )
+        List.map msgs ~f:format_reason_highlighted )
     | [] ->
       failwith "Impossible: an error always has non-empty list of messages"
   in

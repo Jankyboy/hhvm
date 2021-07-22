@@ -10,9 +10,6 @@ echo "*** Testing posix_kill() : usage variations ***\n";
 // Initialise function arguments not being substituted (if any)
 $sig = -999;
 
-//get an unset variable
-$unset_var = 10;
-unset ($unset_var);
 
 //array of values to iterate over
 $values = varray[
@@ -49,20 +46,16 @@ $values = varray[
       "string",
       'string',
 
-      // undefined data
-      $undefined_var,
 
-      // unset data
-      $unset_var,
 
       // object data
-      new stdclass(),
+      new stdClass(),
 ];
 
 // loop through each element of the array for pid
 
 foreach($values as $value) {
-      $text = HH\is_any_array($value) ? 'Array' : $value; echo "\nArg value $text\n";
+      $text = HH\is_any_array($value) ? 'Array' : $value; echo "\nArg value ".(string)$text."\n";
       try { var_dump( posix_kill($value, $sig) ); } catch (Exception $e) { echo "\n".'Warning: '.$e->getMessage().' in '.__FILE__.' on line '.__LINE__."\n"; }
 };
 

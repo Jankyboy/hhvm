@@ -7,7 +7,8 @@
  *
  *)
 
-open Hh_core
+open Hh_prelude
+module Printexc = Stdlib.Printexc
 
 external realpath : string -> string option = "hh_realpath"
 
@@ -15,7 +16,11 @@ external is_nfs : string -> bool = "hh_is_nfs"
 
 external is_apple_os : unit -> bool = "hh_sysinfo_is_apple_os"
 
-let get_env name = (try Some (Sys.getenv name) with Not_found -> None)
+external freopen : string -> string -> Unix.file_descr -> unit = "hh_freopen"
+
+let get_env name =
+  try Some (Sys.getenv name) with
+  | Caml.Not_found -> None
 
 let getenv_user () =
   let user_var =
@@ -57,7 +62,7 @@ let null_path =
 
 let temp_dir_name =
   if Sys.win32 then
-    Filename.get_temp_dir_name ()
+    Stdlib.Filename.get_temp_dir_name ()
   else
     "/tmp"
 
@@ -67,43 +72,51 @@ let getenv_path () =
   get_env path_var
 
 let open_in_no_fail fn =
-  try open_in fn
-  with e ->
+  try In_channel.create fn with
+  | e ->
     let e = Printexc.to_string e in
-    Printf.fprintf stderr "Could not open_in: '%s' (%s)\n" fn e;
+    Printf.fprintf stderr "Could not In_channel.create: '%s' (%s)\n" fn e;
     exit 3
 
 let open_in_bin_no_fail fn =
-  try open_in_bin fn
-  with e ->
+  try In_channel.create ~binary:true fn with
+  | e ->
     let e = Printexc.to_string e in
-    Printf.fprintf stderr "Could not open_in_bin: '%s' (%s)\n" fn e;
+    Printf.fprintf
+      stderr
+      "Could not In_channel.create ~binary:true: '%s' (%s)\n"
+      fn
+      e;
     exit 3
 
 let close_in_no_fail fn ic =
-  try close_in ic
-  with e ->
+  try In_channel.close ic with
+  | e ->
     let e = Printexc.to_string e in
     Printf.fprintf stderr "Could not close: '%s' (%s)\n" fn e;
     exit 3
 
 let open_out_no_fail fn =
-  try open_out fn
-  with e ->
+  try Out_channel.create fn with
+  | e ->
     let e = Printexc.to_string e in
-    Printf.fprintf stderr "Could not open_out: '%s' (%s)\n" fn e;
+    Printf.fprintf stderr "Could not Out_channel.create: '%s' (%s)\n" fn e;
     exit 3
 
 let open_out_bin_no_fail fn =
-  try open_out_bin fn
-  with e ->
+  try Out_channel.create ~binary:true fn with
+  | e ->
     let e = Printexc.to_string e in
-    Printf.fprintf stderr "Could not open_out_bin: '%s' (%s)\n" fn e;
+    Printf.fprintf
+      stderr
+      "Could not Out_channel.create ~binary:true: '%s' (%s)\n"
+      fn
+      e;
     exit 3
 
 let close_out_no_fail fn oc =
-  try close_out oc
-  with e ->
+  try Out_channel.close oc with
+  | e ->
     let e = Printexc.to_string e in
     Printf.fprintf stderr "Could not close: '%s' (%s)\n" fn e;
     exit 3
@@ -120,9 +133,10 @@ let cat_or_failed file =
 
 let cat_no_fail filename =
   let ic = open_in_bin_no_fail filename in
-  let len = in_channel_length ic in
+  let len = Int64.to_int @@ In_channel.length ic in
+  let len = Option.value_exn len in
   let buf = Buffer.create len in
-  Buffer.add_channel buf ic len;
+  Caml.Buffer.add_channel buf ic len;
   let content = Buffer.contents buf in
   close_in_no_fail filename ic;
   content
@@ -134,12 +148,13 @@ let split_lines = Str.split nl_regexp
 let string_contains str substring =
   (* regexp_string matches only this string and nothing else. *)
   let re = Str.regexp_string substring in
-  (try Str.search_forward re str 0 >= 0 with Not_found -> false)
+  try Str.search_forward re str 0 >= 0 with
+  | Caml.Not_found -> false
 
 let exec_read cmd =
   let ic = Unix.open_process_in cmd in
-  let result = input_line ic in
-  assert (Unix.close_process_in ic = Unix.WEXITED 0);
+  let result = In_channel.input_line ic in
+  assert (Poly.(Unix.close_process_in ic = Unix.WEXITED 0));
   result
 
 let exec_read_lines ?(reverse = false) cmd =
@@ -147,10 +162,13 @@ let exec_read_lines ?(reverse = false) cmd =
   let result = ref [] in
   (try
      while true do
-       result := input_line ic :: !result
+       match In_channel.input_line ic with
+       | Some line -> result := line :: !result
+       | None -> raise End_of_file
      done
-   with End_of_file -> ());
-  assert (Unix.close_process_in ic = Unix.WEXITED 0);
+   with
+  | End_of_file -> ());
+  assert (Poly.(Unix.close_process_in ic = Unix.WEXITED 0));
   if not reverse then
     List.rev !result
   else
@@ -196,16 +214,16 @@ let logname_impl () =
          in this file, but this is the only place we need it for now. *)
     let exec_try_read cmd =
       let ic = Unix.open_process_in cmd in
-      let out = (try Some (input_line ic) with End_of_file -> None) in
+      let out = In_channel.input_line ic in
       let status = Unix.close_process_in ic in
       match (out, status) with
       | (Some _, Unix.WEXITED 0) -> out
       | _ -> None
     in
-    (try Utils.unsafe_opt (exec_try_read "logname")
-     with Invalid_argument _ ->
-       (try Utils.unsafe_opt (exec_try_read "id -un")
-        with Invalid_argument _ -> "[unknown]"))
+    (try Utils.unsafe_opt (exec_try_read "logname") with
+    | Invalid_argument _ ->
+      (try Utils.unsafe_opt (exec_try_read "id -un") with
+      | Invalid_argument _ -> "[unknown]"))
 
 let logname_lazy = lazy (logname_impl ())
 
@@ -218,7 +236,7 @@ let get_primary_owner () =
     logged_in_user
   else
     let lines = Core_kernel.String.split_lines (Disk.cat owners_file) in
-    if List.mem lines logged_in_user ~equal:( = ) then
+    if List.mem lines logged_in_user ~equal:String.( = ) then
       logged_in_user
     else
       lines |> List.last |> Option.value ~default:logged_in_user
@@ -242,22 +260,27 @@ let read_stdin_to_string () =
   let buf = Buffer.create 4096 in
   try
     while true do
-      Buffer.add_string buf (input_line stdin);
-      Buffer.add_char buf '\n'
+      match In_channel.input_line In_channel.stdin with
+      | Some line ->
+        Buffer.add_string buf line;
+        Buffer.add_char buf '\n'
+      | None -> raise End_of_file
     done;
     assert false
-  with End_of_file -> Buffer.contents buf
+  with
+  | End_of_file -> Buffer.contents buf
 
 let read_all ?(buf_size = 4096) ic =
   let buf = Buffer.create buf_size in
   (try
      while true do
        let data = Bytes.create buf_size in
-       let bytes_read = input ic data 0 buf_size in
+       let bytes_read = In_channel.input ic ~buf:data ~pos:0 ~len:buf_size in
        if bytes_read = 0 then raise Exit;
-       Buffer.add_subbytes buf data 0 bytes_read
+       Buffer.add_subbytes buf data ~pos:0 ~len:bytes_read
      done
-   with Exit -> ());
+   with
+  | Exit -> ());
   Buffer.contents buf
 
 let expanduser path =
@@ -273,8 +296,8 @@ let expanduser path =
           | Some home -> home
         end
       | unixname ->
-        (try (Unix.getpwnam unixname).Unix.pw_dir
-         with Not_found -> Str.matched_string s)
+        (try (Unix.getpwnam unixname).Unix.pw_dir with
+        | Caml.Not_found -> Str.matched_string s)
     end
     path
 
@@ -321,41 +344,43 @@ let executable_path : unit -> string =
 
 let lines_of_in_channel ic =
   let rec loop accum =
-    match (try Some (input_line ic) with _ -> None) with
+    match In_channel.input_line ic with
     | None -> List.rev accum
     | Some line -> loop (line :: accum)
   in
   loop []
 
 let lines_of_file filename =
-  let ic = open_in filename in
+  let ic = In_channel.create filename in
   try
     let result = lines_of_in_channel ic in
-    let _ = close_in ic in
+    let () = In_channel.close ic in
     result
-  with _ ->
-    close_in ic;
+  with
+  | _ ->
+    In_channel.close ic;
     []
 
 let read_file file =
-  let ic = open_in_bin file in
-  let size = in_channel_length ic in
+  let ic = In_channel.create ~binary:true file in
+  let size = Int64.to_int @@ In_channel.length ic in
+  let size = Option.value_exn size in
   let buf = Bytes.create size in
-  really_input ic buf 0 size;
-  close_in ic;
+  Option.value_exn (In_channel.really_input ic ~buf ~pos:0 ~len:size);
+  In_channel.close ic;
   buf
 
 let write_file ~file s = Disk.write_file ~file ~contents:s
 
 let append_file ~file s =
-  let chan = open_out_gen [Open_wronly; Open_append; Open_creat] 0o666 file in
-  output_string chan s;
-  close_out chan
+  let chan = Out_channel.create ~append:true ~perm:0o666 file in
+  Out_channel.output_string chan s;
+  Out_channel.close chan
 
 let write_strings_to_file ~file (ss : string list) =
-  let chan = open_out_gen [Open_wronly; Open_creat] 0o666 file in
-  List.iter ~f:(output_string chan) ss;
-  close_out chan
+  let chan = Out_channel.create ~perm:0o666 file in
+  List.iter ~f:(Out_channel.output_string chan) ss;
+  Out_channel.close chan
 
 (* could be in control section too *)
 
@@ -370,16 +395,19 @@ let mkdir_no_fail dir =
   with_umask 0 (fun () ->
       (* Don't set sticky bit since the socket opening code wants to remove any
        * old sockets it finds, which may be owned by a different user. *)
-      try Unix.mkdir dir 0o777 with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
+      try Unix.mkdir dir 0o777 with
+      | Unix.Unix_error (Unix.EEXIST, _, _) -> ())
 
 let unlink_no_fail fn =
-  (try Unix.unlink fn with Unix.Unix_error (Unix.ENOENT, _, _) -> ())
+  try Unix.unlink fn with
+  | Unix.Unix_error (Unix.ENOENT, _, _) -> ()
 
 let readlink_no_fail fn =
   if Sys.win32 && Sys.file_exists fn then
     cat fn
   else
-    try Unix.readlink fn with _ -> fn
+    try Unix.readlink fn with
+    | _ -> fn
 
 let filemtime file = (Unix.stat file).Unix.st_mtime
 
@@ -401,28 +429,26 @@ let touch mode file =
     with_umask 0o000 (fun () ->
         if mkdir_if_new then mkdir_no_fail (Filename.dirname file);
         let oc =
-          open_out_gen
-            [Open_wronly; Open_append; Open_creat; Open_binary]
-            perm_if_new
-            file
+          Out_channel.create ~append:true ~binary:true ~perm:perm_if_new file
         in
-        close_out oc)
+        Out_channel.close oc)
 
-let try_touch mode file = (try touch mode file with _ -> ())
+let try_touch mode file =
+  try touch mode file with
+  | _ -> ()
 
 let splitext filename =
   let root = Filename.chop_extension filename in
   let root_length = String.length root in
   (* -1 because the extension includes the period, e.g. ".foo" *)
   let ext_length = String.length filename - root_length - 1 in
-  let ext = String.sub filename (root_length + 1) ext_length in
+  let ext = String.sub filename ~pos:(root_length + 1) ~len:ext_length in
   (root, ext)
 
 let is_test_mode () =
-  try
-    ignore @@ Sys.getenv "HH_TEST_MODE";
-    true
-  with _ -> false
+  match (Sys.getenv_opt "HH_TEST_MODE", Sys.getenv_opt "BUCK_PROJECT_ROOT") with
+  | (None, None) -> false
+  | _ -> true
 
 let sleep ~seconds = ignore @@ Unix.select [] [] [] seconds
 
@@ -515,14 +541,14 @@ let lstat path =
   Unix.lstat
   @@
   if Sys.win32 && String_utils.string_ends_with path Filename.dir_sep then
-    String.sub path 0 (String.length path - 1)
+    String.sub path ~pos:0 ~len:(String.length path - 1)
   else
     path
 
 let normalize_filename_dir_sep =
   let dir_sep_char = Filename.dir_sep.[0] in
-  String.map (fun c ->
-      if c = dir_sep_char then
+  String.map ~f:(fun c ->
+      if Char.equal c dir_sep_char then
         '/'
       else
         c)
@@ -574,32 +600,39 @@ external processor_info : unit -> processor_info = "hh_processor_info"
 
 let rec select_non_intr read write exn timeout =
   let start_time = Unix.gettimeofday () in
-  try Unix.select read write exn timeout
-  with Unix.Unix_error (Unix.EINTR, _, _) ->
+  try Unix.select read write exn timeout with
+  | Unix.Unix_error (Unix.EINTR, _, _) ->
     (* Negative timeouts mean no timeout *)
     let timeout =
-      if timeout < 0.0 then
+      if Float.(timeout < 0.0) then
+        (* A negative timeout means no timeout, i.e. unbounded wait. *)
         timeout
       else
-        max 0.0 (timeout -. (Unix.gettimeofday () -. start_time))
+        Float.(max 0.0 (timeout -. (Unix.gettimeofday () -. start_time)))
     in
     select_non_intr read write exn timeout
 
 let rec waitpid_non_intr flags pid =
-  try Unix.waitpid flags pid
-  with Unix.Unix_error (Unix.EINTR, _, _) -> waitpid_non_intr flags pid
+  try Unix.waitpid flags pid with
+  | Unix.Unix_error (Unix.EINTR, _, _) -> waitpid_non_intr flags pid
 
 let find_oom_in_dmesg_output pid name lines =
+  (* oomd: "Memory cgroup out of memory: Killed process 4083583 (hh_server)" (https://facebookmicrosites.github.io/oomd/)
+     oomkiller: "Out of memory: Kill process 4083583 (hh_server)" *)
   let re =
     Str.regexp
-      (Printf.sprintf "Out of memory: Kill process \\([0-9]+\\) (%s)" name)
+      (Printf.sprintf
+         "[Oo]ut of memory: Kill\\(ed\\)? process \\([0-9]+\\) (%s)"
+         name)
   in
-  List.exists lines (fun line ->
+  let pid = string_of_int pid in
+  List.exists lines ~f:(fun line ->
       try
         ignore @@ Str.search_forward re line 0;
-        let pid_s = Str.matched_group 1 line in
-        int_of_string pid_s = pid
-      with Not_found -> false)
+        let pid_s = Str.matched_group 2 line in
+        String.equal pid_s pid
+      with
+      | Caml.Not_found -> false)
 
 let check_dmesg_for_oom pid name =
   let dmesg = exec_read_lines ~reverse:true "dmesg" in
@@ -646,3 +679,88 @@ external get_gc_time : unit -> float * float = "hh_get_gc_time"
 module For_test = struct
   let find_oom_in_dmesg_output = find_oom_in_dmesg_output
 end
+
+let protected_read_exn (filename : string) : string =
+  (* We can't use the standard Disk.cat because we need to read from an existing (locked)
+     fd for the file; not open the file a second time and read from that. *)
+  let cat_from_fd (fd : Unix.file_descr) : string =
+    let total = Unix.lseek fd 0 Unix.SEEK_END in
+    let _0 = Unix.lseek fd 0 Unix.SEEK_SET in
+    let buf = Bytes.create total in
+    let rec rec_read offset =
+      if offset = total then
+        ()
+      else
+        let bytes_read = Unix.read fd buf offset (total - offset) in
+        if bytes_read = 0 then raise End_of_file;
+        rec_read (offset + bytes_read)
+    in
+    rec_read 0;
+    Bytes.to_string buf
+  in
+  (* Unix has no way to atomically create a file and lock it; fnctl inherently
+     only works on an existing file. There's therefore a race where the writer
+     might create the file before locking it, but we get our read lock in first.
+     We'll work around this with a hacky sleep+retry. Other solutions would be
+     to have the file always exist, or to use a separate .lock file. *)
+  let rec retry_if_empty () =
+    let fd = Unix.openfile filename [Unix.O_RDONLY] 0o666 in
+    let content =
+      Utils.try_finally
+        ~f:(fun () ->
+          Unix.lockf fd Unix.F_RLOCK 0;
+          cat_from_fd fd)
+        ~finally:(fun () -> Unix.close fd)
+    in
+    if String.is_empty content then
+      let () = Unix.sleepf 0.001 in
+      retry_if_empty ()
+    else
+      content
+  in
+  retry_if_empty ()
+
+let protected_write_exn (filename : string) (content : string) : unit =
+  if String.is_empty content then failwith "Empty content not supported.";
+  with_umask 0o000 (fun () ->
+      let fd = Unix.openfile filename [Unix.O_RDWR; Unix.O_CREAT] 0o666 in
+      Utils.try_finally
+        ~f:(fun () ->
+          Unix.lockf fd Unix.F_LOCK 0;
+          let _written =
+            Unix.write_substring fd content 0 (String.length content)
+          in
+          Unix.ftruncate fd (String.length content))
+        ~finally:(fun () -> Unix.close fd))
+
+let redirect_stdout_and_stderr_to_file (filename : string) : unit =
+  let old_stdout = Unix.dup Unix.stdout in
+  let old_stderr = Unix.dup Unix.stderr in
+  Utils.try_finally
+    ~finally:(fun () ->
+      (* Those two old_* handles must be closed so as not to have dangling FDs.
+         Neither success nor failure path holds onto them: the success path ignores
+         then, and the failure path dups them. That's why we can close them here. *)
+      (try Unix.close old_stdout with
+      | _ -> ());
+      (try Unix.close old_stderr with
+      | _ -> ());
+      ())
+    ~f:(fun () ->
+      try
+        (* We want both stdout and stderr to be redirected to the same file.
+           Do not attempt to open a file that's already open:
+           https://wiki.sei.cmu.edu/confluence/display/c/FIO24-C.+Do+not+open+a+file+that+is+already+open
+           Use dup for this scenario instead:
+           https://stackoverflow.com/questions/15155314/redirect-stdout-and-stderr-to-the-same-file-and-restore-it *)
+        freopen filename "w" Unix.stdout;
+        Unix.dup2 Unix.stdout Unix.stderr;
+        ()
+      with
+      | exn ->
+        let e = Exception.wrap exn in
+        (try Unix.dup2 old_stdout Unix.stdout with
+        | _ -> ());
+        (try Unix.dup2 old_stderr Unix.stderr with
+        | _ -> ());
+        Exception.reraise e)

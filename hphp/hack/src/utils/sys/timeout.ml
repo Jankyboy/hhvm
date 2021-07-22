@@ -7,6 +7,9 @@
  *
  *)
 
+open Core_kernel
+module Unix = Caml_unix
+
 type timings = {
   start_time: float;
   deadline_time: float;  (** caller-supplied deadline *)
@@ -69,16 +72,17 @@ module Alarm_timeout = struct
     try
       let timer = Timer.set_timer ~interval:(float_of_int timeout) ~callback in
       let ret =
-        try do_ id
-        with exn ->
-          let stack = Printexc.get_raw_backtrace () in
+        try do_ id with
+        | exn ->
+          let stack = Stdlib.Printexc.get_raw_backtrace () in
           (* Any uncaught exception will cancel the timeout *)
           Timer.cancel_timer timer;
-          Printexc.raise_with_backtrace exn stack
+          Stdlib.Printexc.raise_with_backtrace exn stack
       in
       Timer.cancel_timer timer;
       ret
-    with Timeout { exn_id; timeout_time; deadline_time } when exn_id = id ->
+    with
+    | Timeout { exn_id; timeout_time; deadline_time } when exn_id = id ->
       on_timeout { start_time; timeout_time; deadline_time }
 
   let check_timeout _ = ()
@@ -105,9 +109,9 @@ module Alarm_timeout = struct
      * behavior, however, by trying to read a byte afterwards, which WILL
      * raise End_of_file if the pipe has closed
      * http://caml.inria.fr/mantis/view.php?id=7142 *)
-    try Stdlib.input_value ic
-    with Failure msg as e ->
-      if msg = "input_value: truncated object" then
+    try Stdlib.input_value ic with
+    | Failure msg as e ->
+      if String.equal msg "input_value: truncated object" then
         Stdlib.input_char ic |> ignore;
       raise e
 
@@ -173,10 +177,10 @@ module Alarm_timeout = struct
   let read_process ~timeout ~on_timeout ~reader cmd args =
     let (ic, oc) = open_process cmd args in
     with_timeout ~timeout ~on_timeout ~do_:(fun timeout ->
-        try reader timeout ic oc
-        with exn ->
+        try reader timeout ic oc with
+        | exn ->
           close_in ic;
-          close_out oc;
+          Out_channel.close oc;
           raise exn)
 
   let open_connection ?timeout:_ sockaddr =
@@ -205,13 +209,13 @@ module Select_timeout = struct
   let with_timeout ~timeout ~on_timeout ~do_ =
     let start_time = Unix.gettimeofday () in
     let t = create (float timeout) in
-    try do_ t
-    with Timeout { exn_id; timeout_time; deadline_time } when exn_id = t.id ->
+    try do_ t with
+    | Timeout { exn_id; timeout_time; deadline_time } when exn_id = t.id ->
       on_timeout { start_time; timeout_time; deadline_time }
 
   let check_timeout t =
     let timeout_time = Unix.gettimeofday () in
-    if timeout_time > t.timeout then
+    if Float.(timeout_time > t.timeout) then
       raise (Timeout { exn_id = t.id; timeout_time; deadline_time = t.timeout })
 
   (** Channel *)
@@ -240,7 +244,9 @@ module Select_timeout = struct
 
   let close_in tic = Unix.close tic.fd
 
-  let close_in_noerr tic = (try Unix.close tic.fd with _ -> ())
+  let close_in_noerr tic =
+    try Unix.close tic.fd with
+    | _ -> ()
 
   let close_process_in tic =
     match tic.pid with
@@ -262,12 +268,12 @@ module Select_timeout = struct
       let now = Unix.gettimeofday () in
       let remaining_time = deadline_time -. now in
       (* Whoops, timeout already fired, throw right away! *)
-      if remaining_time < 0. then
+      if Float.(remaining_time < 0.) then
         raise (Timeout { exn_id = id; timeout_time = now; deadline_time });
 
       (* A negative select_timeout would mean wait forever *)
       if
-        select_timeout >= 0.0 && select_timeout < remaining_time
+        Float.(select_timeout >= 0.0 && select_timeout < remaining_time)
         (* The select's timeout is smaller than our timeout, so leave it alone *)
       then
         Sys_utils.select_non_intr rfds wfds xfds select_timeout
@@ -294,8 +300,8 @@ module Select_timeout = struct
         "This should be unreachable. How did select return with no fd when there is no timeout?"
     | ([_], _, _) ->
       let read =
-        try Unix.read tic.fd tic.buf tic.max (buffer_size - tic.max)
-        with Unix.Unix_error (Unix.EPIPE, _, _) -> raise End_of_file
+        try Unix.read tic.fd tic.buf tic.max (buffer_size - tic.max) with
+        | Unix.Unix_error (Unix.EPIPE, _, _) -> raise End_of_file
       in
       tic.max <- tic.max + read;
       read
@@ -312,27 +318,27 @@ module Select_timeout = struct
 
   let unsafe_input ?timeout tic s ofs len =
     let n =
-      if len > max_int then
-        max_int
+      if len > Int.max_value then
+        Int.max_value
       else
         len
     in
     let avail = tic.max - tic.curr in
     if n <= avail then (
       (* There is enough to read in the buffer. *)
-      Bytes.blit tic.buf tic.curr s ofs n;
+      Bytes.blit ~src:tic.buf ~src_pos:tic.curr ~dst:s ~dst_pos:ofs ~len:n;
       tic.curr <- tic.curr + n;
       n
     ) else if avail > 0 then (
       (* Read the rest of the buffer. *)
-      Bytes.blit tic.buf tic.curr s ofs avail;
+      Bytes.blit ~src:tic.buf ~src_pos:tic.curr ~dst:s ~dst_pos:ofs ~len:avail;
       tic.curr <- tic.curr + avail;
       avail
     ) else
       (* No input to read, refill buffer. *)
       let nread = refill ?timeout tic in
       let n = min nread n in
-      Bytes.blit tic.buf tic.curr s ofs n;
+      Bytes.blit ~src:tic.buf ~src_pos:tic.curr ~dst:s ~dst_pos:ofs ~len:n;
       tic.curr <- tic.curr + n;
       n
 
@@ -351,7 +357,7 @@ module Select_timeout = struct
   let input_scan_line ?timeout tic =
     let rec scan_line tic pos =
       if pos < tic.max then
-        if Bytes.get tic.buf pos = '\n' then
+        if Char.equal (Bytes.get tic.buf pos) '\n' then
           pos - tic.curr + 1
         else
           scan_line tic (pos + 1)
@@ -359,7 +365,12 @@ module Select_timeout = struct
         let pos =
           if tic.curr <> 0 then (
             tic.max <- tic.max - tic.curr;
-            Bytes.blit tic.buf tic.curr tic.buf 0 tic.max;
+            Bytes.blit
+              ~src:tic.buf
+              ~src_pos:tic.curr
+              ~dst:tic.buf
+              ~dst_pos:0
+              ~len:tic.max;
             tic.curr <- 0;
             tic.max
           ) else
@@ -381,7 +392,7 @@ module Select_timeout = struct
       | [] -> buf
       | hd :: tl ->
         let len = Bytes.length hd in
-        Bytes.blit hd 0 buf (pos - len) len;
+        Bytes.blit ~src:hd ~src_pos:0 ~dst:buf ~dst_pos:(pos - len) ~len;
         build_result buf (pos - len) tl
     in
     let rec scan accu len =
@@ -410,7 +421,7 @@ module Select_timeout = struct
         ignore (unsafe_input tic ofs 0 (-n));
         scan (ofs :: accu) (len - n)
     in
-    Bytes.unsafe_to_string (scan [] 0)
+    Bytes.unsafe_to_string ~no_mutation_while_string_reachable:(scan [] 0)
 
   let rec unsafe_really_input ?timeout tic buf ofs len =
     if len = 0 then
@@ -438,21 +449,22 @@ module Select_timeout = struct
     Bytes.set magic 1 (input_char ?timeout tic);
     Bytes.set magic 2 (input_char ?timeout tic);
     Bytes.set magic 3 (input_char ?timeout tic);
-    if magic <> marshal_magic then failwith "Select.input_value: bad object.";
+    if Bytes.(magic <> marshal_magic) then
+      failwith "Select.input_value: bad object.";
     let b1 = int_of_char (input_char ?timeout tic) in
     let b2 = int_of_char (input_char ?timeout tic) in
     let b3 = int_of_char (input_char ?timeout tic) in
     let b4 = int_of_char (input_char ?timeout tic) in
     let len = ((b1 lsl 24) lor (b2 lsl 16) lor (b3 lsl 8) lor b4) + 12 in
     let data = Bytes.create (len + 8) in
-    Bytes.blit magic 0 data 0 4;
+    Bytes.blit ~src:magic ~src_pos:0 ~dst:data ~dst_pos:0 ~len:4;
     Bytes.set data 4 (char_of_int b1);
     Bytes.set data 5 (char_of_int b2);
     Bytes.set data 6 (char_of_int b3);
     Bytes.set data 7 (char_of_int b4);
     begin
-      try unsafe_really_input ?timeout tic data 8 len
-      with End_of_file -> failwith "Select.input_value: truncated object."
+      try unsafe_really_input ?timeout tic data 8 len with
+      | End_of_file -> failwith "Select.input_value: truncated object."
     end;
     Marshal.from_bytes data 0
 
@@ -508,12 +520,12 @@ module Select_timeout = struct
       on_timeout timings
     in
     with_timeout ~timeout ~on_timeout ~do_:(fun timeout ->
-        try reader timeout tic oc
-        with exn ->
+        try reader timeout tic oc with
+        | exn ->
           Option.iter ~f:Sys_utils.terminate_process tic.pid;
           tic.pid <- None;
           close_in tic;
-          close_out oc;
+          Out_channel.close oc;
           raise exn)
 
   (** Socket *)
@@ -535,7 +547,7 @@ module Select_timeout = struct
       | Unix.Unix_error ((Unix.EINPROGRESS | Unix.EWOULDBLOCK), _, _) ->
         begin
           match select ?timeout [] [sock] [] no_select_timeout with
-          | (_, [], [exn_sock]) when exn_sock = sock ->
+          | (_, [], [exn_sock]) when Poly.(exn_sock = sock) ->
             failwith "Failed to connect to socket"
           | (_, [], _) ->
             failwith
@@ -593,9 +605,9 @@ module type S = sig
     float ->
     Unix.file_descr list * Unix.file_descr list * Unix.file_descr list
 
-  val input : ?timeout:t -> in_channel -> bytes -> int -> int -> int
+  val input : ?timeout:t -> in_channel -> Bytes.t -> int -> int -> int
 
-  val really_input : ?timeout:t -> in_channel -> bytes -> int -> int -> unit
+  val really_input : ?timeout:t -> in_channel -> Bytes.t -> int -> int -> unit
 
   val input_char : ?timeout:t -> in_channel -> char
 
@@ -603,7 +615,8 @@ module type S = sig
 
   val input_value : ?timeout:t -> in_channel -> 'a
 
-  val open_process : Exec_command.t -> string array -> in_channel * out_channel
+  val open_process :
+    Exec_command.t -> string array -> in_channel * Out_channel.t
 
   val open_process_in : Exec_command.t -> string array -> in_channel
 
@@ -612,12 +625,13 @@ module type S = sig
   val read_process :
     timeout:int ->
     on_timeout:(timings -> 'a) ->
-    reader:(t -> in_channel -> out_channel -> 'a) ->
+    reader:(t -> in_channel -> Out_channel.t -> 'a) ->
     Exec_command.t ->
     string array ->
     'a
 
-  val open_connection : ?timeout:t -> Unix.sockaddr -> in_channel * out_channel
+  val open_connection :
+    ?timeout:t -> Unix.sockaddr -> in_channel * Out_channel.t
 
   val shutdown_connection : in_channel -> unit
 
@@ -628,15 +642,16 @@ let select = (module Select_timeout : S)
 
 let alarm = (module Alarm_timeout : S)
 
-include ( val if Sys.win32 then
-                select
-              else
-                alarm )
+include
+  (val if Sys.win32 then
+         select
+       else
+         alarm)
 
 let read_connection ~timeout ~on_timeout ~reader sockaddr =
   with_timeout ~timeout ~on_timeout ~do_:(fun timeout ->
       let (tic, oc) = open_connection ~timeout sockaddr in
-      try reader timeout tic oc
-      with exn ->
-        close_out oc;
+      try reader timeout tic oc with
+      | exn ->
+        Out_channel.close oc;
         raise exn)

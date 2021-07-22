@@ -14,13 +14,10 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_STATE_VECTOR_H_
-#define incl_HPHP_JIT_STATE_VECTOR_H_
+#pragma once
 
 #include <type_traits>
 #include <utility>
-
-#include <folly/Optional.h>
 
 #include "hphp/runtime/vm/jit/containers.h"
 #include "hphp/runtime/vm/jit/ir-unit.h"
@@ -109,12 +106,10 @@ private:
 private:
   static constexpr Key* nullKey { nullptr };
   const IRUnit* m_unit;
-  folly::Optional<Info> m_init;
+  Optional<Info> m_init;
   InfoVector m_info;
 };
 
 //////////////////////////////////////////////////////////////////////
 
 }}
-
-#endif

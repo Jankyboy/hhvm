@@ -4,6 +4,8 @@
 // LICENSE file in the "hack" directory of this source tree.
 //
 // @generated <<SignedSource::*O*zOeWoEQle#+L!plEphiEmie@IsG>>
+use eq_modulo_pos::EqModuloPos;
+use no_pos_hash::NoPosHash;
 use ocamlrep_derive::FromOcamlRep;
 use ocamlrep_derive::ToOcamlRep;
 use serde::Deserialize;
@@ -19,8 +21,10 @@ pub use qux::*;
     Debug,
     Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,

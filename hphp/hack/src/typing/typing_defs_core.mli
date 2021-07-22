@@ -8,18 +8,28 @@
  *)
 
 module Reason = Typing_reason
-module SN = Naming_special_names
 
-type visibility =
+type pos_id = Reason.pos_id [@@deriving eq, ord, show]
+
+type ce_visibility =
   | Vpublic
   | Vprivate of string
   | Vprotected of string
+  | Vinternal of string
 [@@deriving eq, show]
+
+(* Represents <<Policied()>> or <<InferFlows>> attribute *)
+type ifc_fun_decl =
+  | FDPolicied of string option
+  | FDInferFlows
+[@@deriving eq, ord]
+
+val default_ifc_fun_decl : ifc_fun_decl
 
 type exact =
   | Exact
   | Nonexact
-[@@deriving eq, ord]
+[@@deriving eq, ord, show]
 
 (* All the possible types, reason is a trace of why a type
    was inferred in a certain way.
@@ -29,20 +39,14 @@ type exact =
    inferred via local inference.
 *)
 (* create private types to represent the different type phases *)
-type decl_phase = private DeclPhase [@@deriving eq]
+type decl_phase = Typing_reason.decl_phase [@@deriving eq, show]
 
-type locl_phase = private LoclPhase [@@deriving eq]
+type locl_phase = Typing_reason.locl_phase [@@deriving eq, show]
 
 type val_kind =
   | Lval
   | LvalSubexpr
   | Other
-[@@deriving eq]
-
-type param_mutability =
-  | Param_owned_mutable
-  | Param_borrowed_mutable
-  | Param_maybe_mutable
 [@@deriving eq]
 
 type fun_tparams_kind =
@@ -61,12 +65,50 @@ type fun_tparams_kind =
 type shape_kind =
   | Closed_shape
   | Open_shape
-[@@deriving eq, ord]
+[@@deriving eq, ord, show]
+
+type pos_string = Pos_or_decl.t * string [@@deriving eq, ord, show]
+
+type pos_byte_string = Pos_or_decl.t * Ast_defs.byte_string
+[@@deriving eq, ord, show]
+
+(** This is similar to Aast.shape_field_name, but contains Pos_or_decl.t
+    instead of Pos.t. Aast.shape_field_name is used in shape expressions,
+    while this is used in shape types. *)
+type tshape_field_name =
+  | TSFlit_int of pos_string
+  | TSFlit_str of pos_byte_string
+  | TSFclass_const of pos_id * pos_string
+[@@deriving eq, ord, show]
+
+(** This is similar to Aast.ShapeField, but contains Pos_or_decl.t
+    instead of Pos.t. Aast.ShapeField is used in shape expressions,
+    while this is used in shape types. *)
+module TShapeField : sig
+  type t = tshape_field_name [@@deriving eq, ord]
+
+  val pos : t -> Pos_or_decl.t
+
+  val of_ast : (Pos.t -> Pos_or_decl.t) -> Ast_defs.shape_field_name -> t
+end
+
+(** This is similar to Aast.ShapeMap, but contains Pos_or_decl.t
+    instead of Pos.t. Aast.ShapeMap is used in shape expressions,
+    while this is used in shape types. *)
+module TShapeMap : sig
+  include WrappedMap.S with type key = TShapeField.t
+
+  val pp : (Format.formatter -> 'a -> unit) -> Format.formatter -> 'a t -> unit
+
+  val map_and_rekey : 'a t -> (key -> key) -> ('a -> 'b) -> 'b t
+end
+
+module TShapeSet : Caml.Set.S with type elt = TShapeField.t
 
 type param_mode =
   | FPnormal
   | FPinout
-[@@deriving eq]
+[@@deriving eq, show]
 
 type xhp_attr_tag =
   | Required
@@ -90,29 +132,9 @@ type consistent_kind =
   | Inconsistent
   | ConsistentConstruct
   | FinalClass
-[@@deriving eq]
+[@@deriving eq, show]
 
-(* A dependent type consists of a base kind which indicates what the type is
- * dependent on. It is either dependent on:
- *  - The type 'this'
- *  - A class
- *  - An expression
- *
- * Dependent types also have a path component (derived from accessing a type
- * constant). Thus the dependent type (`expr 0, ['A', 'B', 'C']) roughly means
- * "The type resulting from accessing the type constant A then the type constant
- * B and then the type constant C on the expression reference by 0"
- *)
 type dependent_type =
-  (* Type that is the subtype of the late bound type within a class. *)
-  | DTthis
-  (* A class name, new type, or generic, i.e.
-   *
-   * abstract class C { abstract const type T }
-   *
-   * The type C::T is (`cls '\C', ['T'])
-   *)
-  | DTcls of string
   (* A reference to some expression. For example:
    *
    *  $x->foo()
@@ -121,22 +143,17 @@ type dependent_type =
    *  The expression $x->foo() would have a different one
    *)
   | DTexpr of Ident.t
-[@@deriving eq, ord]
-
-type destructure_kind =
-  | ListDestructure
-  | SplatUnpack
-[@@deriving eq, ord]
+[@@deriving eq, ord, show]
 
 type user_attribute = {
-  ua_name: Aast.sid;
+  ua_name: pos_id;
   ua_classname_params: string list;
 }
 [@@deriving eq, show]
 
 type 'ty tparam = {
   tp_variance: Ast_defs.variance;
-  tp_name: Ast_defs.id;
+  tp_name: pos_id;
   tp_tparams: 'ty tparam list;
   tp_constraints: (Ast_defs.constraint_kind * 'ty) list;
   tp_reified: Aast.reify_kind;
@@ -144,7 +161,30 @@ type 'ty tparam = {
 }
 [@@deriving eq, show]
 
-type 'ty where_constraint = 'ty * Ast_defs.constraint_kind * 'ty [@@deriving eq]
+type 'ty where_constraint = 'ty * Ast_defs.constraint_kind * 'ty
+[@@deriving eq, show]
+
+type collection_style =
+  (* A collection with a single generic w/o upper or lower bound *)
+  | VecStyle
+  (* A collection with two generics, the first with arraykey as upper bound *)
+  | DictStyle
+  (* A collection with a single generic with arraykey upper bound *)
+  | KeysetStyle
+  (* an arraykey *)
+  | ArraykeyStyle
+[@@deriving eq, show, ord]
+
+type enforcement =
+  (* The consumer doesn't enforce the type at runtime *)
+  | Unenforced
+  (* The consumer enforces the type at runtime *)
+  | Enforced
+  (* The consumer enforces part of the type at runtime, e.g.,
+   * in vec<t> it enforces that the value is a vec, but does not enforce the
+   * type argument. *)
+  | PartiallyEnforced of collection_style * pos_id
+[@@deriving eq, show, ord]
 
 (* = Reason.t * 'phase ty_ *)
 type 'phase ty
@@ -153,7 +193,15 @@ and decl_ty = decl_phase ty
 
 and locl_ty = locl_phase ty
 
-and locl_ty_ = locl_phase ty_
+(** Negation types represent the type of values that fail an `is` test
+    for either a primitive type, or a class-ish type C<_> *)
+and neg_type =
+  | Neg_prim of Aast.tprim  (** The negation of a primitive type *)
+  | Neg_class of pos_id
+      (** The negation of a class. If we think of types as denoting sets
+       of values, then (Neg_class C) is complement (Union tyl. C<tyl>), that is
+       all values that are not in C<t1, ..., tn> for any application of C to type
+       arguments. *)
 
 (* A shape may specify whether or not fields are required. For example, consider
    this typedef:
@@ -173,16 +221,7 @@ and _ ty_ =
   (* The late static bound type of a class *)
   | Tthis : decl_phase ty_
   (* Either an object type or a type alias, ty list are the arguments *)
-  | Tapply : Nast.sid * decl_ty list -> decl_phase ty_
-  (* Name of class, name of type const, remaining names of type consts *)
-  | Taccess : taccess_type -> decl_phase ty_
-  (* The type of the various forms of "array":
-   * Tarray (None, None)         => "array"
-   * Tarray (Some ty, None)      => "array<ty>"
-   * Tarray (Some ty1, Some ty2) => "array<ty1, ty2>"
-   * Tarray (None, Some ty)      => [invalid]
-   *)
-  | Tarray : decl_ty option * decl_ty option -> decl_phase ty_
+  | Tapply : pos_id * decl_ty list -> decl_phase ty_
   (* "Any" is the type of a variable with a missing annotation, and "mixed" is
    * the type of a variable annotated as "mixed". THESE TWO ARE VERY DIFFERENT!
    * Any unifies with anything, i.e., it is both a supertype and subtype of any
@@ -210,13 +249,6 @@ and _ ty_ =
    *)
   | Tmixed : decl_phase ty_
   | Tlike : decl_ty -> decl_phase ty_
-  | Tpu_access : decl_ty * Nast.sid -> decl_phase ty_
-      (** Access to a Pocket Universe or Pocket Universes dependent type,
-       * denoted by Foo:@Bar.
-       * It might be unresolved at first (e.g. if Foo is a generic variable).
-       * Will be refined to Tpu, or to the actual type associated with an
-       * atom, once typechecking is successful.
-       *)
   (*========== Following Types Exist in Both Phases ==========*)
   | Tany : TanySentinel.t -> 'phase ty_
   | Terr
@@ -244,7 +276,7 @@ and _ ty_ =
   (* Whether all fields of this shape are known, types of each of the
    * known arms.
    *)
-  | Tshape : shape_kind * 'phase shape_field_type Nast.ShapeMap.t -> 'phase ty_
+  | Tshape : shape_kind * 'phase shape_field_type TShapeMap.t -> 'phase ty_
   | Tvar : Ident.t -> 'phase ty_
   (* The type of a generic parameter. The constraints on a generic parameter
    * are accessed through the lenv.tpenv component of the environment, which
@@ -269,6 +301,10 @@ and _ ty_ =
   | Tvarray : 'phase ty -> 'phase ty_
   (* Tvarray_or_darray (ty1, ty2) => "varray_or_darray<ty1, ty2>" *)
   | Tvarray_or_darray : 'phase ty * 'phase ty -> 'phase ty_
+  (* Tvec_or_dict (ty1, ty2) => "vec_or_dict<ty1, ty2>" *)
+  | Tvec_or_dict : 'phase ty * 'phase ty -> 'phase ty_
+  (* Name of class, name of type const, remaining names of type consts *)
+  | Taccess : 'phase taccess_type -> 'phase ty_
   (*========== Below Are Types That Cannot Be Declared In User Code ==========*)
   (* This represents a type alias that lacks necessary type arguments. Given
    *   type Foo<T1,T2> = ...
@@ -307,39 +343,200 @@ and _ ty_ =
    * If exact=Exact, then this represents instances of *exactly* this class
    * If exact=Nonexact, this also includes subclasses
    *)
-  | Tclass : Nast.sid * exact * locl_ty list -> locl_phase ty_
-  (* Typing of Pocket Universe Expressions
-   * - first parameter is the enclosing class
-   * - second parameter is the name of the Pocket Universe Enumeration
-   * - third parameter is  either Pu_plain (the enumeration as the set of
-   *   all its atoms) or Pu_atom (a specific atom in the enumeration)
-   *)
-  | Tpu : locl_ty * Nast.sid -> locl_phase ty_
-      (** Typing of Pocket Universe Expressions
-       * - first parameter is the enclosing class
-       * - second parameter is the name of the Pocket Universe Enumeration
-       *)
-  | Tpu_type_access : Nast.sid * Nast.sid -> locl_phase ty_
-      (** Typing of Pocket Universes type projections
-       * - first parameter is the Tgeneric in place of the member name
-       * - second parameter is the name of the type to project
-       *)
+  | Tclass : pos_id * exact * locl_ty list -> locl_phase ty_
+  | Tneg : neg_type -> locl_phase ty_
 
-and constraint_type_ =
-  | Thas_member of has_member
-  (* The type of a list destructuring assignment.
-   * Implements valid destructuring operations via subtyping *)
-  | Tdestructure of destructure
-  | TCunion of locl_ty * constraint_type
-  | TCintersection of locl_ty * constraint_type
+and 'phase taccess_type = 'phase ty * pos_id
 
-and has_member = {
+(* Because Tfun is currently used as both a decl and locl ty, without this,
+ * the HH\Contexts\defaults alias must be stored in shared memory for a
+ * decl Tfun record. We can eliminate this if the majority of usages end up
+ * explicit or if we separate decl and locl Tfuns. *)
+and 'ty capability =
+  | CapDefaults of Pos_or_decl.t (* Should not be used for lambda inference *)
+  | CapTy of 'ty
+
+(** Companion to fun_params type, intended to consolidate checking of
+ * implicit params for functions. *)
+and 'ty fun_implicit_params = { capability: 'ty capability }
+
+(* The type of a function AND a method.
+ * A function has a min and max arity because of optional arguments *)
+and 'ty fun_type = {
+  ft_arity: 'ty fun_arity;
+  ft_tparams: 'ty tparam list;
+  ft_where_constraints: 'ty where_constraint list;
+  ft_params: 'ty fun_params;
+  ft_implicit_params: 'ty fun_implicit_params;
+  ft_ret: 'ty possibly_enforced_ty;
+  (* Carries through the sync/async information from the aast *)
+  ft_flags: int;
+  ft_ifc_decl: ifc_fun_decl;
+}
+
+(* Arity information for a fun_type; indicating the minimum number of
+ * args expected by the function and the maximum number of args for
+ * standard, non-variadic functions or the type of variadic argument taken *)
+and 'ty fun_arity =
+  (* min; max is List.length ft_params *)
+  | Fstandard
+  (* PHP5.6-style ...$args finishes the func declaration.
+     min ; variadic param type *)
+  | Fvariadic of 'ty fun_param
+
+and 'ty possibly_enforced_ty = {
+  et_enforced: enforcement;
+  et_type: 'ty;
+}
+
+and 'ty fun_param = {
+  fp_pos: Pos_or_decl.t;
+  fp_name: string option;
+  fp_type: 'ty possibly_enforced_ty;
+  fp_flags: int;
+}
+
+and 'ty fun_params = 'ty fun_param list
+
+module Flags : sig
+  val get_ft_return_disposable : 'a fun_type -> bool
+
+  val get_ft_returns_readonly : 'a fun_type -> bool
+
+  val get_ft_async : 'a fun_type -> bool
+
+  val get_ft_generator : 'a fun_type -> bool
+
+  val get_ft_ftk : 'a fun_type -> fun_tparams_kind
+
+  val set_ft_ftk : 'a fun_type -> fun_tparams_kind -> 'a fun_type
+
+  val set_ft_is_function_pointer : 'a fun_type -> bool -> 'a fun_type
+
+  val get_ft_is_function_pointer : 'a fun_type -> bool
+
+  val get_ft_fun_kind : 'a fun_type -> Ast_defs.fun_kind
+
+  val get_ft_readonly_this : 'a fun_type -> bool
+
+  val get_fp_ifc_can_call : 'a fun_param -> bool
+
+  val get_fp_ifc_external : 'a fun_param -> bool
+
+  val get_fp_via_label : 'a fun_param -> bool
+
+  val get_fp_readonly : 'a fun_param -> bool
+
+  val fun_kind_to_flags : Ast_defs.fun_kind -> Hh_prelude.Int.t
+
+  val make_ft_flags :
+    Ast_defs.fun_kind ->
+    return_disposable:bool ->
+    returns_readonly:bool ->
+    readonly_this:bool ->
+    Hh_prelude.Int.t
+
+  val mode_to_flags : param_mode -> int
+
+  val make_fp_flags :
+    mode:param_mode ->
+    accept_disposable:bool ->
+    has_default:bool ->
+    ifc_external:bool ->
+    ifc_can_call:bool ->
+    via_label:bool ->
+    readonly:bool ->
+    Hh_prelude.Int.t
+
+  val get_fp_accept_disposable : 'a fun_param -> bool
+
+  val get_fp_has_default : 'a fun_param -> bool
+
+  val get_fp_mode : 'a fun_param -> param_mode
+end
+
+include module type of Flags
+
+module Pp : sig
+  val pp_ty : Format.formatter -> 'a ty -> unit
+
+  val pp_decl_ty : Format.formatter -> decl_ty -> unit
+
+  val pp_locl_ty : Format.formatter -> locl_ty -> unit
+
+  val pp_ty_ : Format.formatter -> 'a ty_ -> unit
+
+  val pp_ty_list : Format.formatter -> 'a ty list -> unit
+
+  val pp_taccess_type : Format.formatter -> 'a taccess_type -> unit
+
+  val pp_possibly_enforced_ty :
+    (Format.formatter -> 'a ty -> unit) ->
+    Format.formatter ->
+    'a ty possibly_enforced_ty ->
+    unit
+
+  val pp_fun_implicit_params :
+    Format.formatter -> 'a ty fun_implicit_params -> unit
+
+  val pp_shape_field_type : Format.formatter -> 'a shape_field_type -> unit
+
+  val pp_fun_type : Format.formatter -> 'a ty fun_type -> unit
+
+  val pp_fun_arity : Format.formatter -> 'a ty fun_arity -> unit
+
+  val pp_fun_param : Format.formatter -> 'a ty fun_param -> unit
+
+  val pp_fun_params : Format.formatter -> 'a ty fun_params -> unit
+
+  val show_decl_ty : decl_ty -> string
+
+  val show_locl_ty : locl_ty -> string
+
+  val pp_ifc_fun_decl : Format.formatter -> ifc_fun_decl -> unit
+end
+
+include module type of Pp
+
+type decl_ty_ = decl_phase ty_
+
+type locl_ty_ = locl_phase ty_
+
+type decl_tparam = decl_ty tparam [@@deriving show]
+
+type locl_tparam = locl_ty tparam
+
+type decl_where_constraint = decl_ty where_constraint [@@deriving show]
+
+type locl_where_constraint = locl_ty where_constraint
+
+type decl_fun_type = decl_ty fun_type
+
+type locl_fun_type = locl_ty fun_type
+
+type decl_fun_arity = decl_ty fun_arity
+
+type locl_fun_arity = locl_ty fun_arity
+
+type decl_possibly_enforced_ty = decl_ty possibly_enforced_ty
+
+type locl_possibly_enforced_ty = locl_ty possibly_enforced_ty [@@deriving show]
+
+type decl_fun_param = decl_ty fun_param
+
+type locl_fun_param = locl_ty fun_param
+
+type decl_fun_params = decl_ty fun_params
+
+type locl_fun_params = locl_ty fun_params
+
+type has_member = {
   hm_name: Nast.sid;
   hm_type: locl_ty;
   hm_class_id: Nast.class_id_;
       (** This is required to check ambiguous object access, where sometimes
-  HHVM would access the private member of a parent class instead of the
-  one from the current class. *)
+          HHVM would access the private member of a parent class instead of the
+          one from the current class. *)
   hm_explicit_targs: Nast.targ list option;
       (* - For a "has-property" constraint, this is `None`
        * - For a "has-method" constraint, this is `Some targs`, where targs
@@ -351,8 +548,14 @@ and has_member = {
        * the correct `is_method` parameter to `Typing_object_get.obj_get`.
        *)
 }
+[@@deriving show]
 
-and destructure = {
+type destructure_kind =
+  | ListDestructure
+  | SplatUnpack
+[@@deriving eq, ord, show]
+
+type destructure = {
   (* This represents the standard parameters of a function or the fields in a list
    * destructuring assignment. Example:
    *
@@ -374,126 +577,44 @@ and destructure = {
    * might throw i.e. list($a) = vec[]; *)
   d_kind: destructure_kind;
 }
+[@@deriving show]
 
 (* = Reason.t * constraint_type_ *)
-and constraint_type
+type constraint_type [@@deriving show]
 
-and internal_type =
+type constraint_type_ =
+  | Thas_member of has_member
+  (* The type of a list destructuring assignment.
+   * Implements valid destructuring operations via subtyping *)
+  | Tdestructure of destructure
+  | TCunion of locl_ty * constraint_type
+  | TCintersection of locl_ty * constraint_type
+[@@deriving show]
+
+type internal_type =
   | LoclType of locl_ty
   | ConstraintType of constraint_type
-
-and taccess_type = decl_ty * Nast.sid list
-
-(* represents reactivity of function
-   - None corresponds to non-reactive function
-   - Some reactivity - to reactive function with specified reactivity flavor
-
- Nonreactive <: Local -t <: Shallow -t <: Reactive -t
-
- MaybeReactive represents conditional reactivity of function that depends on
-   reactivity of function arguments
-   <<__Rx>>
-   function f(<<__MaybeRx>> $g) { ... }
-   call to function f will be treated as reactive only if $g is reactive
-  *)
-and reactivity =
-  | Nonreactive
-  | Local of decl_ty option
-  | Shallow of decl_ty option
-  | Reactive of decl_ty option
-  | Pure of decl_ty option
-  | MaybeReactive of reactivity
-  | RxVar of reactivity option
-  | Cipp of string option
-  | CippLocal of string option
-  | CippGlobal
-
-(* Companion to fun_params type, intended to consolidate checking of
- * implicit params for functions. *)
-and 'ty fun_implicit_params = { capability: 'ty }
-
-(* The type of a function AND a method.
- * A function has a min and max arity because of optional arguments *)
-and 'ty fun_type = {
-  ft_arity: 'ty fun_arity;
-  ft_tparams: 'ty tparam list;
-  ft_where_constraints: 'ty where_constraint list;
-  ft_params: 'ty fun_params;
-  ft_implicit_params: 'ty fun_implicit_params;
-  ft_ret: 'ty possibly_enforced_ty;
-  ft_reactive: reactivity;
-  (* Carries through the sync/async information from the aast *)
-  ft_flags: int;
-}
-
-and decl_fun_type = decl_ty fun_type
-
-and locl_fun_type = locl_ty fun_type
-
-(* Arity information for a fun_type; indicating the minimum number of
- * args expected by the function and the maximum number of args for
- * standard, non-variadic functions or the type of variadic argument taken *)
-and 'ty fun_arity =
-  (* min; max is List.length ft_params *)
-  | Fstandard
-  (* PHP5.6-style ...$args finishes the func declaration.
-     min ; variadic param type *)
-  | Fvariadic of 'ty fun_param
-
-and decl_fun_arity = decl_ty fun_arity
-
-and locl_fun_arity = locl_ty fun_arity
-
-and param_rx_annotation =
-  | Param_rx_var
-  | Param_rx_if_impl of decl_ty
-
-and 'ty possibly_enforced_ty = {
-  (* True if consumer of this type enforces it at runtime *)
-  et_enforced: bool;
-  et_type: 'ty;
-}
-
-and decl_possibly_enforced_ty = decl_ty possibly_enforced_ty
-
-and locl_possibly_enforced_ty = locl_ty possibly_enforced_ty
-
-and 'ty fun_param = {
-  fp_pos: Pos.t;
-  fp_name: string option;
-  fp_type: 'ty possibly_enforced_ty;
-  fp_rx_annotation: param_rx_annotation option;
-  fp_flags: int;
-}
-
-and decl_fun_param = decl_ty fun_param
-
-and locl_fun_param = locl_ty fun_param
-
-and 'ty fun_params = 'ty fun_param list
-
-and decl_fun_params = decl_ty fun_params
-
-and locl_fun_params = locl_ty fun_params
+[@@deriving show]
 
 (* Abstraction *)
 val compare_decl_ty : decl_ty -> decl_ty -> int
 
-val mk : Reason.t * 'phase ty_ -> 'phase ty
+val mk : 'phase Reason.t_ * 'phase ty_ -> 'phase ty
 
-val deref : 'phase ty -> Reason.t * 'phase ty_
+val deref : 'phase ty -> 'phase Reason.t_ * 'phase ty_
 
-val get_reason : 'phase ty -> Reason.t
+val get_reason : 'phase ty -> 'phase Reason.t_
 
 val get_node : 'phase ty -> 'phase ty_
 
-val with_reason : 'phase ty -> Reason.t -> 'phase ty
+val with_reason : 'phase ty -> 'phase Reason.t_ -> 'phase ty
 
-val get_pos : 'phase ty -> Pos.t
+val get_pos : 'phase ty -> Pos_or_decl.t
 
-val map_reason : 'phase ty -> f:(Reason.t -> Reason.t) -> 'phase ty
+val map_reason :
+  'phase ty -> f:('phase Reason.t_ -> 'phase Reason.t_) -> 'phase ty
 
-val map_ty : 'ph1 ty -> f:('ph1 ty_ -> 'ph2 ty_) -> 'ph2 ty
+val map_ty : 'ph ty -> f:('ph ty_ -> 'ph ty_) -> 'ph ty
 
 val mk_constraint_type : Reason.t * constraint_type_ -> constraint_type
 

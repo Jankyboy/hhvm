@@ -7,7 +7,10 @@
  *
  *)
 
-open Hh_core
+open Hh_prelude
+module Hashtbl = Stdlib.Hashtbl
+module Queue = Stdlib.Queue
+module Set = Stdlib.Set
 
 (** This is just a sentinel for self-documenting purposes which some
 parts of the codebase use. They take a parameter "uses_sharedmem : SharedMem.uses"
@@ -27,6 +30,8 @@ type config = {
   shm_min_avail: int;
   log_level: int;
   sample_rate: float;
+  (* 0 - lz4, others -- compression level for zstd*)
+  compression: int;
 }
 [@@deriving show]
 
@@ -44,6 +49,7 @@ let default_config =
     (* Half a gig by default *)
     log_level = 0;
     sample_rate = 0.0;
+    compression = 0;
   }
 
 (* There are places where we don't expect to write to shared memory, and doing
@@ -60,6 +66,7 @@ let empty_config =
     shm_min_avail = 0;
     log_level = 0;
     sample_rate = 0.0;
+    compression = 0;
   }
 
 (* Allocated in C only. *)
@@ -70,7 +77,7 @@ type handle = private {
 }
 
 (* Allocated in C only. *)
-type 'a heap_entry = private bytes
+type serialized = private bytes
 
 exception Out_of_shared_memory
 
@@ -91,6 +98,8 @@ exception Less_than_minimum_available of int
 exception Failed_to_use_shm_dir of string
 
 exception C_assertion_failure of string
+
+exception Shared_mem_not_found
 
 let () =
   Callback.register_exception "out_of_shared_memory" Out_of_shared_memory;
@@ -136,9 +145,9 @@ let get_telemetry_list = ref []
 
 let get_telemetry () : Telemetry.t =
   (* This function gets called by compute_tast, even in places which
-  deliberately don't initialize shared memory. In these places, no-op,
-  since otherwise reading from hh_log_level would segfault. *)
-  if !ref_has_done_init = false then
+     deliberately don't initialize shared memory. In these places, no-op,
+     since otherwise reading from hh_log_level would segfault. *)
+  if not !ref_has_done_init then
     Telemetry.create ()
   else
     let start_time = Unix.gettimeofday () in
@@ -166,9 +175,9 @@ let rec shm_dir_init config ~num_workers = function
     raise Out_of_shared_memory
   | shm_dir :: shm_dirs ->
     let shm_min_avail = config.shm_min_avail in
+    (* For some reason statvfs is segfaulting when the directory doesn't
+     * exist, instead of returning -1 and an errno *)
     begin
-      (* For some reason statvfs is segfaulting when the directory doesn't
-       * exist, instead of returning -1 and an errno *)
       try
         if not (Sys.file_exists shm_dir) then
           raise (Failed_to_use_shm_dir "shm_dir does not exist");
@@ -189,7 +198,7 @@ let rec shm_dir_init config ~num_workers = function
         shm_dir_init config ~num_workers shm_dirs
       | Unix.Unix_error (e, fn, arg) ->
         let fn_string =
-          if fn = "" then
+          if String.equal fn "" then
             ""
           else
             Utils.spf " thrown by %s(%s)" fn arg
@@ -212,8 +221,8 @@ let rec shm_dir_init config ~num_workers = function
 
 let init config ~num_workers =
   ref_has_done_init := true;
-  try anonymous_init config ~num_workers
-  with Failed_anonymous_memfd_init ->
+  try anonymous_init config ~num_workers with
+  | Failed_anonymous_memfd_init ->
     EventLogger.(
       log_if_initialized (fun () -> sharedmem_failed_anonymous_memfd_init ()));
     Hh_logger.log "Failed to use anonymous memfd init";
@@ -228,17 +237,21 @@ external connect : handle -> worker_id:int -> unit = "hh_connect"
 
 external get_handle : unit -> handle = "hh_get_handle"
 
+external get_worker_id : unit -> int = "hh_get_worker_id" [@@noalloc]
+
 (*****************************************************************************)
 (* Raw access for proxying across network.
  *)
 (*****************************************************************************)
-external get_raw : string -> 'a heap_entry = "hh_get_raw"
+external mem_raw : string -> bool = "hh_mem"
 
-external add_raw : string -> 'a heap_entry -> unit = "hh_add_raw"
+external get_raw : string -> serialized = "hh_get_raw"
 
-external deserialize_raw : 'a heap_entry -> 'a = "hh_deserialize_raw"
+external add_raw : string -> serialized -> unit = "hh_add_raw"
 
-external serialize_raw : 'a -> 'a heap_entry = "hh_serialize_raw"
+external deserialize_raw : serialized -> 'a = "hh_deserialize_raw"
+
+external serialize_raw : 'a -> serialized = "hh_serialize_raw"
 
 (*****************************************************************************)
 (* The shared memory garbage collector. It must be called every time we
@@ -276,14 +289,14 @@ external update_dep_table_sqlite_c : string -> string -> bool -> int
   = "hh_update_dep_table_sqlite"
 
 let save_dep_table_sqlite fn build_revision ~replace_state_after_saving =
-  if loaded_dep_table_filename () <> None then
+  if Option.is_some (loaded_dep_table_filename ()) then
     failwith
       "save_dep_table_sqlite not supported when server is loaded from a saved state; use update_dep_table_sqlite";
   Hh_logger.log "Dumping a saved state deptable into a SQLite DB.";
   save_dep_table_sqlite_c fn build_revision replace_state_after_saving
 
 let save_dep_table_blob fn build_revision ~reset_state_after_saving =
-  if loaded_dep_table_filename () <> None then
+  if Option.is_some (loaded_dep_table_filename ()) then
     failwith
       "save_dep_table_blob not supported when the server is loaded from a saved state; use update_dep_table_sqlite";
   Hh_logger.log "Dumping a saved state deptable as a blob.";
@@ -394,7 +407,7 @@ let should_collect (effort : [ `gentle | `aggressive | `always_TEST ]) =
   let used = heap_size () in
   let wasted = wasted_heap_size () in
   let reachable = used - wasted in
-  used >= truncate (float reachable *. overhead)
+  used >= Float.iround_towards_zero_exn (float reachable *. overhead)
 
 let collect (effort : [ `gentle | `aggressive | `always_TEST ]) =
   let old_size = heap_size () in
@@ -479,22 +492,25 @@ end) : Key with type userkey = UserKeyType.t = struct
    *)
   let old_prefix = "old_"
 
-  let make prefix x = Prefix.make_key prefix (UserKeyType.to_string x)
+  let make : Prefix.t -> userkey -> t =
+   (fun prefix x -> Prefix.make_key prefix (UserKeyType.to_string x))
 
-  let make_old prefix x =
+  let make_old : Prefix.t -> userkey -> old =
+   fun prefix x ->
     old_prefix ^ Prefix.make_key prefix (UserKeyType.to_string x)
 
-  let to_old x = old_prefix ^ x
+  let to_old : t -> old = (fun x -> old_prefix ^ x)
 
-  let new_from_old x =
+  let new_from_old : old -> t =
+   fun x ->
     let module S = String in
-    S.sub x (S.length old_prefix) (S.length x - S.length old_prefix)
+    S.sub x ~pos:(S.length old_prefix) ~len:(S.length x - S.length old_prefix)
 
-  let md5 = Digest.string
+  let md5 : t -> md5 = Stdlib.Digest.string
 
-  let md5_old = Digest.string
+  let md5_old : old -> md5 = Stdlib.Digest.string
 
-  let string_of_md5 x = x
+  let string_of_md5 : md5 -> string = (fun x -> x)
 end
 
 module type Raw = functor (Key : Key) (Value : Value.Type) -> sig
@@ -551,17 +567,7 @@ end = struct
 
   external hh_move : Key.md5 -> Key.md5 -> unit = "hh_move"
 
-  let hh_mem_status x =
-    WorkerCancel.with_worker_exit (fun () -> hh_mem_status x)
-
   let _ = hh_mem_status
-
-  let hh_mem x = WorkerCancel.with_worker_exit (fun () -> hh_mem x)
-
-  let hh_add x y = WorkerCancel.with_worker_exit (fun () -> hh_add x y)
-
-  let hh_get_and_deserialize x =
-    WorkerCancel.with_worker_exit (fun () -> hh_get_and_deserialize x)
 
   let measure_add = Value.description ^ " (bytes serialized into shared heap)"
 
@@ -662,18 +668,26 @@ end = struct
         Telemetry.object_
           ~key
           ~value:
-            ( Telemetry.create ()
+            (Telemetry.create ()
             |> Telemetry.int_ ~key:"count" ~value:count_val
-            |> Telemetry.int_ ~key:"bytes" ~value:bytes_val )
+            |> Telemetry.int_ ~key:"bytes" ~value:bytes_val)
           t
       in
       let value = List.fold ~f:make_obj ~init:(Telemetry.create ()) metrics in
-      telemetry |> Telemetry.object_ ~key:(Value.description ^ ".shared") ~value
+      telemetry
+      |> Telemetry.object_ ~key:(Value.description ^ "__shared") ~value
 
   let () =
     get_telemetry_list := get_telemetry :: !get_telemetry_list;
     ()
 end
+
+type 'a profiled_value =
+  | RawValue of 'a
+  | ProfiledValue of {
+      entry: 'a;
+      write_time: float;
+    }
 
 module ProfiledImmediate : functor (Key : Key) (Value : Value.Type) -> sig
   include module type of Immediate (Key) (Value)
@@ -688,12 +702,7 @@ functor
         size by 1 byte, and does not change its unmarshalled memory
         representation provided Value.t is a record type containing at least one
         non-float member. *)
-      type t =
-        | Raw of Value.t
-        | Profiled of {
-            entry: Value.t;
-            write_time: float;
-          }
+      type t = Value.t profiled_value
 
       let prefix = Value.prefix
 
@@ -705,18 +714,17 @@ functor
     let add x y =
       let sample_rate = hh_sample_rate () in
       let entry =
-        if hh_log_level () <> 0 && Random.float 1.0 < sample_rate then
-          ProfiledValue.Profiled
-            { entry = y; write_time = Unix.gettimeofday () }
+        if hh_log_level () <> 0 && Float.(Random.float 1.0 < sample_rate) then
+          ProfiledValue { entry = y; write_time = Unix.gettimeofday () }
         else
-          ProfiledValue.Raw y
+          RawValue y
       in
       Immediate.add x entry
 
     let get x =
       match Immediate.get x with
-      | ProfiledValue.Raw y -> y
-      | ProfiledValue.Profiled { entry; write_time } ->
+      | RawValue y -> y
+      | ProfiledValue { entry; write_time } ->
         EventLogger.(
           log_if_initialized @@ fun () ->
           sharedmem_access_sample
@@ -769,20 +777,20 @@ functor
     module Raw = Raw (Key) (Value)
 
     (**
-   * Represents a set of local changes to the view of the shared memory heap
-   * WITHOUT materializing to the changes in the actual heap. This allows us to
-   * make speculative changes to the view of the world that can be reverted
-   * quickly and correctly.
-   *
-   * A LocalChanges maintains the same invariants as the shared heap. Except
-   * add are allowed to overwrite filled keys. This is for convenience so we
-   * do not need to remove filled keys upfront.
-   *
-   * LocalChanges can be committed. This will apply the changes to the previous
-   * stack, or directly to shared memory if there are no other active stacks.
-   * Since changes are kept local to the process, this is NOT compatible with
-   * the parallelism provided by MultiWorker.ml
-   *)
+      Represents a set of local changes to the view of the shared memory heap
+      WITHOUT materializing to the changes in the actual heap. This allows us to
+      make speculative changes to the view of the world that can be reverted
+      quickly and correctly.
+
+      A LocalChanges maintains the same invariants as the shared heap. Except
+      add are allowed to overwrite filled keys. This is for convenience so we
+      do not need to remove filled keys upfront.
+
+      LocalChanges can be committed. This will apply the changes to the previous
+      stack, or directly to shared memory if there are no other active stacks.
+      Since changes are kept local to the process, this is NOT compatible with
+      the parallelism provided by MultiWorker.ml
+      *)
     module LocalChanges = struct
       type action =
         (* The value does not exist in the current stack. When committed this
@@ -952,9 +960,9 @@ functor
         in
         let (actions, depth) = rec_actions_and_depth 0 0 !stack in
         (* We count reachable words of the entire stack, to avoid double-
-        counting in cases where a value appears in multiple stack frames.
-        If instead we added up reachable words from each frame separately,
-        then an item reachable from two frames would be double-counted. *)
+           counting in cases where a value appears in multiple stack frames.
+           If instead we added up reachable words from each frame separately,
+           then an item reachable from two frames would be double-counted. *)
         let bytes =
           if hh_log_level () > 0 then
             Some (Obj.reachable_words (Obj.repr !stack) * (Sys.word_size / 8))
@@ -966,12 +974,12 @@ functor
         else
           telemetry
           |> Telemetry.object_
-               ~key:(Value.description ^ ".stack")
+               ~key:(Value.description ^ "__stack")
                ~value:
-                 ( Telemetry.create ()
+                 (Telemetry.create ()
                  |> Telemetry.int_ ~key:"actions" ~value:actions
                  |> Telemetry.int_opt ~key:"bytes" ~value:bytes
-                 |> Telemetry.int_ ~key:"depth" ~value:depth )
+                 |> Telemetry.int_ ~key:"depth" ~value:depth)
 
       let () =
         get_telemetry_list := get_telemetry :: !get_telemetry_list;
@@ -1009,7 +1017,7 @@ module New : functor (Raw : Raw) (Key : Key) (Value : Value.Type) -> sig
 
   val get : Key.t -> Value.t option
 
-  val find_unsafe : Key.t -> Value.t
+  val find_unsafe : Key.t -> Value.t (* may throw {!Shared_mem_not_found} *)
 
   val remove : Key.t -> unit
 
@@ -1045,7 +1053,7 @@ functor
 
     let find_unsafe key =
       match get key with
-      | None -> raise Not_found
+      | None -> raise Shared_mem_not_found
       | Some x -> x
 
     let remove key =
@@ -1131,7 +1139,7 @@ module type NoCache = sig
 
   val remove_old_batch : KeySet.t -> unit
 
-  val find_unsafe : key -> t
+  val find_unsafe : key -> t (* May throw {!Shared_mem_not_found} *)
 
   val get_batch : KeySet.t -> t option KeyMap.t
 
@@ -1205,6 +1213,7 @@ struct
 
   let add x y = New.add (Key.make Value.prefix x) y
 
+  (* Might raise {!Shared_mem_not_found} *)
   let find_unsafe x = New.find_unsafe (Key.make Value.prefix x)
 
   let get x = New.get (Key.make Value.prefix x)
@@ -1417,7 +1426,7 @@ struct
     match Hashtbl.find_opt cache x with
     | Some (freq, y') ->
       incr freq;
-      if y' == y then
+      if phys_equal y' y then
         ()
       else
         Hashtbl.replace cache x (freq, y)
@@ -1467,13 +1476,13 @@ struct
     ()
 
   let add x y =
-    ( if !size >= LocalHashtblConfig.capacity then
+    (if !size >= LocalHashtblConfig.capacity then
       (* Remove oldest element - if it's still around. *)
       let elt = Queue.pop queue in
       if Hashtbl.mem cache elt then (
         decr size;
         Hashtbl.remove cache elt
-      ) );
+      ));
 
     (* Add the new element, but bump the size only if it's a new addition. *)
     Queue.push x queue;
@@ -1498,7 +1507,7 @@ end
 let invalidate_callback_list = ref []
 
 let invalidate_caches () =
-  List.iter !invalidate_callback_list (fun callback -> callback ())
+  List.iter !invalidate_callback_list ~f:(fun callback -> callback ())
 
 module LocalCache
     (UserKeyType : UserKeyType)
@@ -1551,9 +1560,9 @@ struct
 
   let get_telemetry (telemetry : Telemetry.t) : Telemetry.t =
     (* Many items are stored in both L1 (ordered) and L2 (freq) caches.
-    We don't want to double-count them.
-    So: we'll figure out the reachable words of the (L1,L2) tuple,
-    and we'll figure out the set union of keys in both of them. *)
+       We don't want to double-count them.
+       So: we'll figure out the reachable words of the (L1,L2) tuple,
+       and we'll figure out the set union of keys in both of them. *)
     let (obj1, keys1) = L1.get_telemetry_items_and_keys () in
     let (obj2, keys2) = L2.get_telemetry_items_and_keys () in
     let count =
@@ -1573,11 +1582,11 @@ struct
       in
       telemetry
       |> Telemetry.object_
-           ~key:(Value.description ^ ".local")
+           ~key:(Value.description ^ "__local")
            ~value:
-             ( Telemetry.create ()
+             (Telemetry.create ()
              |> Telemetry.int_ ~key:"count" ~value:count
-             |> Telemetry.int_opt ~key:"bytes" ~value:bytes )
+             |> Telemetry.int_opt ~key:"bytes" ~value:bytes)
 
   let () =
     get_telemetry_list := get_telemetry :: !get_telemetry_list;
@@ -1605,7 +1614,7 @@ struct
   module ValueForCache = struct
     include Value
 
-    let description = Value.description ^ ":cache"
+    let description = Value.description ^ "__cache"
   end
 
   module Direct = NoCache (Raw) (UserKeyType) (Value)
@@ -1634,16 +1643,16 @@ struct
   let log_hit_rate ~hit =
     Measure.sample
       (Value.description ^ " (cache hit rate)")
-      ( if hit then
+      (if hit then
         1.
       else
-        0. );
+        0.);
     Measure.sample
       "(ALL cache hit rate)"
-      ( if hit then
+      (if hit then
         1.
       else
-        0. )
+        0.)
 
   let get x =
     match Cache.get x with
@@ -1670,7 +1679,7 @@ struct
 
   let find_unsafe x =
     match get x with
-    | None -> raise Not_found
+    | None -> raise Shared_mem_not_found
     | Some x -> x
 
   let mem x =

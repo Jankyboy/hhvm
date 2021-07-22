@@ -3,24 +3,33 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the "hack" directory of this source tree.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
+use eq_modulo_pos::EqModuloPos;
+use no_pos_hash::NoPosHash;
 use ocamlrep_derive::{FromOcamlRepIn, ToOcamlRep};
 
 #[derive(
     Clone,
     Copy,
     Debug,
+    Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct LocalId<'a>(isize, &'a str);
+pub struct LocalId<'a>(
+    isize,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)] &'a str,
+);
+arena_deserializer::impl_deserialize_in_arena!(LocalId<'arena>);
 
 impl arena_trait::TrivialDrop for LocalId<'_> {}
 

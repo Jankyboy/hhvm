@@ -13,9 +13,11 @@ namespace HPHP {
 HashCollection::HashCollection(Class* cls, HeaderKind kind, uint32_t cap)
   : ObjectData(cls, NoInit{}, ObjectData::NoAttrs, kind)
   , m_unusedAndSize(0)
-  , m_arr(cap == 0 ? CreateDictAsMixed() :
-          MixedArray::asMixed(MixedArray::MakeReserveDict(cap)))
-{}
+{
+  setArrayData(cap > 0
+    ? MixedArray::asMixed(MixedArray::MakeReserveDict(cap))
+    : CreateDictAsMixed());
+}
 
 NEVER_INLINE
 void HashCollection::throwTooLarge() {
@@ -95,19 +97,19 @@ void HashCollection::warnOnStrIntDup() const {
 }
 
 Array HashCollection::toVArray() {
-  if (!m_size) return empty_varray();
-  return Array{arrayData()}.toVArray();
+  if (!m_size) return empty_vec_array();
+  return Array{arrayData()}.toVec();
 }
 
 Array HashCollection::toDArray() {
-  if (!m_size) return empty_darray();
-  auto arr = Array{arrayData()}.toDArray();
+  if (!m_size) return empty_dict_array();
+  auto arr = Array{arrayData()}.toDict();
   if (UNLIKELY(arr->size() < m_size)) warnOnStrIntDup();
   return arr;
 }
 
 Array HashCollection::toKeysArray() {
-  VArrayInit ai(m_size);
+  VecInit ai(m_size);
   auto* eLimit = elmLimit();
   for (auto* e = firstElm(); e != eLimit; e = nextElm(e, eLimit)) {
     if (e->hasIntKey()) {
@@ -151,18 +153,11 @@ void HashCollection::eraseNoCompact(MixedArray::RemovePos pos) {
 NEVER_INLINE
 void HashCollection::makeRoom() {
   assertx(isFull());
-  assertx(posLimit() == cap());
-  if (LIKELY(!isDensityTooLow())) {
-    if (UNLIKELY(cap() == MaxSize)) {
-      throwTooLarge();
-    }
-    assertx(scale() > 0);
-    grow(scale() * 2);
-  } else {
-    compact();
-  }
+  assertx(!isDensityTooLow());
+  if (UNLIKELY(cap() == MaxSize)) throwTooLarge();
+  assertx(scale() > 0);
+  grow(scale() * 2);
   assertx(canMutateBuffer());
-  assertx(m_immCopy.isNull());
   assertx(!isFull());
 }
 
@@ -218,9 +213,9 @@ void HashCollection::resizeHelper(uint32_t newCap) {
   // all the elements (without copying over tombstones).
   auto ad = arrayData()->isStatic() && arrayData()->empty() ?
     MixedArray::asMixed(MixedArray::MakeReserveDict(newCap)) :
-    MixedArray::CopyReserve(m_arr, newCap);
-  decRefArr(m_arr);
-  m_arr = ad;
+    MixedArray::CopyReserve(arrayData(), newCap);
+  decRefArr(arrayData());
+  setArrayData(ad);
   assertx(canMutateBuffer());
 }
 
@@ -232,7 +227,7 @@ void HashCollection::grow(uint32_t newScale) {
   auto oldAd = arrayData();
   dropImmCopy();
   if (m_size > 0 && !oldAd->cowCheck()) {
-    m_arr = MixedArray::Grow(oldAd, newScale, false);
+    setArrayData(MixedArray::Grow(oldAd, newScale, false));
     decRefArr(oldAd);
   } else {
     // For cases where m_size is zero or the buffer's refcount is
@@ -240,7 +235,6 @@ void HashCollection::grow(uint32_t newScale) {
     resizeHelper(newCap);
   }
   assertx(canMutateBuffer());
-  assertx(m_immCopy.isNull());
 }
 
 void HashCollection::compact() {
@@ -256,7 +250,6 @@ void HashCollection::compact() {
     resizeHelper(cap());
   }
   assertx(canMutateBuffer());
-  assertx(m_immCopy.isNull());
   assertx(!isDensityTooLow());
 }
 
@@ -275,8 +268,8 @@ void HashCollection::shrink(uint32_t oldCap /* = 0 */) {
     assertx(newCap == computeMaxElms(folly::nextPowTwo<uint64_t>(newCap) - 1));
   } else {
     if (m_size == 0 && nextKI() == 0) {
-      decRefArr(m_arr);
-      m_arr = CreateDictAsMixed();
+      decRefArr(arrayData());
+      setArrayData(CreateDictAsMixed());
       return;
     }
     // If no old capacity was provided, we compute the largest capacity
@@ -294,9 +287,10 @@ void HashCollection::shrink(uint32_t oldCap /* = 0 */) {
     auto oldBuf = data();
     auto oldUsed = posLimit();
     auto oldNextKI = nextKI();
-    m_arr = MixedArray::asMixed(MixedArray::MakeReserveDict(newCap));
-    m_arr->m_size = m_size;
-    m_arr->mutableKeyTypes()->copyFrom(oldAd->keyTypes(), /*compact=*/true);
+    auto const arr = MixedArray::asMixed(MixedArray::MakeReserveDict(newCap));
+    setArrayData(arr);
+    arr->m_size = m_size;
+    arr->mutableKeyTypes()->copyFrom(oldAd->keyTypes(), /*compact=*/true);
     auto data = this->data();
     auto table = hashTab();
     auto table_mask = tableMask();
@@ -315,7 +309,6 @@ void HashCollection::shrink(uint32_t oldCap /* = 0 */) {
     resizeHelper(newCap);
   }
   assertx(canMutateBuffer());
-  assertx(m_immCopy.isNull());
   assertx(!isCapacityTooHigh() || newCap == oldCap);
 }
 
@@ -349,7 +342,7 @@ void HashCollection::mutateImpl() {
     return;
   }
   auto* oldAd = arrayData();
-  m_arr = MixedArray::asMixed(MixedArray::Copy(oldAd));
+  setArrayData(MixedArray::asMixed(MixedArray::Copy(oldAd)));
   assertx(oldAd->hasMultipleRefs());
   oldAd->decRefCount();
 }

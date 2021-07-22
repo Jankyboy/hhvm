@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_LITSTR_TABLE_H_
-#define incl_HPHP_LITSTR_TABLE_H_
+#pragma once
 
 #include "hphp/runtime/base/string-functors.h"
 #include "hphp/runtime/vm/named-entity.h"
@@ -25,11 +24,6 @@
 #include <tbb/concurrent_hash_map.h>
 
 namespace HPHP {
-
-/*
- * Unit litstr Id's are all above this mark.
- */
-constexpr int kUnitLitstrOffset = 0x40000000;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -155,20 +149,9 @@ private:
 StringData* loadLitstrById(Id id);
 
 ///////////////////////////////////////////////////////////////////////////////
-// ID helpers.
-
-/*
- * Functions for differentiating unit-local Id's from global litstrId's.
- */
-bool isUnitLitstrId(Id id);
-Id encodeUnitLitstrId(Id id);
-Id decodeUnitLitstrId(Id id);
-
-///////////////////////////////////////////////////////////////////////////////
 }
 
 #define incl_HPHP_LITSTR_TABLE_INL_H_
 #include "hphp/runtime/vm/litstr-table-inl.h"
 #undef incl_HPHP_LITSTR_TABLE_INL_H_
 
-#endif // incl_HPHP_LITSTR_TABLE_H_

@@ -11,22 +11,22 @@ open Hh_prelude
 
 module Decl_cache_entry = struct
   (* NOTE: we can't simply use a string as a key. In the case of a name
-  conflict, we may put e.g. a function named 'foo' into the cache whose value is
-  one type, and then later try to withdraw a class named 'foo' whose value is
-  another type.
+     conflict, we may put e.g. a function named 'foo' into the cache whose value is
+     one type, and then later try to withdraw a class named 'foo' whose value is
+     another type.
 
-  The actual value type for [Class_decl] is a [Typing_classes_heap.Classes.t],
-  but that module depends on this module, so we can't write it down or else we
-  will cause a circular dependency. (It could probably be refactored to break
-  the dependency.) We just use [Obj.t] instead, which is better than using
-  [Obj.t] for all of the cases here.
+     The actual value type for [Class_decl] is a [Typing_classes_heap.Classes.t],
+     but that module depends on this module, so we can't write it down or else we
+     will cause a circular dependency. (It could probably be refactored to break
+     the dependency.) We just use [Obj.t] instead, which is better than using
+     [Obj.t] for all of the cases here.
   *)
   type _ t =
     | Fun_decl : string -> Typing_defs.fun_elt t
     | Class_decl : string -> Obj.t t
     | Record_decl : string -> Typing_defs.record_def_type t
     | Typedef_decl : string -> Typing_defs.typedef_type t
-    | Gconst_decl : string -> (Typing_defs.decl_ty * Errors.t) t
+    | Gconst_decl : string -> Typing_defs.const_decl t
 
   type 'a key = 'a t
 
@@ -65,9 +65,7 @@ end
 module Shallow_decl_cache = Lru_cache.Cache (Shallow_decl_cache_entry)
 
 module Linearization_cache_entry = struct
-  type _ t =
-    | Member_resolution_linearization : string -> Decl_defs.linearization t
-    | Ancestor_types_linearization : string -> Decl_defs.linearization t
+  type _ t = Linearization : string -> Decl_defs.lin t
 
   type 'a key = 'a t
 
@@ -78,8 +76,7 @@ module Linearization_cache_entry = struct
   let key_to_log_string : type a. a key -> string =
    fun key ->
     match key with
-    | Member_resolution_linearization c -> "MemberResolution" ^ c
-    | Ancestor_types_linearization c -> "AncestorTypes" ^ c
+    | Linearization c -> "Linearization" ^ c
 end
 
 module Linearization_cache = Lru_cache.Cache (Linearization_cache_entry)
@@ -93,7 +90,8 @@ module Fixme_store = struct
 
   let get t filename = Relative_path.Map.find_opt !t filename
 
-  let add t filename fixmes = t := Relative_path.Map.add !t filename fixmes
+  let add t filename fixmes =
+    t := Relative_path.Map.add !t ~key:filename ~data:fixmes
 
   let remove t filename = t := Relative_path.Map.remove !t filename
 
@@ -196,14 +194,18 @@ type t =
       decl: Decl_service_client.t;
       fixmes: Fixmes.t;
     }
+  | Analysis
 
 let t_to_string (t : t) : string =
   match t with
   | Shared_memory -> "Shared_memory"
   | Local_memory _ -> "Local_memory"
   | Decl_service _ -> "Decl_service"
+  | Analysis -> "Analysis"
 
 let backend_ref = ref Shared_memory
+
+let set_analysis_backend () : unit = backend_ref := Analysis
 
 let set_shared_memory_backend () : unit = backend_ref := Shared_memory
 
@@ -226,7 +228,7 @@ let set_local_memory_backend
 
 let set_local_memory_backend_with_defaults () : unit =
   (* Shallow decls: some files read ~5k shallow decls, at about 16k / shallow dec,
-  fitting into 73Mb. Hence we guess at 140Mb. *)
+     fitting into 73Mb. Hence we guess at 140Mb. *)
   let max_bytes_shallow_decls = 140 * 1024 * 1024 in
   (* Linearizations: such files will pick up ~6k linearizations. *)
   let max_num_linearizations = 10000 in

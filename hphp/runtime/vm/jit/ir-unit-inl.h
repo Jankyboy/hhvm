@@ -19,6 +19,7 @@
 #include "hphp/runtime/vm/jit/ssa-tmp.h"
 #include "hphp/runtime/vm/jit/type.h"
 
+#include "hphp/util/optional.h"
 #include "hphp/util/trace.h"
 
 #include <folly/ScopeGuard.h>
@@ -105,7 +106,6 @@ private:
    * Call the lambda on the initialized IRInstruction.
    */
   Ret stop(IRInstruction* inst) {
-    assertx(checkOperandTypes(inst));
     return func(inst);
   }
 
@@ -118,8 +118,8 @@ private:
   void setter(IRInstruction* inst, Type t) {
     inst->setTypeParam(t);
   }
-  void setter(IRInstruction* inst, folly::Optional<Type> t) {
-    if (t.hasValue()) {
+  void setter(IRInstruction* inst, Optional<Type> t) {
+    if (t.has_value()) {
       inst->setTypeParam(t.value());
     }
   }
@@ -276,16 +276,11 @@ inline SSATmp* IRUnit::findSSATmp(uint32_t id) const {
   return m_ssaTmps[id];
 }
 
-inline SSATmp* IRUnit::mainFP() const {
-  assertx(!entry()->empty() && entry()->begin()->is(DefFP));
-  return entry()->begin()->dst();
-}
-
 inline int64_t IRUnit::startNanos() const {
   return m_startNanos;
 }
 
-inline folly::Optional<StructuredLogEntry>& IRUnit::logEntry() const {
+inline Optional<StructuredLogEntry>& IRUnit::logEntry() const {
   return m_logEntry;
 }
 

@@ -15,11 +15,11 @@ dict(3) {
       string(4) "main"
     }
     ["md5sum0"]=>
-    int(2211993249518475090)
+    int(8960286621244190504)
     ["md5sum1"]=>
-    int(-9199810989213316308)
+    int(7716124121876020767)
     ["sha1sum"]=>
-    string(40) "cd1d69d059204aedfe0ffd744140d0f288b137e9"
+    string(40) "44e388667694da90eba94576851f8171aa9543e5"
     ["typeAliases"]=>
     vec(3) {
       string(3) "TA0"
@@ -72,7 +72,7 @@ dict(3) {
           string(14) "HH\BuiltinEnum"
         }
         ["flags"]=>
-        int(2)
+        int(0)
         ["kindOf"]=>
         string(4) "enum"
         ["name"]=>
@@ -231,11 +231,11 @@ dict(3) {
       string(7) "NS\main"
     }
     ["md5sum0"]=>
-    int(-1787249074018480255)
+    int(4365666228056111572)
     ["md5sum1"]=>
-    int(2816791963074828456)
+    int(-2385164017367553721)
     ["sha1sum"]=>
-    string(40) "5c7f8c9e262ff0d81b4805b803180559924a7f8b"
+    string(40) "11b47ee22db582ad6a044f6c112e4f615b428e4b"
     ["typeAliases"]=>
     vec(3) {
       string(6) "NS\TA0"
@@ -288,7 +288,7 @@ dict(3) {
           string(14) "HH\BuiltinEnum"
         }
         ["flags"]=>
-        int(2)
+        int(0)
         ["kindOf"]=>
         string(4) "enum"
         ["name"]=>
@@ -447,11 +447,11 @@ dict(3) {
       string(10) "NS\NS\main"
     }
     ["md5sum0"]=>
-    int(-457770342238363655)
+    int(8862761181756929420)
     ["md5sum1"]=>
-    int(-1440256527872543432)
+    int(-6355411648769904274)
     ["sha1sum"]=>
-    string(40) "3ca58bd8c14f8b81599f39717f8fe950fcb17d0a"
+    string(40) "5a96a3890f02834ebf72c49976ed20e065c5ee02"
     ["typeAliases"]=>
     vec(3) {
       string(9) "NS\NS\TA0"
@@ -504,7 +504,7 @@ dict(3) {
           string(14) "HH\BuiltinEnum"
         }
         ["flags"]=>
-        int(2)
+        int(0)
         ["kindOf"]=>
         string(4) "enum"
         ["name"]=>

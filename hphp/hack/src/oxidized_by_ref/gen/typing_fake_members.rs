@@ -3,14 +3,16 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the "hack" directory of this source tree.
 //
-// @generated SignedSource<<952c6fa5267ad40e7a6c1eccff9b9163>>
+// @generated SignedSource<<f6e4bfe77f60ea75ee68896c49a72955>>
 //
 // To regenerate this file, run:
-//   hphp/hack/src/oxidized_by_ref/regen.sh
+//   hphp/hack/src/oxidized_regen.sh
 
 use arena_trait::TrivialDrop;
+use no_pos_hash::NoPosHash;
 use ocamlrep_derive::FromOcamlRepIn;
 use ocamlrep_derive::ToOcamlRep;
+use serde::Deserialize;
 use serde::Serialize;
 
 #[allow(unused_imports)]
@@ -21,9 +23,11 @@ pub use crate::typing_reason as reason;
 #[derive(
     Clone,
     Debug,
+    Deserialize,
     Eq,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -31,7 +35,10 @@ pub use crate::typing_reason as reason;
     ToOcamlRep
 )]
 pub struct TypingFakeMembers<'a> {
-    pub valid: blame_set::BlameSet<'a>,
-    pub invalid: blame_set::BlameSet<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub valid: &'a blame_set::BlameSet<'a>,
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    pub invalid: &'a blame_set::BlameSet<'a>,
 }
 impl<'a> TrivialDrop for TypingFakeMembers<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(TypingFakeMembers<'arena>);

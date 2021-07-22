@@ -14,8 +14,9 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_UNIT_CACHE_H_
-#define incl_HPHP_UNIT_CACHE_H_
+#pragma once
+
+#include "hphp/util/sha1.h"
 
 #include <string>
 #include <vector>
@@ -64,10 +65,12 @@ struct FuncTable;
  * fatal errors.
  */
 Unit* lookupUnit(StringData* path, const char* currentDir, bool* initial_opt,
-                 const Native::FuncTable&, bool alreadyRealpath);
+                 const Native::FuncTable&, bool alreadyRealpath,
+                 bool forPrefetch = false);
 
 /*
- * As above, but for system units.
+ * As above, but for system units. Only appropriate in
+ * RepoAuthoritative mode, as we do not cache system units otherwise.
  */
 Unit* lookupSyslibUnit(StringData* path, const Native::FuncTable&);
 
@@ -94,6 +97,13 @@ size_t numLoadedUnits();
 std::vector<Unit*> loadedUnitsRepoAuth();
 
 /*
+ * Return the current entires in the non-repo Unit cache or the
+ * per-hash Unit cache. Used for debugging.
+ */
+std::vector<std::pair<const StringData*, Unit*>> nonRepoUnitCacheUnits();
+std::vector<std::pair<SHA1, Unit*>> nonRepoUnitHashCacheUnits();
+
+/*
  * Resolve an include path, for the supplied path and directory, using the same
  * rules as PHP's fopen() or include.  May return a null String if the path
  * would not be includable.  File stat information is returned in `s'.
@@ -104,7 +114,7 @@ std::vector<Unit*> loadedUnitsRepoAuth();
  * Note: it's unclear what's "vm" about this, and why it's not just
  * resolve_include.  (Likely naming relic from hphpc days.)
  */
-String resolveVmInclude(StringData* path,
+String resolveVmInclude(const StringData* path,
                         const char* currentDir,
                         struct stat* s,  // out
                         const Native::FuncTable&,
@@ -129,6 +139,12 @@ void clearUnitCacheForExit();
  * clearUnitCacheForExit().
  */
 void shutdownUnitPrefetcher();
+
+/*
+ * Shutdown the Unit reaper. This needs to be done before
+ * clearUnitCacheForExit().
+ */
+void shutdownUnitReaper();
 
 /*
  * Returns a unit if it's already loaded. If not then this returns nullptr.
@@ -171,8 +187,13 @@ void prefetchUnit(StringData* path,
  */
 void drainUnitPrefetcher();
 
+/*
+ * Compile a string into an Unit for the purposes of eval
+ * execution. Units may be cached.
+ */
+Unit* compileEvalString(const StringData* code,
+                        const char* evalFilename = nullptr);
+
 //////////////////////////////////////////////////////////////////////
 
 }
-
-#endif

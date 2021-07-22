@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_FUNC_UTIL_H_
-#define incl_HPHP_FUNC_UTIL_H_
+#pragma once
 
 #include <cstdint>
 
@@ -60,6 +59,11 @@ bool check_nargs_in_range(const php::Func* func, uint32_t nArgs);
 bool append_func(php::Func* dst, const php::Func& src);
 
 /*
+ * Append the cases of the switch from one 86cinit to another 86cinit.
+ */
+bool append_86cinit(php::Func* dst, const php::Func& src);
+
+/*
  * Create a block similar to another block (but with no bytecode in it yet).
  *
  * It will have the same exnNodeId, and throw exit block.
@@ -72,8 +76,11 @@ BlockId make_block(php::WideFunc& func, const php::Block* srcBlk);
 */
 int dyn_call_error_level(const php::Func*);
 
+/*
+ * Does this function have a coeffects local?
+ */
+bool has_coeffects_local(const php::Func*);
+
 //////////////////////////////////////////////////////////////////////
 
 }}
-
-#endif

@@ -30,9 +30,6 @@ echo "*** Testing array_diff_uassoc() : usage variation ***\n";
 //Initialize variables
 $array1 = darray["a" => "green", "b" => "brown", "c" => "blue", 0 => "red"];
 
-//get an unset variable
-$unset_var = 10;
-unset ($unset_var);
 
 //resource variable
 $fp = fopen(__FILE__, "r");
@@ -86,11 +83,7 @@ $inputs = darray[
       'instance of classWithToString' => new classWithToString(),
       'instance of classWithoutToString' => new classWithoutToString(),
 
-      // undefined data
-      'undefined var' => @$undefined_var,
 
-      // unset data
-      'unset var' => @$unset_var,
 
       // resource data
       'resource' => $fp,
@@ -100,7 +93,7 @@ $inputs = darray[
 
 foreach($inputs as $key =>$value) {
       echo "\n--$key--\n";
-      var_dump( array_diff_uassoc($array1, $value, fun("key_compare_func")) );
+      var_dump( array_diff_uassoc($array1, $value, key_compare_func<>) );
 };
 
 fclose($fp);

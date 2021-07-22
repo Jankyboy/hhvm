@@ -15,47 +15,57 @@ module ExprDepTy = struct
   module Env = Typing_env
   module TUtils = Typing_utils
 
+  type dep =
+    | Dep_This
+    | Dep_Cls of string
+    | Dep_Expr of Ident.t
+
   let new_ () =
     let eid = Ident.tmp () in
-    (Reason.ERexpr eid, DTexpr eid)
+    (Reason.ERexpr eid, Dep_Expr eid)
 
-  let from_cid env reason cid =
+  (* Convert a class_id into a "dependent kind" (dep). This later informs the make_with_dep_kind function
+   * how to translate a type suitable for substituting for `this` in a method signature.
+   *)
+  let from_cid env reason (cid : Nast.class_id_) =
     let pos = Reason.to_pos reason in
     let (pos, expr_dep_reason, dep) =
       match cid with
       | N.CIparent ->
         (match Env.get_parent_id env with
-        | Some cls -> (pos, Reason.ERparent cls, DTcls cls)
+        | Some cls -> (pos, Reason.ERparent cls, Dep_Cls cls)
         | None ->
           let (ereason, dep) = new_ () in
           (pos, ereason, dep))
       | N.CIself ->
-        (match get_node (Env.get_self env) with
-        | Tclass ((_, cls), _, _) -> (pos, Reason.ERself cls, DTcls cls)
-        | _ ->
+        (match Env.get_self_id env with
+        | Some cls -> (pos, Reason.ERself cls, Dep_Cls cls)
+        | None ->
           let (ereason, dep) = new_ () in
           (pos, ereason, dep))
-      | N.CI (p, cls) -> (p, Reason.ERclass cls, DTcls cls)
-      | N.CIstatic -> (pos, Reason.ERstatic, DTthis)
-      | N.CIexpr (p, N.This) -> (p, Reason.ERstatic, DTthis)
+      | N.CI (p, cls) ->
+        (Pos_or_decl.of_raw_pos p, Reason.ERclass cls, Dep_Cls cls)
+      | N.CIstatic -> (pos, Reason.ERstatic, Dep_This)
+      | N.CIexpr (_, p, N.This) ->
+        (Pos_or_decl.of_raw_pos p, Reason.ERstatic, Dep_This)
       (* If it is a local variable then we look up the expression id associated
        * with it. If one doesn't exist we generate a new one. We are being
        * conservative here because the new expression id we create isn't
        * added to the local enviornment.
        *)
-      | N.CIexpr (p, N.Lvar (_, x)) ->
+      | N.CIexpr (_, p, N.Lvar (_, x)) ->
         let (ereason, dep) =
           match Env.get_local_expr_id env x with
-          | Some eid -> (Reason.ERexpr eid, DTexpr eid)
+          | Some eid -> (Reason.ERexpr eid, Dep_Expr eid)
           | None -> new_ ()
         in
-        (p, ereason, dep)
+        (Pos_or_decl.of_raw_pos p, ereason, dep)
       (* If all else fails we generate a new identifier for our expression
        * dependent type.
        *)
-      | N.CIexpr (p, _) ->
+      | N.CIexpr (_, p, _) ->
         let (ereason, dep) = new_ () in
-        (p, ereason, dep)
+        (Pos_or_decl.of_raw_pos p, ereason, dep)
     in
     (Reason.Rexpr_dep_type (reason, pos, expr_dep_reason), dep)
 
@@ -78,18 +88,23 @@ module ExprDepTy = struct
    * More specific details are explained inline
    *)
   (****************************************************************************)
-  let make env ~cid ty =
-    let (r_dep_ty, dep_ty) = from_cid env (get_reason ty) cid in
-    let apply env ty = (env, mk (r_dep_ty, Tdependent (dep_ty, ty))) in
+  let make_with_dep_kind env dep_kind ty =
+    let (r_dep_ty, dep_ty) = dep_kind in
+    let apply env ty =
+      match dep_ty with
+      | Dep_Cls _ -> (env, mk (r_dep_ty, Tdependent (DTexpr (Ident.tmp ()), ty)))
+      | Dep_This -> (env, ty)
+      | Dep_Expr id -> (env, mk (r_dep_ty, Tdependent (DTexpr id, ty)))
+    in
     let rec make env ty =
-      let (env, ety) = Env.expand_type env ty in
-      match deref ety with
+      let (env, ty) = Env.expand_type env ty in
+      match deref ty with
       | (_, Tclass (_, Exact, _)) -> (env, ty)
       | (_, Tclass (((_, x) as c), Nonexact, tyl)) ->
         let class_ = Env.get_class env x in
         (* If a class is both final and variant, we must treat it as non-final
-        * since we can't statically guarantee what the runtime type
-        * will be.
+           * since we can't statically guarantee what the runtime type
+           * will be.
         *)
         if
           Option.value_map class_ ~default:false ~f:(fun class_ty ->
@@ -98,7 +113,7 @@ module ExprDepTy = struct
           (env, ty)
         else (
           match dep_ty with
-          | DTcls n when String.equal n x ->
+          | Dep_Cls n when String.equal n x ->
             (env, mk (r_dep_ty, Tclass (c, Exact, tyl)))
           | _ -> apply env ty
         )
@@ -107,13 +122,14 @@ module ExprDepTy = struct
         (env, ty)
       | (_, Tgeneric _) ->
         (* TODO(T69551141) handle type arguments here? *)
-        let (env, tyl) = Typing_utils.get_concrete_supertypes env ty in
+        let (env, tyl) =
+          Typing_utils.get_concrete_supertypes ~abstract_enum:true env ty
+        in
         let (env, tyl') = List.fold_map tyl ~init:env ~f:make in
         if tyl_equal tyl tyl' then
           (env, ty)
         else
           apply env ty
-      | (_, Tpu _) -> apply env ty
       | (r, Toption ty) ->
         let (env, ty) = make env ty in
         (env, mk (r, Toption ty))
@@ -129,12 +145,18 @@ module ExprDepTy = struct
       | (r, Tintersection tyl) ->
         let (env, tyl) = List.fold_map tyl ~init:env ~f:make in
         (env, mk (r, Tintersection tyl))
+      | (r, Taccess (ty, ids)) ->
+        let (env, ty) = make env ty in
+        (env, mk (r, Taccess (ty, ids)))
       (* TODO(T36532263) check if this is legal *)
       | ( _,
           ( Tobject | Tnonnull | Tprim _ | Tshape _ | Ttuple _ | Tdynamic
-          | Tvarray _ | Tdarray _ | Tvarray_or_darray _ | Tfun _ | Tany _
-          | Tvar _ | Terr | Tpu_type_access _ ) ) ->
+          | Tvarray _ | Tdarray _ | Tvarray_or_darray _ | Tvec_or_dict _
+          | Tfun _ | Tany _ | Tvar _ | Terr | Tneg _ ) ) ->
         (env, ty)
     in
     make env ty
+
+  let make env ~cid ty =
+    make_with_dep_kind env (from_cid env (get_reason ty) cid) ty
 end

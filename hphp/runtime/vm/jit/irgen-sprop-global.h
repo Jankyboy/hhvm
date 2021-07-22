@@ -13,11 +13,11 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_JIT_IRGEN_SPROP_GLOBAL_H_
-#define incl_HPHP_JIT_IRGEN_SPROP_GLOBAL_H_
+#pragma once
 
 #include "hphp/runtime/vm/containers.h"
 #include "hphp/runtime/vm/jit/types.h"
+#include "hphp/runtime/vm/member-key.h"
 
 namespace HPHP {
 
@@ -43,12 +43,16 @@ struct ClsPropLookup {
   Slot slot;
 };
 
+struct LdClsPropOptions {
+  const ReadOnlyOp readOnlyCheck;
+  bool raise;
+  bool ignoreLateInit;
+  bool writeMode;
+};
+
 ClsPropLookup ldClsPropAddrKnown(IRGS&, const Class*, const StringData*, bool);
-ClsPropLookup ldClsPropAddr(IRGS&, SSATmp*, SSATmp*, bool, bool, bool);
+ClsPropLookup ldClsPropAddr(IRGS&, SSATmp*, SSATmp*, SSATmp*, const LdClsPropOptions&);
 
 //////////////////////////////////////////////////////////////////////
 
 }}}
-
-
-#endif

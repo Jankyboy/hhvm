@@ -20,7 +20,7 @@
 
 #include "hphp/runtime/vm/jit/abi.h"
 #include "hphp/runtime/vm/jit/prof-data-serialize.h"
-#include "hphp/runtime/vm/jit/region-prof-counters.h"
+#include "hphp/runtime/vm/jit/trans-prof-counters.h"
 #include "hphp/runtime/vm/jit/vasm-gen.h"
 #include "hphp/runtime/vm/jit/vasm-instr.h"
 #include "hphp/runtime/vm/jit/vasm-print.h"
@@ -42,106 +42,94 @@ namespace VasmBlockCounters {
 namespace {
 
 /*
- * Profile counters for vasm blocks for each optimized JIT region.  Along with
- * the counters, we keep the opcode of the first Vasm instruction in each block
- * as metadata (prior to inserting the profile counters), which is used to
- * validate the profile.
+ * Profile counters for vasm blocks for each optimized JIT region and prologue.
+ * Along with the counters, we keep the opcode of the first Vasm instruction
+ * in each block as metadata (prior to inserting the profile counters), which
+ * is used to validate the profile.
  */
 using VOpRaw = std::underlying_type<Vinstr::Opcode>::type;
-RegionProfCounters<int64_t, VOpRaw> s_blockCounters;
+TransProfCounters<int64_t, VOpRaw> s_blockCounters;
+
+bool ignoreOp(Vinstr::Opcode op) {
+  return op == Vinstr::phidef || op == Vinstr::landingpad;
+}
 
 /*
  * Insert profile counters for the blocks in the given unit.
  */
-void insert(Vunit& unit) {
+template <typename T>
+void insert(Vunit& unit, const T& key) {
   assertx(isJitSerializing());
 
-  if (!unit.context) return;
-  auto const regionPtr = unit.context->region;
-  if (!regionPtr) return;
-  const RegionEntryKey regionKey(*regionPtr);
-
-  splitCriticalEdges(unit);
+  // This isn't necessary for correctness, but it ensures we add
+  // counters for all possible edges. It also helps us stay in sync
+  // with the register allocator (which needs these invariants
+  // anyways).
+  assertx(checkNoCriticalEdges(unit));
+  assertx(checkNoSideExits(unit));
 
   auto const blocks = sortBlocks(unit);
-  auto const livein = computeLiveness(unit, abi(), blocks);
-  auto const gp_regs = abi().gpUnreserved;
-  auto const rgpFallback = abi().gp().choose();
-  auto const rsf = abi().sf.choose();
-
-  for (auto b : blocks) {
+  for (auto const b : blocks) {
     auto& block = unit.blocks[b];
-    auto const counterAddr = s_blockCounters.addCounter(regionKey,
-                                                        block.code.front().op);
-    auto const& live_set = livein[b];
-    auto const save_sf = live_set[Vreg(rsf)] ||
-                         RuntimeOption::EvalJitPGOVasmBlockCountersForceSaveSF;
 
-    // search for an available gp register to load the counter's address into it
-    auto save_gp = true;
-    auto rgp = rgpFallback;
-    gp_regs.forEach([&](PhysReg r) {
-                      if (save_gp && !live_set[Vreg(r)]) {
-                        save_gp = false;
-                        rgp = r;
-                      }
-                    });
-    if (RuntimeOption::EvalJitPGOVasmBlockCountersForceSaveGP) save_gp = true;
+    size_t idx = 0;
+    while (ignoreOp(block.code[idx].op)) ++idx;
 
-    // emit the increment of the counter, saving/restoring the used registers on
-    // the native stack before/after if needed.
-    // NB: decqmlock instructions are currently used to update the counters, so
-    // they actually start at zero and grow down from there.  The sign is then
-    // flipped when serializing the data in RegionProfCounters::serialize().
-    jit::vector<Vinstr> new_insts;
-    if (save_gp) new_insts.insert(new_insts.end(), push{rgp});
-    if (save_sf) new_insts.insert(new_insts.end(), pushf{rsf});
-    new_insts.insert(new_insts.end(), ldimmq{counterAddr, rgp});
-    new_insts.insert(new_insts.end(), decqmlock{rgp[0], rsf});
-    if (save_sf) new_insts.insert(new_insts.end(), popf{rsf});
-    if (save_gp) new_insts.insert(new_insts.end(), pop{rgp});
+    auto const counter = s_blockCounters.addCounter(key, block.code[idx].op);
 
-    // set irctx for the newly added instructions
-    auto const irctx = block.code.front().irctx();
-    for (auto& ni : new_insts) {
-      ni.set_irctx(irctx);
-    }
-
-    // insert new instructions in the beginning of the block, but after any
-    // existing phidef
-    auto insertPt = block.code.begin();
-    while (insertPt->op == Vinstr::phidef) insertPt++;
-    block.code.insert(insertPt, new_insts.begin(), new_insts.end());
+    vmodify(
+      unit,
+      b,
+      idx,
+      [&] (Vout& v) {
+        // We use decqmlocknosf here so we don't have to worry about
+        // potentially clobbering a live sf. If we later determine
+        // it's dead (which is the usual case), we'll lower it to a
+        // regular decqmlock.
+        auto const addr = v.cns(counter);
+        v << decqmlocknosf{addr[0]};
+        return 0;
+      }
+    );
   }
 
-  FTRACE(1, "VasmBlockCounters::insert: modified unit\n{}", show(unit));
+  if (Trace::moduleEnabled(Trace::vasm_block_count, 1) ||
+      Trace::moduleEnabled(Trace::vasm, kVasmBlockCountLevel)) {
+    printUnit(0, "after vasm-block-counts insert counters", unit);
+  }
 }
 
 /*
  * Checks whether the profile data in `counters' and `opcodes' matches the given
- * `unit'.  If they don't, a string with the error found is returned.  Otherwise
+ * `unit'. If they don't, a string with the error found is returned. Otherwise
  * (on success), an empty string is returned.
  */
 std::string checkProfile(const Vunit& unit,
                          const jit::vector<Vlabel>& sortedBlocks,
                          const jit::vector<int64_t>& counters,
                          const jit::vector<VOpRaw>& opcodes) {
-  if (counters.size() == 0) return "no profile for this region";
+  auto const kind = unit.context->kind == TransKind::OptPrologue ? "prologue" : "region";
+  if (counters.size() == 0) return folly::sformat("no profile for this {}", kind);
 
   std::string errorMsg;
   size_t opcodeMismatches=0;
 
-  auto reportRegion = [&] {
+  auto report = [&] {
     if (!errorMsg.empty()) return;
-    errorMsg = show(unit.context->region->entry()->start()) + "\n";
-    FTRACE(1, "VasmBlockCounters::checkProfile: SrcKey={}", errorMsg);
+    if (unit.context->kind == TransKind::OptPrologue) {
+      errorMsg = show(unit.context->pid) + "\n";
+      FTRACE(1, "VasmBlockCounters::checkProfile: PrologueID={}", errorMsg);
+    } else {
+      errorMsg = show(unit.context->region->entry()->start()) + "\n";
+      FTRACE(1, "VasmBlockCounters::checkProfile: SrcKey={}", errorMsg);
+    }
   };
 
   for (size_t index = 0; index < sortedBlocks.size(); index++) {
     auto b = sortedBlocks[index];
     auto& block = unit.blocks[b];
     if (index >= counters.size()) {
-      reportRegion();
+      report();
       auto const msg = folly::sformat(
         "missing block counter for B{} (index = {}, counters.size() = {})\n",
         size_t{b}, index, counters.size());
@@ -149,10 +137,16 @@ std::string checkProfile(const Vunit& unit,
       errorMsg += msg;
       return errorMsg;
     }
-    auto const op_opti = block.code.front().op;
+
+    auto const op_opti = [&] {
+      size_t idx = 0;
+      while (ignoreOp(block.code[idx].op)) ++idx;
+      return block.code[idx].op;
+    }();
+
     auto const op_prof = opcodes[index];
     if (op_prof != op_opti) {
-      reportRegion();
+      report();
       auto const msg = folly::sformat(
         "mismatch opcode for B{} (index = {}): "
         "profile was {} optimized is {}\n",
@@ -175,32 +169,27 @@ std::string checkProfile(const Vunit& unit,
  * Set the weights of the blocks in the given unit based on profile data, if
  * available.
  */
-void setWeights(Vunit& unit) {
+template <typename T>
+void setWeights(Vunit& unit, const T& key) {
   assertx(isJitDeserializing());
 
-  if (!unit.context) return;
-  auto const regionPtr = unit.context->region;
-  if (!regionPtr) return;
-  const RegionEntryKey regionKey(*regionPtr);
-
   jit::vector<VOpRaw> opcodes;
-  auto counters = s_blockCounters.getCounters(regionKey, opcodes);
+  auto counters = s_blockCounters.getCounters(key, opcodes);
 
-  splitCriticalEdges(unit);
+  assertx(checkNoCriticalEdges(unit));
+  assertx(checkNoSideExits(unit));
 
   auto sortedBlocks = sortBlocks(unit);
 
-  FTRACE(1, "VasmBlockCounters::setWeights: original unit\n{}", show(unit));
+  FTRACE(2, "VasmBlockCounters::setWeights: original unit\n{}", show(unit));
 
   std::string errorMsg = checkProfile(unit, sortedBlocks, counters, opcodes);
 
-  auto DEBUG_ONLY prefix = "un";
   bool enoughProfile = false;
 
   if (errorMsg == "") {
     // Check that enough profile was collected.
     if (counters[0] >= RuntimeOption::EvalJitPGOVasmBlockCountersMinEntryValue) {
-      prefix = "";
       enoughProfile = true;
       // Update the block weights.
       for (size_t index = 0; index < sortedBlocks.size(); index++) {
@@ -223,35 +212,53 @@ void setWeights(Vunit& unit) {
                                   enoughProfile ? "matches" :
                                   "matches, but not enough profile data");
   }
-  FTRACE(1, "VasmBlockCounters::setWeights: {}modified unit\n{}",
-         prefix, show(unit));
+
+  if (Trace::moduleEnabled(Trace::vasm_block_count, 1) ||
+      Trace::moduleEnabled(Trace::vasm, kVasmBlockCountLevel)) {
+    printUnit(0, "after vasm-block-counts set weights", unit);
+  }
 }
 
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 
-folly::Optional<uint64_t> getRegionWeight(const RegionDesc& region) {
+Optional<uint64_t> getRegionWeight(const RegionDesc& region) {
   if (!RO::EvalJitPGOVasmBlockCounters || !isJitDeserializing()) {
-    return folly::none;
+    return std::nullopt;
   }
   auto const key = RegionEntryKey(region);
   auto const weight = s_blockCounters.getFirstCounter(key);
-  if (!weight) return folly::none;
+  if (!weight) return std::nullopt;
   return safe_cast<uint64_t>(*weight);
+}
+
+template <typename T>
+void update(Vunit& unit, const T& key){
+  if (isJitSerializing()) {
+    // Insert block profile counters.
+    insert(unit, key);
+  } else if (isJitDeserializing()) {
+    // Look up the information from the profile, and use it if found.
+    setWeights(unit, key);
+  }
 }
 
 void profileGuidedUpdate(Vunit& unit) {
   if (!RuntimeOption::EvalJitPGOVasmBlockCounters) return;
   if (!unit.context) return;
-  if (unit.context->kind != TransKind::Optimize) return;
+  auto const optimizePrologue = unit.context->kind == TransKind::OptPrologue &&
+    RuntimeOption::EvalJitPGOVasmBlockCountersOptPrologue;
 
-  if (isJitSerializing()) {
-    // Insert block profile counters.
-    insert(unit);
-  } else if (isJitDeserializing()) {
-    // Look up the information from the profile, and use it if found.
-    setWeights(unit);
+  if (unit.context->kind == TransKind::Optimize) {
+    auto const regionPtr = unit.context->region;
+    if (!regionPtr) return;
+    const RegionEntryKey regionKey(*regionPtr);
+    update(unit, regionKey);
+  } else if (optimizePrologue) {
+    auto const pid = unit.context->pid;
+    if (pid.funcId() == FuncId::Invalid) return;
+    update(unit, pid);
   }
 }
 
@@ -261,10 +268,12 @@ void serialize(ProfDataSerializer& ser) {
   s_blockCounters.serialize(ser);
 }
 
-///////////////////////////////////////////////////////////////////////////////
-
 void deserialize(ProfDataDeserializer& des) {
   s_blockCounters.deserialize(des);
+}
+
+void free() {
+  s_blockCounters.freeCounters();
 }
 
 ///////////////////////////////////////////////////////////////////////////////

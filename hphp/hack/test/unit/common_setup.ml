@@ -54,17 +54,26 @@ let setup ~(sqlite : bool) (tcopt : GlobalOptions.t) : setup =
     (Path.make @@ in_fake_dir "root/");
 
   (* We'll need to parse these files in order to create a naming table, which
-    will be used for look up of symbols in type checking. *)
+     will be used for look up of symbols in type checking. *)
   Disk.write_file ~file:(in_fake_dir "root/Foo.php") ~contents:foo_contents;
   Disk.write_file ~file:(in_fake_dir "root/Bar.php") ~contents:bar_contents;
   let foo_path = Relative_path.from_root ~suffix:"Foo.php" in
   let bar_path = Relative_path.from_root ~suffix:"Bar.php" in
   let nonexistent_path = Relative_path.from_root ~suffix:"Nonexistent.php" in
   (* Parsing produces the file infos that the naming table module can use
-    to construct the forward naming table (files-to-symbols) *)
+     to construct the forward naming table (files-to-symbols) *)
   let popt = ParserOptions.default in
+  let deps_mode = Typing_deps_mode.SQLiteMode in
+  let ctx =
+    Provider_context.empty_for_tool
+      ~popt
+      ~tcopt
+      ~backend:(Provider_backend.get ())
+      ~deps_mode
+  in
   let (file_infos, _errors, _failed_parsing) =
     Parsing_service.go
+      ctx
       None
       Relative_path.Set.empty
       ~get_next:(MultiWorker.next None [foo_path; bar_path])
@@ -73,24 +82,8 @@ let setup ~(sqlite : bool) (tcopt : GlobalOptions.t) : setup =
   in
   let naming_table = Naming_table.create file_infos in
   (* Construct the reverse naming table (symbols-to-files) *)
-  let fast = Naming_table.to_fast naming_table in
-  let ctx =
-    Provider_context.empty_for_tool
-      ~popt
-      ~tcopt
-      ~backend:(Provider_backend.get ())
-  in
-  Relative_path.Map.iter
-    fast
-    ~f:(fun (name : Relative_path.t) (info : FileInfo.names) ->
-      Naming_global.ndecl_file_fast
-        ctx
-        name
-        ~funs:info.FileInfo.n_funs
-        ~classes:info.FileInfo.n_classes
-        ~record_defs:info.FileInfo.n_record_defs
-        ~typedefs:info.FileInfo.n_types
-        ~consts:info.FileInfo.n_consts);
+  Naming_table.fold naming_table ~init:() ~f:(fun fn fileinfo () ->
+      Naming_global.ndecl_file_skip_if_already_bound ctx fn fileinfo);
 
   let (ctx, naming_table) =
     if sqlite then (
@@ -99,13 +92,14 @@ let setup ~(sqlite : bool) (tcopt : GlobalOptions.t) : setup =
         Naming_table.save naming_table db_name
       in
       (* Now, I want a fresh ctx with no reverse-naming entries in it,
-      and I want it to be backed by a sqlite naming database. *)
+         and I want it to be backed by a sqlite naming database. *)
       Provider_backend.set_local_memory_backend_with_defaults ();
       let sqlite_ctx =
         Provider_context.empty_for_tool
           ~popt:(Provider_context.get_popt ctx)
           ~tcopt:(Provider_context.get_tcopt ctx)
           ~backend:(Provider_backend.get ())
+          ~deps_mode:(Provider_context.get_deps_mode ctx)
       in
       (sqlite_ctx, Naming_table.load_from_sqlite sqlite_ctx db_name)
     ) else

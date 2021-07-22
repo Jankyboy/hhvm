@@ -27,17 +27,13 @@ class classWithoutToString
 <<__EntryPoint>> function main(): void {
 echo "*** Testing class_uses() : variation ***\n";
 
-set_error_handler(fun('test_error_handler'));
+set_error_handler(test_error_handler<>);
 
 // Initialise function arguments not being substituted (if any)
 $autoload = true;
 
 //resource
 $res = fopen(__FILE__,'r');
-
-//get an unset variable
-$unset_var = 10;
-unset ($unset_var);
 
 // heredoc string
 $heredoc = <<<EOT
@@ -87,13 +83,7 @@ $inputs = darray[
       // object data
       'instance of classWithToString' => new classWithToString(),
       'instance of classWithoutToString' => new classWithoutToString(),
-
-      // undefined data
-      'undefined var' => @$undefined_var,
-
-      // unset data
-      'unset var' => @$unset_var,
-
+      
       //resource
       'resource' => $res,
 ];

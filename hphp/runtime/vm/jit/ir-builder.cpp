@@ -75,11 +75,10 @@ bool isMBaseLoad(const IRInstruction* inst) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-IRBuilder::IRBuilder(IRUnit& unit, const BCMarker& initMarker)
+IRBuilder::IRBuilder(IRUnit& unit, const Func* func)
   : m_unit(unit)
-  , m_initialMarker(initMarker)
-  , m_curBCContext{initMarker, 0}
-  , m_state(initMarker)
+  , m_curBCContext{BCMarker{}, 0}
+  , m_state(func)
   , m_curBlock(m_unit.entry())
 {
   if (RuntimeOption::EvalHHIRGenOpts) {
@@ -99,10 +98,11 @@ bool IRBuilder::shouldConstrainGuards() const {
 void IRBuilder::appendInstruction(IRInstruction* inst) {
   FTRACE(1, "  append {}\n", inst->toString());
   assertx(inst->marker().valid());
+  assertx(checkOperandTypes(inst));
   if (inst->is(Nop, DefConst)) return;
 
   if (shouldConstrainGuards()) {
-    auto const l = [&]() -> folly::Optional<Location> {
+    auto const l = [&]() -> Optional<Location> {
       switch (inst->op()) {
         case AssertLoc:
         case CheckLoc:
@@ -116,15 +116,15 @@ void IRBuilder::appendInstruction(IRInstruction* inst) {
 
         case AssertMBase:
         case CheckMBase:
-          return folly::make_optional<Location>(Location::MBase{});
+          return make_optional<Location>(Location::MBase{});
 
         case LdMem:
           return isMBaseLoad(inst)
-            ? folly::make_optional<Location>(Location::MBase{})
-            : folly::none;
+            ? make_optional<Location>(Location::MBase{})
+            : std::nullopt;
 
         default:
-          return folly::none;
+          return std::nullopt;
       }
       not_reached();
     }();
@@ -159,6 +159,18 @@ void IRBuilder::appendInstruction(IRInstruction* inst) {
   m_curBlock->push_back(inst);
   m_state.update(inst);
   if (inst->isTerminal()) m_state.finishBlock(m_curBlock);
+
+  // If the instruction is block ending and introduces a bottom type, we are
+  // now in an unreachable state.
+  if (inst->isNextEdgeUnreachable() && inst->isBlockEnd()) {
+    assertx(!inst->isTerminal());
+    m_curBlock = m_unit.defBlock(1);
+    m_curBlock->setHint(Block::Hint::Unused);
+    inst->setNext(m_curBlock);
+    m_state.finishBlock(inst->block());
+    m_state.startBlock(m_curBlock, false);
+    gen(Unreachable, ASSERT_REASON);
+  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -296,8 +308,19 @@ SSATmp* IRBuilder::preOptimizeLdStk(IRInstruction* inst) {
   return preOptimizeLdLocation(inst, stk(inst->extra<LdStk>()->offset));
 }
 
+SSATmp* IRBuilder::preOptimizeLdMem(IRInstruction* inst) {
+  auto const mbr = isMBaseLoad(inst) || inst->src(0) == m_state.mbr().ptr;
+  return mbr ? preOptimizeLdLocation(inst, Location::MBase{}) : nullptr;
+}
+
 SSATmp* IRBuilder::preOptimizeLdMBase(IRInstruction* inst) {
-  if (auto ptr = m_state.mbr().ptr) return ptr;
+  auto const type = m_state.mbase().type.lval(Ptr::Ptr);
+  inst->setTypeParam(inst->typeParam() & type);
+
+  if (auto const ptr = m_state.mbr().ptr) {
+    if (ptr->isA(inst->typeParam())) return ptr;
+    return gen(AssertType, inst->typeParam(), ptr);
+  }
   return nullptr;
 }
 
@@ -369,6 +392,7 @@ SSATmp* IRBuilder::preOptimize(IRInstruction* inst) {
   X(CheckMBase)
   X(LdLoc)
   X(LdStk)
+  X(LdMem)
   X(LdMBase)
   X(LdClosureCls)
   X(LdClosureThis)
@@ -479,7 +503,7 @@ void IRBuilder::exceptionStackBoundary() {
    * trace that the unwinder won't be able to see.
    */
   FTRACE(2, "exceptionStackBoundary()\n");
-  assertx(m_state.bcSPOff() == curMarker().spOff());
+  assertx(m_state.bcSPOff() == curMarker().bcSPOff());
   m_exnStack.syncedSpLevel = m_state.bcSPOff();
   m_state.resetStackModified();
 }
@@ -659,7 +683,7 @@ bool IRBuilder::constrainTypeSrc(TypeSource typeSrc, GuardConstraint gc) {
  */
 bool IRBuilder::constrainAssert(const IRInstruction* inst,
                                 GuardConstraint gc, Type srcType,
-                                folly::Optional<Type> knownType) {
+                                Optional<Type> knownType) {
   if (!knownType) knownType = inst->typeParam();
 
   // If the known type fits the constraint, we're done.
@@ -717,12 +741,12 @@ uint32_t IRBuilder::numGuards() const {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-const LocalState& IRBuilder::local(uint32_t id, GuardConstraint gc) {
+LocalState IRBuilder::local(uint32_t id, GuardConstraint gc) {
   constrainLocal(id, gc, "");
   return m_state.local(id);
 }
 
-const StackState& IRBuilder::stack(IRSPRelOffset offset, GuardConstraint gc) {
+StackState IRBuilder::stack(IRSPRelOffset offset, GuardConstraint gc) {
   constrainStack(offset, gc);
   return m_state.stack(offset);
 }
@@ -744,7 +768,7 @@ Location IRBuilder::loc(uint32_t id) const {
   return Location::Local { id };
 }
 Location IRBuilder::stk(IRSPRelOffset off) const {
-  auto const fpRel = off.to<FPInvOffset>(m_state.irSPOff());
+  auto const fpRel = off.to<SBInvOffset>(m_state.irSPOff());
   return Location::Stack { fpRel };
 }
 
@@ -781,7 +805,7 @@ bool IRBuilder::startBlock(Block* block, bool hasUnprocessedPred) {
   always_assert(m_state.fp() != nullptr);
 
   FTRACE(2, "IRBuilder switching to block B{}: {}\n", block->id(),
-         show(m_state));
+         m_state.show());
   return true;
 }
 
@@ -825,13 +849,11 @@ void IRBuilder::resetOffsetMapping() {
   m_skToBlockMap.clear();
 }
 
-jit::flat_map<SrcKey, Block*> IRBuilder::saveAndClearOffsetMapping() {
+IRBuilder::SkToBlockMap IRBuilder::saveAndClearOffsetMapping() {
   return std::move(m_skToBlockMap);
 }
 
-void IRBuilder::restoreOffsetMapping(
-  jit::flat_map<SrcKey, Block*>&& offsetMapping
-) {
+void IRBuilder::restoreOffsetMapping(SkToBlockMap&& offsetMapping) {
   m_skToBlockMap = std::move(offsetMapping);
 }
 

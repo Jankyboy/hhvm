@@ -29,20 +29,22 @@
 #include "hphp/runtime/base/backtrace.h"
 #include "hphp/runtime/base/comparisons.h"
 #include "hphp/runtime/base/container-functions.h"
+#include "hphp/runtime/base/datatype.h"
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/base/file-stream-wrapper.h"
 #include "hphp/runtime/base/implicit-context.h"
+#include "hphp/runtime/base/program-functions.h"
 #include "hphp/runtime/base/request-tracing.h"
 #include "hphp/runtime/base/stream-wrapper-registry.h"
 #include "hphp/runtime/base/unit-cache.h"
 #include "hphp/runtime/base/variable-serializer.h"
 #include "hphp/runtime/ext/fb/ext_fb.h"
 #include "hphp/runtime/ext/collections/ext_collections-pair.h"
+#include "hphp/runtime/ext/std/ext_std_closure.h"
 #include "hphp/runtime/vm/class-meth-data-ref.h"
 #include "hphp/runtime/vm/extern-compiler.h"
 #include "hphp/runtime/vm/memo-cache.h"
 #include "hphp/runtime/vm/repo-global-data.h"
-#include "hphp/runtime/vm/repo.h"
 #include "hphp/runtime/vm/runtime.h"
 #include "hphp/runtime/vm/vm-regs.h"
 #include "hphp/util/file.h"
@@ -76,9 +78,7 @@ bool HHVM_FUNCTION(autoload_set_paths,
                    const String& root) {
   // If we are using a native autoload map you are not allowed to override it
   // in repo mode
-  if (RuntimeOption::RepoAuthoritative &&
-      RuntimeOption::EvalUseRepoAutoloadMap &&
-      Repo::get().global().AutoloadMap.get()) {
+  if (RuntimeOption::RepoAuthoritative) {
     return false;
   }
 
@@ -211,7 +211,7 @@ namespace {
  * 10 (CONTAINER): any PHP array, collection, or hack array; data is the
  *                 keys and values of the container in insertion order,
  *                 serialized as above, followed by the STOP code
- * 11 (STOP): terminates a CONTAINER encoding
+ * 16 (STOP): terminates a CONTAINER encoding
  */
 
 enum SerializeMemoizeCode {
@@ -304,7 +304,7 @@ void serialize_memoize_array(StringBuffer& sb, int depth, const ArrayData* ad) {
 
 void serialize_memoize_set(StringBuffer& sb, const ArrayData* ad) {
   serialize_memoize_code(sb, SER_MC_CONTAINER);
-  IterateKVNoInc(ad, [&] (TypedValue k, TypedValue) {
+  IterateKV(ad, [&] (TypedValue k, TypedValue) {
     serialize_memoize_arraykey(sb, k);
     serialize_memoize_arraykey(sb, k);
   });
@@ -337,7 +337,7 @@ void serialize_memoize_obj(StringBuffer& sb, int depth, ObjectData* obj) {
   if (obj->isCollection()) {
     serialize_memoize_col(sb, depth, obj);
   } else if (obj->instanceof(s_IMemoizeParam)) {
-    Variant ser = obj->o_invoke_few_args(s_getInstanceKey, 0);
+    Variant ser = obj->o_invoke_few_args(s_getInstanceKey, RuntimeCoeffects::fixme(), 0);
     serialize_memoize_code(sb, SER_MC_OBJECT);
     serialize_memoize_string_data(sb, ser.toString().get());
   } else {
@@ -395,8 +395,15 @@ void serialize_memoize_tv(StringBuffer& sb, int depth, TypedValue tv) {
       break;
 
     case KindOfClass:
-      serialize_memoize_code(sb, SER_MC_CLS);
-      serialize_memoize_string_data(sb, tv.m_data.pclass->name());
+      serialize_memoize_code(sb, SER_MC_STRING);
+      serialize_memoize_string_data(
+        sb, classToStringHelper(tv.m_data.pclass));
+      break;
+
+    case KindOfLazyClass:
+      serialize_memoize_code(sb, SER_MC_STRING);
+      serialize_memoize_string_data(
+        sb, lazyClassToStringHelper(tv.m_data.plazyclass));
       break;
 
     case KindOfPersistentString:
@@ -410,10 +417,6 @@ void serialize_memoize_tv(StringBuffer& sb, int depth, TypedValue tv) {
       serialize_memoize_set(sb, tv.m_data.parr);
       break;
 
-    case KindOfPersistentDArray:
-    case KindOfDArray:
-    case KindOfPersistentVArray:
-    case KindOfVArray:
     case KindOfPersistentVec:
     case KindOfVec:
     case KindOfPersistentDict:
@@ -440,7 +443,6 @@ void serialize_memoize_tv(StringBuffer& sb, int depth, TypedValue tv) {
       break;
 
     case KindOfResource:
-    case KindOfLazyClass: // TODO(T68810726)
     case KindOfRecord: { // TODO(T41025646)
       auto msg = folly::format(
         "Cannot Serialize unexpected type {}",
@@ -499,6 +501,11 @@ TypedValue serialize_memoize_param_str(StringData* str) {
   return serialize_memoize_string_top(str);
 }
 
+TypedValue serialize_memoize_param_lazycls(LazyClassData lcls) {
+  return serialize_memoize_string_top(
+    const_cast<StringData*>(lazyClassToStringHelper(lcls)));
+}
+
 TypedValue serialize_memoize_param_dbl(double val) {
   StringBuffer sb;
   serialize_memoize_code(sb, SER_MC_DOUBLE);
@@ -518,6 +525,10 @@ TypedValue HHVM_FUNCTION(serialize_memoize_param, TypedValue param) {
     return serialize_memoize_string_top(param.m_data.pstr);
   } else if (type == KindOfUninit || type == KindOfNull) {
     return make_tv<KindOfPersistentString>(s_nullMemoKey.get());
+  } else if (isLazyClassType(type)) {
+    return serialize_memoize_string_top(
+      const_cast<StringData*>(
+        lazyClassToStringHelper(param.m_data.plazyclass)));
   } else if (type == KindOfBoolean) {
     return make_tv<KindOfPersistentString>(
       param.m_data.num ? s_trueMemoKey.get() : s_falseMemoKey.get()
@@ -559,7 +570,7 @@ bool HHVM_FUNCTION(clear_static_memoization,
   };
 
   if (isStringType(clsStr.m_type)) {
-    auto const cls = Unit::loadClass(clsStr.m_data.pstr);
+    auto const cls = Class::load(clsStr.m_data.pstr);
     if (!cls) return false;
     if (isStringType(funcStr.m_type)) {
       auto const func = cls->lookupMethod(funcStr.m_data.pstr);
@@ -617,7 +628,7 @@ bool HHVM_FUNCTION(clear_lsb_memoization,
     return true;
   };
 
-  auto const cls = Unit::loadClass(clsStr.get());
+  auto const cls = Class::load(clsStr.get());
   if (!cls) return false;
 
   if (isStringType(funcStr.m_type)) {
@@ -698,7 +709,7 @@ TypedValue HHVM_FUNCTION(all_request_stats) {
   if (auto const trace = g_context->getRequestTrace()) {
     return tvReturn(from_stats_list(trace->stats()));
   }
-  return tvReturn(ArrayData::CreateDArray());
+  return tvReturn(ArrayData::CreateDict());
 }
 
 TypedValue HHVM_FUNCTION(all_process_stats) {
@@ -780,7 +791,8 @@ void HHVM_FUNCTION(prefetch_units, const Array& paths, bool hint) {
           "",
           nullptr,
           Native::s_noNativeFuncs,
-          false
+          false,
+          true
         );
       }
     );
@@ -827,6 +839,18 @@ TypedValue dynamicFun(const StringData* fun) {
       folly::sformat("Unable to find function {}", fun->data())
     );
   }
+  if (func->hasReifiedGenerics()) {
+    if (func->getReifiedGenericsInfo().allGenericsSoft()) {
+      raise_warning(
+        "Function %s is reified and cannot be used with dynamic_fun",
+        fun->data()
+      );
+    } else {
+      SystemLib::throwInvalidArgumentExceptionObject(
+        folly::sformat("Function {} is reified", fun->data())
+      );
+    }
+  }
   if (!func->isDynamicallyCallable() && DA == DynamicAttr::Require) {
     auto const level = RuntimeOption::EvalDynamicFunLevel;
     if (level == 2) {
@@ -843,7 +867,7 @@ TypedValue dynamicFun(const StringData* fun) {
 
 template <DynamicAttr DA = DynamicAttr::Require, bool checkVis = true>
 TypedValue dynamicClassMeth(const StringData* cls, const StringData* meth) {
-  auto const c = Unit::loadClass(cls);
+  auto const c = Class::load(cls);
   if (!c) {
     SystemLib::throwInvalidArgumentExceptionObject(
       folly::sformat("Unable to find class {}", cls->data())
@@ -889,6 +913,19 @@ TypedValue dynamicClassMeth(const StringData* cls, const StringData* meth) {
                          cls->data(), meth->data())
         );
       }
+    }
+  }
+  if (func->hasReifiedGenerics()) {
+    if (func->getReifiedGenericsInfo().allGenericsSoft()) {
+      raise_warning(
+        "Method %s::%s is reified and cannot be used with dynamic_class_meth",
+        cls->data(),
+        meth->data()
+      );
+    } else {
+      SystemLib::throwInvalidArgumentExceptionObject(
+        folly::sformat("Method {}::{} is reified", cls->data(), meth->data())
+      );
     }
   }
   if (!func->isDynamicallyCallable() && DA == DynamicAttr::Require) {
@@ -1074,7 +1111,7 @@ int64_t HHVM_FUNCTION(set_implicit_context, StringArg keyarg,
     vec.push_back(std::make_pair(p.first, p.second.second));
   }
   std::sort(vec.begin(), vec.end(), [](const Elem e1, const Elem e2) {
-                                      return compare(e1.first, e1.first);
+                                      return e1.first->compare(e2.first);
                                     });
   StringBuffer sb;
   for (auto const& e : vec) {
@@ -1105,6 +1142,162 @@ int64_t HHVM_FUNCTION(set_implicit_context_by_index, int64_t index) {
   }
   *ImplicitContext::activeCtx = g_context->m_implicitContexts[index];
   return prev_index;
+}
+
+namespace {
+
+Variant coeffects_call_helper(const Variant& function, const char* name,
+                              RuntimeCoeffects coeffects,
+                              bool getCoeffectsFromClosure) {
+  CallCtx ctx;
+  vm_decode_function(function, ctx);
+  if (!ctx.func) {
+    raise_error("%s expects first argument to be a closure or a "
+                "function pointer",
+                name);
+  }
+  if (getCoeffectsFromClosure &&
+      ctx.func->hasCoeffectRules() &&
+      ctx.func->getCoeffectRules().size() == 1 &&
+      ctx.func->getCoeffectRules()[0].isClosureParentScope()) {
+    assertx(ctx.func->isClosureBody());
+    auto const closure = reinterpret_cast<c_Closure*>(ctx.this_);
+    coeffects = closure->getCoeffects();
+  }
+  return Variant::attach(
+    g_context->invokeFunc(ctx.func, init_null_variant, ctx.this_, ctx.cls,
+                          coeffects, ctx.dynamic)
+  );
+}
+
+} // namespace
+
+Variant HHVM_FUNCTION(coeffects_backdoor, const Variant& function) {
+  return coeffects_call_helper(function, "HH\\Coeffects\\backdoor",
+                               RuntimeCoeffects::defaults(), true);
+}
+
+Variant HHVM_FUNCTION(enter_policied_of_internal, const Variant& function) {
+  return coeffects_call_helper(function,
+                               "HH\\Coeffects\\enter_policied_of_internal",
+                               RuntimeCoeffects::policied_of(), false);
+}
+
+bool HHVM_FUNCTION(is_dynamically_callable_inst_method, StringArg cls,
+                                                        StringArg meth) {
+  if (auto const c = Class::load(cls.get())) {
+    if (auto const m = c->lookupMethod(meth.get())) {
+      return !m->isStatic() && m->isDynamicallyCallable();
+    }
+  }
+  return false;
+}
+
+namespace {
+
+Class* getClass(TypedValue cls) {
+  switch (cls.m_type) {
+    case KindOfPersistentString:
+    case KindOfString:
+      return Class::load(cls.m_data.pstr);
+    case KindOfClass:
+      return cls.m_data.pclass;
+    case KindOfLazyClass:
+      return Class::load(cls.m_data.plazyclass.name());
+    case KindOfObject:
+      return cls.m_data.pobj->getVMClass();
+    case KindOfUninit:
+    case KindOfNull:
+    case KindOfBoolean:
+    case KindOfInt64:
+    case KindOfDouble:
+    case KindOfVec:
+    case KindOfPersistentVec:
+    case KindOfDict:
+    case KindOfPersistentDict:
+    case KindOfKeyset:
+    case KindOfPersistentKeyset:
+    case KindOfResource:
+    case KindOfFunc:
+    case KindOfRFunc:
+    case KindOfClsMeth:
+    case KindOfRClsMeth:
+    case KindOfRecord:
+      SystemLib::throwInvalidArgumentExceptionObject(
+        folly::sformat(
+          "Invalid argument type passed to reflection class constructor")
+      );
+  }
+  not_reached();
+};
+
+}
+
+bool HHVM_FUNCTION(reflection_class_is_abstract, TypedValue cls) {
+  auto const c = getClass(cls);
+  if (!c) {
+    SystemLib::throwInvalidArgumentExceptionObject(
+      folly::sformat("Unable to find class.")
+    );
+  }
+  return isAbstract(c);
+}
+
+String HHVM_FUNCTION(reflection_class_get_name, TypedValue classname) {
+  auto const cls = getClass(classname);
+  if (!cls) {
+    SystemLib::throwInvalidArgumentExceptionObject(
+      folly::sformat("Unable to find class.")
+    );
+  }
+  return cls->name()->data();
+}
+
+bool HHVM_FUNCTION(reflection_class_is_final, TypedValue cls) {
+  auto const c = getClass(cls);
+  if (!c) {
+    SystemLib::throwInvalidArgumentExceptionObject(
+      folly::sformat("Unable to find class.")
+    );
+  }
+  return c->attrs() & AttrFinal;
+}
+
+bool HHVM_FUNCTION(reflection_class_is_interface, TypedValue cls) {
+  auto const c = getClass(cls);
+  if (!c) {
+    SystemLib::throwInvalidArgumentExceptionObject(
+      folly::sformat("Unable to find class.")
+    );
+  }
+  return isInterface(c);
+}
+
+TypedValue HHVM_FUNCTION(get_executable_lines, StringArg path) {
+  auto const file = lookupUnit(path.get(), "", nullptr, Native::s_noNativeFuncs,
+                               false);
+  if (!file) {
+    SystemLib::throwInvalidArgumentExceptionObject(
+      folly::sformat("Unable to find file {}", path.get()->data())
+    );
+  }
+
+  auto const lines = get_executable_lines(file);
+  VecInit vinit{lines.size()};
+  for (auto line : lines) vinit.append(make_tv<KindOfInt64>(line));
+  return tvReturn(vinit.toVariant());
+}
+
+int64_t HHVM_FUNCTION(hphp_get_logger_request_id) {
+  return Logger::GetRequestId();
+}
+
+void HHVM_FUNCTION(enable_function_coverage) {
+  Func::EnableCoverage();
+}
+
+Array HHVM_FUNCTION(collect_function_coverage) {
+  return Func::GetCoverage();
 }
 
 static struct HHExtension final : Extension {
@@ -1144,6 +1337,10 @@ static struct HHExtension final : Extension {
     X(get_implicit_context);
     X(set_implicit_context);
     X(set_implicit_context_by_index);
+    X(get_executable_lines);
+    X(hphp_get_logger_request_id);
+    X(enable_function_coverage);
+    X(collect_function_coverage);
 #undef X
 #define X(nm) HHVM_NAMED_FE(HH\\rqtrace\\nm, HHVM_FN(nm))
     X(is_enabled);
@@ -1159,6 +1356,21 @@ static struct HHExtension final : Extension {
     X(AUTOLOAD_MAP_KIND_OF_CONSTANT, Constant);
     X(AUTOLOAD_MAP_KIND_OF_TYPE_ALIAS, TypeAlias);
 #undef X
+
+    HHVM_NAMED_FE(HH\\Coeffects\\backdoor, HHVM_FN(coeffects_backdoor));
+    HHVM_NAMED_FE(HH\\Coeffects\\enter_policied_of_internal,
+                  HHVM_FN(enter_policied_of_internal));
+
+    HHVM_NAMED_FE(__SystemLib\\is_dynamically_callable_inst_method,
+                  HHVM_FN(is_dynamically_callable_inst_method));
+    HHVM_NAMED_FE(__SystemLib\\reflection_class_get_name,
+                  HHVM_FN(reflection_class_get_name));
+    HHVM_NAMED_FE(__SystemLib\\reflection_class_is_abstract,
+                  HHVM_FN(reflection_class_is_abstract));
+    HHVM_NAMED_FE(__SystemLib\\reflection_class_is_final,
+                  HHVM_FN(reflection_class_is_final));
+    HHVM_NAMED_FE(__SystemLib\\reflection_class_is_interface,
+                  HHVM_FN(reflection_class_is_interface));
 
     loadSystemlib();
   }

@@ -1,236 +1,213 @@
-Parsed decls:
-
-{ Direct_decl_parser.classes = {};
-  funs =
-  { "\\a2" ->
-    { fe_pos = [3:10-12];
-      fe_type =
-      (Rwitness (root|array_typehints.php line 3, characters 10-11),
-       (Tfun
-          { ft_arity = (Fstandard ()); ft_tparams = [];
-            ft_where_constraints = []; ft_params = [];
-            ft_implicit_params =
-            { capability =
-              (Rhint (root|array_typehints.php line 3, characters 10-11),
-               (Tunion []))
-              };
-            ft_ret =
-            { et_enforced = false;
-              et_type =
-              (Rhint (root|array_typehints.php line 3, characters 16-33),
-               (Tarray (
-                  (Some (Rhint (root|array_typehints.php line 3, characters 22-24),
-                         (Tprim Tint))),
-                  (Some (Rhint (root|array_typehints.php line 3, characters 27-32),
-                         (Tprim Tstring)))
-                  )))
-              };
-            ft_flags =
-            (make_ft_flags sync none ~return_disposable:false
-              ~returns_mutable:false ~returns_void_to_rx:false);
-            ft_reactive = Nonreactive }));
-      fe_deprecated = None;  };
-    "\\d0" ->
-    { fe_pos = [15:10-12];
-      fe_type =
-      (Rwitness (root|array_typehints.php line 15, characters 10-11),
-       (Tfun
-          { ft_arity = (Fstandard ()); ft_tparams = [];
-            ft_where_constraints = []; ft_params = [];
-            ft_implicit_params =
-            { capability =
-              (Rhint (root|array_typehints.php line 15, characters 10-11),
-               (Tunion []))
-              };
-            ft_ret =
-            { et_enforced = false;
-              et_type =
-              (Rhint (root|array_typehints.php line 15, characters 16-21),
-               (Tdarray ((Rnone (| line 0, characters 0-0), Tany),
-                  (Rnone (| line 0, characters 0-0), Tany))))
-              };
-            ft_flags =
-            (make_ft_flags sync none ~return_disposable:false
-              ~returns_mutable:false ~returns_void_to_rx:false);
-            ft_reactive = Nonreactive }));
-      fe_deprecated = None;  };
-    "\\d2" ->
-    { fe_pos = [19:10-12];
-      fe_type =
-      (Rwitness (root|array_typehints.php line 19, characters 10-11),
-       (Tfun
-          { ft_arity = (Fstandard ()); ft_tparams = [];
-            ft_where_constraints = []; ft_params = [];
-            ft_implicit_params =
-            { capability =
-              (Rhint (root|array_typehints.php line 19, characters 10-11),
-               (Tunion []))
-              };
-            ft_ret =
-            { et_enforced = false;
-              et_type =
-              (Rhint (root|array_typehints.php line 19, characters 16-34),
-               (Tdarray (
-                  (Rhint (root|array_typehints.php line 19, characters 23-25),
-                   (Tprim Tint)),
-                  (Rhint (root|array_typehints.php line 19, characters 28-33),
-                   (Tprim Tstring))
-                  )))
-              };
-            ft_flags =
-            (make_ft_flags sync none ~return_disposable:false
-              ~returns_mutable:false ~returns_void_to_rx:false);
-            ft_reactive = Nonreactive }));
-      fe_deprecated = None;  };
-    "\\v0" ->
-    { fe_pos = [7:10-12];
-      fe_type =
-      (Rwitness (root|array_typehints.php line 7, characters 10-11),
-       (Tfun
-          { ft_arity = (Fstandard ()); ft_tparams = [];
-            ft_where_constraints = []; ft_params = [];
-            ft_implicit_params =
-            { capability =
-              (Rhint (root|array_typehints.php line 7, characters 10-11),
-               (Tunion []))
-              };
-            ft_ret =
-            { et_enforced = false;
-              et_type =
-              (Rhint (root|array_typehints.php line 7, characters 16-21),
-               (Tvarray (Rnone (| line 0, characters 0-0), Tany)))
-              };
-            ft_flags =
-            (make_ft_flags sync none ~return_disposable:false
-              ~returns_mutable:false ~returns_void_to_rx:false);
-            ft_reactive = Nonreactive }));
-      fe_deprecated = None;  };
-    "\\v1" ->
-    { fe_pos = [11:10-12];
-      fe_type =
-      (Rwitness (root|array_typehints.php line 11, characters 10-11),
-       (Tfun
-          { ft_arity = (Fstandard ()); ft_tparams = [];
-            ft_where_constraints = []; ft_params = [];
-            ft_implicit_params =
-            { capability =
-              (Rhint (root|array_typehints.php line 11, characters 10-11),
-               (Tunion []))
-              };
-            ft_ret =
-            { et_enforced = false;
-              et_type =
-              (Rhint (root|array_typehints.php line 11, characters 16-26),
-               (Tvarray
-                  (Rhint (root|array_typehints.php line 11, characters 23-25),
-                   (Tprim Tint))))
-              };
-            ft_flags =
-            (make_ft_flags sync none ~return_disposable:false
-              ~returns_mutable:false ~returns_void_to_rx:false);
-            ft_reactive = Nonreactive }));
-      fe_deprecated = None;  };
-    "\\vd0" ->
-    { fe_pos = [23:10-13];
-      fe_type =
-      (Rwitness (root|array_typehints.php line 23, characters 10-12),
-       (Tfun
-          { ft_arity = (Fstandard ()); ft_tparams = [];
-            ft_where_constraints = []; ft_params = [];
-            ft_implicit_params =
-            { capability =
-              (Rhint (root|array_typehints.php line 23, characters 10-12),
-               (Tunion []))
-              };
-            ft_ret =
-            { et_enforced = false;
-              et_type =
-              (Rhint (root|array_typehints.php line 23, characters 17-32),
-               (Tvarray_or_darray
-                  (Rnone (| line 0, characters 0-0), (Tprim Tarraykey)),
-                  (Rnone (| line 0, characters 0-0), Tany)))
-              };
-            ft_flags =
-            (make_ft_flags sync none ~return_disposable:false
-              ~returns_mutable:false ~returns_void_to_rx:false);
-            ft_reactive = Nonreactive }));
-      fe_deprecated = None;  };
-    "\\vd1" ->
-    { fe_pos = [27:10-13];
-      fe_type =
-      (Rwitness (root|array_typehints.php line 27, characters 10-12),
-       (Tfun
-          { ft_arity = (Fstandard ()); ft_tparams = [];
-            ft_where_constraints = []; ft_params = [];
-            ft_implicit_params =
-            { capability =
-              (Rhint (root|array_typehints.php line 27, characters 10-12),
-               (Tunion []))
-              };
-            ft_ret =
-            { et_enforced = false;
-              et_type =
-              (Rhint (root|array_typehints.php line 27, characters 17-37),
-               (Tvarray_or_darray
-                  (Rnone (| line 0, characters 0-0), (Tprim Tarraykey)),
-                  (Rhint (root|array_typehints.php line 27, characters 34-36),
-                   (Tprim Tint))))
-              };
-            ft_flags =
-            (make_ft_flags sync none ~return_disposable:false
-              ~returns_mutable:false ~returns_void_to_rx:false);
-            ft_reactive = Nonreactive }));
-      fe_deprecated = None;  };
-    "\\vd2" ->
-    { fe_pos = [31:10-13];
-      fe_type =
-      (Rwitness (root|array_typehints.php line 31, characters 10-12),
-       (Tfun
-          { ft_arity = (Fstandard ()); ft_tparams = [];
-            ft_where_constraints = []; ft_params = [];
-            ft_implicit_params =
-            { capability =
-              (Rhint (root|array_typehints.php line 31, characters 10-12),
-               (Tunion []))
-              };
-            ft_ret =
-            { et_enforced = false;
-              et_type =
-              (Rhint (root|array_typehints.php line 31, characters 17-45),
-               (Tvarray_or_darray
-                  (Rhint (root|array_typehints.php line 31, characters 34-36),
-                   (Tprim Tint)),
-                  (Rhint (root|array_typehints.php line 31, characters 39-44),
-                   (Tprim Tstring))))
-              };
-            ft_flags =
-            (make_ft_flags sync none ~return_disposable:false
-              ~returns_mutable:false ~returns_void_to_rx:false);
-            ft_reactive = Nonreactive }));
-      fe_deprecated = None;  };
-    "\\vd3" ->
-    { fe_pos = [35:10-13];
-      fe_type =
-      (Rwitness (root|array_typehints.php line 35, characters 10-12),
-       (Tfun
-          { ft_arity = (Fstandard ()); ft_tparams = [];
-            ft_where_constraints = []; ft_params = [];
-            ft_implicit_params =
-            { capability =
-              (Rhint (root|array_typehints.php line 35, characters 10-12),
-               (Tunion []))
-              };
-            ft_ret =
-            { et_enforced = false;
-              et_type =
-              (Rhint (root|array_typehints.php line 35, characters 17-51),
-               Tany)
-              };
-            ft_flags =
-            (make_ft_flags sync none ~return_disposable:false
-              ~returns_mutable:false ~returns_void_to_rx:false);
-            ft_reactive = Nonreactive }));
-      fe_deprecated = None;  } };
-  typedefs = {}; consts = {} }
+[("\\a2",
+  (Shallow_decl_defs.Fun
+     { Typing_defs.fe_deprecated = None; fe_module = None;
+       fe_internal = false;
+       fe_type =
+       (Rwitness_from_decl ([3:10-12]),
+        (Tfun
+           { ft_arity = (Fstandard ()); ft_tparams = [];
+             ft_where_constraints = []; ft_params = [];
+             ft_implicit_params = { capability = (CapDefaults [3:10-12]) };
+             ft_ret =
+             { et_enforced = Typing_defs_core.Unenforced;
+               et_type =
+               (Rhint ([3:16-35]),
+                (Tapply (([3:16-22], "\\HH\\dict"),
+                   [(Rhint ([3:23-26]), (Tprim Tint));
+                     (Rhint ([3:28-34]), (Tprim Tstring))]
+                   )))
+               };
+             ft_flags =
+             (make_ft_flags FSync ~return_disposable:false
+               ~returns_readonly:false ~readonly_this:false);
+             ft_ifc_decl = FDPolicied {PUBLIC} }));
+       fe_pos = [3:10-12]; fe_php_std_lib = false;
+       fe_support_dynamic_type = false }));
+  ("\\v0",
+   (Shallow_decl_defs.Fun
+      { Typing_defs.fe_deprecated = None; fe_module = None;
+        fe_internal = false;
+        fe_type =
+        (Rwitness_from_decl ([7:10-12]),
+         (Tfun
+            { ft_arity = (Fstandard ()); ft_tparams = [];
+              ft_where_constraints = []; ft_params = [];
+              ft_implicit_params = { capability = (CapDefaults [7:10-12]) };
+              ft_ret =
+              { et_enforced = Typing_defs_core.Unenforced;
+                et_type =
+                (Rhint ([7:16-22]),
+                 (Tapply (([7:16-22], "\\HH\\vec"),
+                    [(Rhint ([7:16-22]), Tany)])))
+                };
+              ft_flags =
+              (make_ft_flags FSync ~return_disposable:false
+                ~returns_readonly:false ~readonly_this:false);
+              ft_ifc_decl = FDPolicied {PUBLIC} }));
+        fe_pos = [7:10-12]; fe_php_std_lib = false;
+        fe_support_dynamic_type = false }));
+  ("\\v1",
+   (Shallow_decl_defs.Fun
+      { Typing_defs.fe_deprecated = None; fe_module = None;
+        fe_internal = false;
+        fe_type =
+        (Rwitness_from_decl ([11:10-12]),
+         (Tfun
+            { ft_arity = (Fstandard ()); ft_tparams = [];
+              ft_where_constraints = []; ft_params = [];
+              ft_implicit_params = { capability = (CapDefaults [11:10-12]) };
+              ft_ret =
+              { et_enforced = Typing_defs_core.Unenforced;
+                et_type =
+                (Rhint ([11:16-27]),
+                 (Tapply (([11:16-22], "\\HH\\vec"),
+                    [(Rhint ([11:23-26]), (Tprim Tint))])))
+                };
+              ft_flags =
+              (make_ft_flags FSync ~return_disposable:false
+                ~returns_readonly:false ~readonly_this:false);
+              ft_ifc_decl = FDPolicied {PUBLIC} }));
+        fe_pos = [11:10-12]; fe_php_std_lib = false;
+        fe_support_dynamic_type = false }));
+  ("\\d0",
+   (Shallow_decl_defs.Fun
+      { Typing_defs.fe_deprecated = None; fe_module = None;
+        fe_internal = false;
+        fe_type =
+        (Rwitness_from_decl ([15:10-12]),
+         (Tfun
+            { ft_arity = (Fstandard ()); ft_tparams = [];
+              ft_where_constraints = []; ft_params = [];
+              ft_implicit_params = { capability = (CapDefaults [15:10-12]) };
+              ft_ret =
+              { et_enforced = Typing_defs_core.Unenforced;
+                et_type =
+                (Rhint ([15:16-22]),
+                 (Tapply (([15:16-22], "\\HH\\dict"),
+                    [(Rhint ([15:16-22]), Tany); (Rhint ([15:16-22]), Tany)]
+                    )))
+                };
+              ft_flags =
+              (make_ft_flags FSync ~return_disposable:false
+                ~returns_readonly:false ~readonly_this:false);
+              ft_ifc_decl = FDPolicied {PUBLIC} }));
+        fe_pos = [15:10-12]; fe_php_std_lib = false;
+        fe_support_dynamic_type = false }));
+  ("\\d2",
+   (Shallow_decl_defs.Fun
+      { Typing_defs.fe_deprecated = None; fe_module = None;
+        fe_internal = false;
+        fe_type =
+        (Rwitness_from_decl ([19:10-12]),
+         (Tfun
+            { ft_arity = (Fstandard ()); ft_tparams = [];
+              ft_where_constraints = []; ft_params = [];
+              ft_implicit_params = { capability = (CapDefaults [19:10-12]) };
+              ft_ret =
+              { et_enforced = Typing_defs_core.Unenforced;
+                et_type =
+                (Rhint ([19:16-35]),
+                 (Tapply (([19:16-22], "\\HH\\dict"),
+                    [(Rhint ([19:23-26]), (Tprim Tint));
+                      (Rhint ([19:28-34]), (Tprim Tstring))]
+                    )))
+                };
+              ft_flags =
+              (make_ft_flags FSync ~return_disposable:false
+                ~returns_readonly:false ~readonly_this:false);
+              ft_ifc_decl = FDPolicied {PUBLIC} }));
+        fe_pos = [19:10-12]; fe_php_std_lib = false;
+        fe_support_dynamic_type = false }));
+  ("\\vd0",
+   (Shallow_decl_defs.Fun
+      { Typing_defs.fe_deprecated = None; fe_module = None;
+        fe_internal = false;
+        fe_type =
+        (Rwitness_from_decl ([23:10-13]),
+         (Tfun
+            { ft_arity = (Fstandard ()); ft_tparams = [];
+              ft_where_constraints = []; ft_params = [];
+              ft_implicit_params = { capability = (CapDefaults [23:10-13]) };
+              ft_ret =
+              { et_enforced = Typing_defs_core.Unenforced;
+                et_type =
+                (Rhint ([23:17-33]),
+                 (Tvec_or_dict
+                    (Rvec_or_dict_key ([23:17-33]), (Tprim Tarraykey)),
+                    (Rhint ([23:17-33]), Tany)))
+                };
+              ft_flags =
+              (make_ft_flags FSync ~return_disposable:false
+                ~returns_readonly:false ~readonly_this:false);
+              ft_ifc_decl = FDPolicied {PUBLIC} }));
+        fe_pos = [23:10-13]; fe_php_std_lib = false;
+        fe_support_dynamic_type = false }));
+  ("\\vd1",
+   (Shallow_decl_defs.Fun
+      { Typing_defs.fe_deprecated = None; fe_module = None;
+        fe_internal = false;
+        fe_type =
+        (Rwitness_from_decl ([27:10-13]),
+         (Tfun
+            { ft_arity = (Fstandard ()); ft_tparams = [];
+              ft_where_constraints = []; ft_params = [];
+              ft_implicit_params = { capability = (CapDefaults [27:10-13]) };
+              ft_ret =
+              { et_enforced = Typing_defs_core.Unenforced;
+                et_type =
+                (Rhint ([27:17-38]),
+                 (Tvec_or_dict
+                    (Rvec_or_dict_key ([27:17-38]), (Tprim Tarraykey)),
+                    (Rhint ([27:34-37]), (Tprim Tint))))
+                };
+              ft_flags =
+              (make_ft_flags FSync ~return_disposable:false
+                ~returns_readonly:false ~readonly_this:false);
+              ft_ifc_decl = FDPolicied {PUBLIC} }));
+        fe_pos = [27:10-13]; fe_php_std_lib = false;
+        fe_support_dynamic_type = false }));
+  ("\\vd2",
+   (Shallow_decl_defs.Fun
+      { Typing_defs.fe_deprecated = None; fe_module = None;
+        fe_internal = false;
+        fe_type =
+        (Rwitness_from_decl ([31:10-13]),
+         (Tfun
+            { ft_arity = (Fstandard ()); ft_tparams = [];
+              ft_where_constraints = []; ft_params = [];
+              ft_implicit_params = { capability = (CapDefaults [31:10-13]) };
+              ft_ret =
+              { et_enforced = Typing_defs_core.Unenforced;
+                et_type =
+                (Rhint ([31:17-46]),
+                 (Tvec_or_dict (Rhint ([31:34-37]), (Tprim Tint)),
+                    (Rhint ([31:39-45]), (Tprim Tstring))))
+                };
+              ft_flags =
+              (make_ft_flags FSync ~return_disposable:false
+                ~returns_readonly:false ~readonly_this:false);
+              ft_ifc_decl = FDPolicied {PUBLIC} }));
+        fe_pos = [31:10-13]; fe_php_std_lib = false;
+        fe_support_dynamic_type = false }));
+  ("\\vd3",
+   (Shallow_decl_defs.Fun
+      { Typing_defs.fe_deprecated = None; fe_module = None;
+        fe_internal = false;
+        fe_type =
+        (Rwitness_from_decl ([35:10-13]),
+         (Tfun
+            { ft_arity = (Fstandard ()); ft_tparams = [];
+              ft_where_constraints = []; ft_params = [];
+              ft_implicit_params = { capability = (CapDefaults [35:10-13]) };
+              ft_ret =
+              { et_enforced = Typing_defs_core.Unenforced;
+                et_type = (Rhint ([35:17-52]), Tany) };
+              ft_flags =
+              (make_ft_flags FSync ~return_disposable:false
+                ~returns_readonly:false ~readonly_this:false);
+              ft_ifc_decl = FDPolicied {PUBLIC} }));
+        fe_pos = [35:10-13]; fe_php_std_lib = false;
+        fe_support_dynamic_type = false }))
+  ]
 
 They matched!

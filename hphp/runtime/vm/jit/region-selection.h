@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_REGION_SELECTION_H_
-#define incl_HPHP_JIT_REGION_SELECTION_H_
+#pragma once
 
 #include <memory>
 #include <utility>
@@ -26,7 +25,6 @@
 
 #include <folly/Format.h>
 #include <folly/Hash.h>
-#include <folly/Optional.h>
 
 #include "hphp/runtime/vm/jit/containers.h"
 #include "hphp/runtime/vm/jit/location.h"
@@ -126,8 +124,9 @@ struct RegionDesc {
    * counts of these other blocks as well.
    */
   int64_t           blockProfCount(BlockId bid) const;
+  double            blockProfCountScale(BlockId bid) const;
 
-  Block*            addBlock(SrcKey sk, int length, FPInvOffset spOffset);
+  Block*            addBlock(SrcKey sk, int length, SBInvOffset spOffset);
   void              addBlock(BlockPtr newBlock);
   bool              hasBlock(BlockId id) const;
   void              replaceBlock(BlockId bid, BlockPtr newBlock);
@@ -137,19 +136,20 @@ struct RegionDesc {
   void              addArc(BlockId src, BlockId dst);
   void              removeArc(BlockId src, BlockId dst);
   void              addMerged(BlockId fromId, BlockId intoId);
-  folly::Optional<BlockId> prevRetrans(BlockId id) const;
-  folly::Optional<BlockId> nextRetrans(BlockId id) const;
+  Optional<BlockId> prevRetrans(BlockId id) const;
+  Optional<BlockId> nextRetrans(BlockId id) const;
   void              clearPrevRetrans(BlockId id);
   void              clearNextRetrans(BlockId id);
   void              setNextRetrans(BlockId id, BlockId next);
   void              append(const RegionDesc&  other);
   void              prepend(const RegionDesc& other);
   void              chainRetransBlocks();
+  void              setBlockProfCountScale(BlockId, double);
   uint32_t          instrSize() const;
   std::string       toString() const;
 
   void setHotWeight(uint64_t weight) { m_hotWeight = weight; }
-  folly::Optional<uint64_t> getHotWeight() const { return m_hotWeight; }
+  Optional<uint64_t> getHotWeight() const { return m_hotWeight; }
 
   const std::vector<Type>& inlineInputTypes() const {
     return m_inlineInputTypes;
@@ -172,6 +172,7 @@ private:
     BlockIdSet               merged; // other blocks that got merged into this
     BlockId                  prevRetransId{kInvalidTransID};
     BlockId                  nextRetransId{kInvalidTransID};
+    double                   profCountScale{1.0};
     bool                     hasIncoming{false};
     explicit BlockData(BlockPtr b = nullptr) : block(b) {}
   };
@@ -192,7 +193,7 @@ private:
 
   // When optimizing, we may know what a "hot weight" for this region would be
   // relative to other regions. Pass this information down to vasm-layout.
-  folly::Optional<uint64_t> m_hotWeight;
+  Optional<uint64_t> m_hotWeight;
 
   // For regions selected for inlining, track the types of input arguments
   std::vector<Type> m_inlineInputTypes;
@@ -278,8 +279,7 @@ struct PostConditions {
  */
 struct RegionDesc::Block {
 
-  Block(BlockId id, const Func* func, ResumeMode resumeMode,
-        Offset start, int length, FPInvOffset initSpOff);
+  Block(BlockId id, SrcKey start, int length, SBInvOffset initSpOff);
 
   Block& operator=(const Block&) = delete;
 
@@ -288,23 +288,18 @@ struct RegionDesc::Block {
    * starting SrcKey of this Block.
    */
   BlockId     id()                const { return m_id; }
-  const Unit* unit()              const { return m_func->unit(); }
-  const Func* func()              const { return m_func; }
-  SrcKey      start()             const {
-    return SrcKey { m_func, m_start, m_resumeMode };
-  }
-  SrcKey      last()              const {
-    return SrcKey { m_func, m_last, m_resumeMode };
-  }
+  const Unit* unit()              const { return m_start.unit(); }
+  const Func* func()              const { return m_start.func(); }
+  SrcKey      start()             const { return m_start; }
+  SrcKey      last()              const { return m_last; }
   int         length()            const { return m_length; }
   bool        empty()             const { return length() == 0; }
-  bool        contains(SrcKey sk) const;
-  FPInvOffset initialSpOffset()   const { return m_initialSpOffset; }
+  SBInvOffset initialSpOffset()   const { return m_initialSpOffset; }
   TransID     profTransID()       const { return m_profTransID; }
 
   void setID(BlockId id)                  { m_id = id; }
   void setProfTransID(TransID ptid)       { m_profTransID = ptid; }
-  void setInitialSpOffset(FPInvOffset sp) { m_initialSpOffset = sp; }
+  void setInitialSpOffset(SBInvOffset sp) { m_initialSpOffset = sp; }
 
   /*
    * Increase the length of the Block by 1.
@@ -353,13 +348,11 @@ private:
   void checkMetadata() const;
 
 private:
+  const SrcKey     m_start;
+  SrcKey           m_last;
   BlockId          m_id;
-  const Func*      m_func;
-  const ResumeMode m_resumeMode;
-  const Offset     m_start;
-  Offset           m_last;
   int              m_length;
-  FPInvOffset      m_initialSpOffset;
+  SBInvOffset      m_initialSpOffset;
   TransID          m_profTransID;
   GuardedLocations m_typePreConditions;
   PostConditions   m_postConds;
@@ -377,13 +370,12 @@ private:
 struct RegionContext {
   struct LiveType;
 
-  RegionContext(SrcKey sk, FPInvOffset spOff)
+  RegionContext(SrcKey sk, SBInvOffset spOff)
     : sk(sk), spOffset(spOff) {}
 
   SrcKey sk;
   jit::vector<LiveType> liveTypes;
-  bool liveBespoke = false;
-  FPInvOffset spOffset;
+  SBInvOffset spOffset;
 };
 
 /*
@@ -496,7 +488,7 @@ RegionDescPtr selectTracelet(const RegionContext& ctx, TransKind kind,
                              int32_t maxBCInstrs, bool inlining = false);
 
 struct HotTransContext {
-  TransID tid;
+  TransIDSet entries;
   TransCFG* cfg;
   const ProfData* profData;
   int32_t maxBCInstrs;
@@ -577,5 +569,3 @@ std::string show(const RegionDesc&);
 //////////////////////////////////////////////////////////////////////
 
 }}
-
-#endif

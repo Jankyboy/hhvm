@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_LIGHT_PROCESS_H_
-#define incl_HPHP_LIGHT_PROCESS_H_
+#pragma once
 
 #ifdef _MSC_VER
 # error LightProcess is not supported under MSVC!
@@ -130,9 +129,11 @@ private:
   Mutex m_procMutex;
   int m_afdt_fd;
   std::map<FILE*, pid_t> m_popenMap;
+
+ public:
+  // whether to abort when user change fails.
+  static bool g_strictUser;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif // incl_HPHP_LIGHT_PROCESS_H_

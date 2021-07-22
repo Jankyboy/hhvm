@@ -56,7 +56,7 @@ Variant StringUtil::Explode(const String& input, const String& delimiter,
     return false;
   }
 
-  Array ret(Array::CreateVArray());
+  Array ret(Array::CreateVec());
 
   if (input.empty()) {
     if (limit >= 0) {
@@ -163,7 +163,7 @@ Variant StringUtil::Split(const String& str, int64_t split_length /* = 1 */) {
   }
 
   int len = str.size();
-  VArrayInit ret(len / split_length + 1);
+  VecInit ret(len / split_length + 1);
   if (split_length >= len) {
     ret.append(str);
   } else {
@@ -435,7 +435,8 @@ String StringUtil::ROT13(const String& input) {
 }
 
 String StringUtil::Crypt(const String& input, const char *salt /* = "" */) {
-  if (salt && salt[0] == '\0') {
+  assertx(salt);
+  if (salt[0] == '\0') {
     raise_notice("crypt(): No salt parameter was specified."
       " You must use a randomly generated salt and a strong"
       " hash function to produce a secure hash.");

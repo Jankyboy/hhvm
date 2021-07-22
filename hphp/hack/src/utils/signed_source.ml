@@ -30,9 +30,11 @@ let hash data = Digest.to_hex (Digest.string data)
 
 let signing_token = make_signing_token token
 
+exception Token_not_found
+
 let sign_file data =
   let data = Str.global_replace sign_or_old_token token data in
-  if not @@ String_utils.is_substring token data then raise Not_found;
+  if not @@ String_utils.is_substring token data then raise Token_not_found;
   let signature = "SignedSource<<" ^ hash data ^ ">>" in
   Str.global_replace token_regexp signature data
 
@@ -40,7 +42,8 @@ let is_signed data =
   try
     let (_ : int) = Str.search_forward signing_regexp data 0 in
     true
-  with Not_found -> false
+  with
+  | Not_found -> false
 
 type sign_check_response =
   | Sign_ok

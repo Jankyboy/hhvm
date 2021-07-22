@@ -7,6 +7,7 @@
  * LICENSE file in the "hack" directory of this source tree.
  *
  */
+<<file:__EnableUnstableFeatures('readonly')>>
 
 /**
  * This file provides type information for some of HHVM's builtin classes.
@@ -41,15 +42,14 @@ namespace HH {
  * @guide /hack/collections/introduction
  * @guide /hack/collections/classes
  */
-
+<<__SupportDynamicType>>
 final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
   /**
    * @internal
    *
    * Pairs must be constructed with "Pair {$first, $second}".
    */
-  <<__Pure>>
-  private function __construct();
+  private function __construct()[];
 
   /**
    * Returns an `array` containing the values from the current `Pair`.
@@ -58,10 +58,9 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    *
    * @return - an `array` containing the values from the current `Pair`.
    */
-  <<__Pure, __MaybeMutable>>
   /* HH_FIXME[4110] pair needs to extend ConstVector<Tv1|Tv2> */
   /* HH_FIXME[4341] pair needs to extend ConstVector<Tv1|Tv2> */
-  public function toValuesArray<Tu>(): varray<Tu>
+  public function toValuesArray<Tu>()[]: varray<Tu>
     where Tv1 as Tu, Tv2 as Tu;
 
   /**
@@ -69,8 +68,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    *
    * @return - an `array` with the integer keys from the current `Pair`.
    */
-  <<__Pure, __MaybeMutable>>
-  public function toKeysArray(): varray<int>;
+  public readonly function toKeysArray()[]: varray<int>;
 
  /**
    * Returns a `Vector` containing the elements of the current `Pair`.
@@ -79,8 +77,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    *
    * @return - a `Vector` with the elements of the current `Pair`.
    */
-  <<__Pure, __MutableReturn, __MaybeMutable>>
-  public function toVector(): Vector<mixed>;
+  public function toVector()[]: Vector<mixed>;
 
  /**
    * Returns an immutable vector (`ImmVector`) containing the elements of the
@@ -88,8 +85,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    *
    * @return - an `ImmVector` with the elements of the current `Pair`.
    */
-  <<__Pure, __MaybeMutable>>
-  public function toImmVector(): ImmVector<mixed>;
+  public function toImmVector()[]: ImmVector<mixed>;
 
   /**
    * Returns an integer-keyed `Map` based on the elements of the current `Pair`.
@@ -98,8 +94,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    *
    * @return - an integer-keyed `Map` with the values of the current `Pair`.
    */
-  <<__Pure, __MutableReturn, __MaybeMutable>>
-  public function toMap(): Map<int, mixed>;
+  public function toMap()[]: Map<int, mixed>;
 
   /**
    * Returns an immutable, integer-keyed map (`ImmMap`) based on the elements of
@@ -109,28 +104,25 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    *
    * @return - an `ImmMap` with the values of the current `Pair`.
    */
-  <<__Pure, __MaybeMutable>>
-  public function toImmMap(): ImmMap<int, mixed>;
+  public function toImmMap()[]: ImmMap<int, mixed>;
 
   /**
    * Returns a `Set` with the values of the current `Pair`.
    *
    * @return - a `Set` with the current values of the current `Pair`.
    */
-  <<__Pure, __MutableReturn, __MaybeMutable>>
   /* HH_FIXME[4110] pair needs to extend ConstVector<Tv1|Tv2> */
   /* HH_FIXME[4341] pair needs to extend ConstVector<Tv1|Tv2> */
-  public function toSet(): Set<arraykey> where Tv1 as arraykey, Tv2 as arraykey;
+  public function toSet()[]: Set<arraykey> where Tv1 as arraykey, Tv2 as arraykey;
 
   /**
    * Returns an immutable set (`ImmSet`) with the values of the current `Pair`.
    *
    * @return - an `ImmSet` with the current values of the current `Pair`.
    */
-  <<__Pure, __MaybeMutable>>
   /* HH_FIXME[4110] pair needs to extend ConstVector<Tv1|Tv2> */
   /* HH_FIXME[4341] pair needs to extend ConstVector<Tv1|Tv2> */
-  public function toImmSet(): ImmSet<arraykey> where Tv1 as arraykey, Tv2 as arraykey;
+  public function toImmSet()[]: ImmSet<arraykey> where Tv1 as arraykey, Tv2 as arraykey;
 
   /**
    * Returns a lazy, access elements only when needed view of the current
@@ -148,8 +140,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    *
    * @guide /hack/collections/examples
    */
-  <<__Pure, __MutableReturn, __MaybeMutable>>
-  public function lazy(): \HH\Rx\KeyedIterable<int, mixed>;
+  public function lazy()[]: \HH\Rx\KeyedIterable<int, mixed>;
 
   /**
    * Returns an `ImmVector` containing the values of the current `Pair`.
@@ -158,8 +149,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    *
    * @return - an `ImmVector` containing the values of the current `Pair`.
    */
-  <<__Pure, __MutableReturn, __MaybeMutable>>
-  public function values(): ImmVector<mixed>;
+  public function values()[]: ImmVector<mixed>;
 
   /**
    * Returns an `ImmVector` with the values being the keys of the current
@@ -171,8 +161,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    * @return - an `ImmVector` containing the integer keys of the current
    *           `Pair` as values.
    */
-  <<__Pure, __MutableReturn, __MaybeMutable>>
-  public function keys(): ImmVector<int>;
+  public readonly function keys()[]: ImmVector<int>;
 
   /**
    * Returns an `ImmVector` containing the values after an operation has been
@@ -181,7 +170,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    * Every value in the current Pair is affected by a call to `map()`, unlike
    * `filter()` where only values that meet a certain criteria are affected.
    *
-   * @param $callback - The callback containing the operation to apply to the
+   * @param $fn - The callback containing the operation to apply to the
    *                    current `Pair` values.
    *
    * @return - an `ImmVector` containing the values after a user-specified
@@ -189,8 +178,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    *
    * @guide /hack/collections/examples
    */
-  <<__Pure, __AtMostRxAsArgs, __MutableReturn, __MaybeMutable>>
-  public function map<Tu>(<<__AtMostRxAsFunc>>(function(mixed): Tu) $callback): ImmVector<Tu>;
+  public function map<Tu>((function(mixed)[_]: Tu) $fn)[ctx $fn]: ImmVector<Tu>;
 
   /**
    * Returns an `ImmVector` containing the values after an operation has been
@@ -200,14 +188,13 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    * `mapWithKey()`, unlike `filterWithKey()` where only values that meet a
    * certain criteria are affected.
    *
-   * @param $callback - The $allback containing the operation to apply to the
+   * @param $fn - The $allback containing the operation to apply to the
    *                    current `Pair` keys and values.
    *
    * @return - an `ImmVector` containing the values after a user-specified
    *           operation on the current `Pair`'s keys and values is applied.
    */
-  <<__Pure, __AtMostRxAsArgs, __MutableReturn, __MaybeMutable>>
-  public function mapWithKey<Tu>(<<__AtMostRxAsFunc>>(function(int, mixed): Tu) $callback):
+  public function mapWithKey<Tu>((function(int, mixed)[_]: Tu) $fn)[ctx $fn]:
     ImmVector<Tu>;
 
   /**
@@ -217,7 +204,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    * Only values that meet a certain criteria are affected by a call to
    * `filter()`, while all values are affected by a call to `map()`.
    *
-   * @param $callback - The callback containing the condition to apply to the
+   * @param $fn - The callback containing the condition to apply to the
    *                    current `Pair` values.
    *
    * @return - an `ImmVector` containing the values after a user-specified
@@ -225,8 +212,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    *
    * @guide /hack/collections/examples
    */
-  <<__Pure, __AtMostRxAsArgs, __MutableReturn, __MaybeMutable>>
-  public function filter(<<__AtMostRxAsFunc>>(function(mixed): bool) $callback): ImmVector<mixed>;
+  public function filter((function(mixed)[_]: bool) $fn)[ctx $fn]: ImmVector<mixed>;
 
   /**
    * Returns an `ImmVector` containing the values of the current `Pair` that
@@ -236,15 +222,14 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    * `filterWithKey()`, while all values are affected by a call to
    * `mapWithKey()`.
    *
-   * @param $callback - The callback containing the condition to apply to the
+   * @param $fn - The callback containing the condition to apply to the
    *                    current `Pair` keys and values.
    *
    * @return - an `ImmVector` containing the values after a user-specified
    *           condition is applied to the keys and values of the current
    *           `Pair`.
    */
-  <<__Pure, __AtMostRxAsArgs, __MutableReturn, __MaybeMutable>>
-  public function filterWithKey(<<__AtMostRxAsFunc>>(function(int, mixed): bool) $callback):
+  public function filterWithKey((function(int, mixed)[_]: bool) $fn)[ctx $fn]:
     ImmVector<mixed>;
 
   /**
@@ -262,8 +247,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    * @return - The `ImmVector` that combines the values of the current `Pair`
    *           with the provided `Traversable`.
    */
-  <<__Pure, __AtMostRxAsArgs, __MutableReturn, __MaybeMutable>>
-  public function zip<Tu>(<<__MaybeMutable, __OnlyRxIfImpl(\HH\Rx\Traversable::class)>> Traversable<Tu> $traversable):
+  public function zip<Tu>(Traversable<Tu> $traversable)[]:
     ImmVector<Pair<mixed, Tu>>;
 
   /**
@@ -279,8 +263,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    * @return - An `ImmVector` containing the first `n` values of the current
    *           `Pair`.
    */
-  <<__Pure, __MutableReturn, __MaybeMutable>>
-  public function take(int $n): ImmVector<mixed>;
+  public function take(int $n)[]: ImmVector<mixed>;
 
   /**
    * Returns an `ImmVector` containing the values of the current `Pair` up to
@@ -292,8 +275,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    * @return - An `ImmVector` that contains the values of the current `Pair` up
    *           until the callback returns `false`.
    */
-  <<__Pure, __AtMostRxAsArgs, __MutableReturn, __MaybeMutable>>
-  public function takeWhile(<<__AtMostRxAsFunc>>(function(mixed): bool) $fn): ImmVector<mixed>;
+  public function takeWhile((function(mixed)[_]: bool) $fn)[ctx $fn]: ImmVector<mixed>;
 
   /**
    * Returns an `ImmVector` containing the values after the `n`-th element of
@@ -310,8 +292,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    * @return - An `ImmVector` that contains values after the specified `n`-th
    *           element in the current `Pair`.
    */
-  <<__Pure, __MutableReturn, __MaybeMutable>>
-  public function skip(int $n): ImmVector<mixed>;
+  public function skip(int $n)[]: ImmVector<mixed>;
 
   /**
    * Returns an `ImmVector` containing the values of the current `Pair` starting
@@ -324,8 +305,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    * @return - An `ImmVector` that contains the values of the current `Pair`
    *           starting after the callback returns `true`.
    */
-  <<__Pure, __AtMostRxAsArgs, __MutableReturn, __MaybeMutable>>
-  public function skipWhile(<<__AtMostRxAsFunc>>(function(mixed): bool) $fn): ImmVector<mixed>;
+  public function skipWhile((function(mixed)[_]: bool) $fn)[ctx $fn]: ImmVector<mixed>;
 
   /**
    * Returns a subset of the current `Pair` starting from a given key up to,
@@ -342,8 +322,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    * @return - An `ImmVector` with values from the current `Pair` starting at
    *           `$start` up to but not including the element `$start + $len`.
    */
-  <<__Pure, __MutableReturn, __MaybeMutable>>
-  public function slice(int $start, int $len): ImmVector<mixed>;
+  public function slice(int $start, int $len)[]: ImmVector<mixed>;
 
   /**
    * Returns an `ImmVector` that is the concatenation of the values of the
@@ -359,8 +338,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    *
    * @guide /hack/generics/constraints
    */
-  <<__Pure, __AtMostRxAsArgs, __MutableReturn, __MaybeMutable>>
-  public function concat(<<__MaybeMutable, __OnlyRxIfImpl(\HH\Rx\Traversable::class)>> Traversable<mixed> $traversable):
+  public function concat(Traversable<mixed> $traversable)[]:
     ImmVector<mixed>;
 
   /**
@@ -368,8 +346,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    *
    * @return - The first value in the current `Pair`.
    */
-  <<__Pure, __MaybeMutable>>
-  public function firstValue(): Tv1;
+  public function firstValue()[]: Tv1;
 
   /**
    * Returns the first key in the current `Pair`.
@@ -378,26 +355,23 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    *
    * @return - 0
    */
-  <<__Pure, __MaybeMutable>>
-  public function firstKey(): int;
+  public readonly function firstKey()[]: int;
 
   /**
    * Returns the last value in the current `Pair`.
    *
    * @return - The last value in the current `Pair`.
    */
-  <<__Pure, __MaybeMutable>>
-  public function lastValue(): Tv2;
+  public function lastValue()[]: Tv2;
 
   /**
    * Returns the last key in the current `Pair`.
    *
    * The return will always be 1 since a `Pair` only has two keys, 0 and 1.
    *
-   * @return - 0
+   * @return - 1
    */
-  <<__Pure, __MaybeMutable>>
-  public function lastKey(): int;
+  public readonly function lastKey()[]: int;
 
   /**
    * Returns the index of the first element that matches the search value.
@@ -411,24 +385,21 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    *
    * @guide /hack/generics/constraints
    */
-  <<__Pure, __MaybeMutable>>
-  public function linearSearch(mixed $search_value): int;
+  public readonly function linearSearch(mixed $search_value)[]: int;
 
   /**
    * Returns `false`; a `Pair` cannot be empty.
    *
    * @return - `false`
    */
-  <<__Pure, __MaybeMutable>>
-  public function isEmpty(): bool;
+  public readonly function isEmpty()[]: bool;
 
   /**
    * Returns 2; a `Pair` always has two values.
    *
    * @return - 2
    */
-  <<__Pure, __MaybeMutable>>
-  public function count(): int;
+  public readonly function count()[]: int;
 
   /**
    * Returns an `Iterable` view of the current `Pair`.
@@ -438,8 +409,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    *
    * @return - The `Iterable` view of the current `Pair`.
    */
-  <<__Pure, __MutableReturn, __MaybeMutable>>
-  public function items(): \HH\Rx\Iterable<mixed>;
+  public function items()[]: \HH\Rx\Iterable<mixed>;
 
   /**
    * Returns the value at the specified key in the current `Pair`.
@@ -455,8 +425,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    * @return - The value at the specified key; or an exception if the key does
    *           not exist.
    */
-  <<__Pure, __MaybeMutable>>
-  public function at(int $k): mixed;
+  public function at(int $k)[]: mixed;
 
   /**
    * Returns the value at the specified key in the current `Pair`.
@@ -469,8 +438,7 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    * @return - The value at the specified key; or `null` if the key does not
    *           exist.
    */
-  <<__Pure, __MaybeMutable>>
-  public function get(int $k): mixed;
+  public function get(int $k)[]: mixed;
 
   /**
    * Checks whether a provided key exists in the current `Pair`.
@@ -484,29 +452,24 @@ final class Pair<+Tv1, +Tv2> implements \ConstVector<mixed> {
    *           otherwise. This will only return `true` if the provided key is
    *           0 or 1.
    */
-  <<__Pure, __MaybeMutable>>
-  public function containsKey(mixed $k): bool;
+  public readonly function containsKey(mixed $k)[]: bool;
 
   /**
    * Returns an iterator that points to beginning of the current `Pair`.
    *
    * @return - A `KeyedIterator` that allows you to traverse the current `Pair`.
    */
-  <<__Pure, __MutableReturn, __MaybeMutable>>
-  public function getIterator(): \HH\Rx\KeyedIterator<int, mixed>;
+  public function getIterator()[]: \HH\Rx\KeyedIterator<int, mixed>;
 
   /**
    * Returns the `string` version of the current `Pair`, which is `"Pair"`.
    *
    * @return - The `string` "Pair".
    */
-  <<__Pure, __MaybeMutable>>
-  public function __toString(): string;
-
-  <<__Pure, __MaybeMutable>> /* HH_FIXME[0002] */
-  public function toVArray(): varray;
-  <<__Pure, __MaybeMutable>> /* HH_FIXME[0001] */
-  public function toDArray(): darray<int, mixed>;
+  public function __toString()[]: string;
+ /* HH_FIXME[0002] */
+  public function toVArray()[]: varray; /* HH_FIXME[0001] */
+  public function toDArray()[]: darray<int, mixed>;
 }
 
 } // namespace HH
@@ -519,18 +482,12 @@ namespace {
  * Methods and functions should take and return the KeyedIterator interface.
  */
 class PairIterator implements HH\Rx\KeyedIterator<int, mixed> {
-  <<__Pure>>
-  public function __construct();
-  <<__Pure, __MaybeMutable>>
-  public function current(): mixed;
-  <<__Pure, __MaybeMutable>>
-  public function key(): int;
-  <<__Pure, __MaybeMutable>>
-  public function valid(): bool;
-  <<__Pure, __Mutable>>
-  public function next(): void;
-  <<__Pure, __Mutable>>
-  public function rewind(): void;
+  public function __construct()[];
+  public function current()[]: mixed;
+  public function key()[]: int;
+  public function valid()[]: bool;
+  public function next()[]: void;
+  public function rewind()[]: void;
 }
 
 } // namespace

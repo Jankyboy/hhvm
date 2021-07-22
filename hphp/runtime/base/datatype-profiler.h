@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_DATATYPE_PROFILER_H_
-#define incl_HPHP_DATATYPE_PROFILER_H_
+#pragma once
 
 #include "hphp/runtime/base/datatype.h"
 #include "hphp/util/stacktrace-profiler.h"
@@ -32,8 +31,6 @@ private:
   const std::string m_name;
   StackTraceProfiler m_uninit, m_null, m_boolean, m_int, m_double,
                      m_persistent_string, m_string,
-                     m_persistent_darray, m_darray,
-                     m_persistent_varray, m_varray,
                      m_persistent_vec, m_vec,
                      m_persistent_dict, m_dict,
                      m_persistent_keyset, m_keyset,
@@ -46,4 +43,3 @@ private:
 ///////////////////////////////////////////////////////////////////////////////
 } // namespace HPHP
 
-#endif // incl_HPHP_DATATYPE_PROFILER_H_

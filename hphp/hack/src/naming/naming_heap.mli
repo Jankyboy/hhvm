@@ -20,12 +20,14 @@ module type ReverseNamingTable = sig
 
   val is_defined : Naming_sqlite.db_path option -> string -> bool
 
-  val remove_batch : Naming_sqlite.db_path option -> SSet.t -> unit
+  val remove_batch : Naming_sqlite.db_path option -> string list -> unit
 
-  val heap_string_of_key : string -> string
+  module Position : Value.Type with type t = pos
 end
 
 module Types : sig
+  module CanonName : Value.Type with type t = string
+
   include
     ReverseNamingTable with type pos = FileInfo.pos * Naming_types.kind_of_type
 
@@ -41,6 +43,8 @@ module Types : sig
 end
 
 module Funs : sig
+  module CanonName : Value.Type with type t = string
+
   include ReverseNamingTable with type pos = FileInfo.pos
 
   val get_canon_name : Provider_context.t -> string -> string option

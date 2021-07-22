@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VM_IRBUILDER_H_
-#define incl_HPHP_VM_IRBUILDER_H_
+#pragma once
 
 #include "hphp/runtime/vm/jit/block.h"
 #include "hphp/runtime/vm/jit/cfg.h"
@@ -30,7 +29,6 @@
 #include "hphp/runtime/vm/jit/state-vector.h"
 #include "hphp/runtime/vm/jit/type.h"
 
-#include <folly/Optional.h>
 #include <folly/ScopeGuard.h>
 
 #include <functional>
@@ -40,7 +38,7 @@ namespace HPHP { namespace jit { namespace irgen {
 ///////////////////////////////////////////////////////////////////////////////
 
 struct ExnStackState {
-  FPInvOffset syncedSpLevel{0};
+  SBInvOffset syncedSpLevel{0};
 };
 
 /*
@@ -65,7 +63,7 @@ struct ExnStackState {
  *      copy propagation and strength reduction.  (See simplify.h.)
  */
 struct IRBuilder {
-  IRBuilder(IRUnit&, const BCMarker&);
+  IRBuilder(IRUnit&, const Func*);
 
   /*
    * Accessors.
@@ -115,8 +113,8 @@ struct IRBuilder {
    *
    * These simply constrain the location, then delegate to fs().
    */
-  const LocalState& local(uint32_t id, GuardConstraint gc);
-  const StackState& stack(IRSPRelOffset offset, GuardConstraint gc);
+  LocalState local(uint32_t id, GuardConstraint gc);
+  StackState stack(IRSPRelOffset offset, GuardConstraint gc);
   SSATmp* valueOf(Location l, GuardConstraint gc);
   Type     typeOf(Location l, GuardConstraint gc);
 
@@ -229,8 +227,9 @@ struct IRBuilder {
   /*
    * Save and restore the SrcKey-to-block map.
    */
-  jit::flat_map<SrcKey, Block*> saveAndClearOffsetMapping();
-  void restoreOffsetMapping(jit::flat_map<SrcKey, Block*>&& offsetMapping);
+  using SkToBlockMap = jit::fast_map<SrcKey, Block*, SrcKey::Hasher>;
+  SkToBlockMap saveAndClearOffsetMapping();
+  void restoreOffsetMapping(SkToBlockMap&& offsetMapping);
 
   /*
    * Get, set, or null out the block to branch to in case of a guard failure.
@@ -312,6 +311,7 @@ private:
   SSATmp* preOptimizeLdLocation(IRInstruction*, Location);
   SSATmp* preOptimizeLdLoc(IRInstruction*);
   SSATmp* preOptimizeLdStk(IRInstruction*);
+  SSATmp* preOptimizeLdMem(IRInstruction*);
   SSATmp* preOptimizeLdMBase(IRInstruction*);
   SSATmp* preOptimizeLdClosureCtx(IRInstruction*);
   SSATmp* preOptimizeLdClosureThis(IRInstruction*);
@@ -333,7 +333,7 @@ private:
                       GuardConstraint gc, Type srcType);
   bool constrainAssert(const IRInstruction* inst,
                        GuardConstraint gc, Type srcType,
-                       folly::Optional<Type> knownType = folly::none);
+                       Optional<Type> knownType = std::nullopt);
   bool constrainTypeSrc(TypeSource typeSrc, GuardConstraint gc);
   bool shouldConstrainGuards() const;
 
@@ -349,7 +349,6 @@ private:
 
 private:
   IRUnit& m_unit;
-  BCMarker m_initialMarker;
   BCContext m_curBCContext;
   FrameStateMgr m_state;
 
@@ -368,11 +367,11 @@ private:
   bool m_constrainGuards{false};
 
   // Keep track of blocks created to support bytecode control flow.
-  jit::flat_map<SrcKey,Block*> m_skToBlockMap;
+  SkToBlockMap m_skToBlockMap;
 
   // Keeps the block to branch to (if any) in case a guard fails.
   // This holds nullptr if the guard failures should perform a service
-  // request (REQ_RETRANSLATE or REQ_BIND_JMP).
+  // request (StubType::Retranslate or REQ_BIND_JMP).
   Block* m_guardFailBlock{nullptr};
 };
 
@@ -400,5 +399,3 @@ struct BlockPusher {
 ///////////////////////////////////////////////////////////////////////////////
 
 }}}
-
-#endif

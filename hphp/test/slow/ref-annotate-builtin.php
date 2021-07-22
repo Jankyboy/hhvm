@@ -3,8 +3,8 @@
 class X {
   private $a;
   private int $b;
-  private arraylike $c;
-  private stdclass $d;
+  private AnyArray $c;
+  private stdClass $d;
 }
 
 function foo($value) {

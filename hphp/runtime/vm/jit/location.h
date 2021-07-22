@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_LOCATION_H_
-#define incl_HPHP_JIT_LOCATION_H_
+#pragma once
 
 #include "hphp/runtime/vm/jit/stack-offsets.h"
 
@@ -42,7 +41,7 @@ enum class LTag : uint32_t {
  */
 struct Location {
   struct Local { uint32_t locId; };
-  struct Stack { FPInvOffset stackIdx; };
+  struct Stack { SBInvOffset stackIdx; };
   struct MBase { uint32_t unused; };
 
   /* implicit */ Location(Local l) : m_tag{LTag::Local}, m_local(l) {}
@@ -52,7 +51,7 @@ struct Location {
   LTag tag() const { return m_tag; };
 
   uint32_t localId() const;
-  FPInvOffset stackIdx() const;
+  SBInvOffset stackIdx() const;
 
   bool operator==(const Location& other) const;
   bool operator!=(const Location& other) const;
@@ -84,4 +83,3 @@ std::string show(Location);
 
 #include "hphp/runtime/vm/jit/location-inl.h"
 
-#endif

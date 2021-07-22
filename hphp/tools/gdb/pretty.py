@@ -7,6 +7,7 @@ GDB pretty printers for HHVM types.
 from compatibility import *
 
 import gdb
+import gdb.types
 import re
 
 import gdbutils
@@ -219,12 +220,15 @@ class LowPtrPrinter(PtrPrinter):
         return self.val.type
 
     def _pointer(self):
-        inner = self.val.type.template_argument(0)
-        storage = template_type(rawtype(self.val.type.template_argument(1)))
-
-        if storage == 'HPHP::detail::AtomicStorage':
-            return atomic_get(self.val['m_s']).cast(inner.pointer())
-        else:
+        rtype = gdb.types.get_basic_type(self.val.type)
+        inner = rtype.template_argument(0)
+        try:
+            storage = template_type(rawtype(rtype.template_argument(1)))
+            if storage == 'HPHP::detail::AtomicStorage':
+                return atomic_get(self.val['m_s']).cast(inner.pointer())
+            else:
+                return self.val['m_s'].cast(inner.pointer())
+        finally:
             return self.val['m_s'].cast(inner.pointer())
 
 
@@ -252,26 +256,24 @@ class ArrayDataPrinter(object):
     RECOGNIZE = '^HPHP::(ArrayData|MixedArray)$'
 
     class _packed_iterator(_BaseIterator):
-        def __init__(self, begin, end):
-            self.cur = begin
-            self.end = end
-            self.count = 0
+        def __init__(self, base, size):
+            self.base = base
+            self.size = size
+            self.cur = 0
 
         def __next__(self):
-            if self.cur == self.end:
+            if self.cur == self.size:
                 raise StopIteration
 
-            elt = self.cur
-            key = '%d' % self.count
-
+            key = '%d' % self.cur
             try:
-                data = elt.dereference()
+                val = idx.packed_array_at(self.base, self.cur)
             except gdb.MemoryError:
                 data = '<invalid>'
 
             self.cur = self.cur + 1
-            self.count = self.count + 1
-            return (key, data)
+
+            return (key, val)
 
     class _mixed_iterator(_BaseIterator):
         def __init__(self, begin, end):
@@ -360,7 +362,7 @@ class ArrayDataPrinter(object):
 
         if self.kind == self._kind('Packed') or self.kind == self._kind('Vec'):
             pelm = data.cast(T('HPHP::TypedValue').pointer())
-            return self._packed_iterator(pelm, pelm + self.val['m_size'])
+            return self._packed_iterator(pelm, self.val['m_size'])
         if self.kind == self._kind('Mixed') or self.kind == self._kind('Dict'):
             pelm = data.cast(T('HPHP::MixedArrayElm').pointer())
             return self._mixed_iterator(pelm, pelm + self.val['m_used'])

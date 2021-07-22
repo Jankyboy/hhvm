@@ -7,7 +7,7 @@
  *
  *)
 
-open Hh_core
+open Hh_prelude
 open String_utils
 open SearchServiceRunner
 
@@ -32,6 +32,7 @@ module Periodical : sig
 
   val one_week : float
 
+  (** Check if any callback is due and run those. *)
   val check : ServerEnv.env -> ServerEnv.env
 
   (* register_callback X Y
@@ -64,15 +65,15 @@ end = struct
     let env = ref env in
     last_call := current;
     callback_list :=
-      List.filter !callback_list (fun callback ->
+      List.filter !callback_list ~f:(fun callback ->
           (match callback with
           | Periodic (seconds_left, _, job)
           | Once (seconds_left, job) ->
             seconds_left := !seconds_left -. delta;
-            if !seconds_left < 0.0 then env := job !env);
+            if Float.(!seconds_left < 0.0) then env := job ~env:!env);
           match callback with
           | Periodic (seconds_left, period, _) ->
-            if !seconds_left < 0.0 then seconds_left := period;
+            if Float.(!seconds_left < 0.0) then seconds_left := period;
             true
           | Once _ -> false);
     !env
@@ -105,7 +106,7 @@ let stamp_connection () =
 
 let exit_if_unused () =
   let delta : float = Unix.time () -. !last_client_connect in
-  if delta > Periodical.one_week then (
+  if Float.(delta > Periodical.one_week) then (
     Printf.eprintf "Exiting server. Last used >7 days ago\n";
     Exit.exit Exit_status.Unused_server
   )
@@ -131,13 +132,14 @@ let init (genv : ServerEnv.genv) (root : Path.t) : unit =
           begin
             try
               (* We'll cycle the client-log if it gets bigger than 1Mb.
-              We do this cycling here in the server (rather than in the client)
-              to avoid races when multiple concurrent clients try to cycle it. *)
+                 We do this cycling here in the server (rather than in the client)
+                 to avoid races when multiple concurrent clients try to cycle it. *)
               let client_log_fn = ServerFiles.client_log root in
               let stat = Unix.stat client_log_fn in
               if stat.Unix.st_size > 1024 * 1024 then
                 Sys.rename client_log_fn (client_log_fn ^ ".old")
-            with _ -> ()
+            with
+            | _ -> ()
           end;
           env );
       ( Periodical.one_hour *. 3.,
@@ -174,24 +176,26 @@ let init (genv : ServerEnv.genv) (root : Path.t) : unit =
       ( Periodical.one_day,
         fun ~env ->
           Array.iter
-            begin
-              fun fn ->
-              let fn = Filename.concat GlobalConfig.tmp_dir fn in
-              if
-                (try Sys.is_directory fn with _ -> false)
-                (* We don't want to touch things like .watchman_failed *)
-                || string_starts_with fn "."
-                || not (ServerFiles.is_of_root root fn)
-              then
-                ()
-              else
-                Sys_utils.try_touch
-                  (Sys_utils.Touch_existing { follow_symlinks = false })
-                  fn
-            end
+            ~f:
+              begin
+                fun fn ->
+                let fn = Filename.concat GlobalConfig.tmp_dir fn in
+                if
+                  (try Sys.is_directory fn with
+                  | _ -> false)
+                  (* We don't want to touch things like .watchman_failed *)
+                  || string_starts_with fn "."
+                  || not (ServerFiles.is_of_root root fn)
+                then
+                  ()
+                else
+                  Sys_utils.try_touch
+                    (Sys_utils.Touch_existing { follow_symlinks = false })
+                    fn
+              end
             (Sys.readdir GlobalConfig.tmp_dir);
           env );
     ]
   in
-  List.iter jobs (fun (period, cb) ->
+  List.iter jobs ~f:(fun (period, cb) ->
       Periodical.register_callback (Periodic (ref period, period, cb)))

@@ -41,7 +41,6 @@ let operators =
     make_operator "UnaryMinus";
     make_operator "Not";
     make_operator "LogicalNot";
-    make_operator "Suspend";
     make_operator "Remainder";
     make_operator "Multiplication";
     make_operator "Division";
@@ -57,7 +56,6 @@ let operators =
     make_operator "GreaterThan" ~is_comparison:true;
     make_operator "StrictNotEqual" ~is_comparison:true;
     make_operator "StrictEqual" ~is_comparison:true;
-    make_operator "PhpNotEqual" ~is_comparison:true;
     make_operator "NotEqual" ~is_comparison:true;
     make_operator "Equal" ~is_comparison:true;
     make_operator "And";
@@ -90,4 +88,6 @@ let operators =
     make_operator "Include";
     make_operator "IncludeOnce";
     make_operator "Await";
+    make_operator "Readonly";
+    make_operator "EnumClassLabel";
   ]

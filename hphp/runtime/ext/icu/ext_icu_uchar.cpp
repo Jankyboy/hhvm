@@ -100,7 +100,7 @@ static UBool enumCharType_callback(CallCtx* ctx,
   args[1].m_data.num = limit;
   args[2].m_data.num = type;
   tvDecRefGen(
-    g_context->invokeFuncFew(*ctx, 3, args)
+    g_context->invokeFuncFew(*ctx, 3, args, RuntimeCoeffects::fixme())
   );
   return true;
 }
@@ -167,7 +167,7 @@ static UBool enumCharNames_callback(CallCtx *ctx,
   tvCopy(*charName.asTypedValue(), args[2]);
 
   tvDecRefGen(
-    g_context->invokeFuncFew(*ctx, 3, args)
+    g_context->invokeFuncFew(*ctx, 3, args, RuntimeCoeffects::fixme())
   );
   return true;
 }
@@ -263,7 +263,7 @@ Variant HHVM_STATIC_METHOD(IntlChar, charAge, const Variant& arg) {
 
   UVersionInfo version;
   u_charAge(cp, version);
-  Array ret = Array::CreateVArray();
+  Array ret = Array::CreateVec();
   for(int i = 0; i < U_MAX_VERSION_LENGTH; ++i) {
     ret.append(version[i]);
   }
@@ -273,7 +273,7 @@ Variant HHVM_STATIC_METHOD(IntlChar, charAge, const Variant& arg) {
 Array HHVM_STATIC_METHOD(IntlChar, getUnicodeVersion) {
   UVersionInfo version;
   u_getUnicodeVersion(version);
-  VArrayInit ret(U_MAX_VERSION_LENGTH);
+  VecInit ret(U_MAX_VERSION_LENGTH);
   for(int i = 0; i < U_MAX_VERSION_LENGTH; ++i) {
     ret.append(version[i]);
   }

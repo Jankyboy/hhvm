@@ -53,11 +53,9 @@ namespace irgen {
  */
 struct IRGS {
   explicit IRGS(IRUnit& unit, const RegionDesc* region, int32_t budgetBCInstrs,
-                TranslateRetryContext* retryContext,
-                bool prologueSetup = false);
+                TranslateRetryContext* retryContext);
 
   TransContext context;
-  TransFlags transFlags;
   const RegionDesc* region;
   IRUnit& unit;
   std::unique_ptr<IRBuilder> irb;
@@ -105,6 +103,12 @@ struct IRGS {
    * The remaining bytecode instruction budget for this region translation.
    */
   int32_t budgetBCInstrs{0};
+
+  /*
+   * A surprise check has already been emitted and does not need to be generated
+   * again for the current instruction.
+   */
+  bool skipSurpriseCheck{false};
 
   /*
    * Context for translation retries.

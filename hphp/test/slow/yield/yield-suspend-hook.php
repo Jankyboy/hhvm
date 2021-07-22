@@ -12,7 +12,7 @@ function doh($x, $y) {
 }
 
 function hey() {
-  yield new stdclass;
+  yield new stdClass;
 }
 
 
@@ -26,5 +26,5 @@ for ($i = 0; $i < 3; ++$i) {
 }
 
 abstract final class YieldYieldSuspendHook {
-  public static $counter;
+  public static $counter = 0;
 }

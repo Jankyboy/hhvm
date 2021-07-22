@@ -1,6 +1,6 @@
 # Test type annotations for hhas
 
-.adata A_0 = """Y:0:{}""";
+.adata A_0 = """D:0:{}""";
 
 
 .function use_class(<"@C" "C" extended_hint soft> $x) {
@@ -35,77 +35,57 @@
 .function ["__EntryPoint"("""y:0:{}""")] main() {
   NullUninit
   NullUninit
-  NullUninit
   NewObjD "C"
   Dup
-  NullUninit
   NullUninit
   FCallCtor <LockWhileUnwinding> 0 1 "" - "" ""
   PopC
   LockObj
   FCallFuncD <> 1 1 "" - "" "use_class"
   PopC
-
-  NullUninit
   NullUninit
   NullUninit
   Null
   FCallFuncD <> 1 1 "" - "" "use_class"
   PopC
-
-  NullUninit
   NullUninit
   NullUninit
   Int 5
   FCallFuncD <> 1 1 "" - "" "use_int_soft"
   PopC
-
   NullUninit
   NullUninit
-  NullUninit
-  Array @A_0
+  Dict @A_0
   FCallFuncD <> 1 1 "" - "" "use_int_soft"
   PopC
-
-  NullUninit
   NullUninit
   NullUninit
   Null
   FCallFuncD <> 1 1 "" - "" "use_int_soft"
   PopC
-
-  NullUninit
   NullUninit
   NullUninit
   Int 6
   FCallFuncD <> 1 1 "" - "" "use_int_nullable"
   PopC
-
-  NullUninit
   NullUninit
   NullUninit
   Null
   FCallFuncD <> 1 1 "" - "" "use_int_nullable"
   PopC
-
-  NullUninit
   NullUninit
   NullUninit
   Int 5
   FCallFuncD <> 1 1 "" - "" "use_int"
   PopC
-
   NullUninit
   NullUninit
-  NullUninit
-  Array @A_0
+  Dict @A_0
   FCallFuncD <> 1 1 "" - "" "use_mixed"
   PopC
-
   NullUninit
   NullUninit
-  NullUninit
-  Array @A_0
+  Dict @A_0
   FCallFuncD <> 1 1 "" - "" "use_int"
   PopC
 

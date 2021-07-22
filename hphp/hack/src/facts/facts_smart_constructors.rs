@@ -5,13 +5,14 @@
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the "hack" directory of this source tree.
  *
-*/
+ */
 mod facts_smart_constructors_generated;
 
 use escaper::{extract_unquoted_string, unescape_double, unescape_single};
 use flatten_smart_constructors::{FlattenOp, FlattenSmartConstructors};
 use parser_core_types::{
-    lexable_token::LexableToken, source_text::SourceText, token_kind::TokenKind,
+    lexable_token::LexableToken, positioned_token::PositionedToken, source_text::SourceText,
+    syntax_kind::SyntaxKind, token_factory::SimpleTokenFactoryImpl, token_kind::TokenKind,
 };
 
 pub use crate::facts_smart_constructors_generated::*;
@@ -22,6 +23,7 @@ impl<'src> FactsSmartConstructors<'src> {
     pub fn new(src: &SourceText<'src>) -> Self {
         Self {
             state: (false, src.clone()),
+            token_factory: SimpleTokenFactoryImpl::new(),
         }
     }
 }
@@ -76,8 +78,10 @@ pub enum Node {
     // declarations
     ClassDecl(Box<ClassDeclChildren>),
     FunctionDecl(Box<Node>),
-    MethodDecl(Box<Node>),
+    MethodDecl(Box<Node>, Box<Node>, Box<Node>),
+    EnumUseClause(Box<Node>),
     EnumDecl(Box<EnumDeclChildren>),
+    EnumClassDecl(Box<EnumClassDeclChildren>),
     TraitUseClause(Box<Node>),
     RequireExtendsClause(Box<Node>),
     RequireImplementsClause(Box<Node>),
@@ -105,7 +109,14 @@ pub struct ClassDeclChildren {
 pub struct EnumDeclChildren {
     pub name: Node,
     pub attributes: Node,
-    pub includes: Node,
+    pub use_clauses: Node,
+}
+
+#[derive(Debug)]
+pub struct EnumClassDeclChildren {
+    pub name: Node,
+    pub attributes: Node,
+    pub extends: Node,
 }
 
 #[derive(Debug)]
@@ -117,7 +128,7 @@ pub struct TypeAliasDeclChildren {
 impl<'a> FlattenOp for FactsSmartConstructors<'_> {
     type S = Node;
 
-    fn flatten(&self, lst: Vec<Self::S>) -> Self::S {
+    fn flatten(&self, _kind: SyntaxKind, lst: Vec<Self::S>) -> Self::S {
         let mut r = lst
             .into_iter()
             .map(|s| match s {
@@ -139,7 +150,7 @@ impl<'a> FlattenOp for FactsSmartConstructors<'_> {
         }
     }
 
-    fn zero() -> Self::S {
+    fn zero(_kind: SyntaxKind) -> Self::S {
         Node::Ignored
     }
 
@@ -167,7 +178,7 @@ impl<'a> FlattenOp for FactsSmartConstructors<'_> {
 }
 
 impl<'a> FlattenSmartConstructors<'a, HasScriptContent<'a>> for FactsSmartConstructors<'a> {
-    fn make_token(&mut self, token: Self::Token) -> Self::R {
+    fn make_token(&mut self, token: PositionedToken) -> Self::R {
         let token_text = || {
             self.state
                 .1
@@ -222,9 +233,9 @@ impl<'a> FlattenSmartConstructors<'a, HasScriptContent<'a>> for FactsSmartConstr
             TokenKind::Static => Node::Static,
             _ => Node::Ignored,
         };
-        // assume file has script content if it has any tokens besides markup or EOF
+        // assume file has script content if it has any tokens besides !# or EOF
         self.state.0 |= match kind {
-            TokenKind::EndOfFile | TokenKind::Markup => false,
+            TokenKind::EndOfFile | TokenKind::Hashbang => false,
             _ => true,
         };
         result
@@ -279,6 +290,13 @@ impl<'a> FlattenSmartConstructors<'a, HasScriptContent<'a>> for FactsSmartConstr
         class_type
     }
 
+    fn make_enum_use(&mut self, _keyword: Self::R, names: Self::R, _semicolon: Self::R) -> Self::R {
+        match names {
+            Node::Ignored => Node::Ignored,
+            _ => Node::EnumUseClause(Box::new(names)),
+        }
+    }
+
     fn make_enum_declaration(
         &mut self,
         attributes: Self::R,
@@ -287,9 +305,8 @@ impl<'a> FlattenSmartConstructors<'a, HasScriptContent<'a>> for FactsSmartConstr
         _colon: Self::R,
         _base: Self::R,
         _type: Self::R,
-        _includes: Self::R,
-        includes_list: Self::R,
         _left_brace: Self::R,
+        use_clauses: Self::R,
         _enumerators: Self::R,
         _right_brace: Self::R,
     ) -> Self::R {
@@ -298,7 +315,31 @@ impl<'a> FlattenSmartConstructors<'a, HasScriptContent<'a>> for FactsSmartConstr
             _ => Node::EnumDecl(Box::new(EnumDeclChildren {
                 name,
                 attributes,
-                includes: includes_list,
+                use_clauses,
+            })),
+        }
+    }
+
+    fn make_enum_class_declaration(
+        &mut self,
+        attributes: Self::R,
+        _enum_keyword: Self::R,
+        _class_keyword: Self::R,
+        name: Self::R,
+        _colon: Self::R,
+        _base: Self::R,
+        _extends_keyword: Self::R,
+        extends_list: Self::R,
+        _left_brace: Self::R,
+        _elements: Self::R,
+        _right_brace: Self::R,
+    ) -> Self::R {
+        match name {
+            Node::Ignored => Node::Ignored,
+            _ => Node::EnumClassDecl(Box::new(EnumClassDeclChildren {
+                name,
+                attributes,
+                extends: extends_list,
             })),
         }
     }
@@ -318,28 +359,6 @@ impl<'a> FlattenSmartConstructors<'a, HasScriptContent<'a>> for FactsSmartConstr
             Node::Ignored => Node::Ignored,
             _ => Node::TypeAliasDecl(Box::new(TypeAliasDeclChildren { name, attributes })),
         }
-    }
-
-    fn make_define_expression(
-        &mut self,
-        _keyword: Self::R,
-        _left_paren: Self::R,
-        args: Self::R,
-        _right_paren: Self::R,
-    ) -> Self::R {
-        match args {
-            Node::List(mut nodes) => {
-                if let Some(_snd) = nodes.pop() {
-                    if let Some(fst @ Node::String(_)) = nodes.pop() {
-                        if nodes.is_empty() {
-                            return Node::Define(Box::new(fst));
-                        }
-                    }
-                }
-            }
-            _ => {}
-        };
-        Node::Ignored
     }
 
     fn make_function_declaration(
@@ -364,8 +383,9 @@ impl<'a> FlattenSmartConstructors<'a, HasScriptContent<'a>> for FactsSmartConstr
         _left_parens: Self::R,
         _param_list: Self::R,
         _right_parens: Self::R,
-        _capability_provisional: Self::R,
+        _capability: Self::R,
         _colon: Self::R,
+        _readonly: Self::R,
         _type: Self::R,
         _where: Self::R,
     ) -> Self::R {
@@ -437,15 +457,16 @@ impl<'a> FlattenSmartConstructors<'a, HasScriptContent<'a>> for FactsSmartConstr
 
     fn make_methodish_declaration(
         &mut self,
-        _attributes: Self::R,
-        _function_decl_header: Self::R,
+        attributes: Self::R,
+        function_decl_header: Self::R,
         body: Self::R,
         _semicolon: Self::R,
     ) -> Self::R {
-        match body {
-            Node::Ignored => Node::Ignored,
-            _ => Node::MethodDecl(Box::new(body)),
-        }
+        Node::MethodDecl(
+            Box::new(attributes),
+            Box::new(function_decl_header),
+            Box::new(body),
+        )
     }
 
     fn make_classish_declaration(

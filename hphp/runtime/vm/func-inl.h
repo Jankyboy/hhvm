@@ -26,9 +26,9 @@ namespace HPHP {
 
 template<class SerDe>
 void EHEnt::serde(SerDe& sd) {
-  folly::Optional<Offset> end;
+  Optional<Offset> end;
   if (!SerDe::deserializing) {
-    end = (m_end == kInvalidOffset) ? folly::none : folly::make_optional(m_end);
+    end = (m_end == kInvalidOffset) ? std::nullopt : make_optional(m_end);
   }
 
   sd(m_base)
@@ -117,9 +117,14 @@ inline bool Func::validate() const {
 // FuncId manipulation.
 
 inline FuncId Func::getFuncId() const {
-  assertx(m_funcId != InvalidFuncId);
+#ifdef USE_LOWPTR
+  assertx(fromFuncId(FuncId{this}) == this);
+  return FuncId{this};
+#else
+  assertx(!m_funcId.isInvalid());
   assertx(fromFuncId(m_funcId) == this);
   return m_funcId;
+#endif
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -151,9 +156,24 @@ inline const StringData* Func::name() const {
   return m_name;
 }
 
+inline String Func::nameWithClosureName() const {
+  if (!isClosureBody()) return String(const_cast<StringData*>(name()));
+  // Strip the file hash from the closure name.
+  String name{const_cast<StringData*>(baseCls()->name())};
+  return name.substr(0, name.find(';'));
+}
+
 inline StrNR Func::nameStr() const {
   assertx(m_name != nullptr);
   return StrNR(m_name);
+}
+
+inline size_t Func::stableHash() const {
+  return folly::hash::hash_combine(
+    name()->hashStatic(),
+    cls() ? cls()->name()->hashStatic() : 0,
+    unit()->sn()
+  );
 }
 
 inline const StringData* Func::fullName() const {
@@ -163,6 +183,11 @@ inline const StringData* Func::fullName() const {
       std::string(cls()->name()->data()) + "::" + m_name->data());
   }
   return m_fullName;
+}
+
+inline String Func::fullNameWithClosureName() const {
+  if (!isClosureBody()) return String(const_cast<StringData*>(fullName()));
+  return nameWithClosureName();
 }
 
 inline StrNR Func::fullNameStr() const {
@@ -225,6 +250,16 @@ inline const StringData* Func::filename() const {
   return name;
 }
 
+inline int Func::sn() const {
+  auto const sd = shared();
+  auto small = sd->m_sn;
+  if (UNLIKELY(small == kSmallDeltaLimit)) {
+    assertx(extShared());
+    return static_cast<const ExtendedSharedData*>(sd)->m_sn;
+  }
+  return small;
+}
+
 inline int Func::line1() const {
   return shared()->m_line1;
 }
@@ -240,53 +275,55 @@ inline int Func::line2() const {
 }
 
 inline const StringData* Func::docComment() const {
-  return shared()->m_docComment;
+  auto const ex = extShared();
+  return ex ? ex->m_docComment : staticEmptyString();
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // Bytecode.
 
 inline PC Func::entry() const {
-  return m_unit->entry() + shared()->m_base;
+  auto const bc = shared()->m_bc.copy();
+  return bc.isPtr() ? bc.ptr() : const_cast<Func*>(this)->loadBytecode();
 }
 
-inline Offset Func::base() const {
-  return shared()->m_base;
+inline Offset Func::bclen() const {
+  return shared()->bclen();
 }
 
-inline Offset Func::past() const {
-  auto const sd = shared();
-  auto const delta = sd->m_pastDelta;
-  if (UNLIKELY(delta == kSmallDeltaLimit)) {
-    assertx(extShared());
-    return static_cast<const ExtendedSharedData*>(sd)->m_past;
+inline Offset Func::SharedData::bclen() const {
+  auto const len = this->m_bclenSmall;
+  if (UNLIKELY(len == kSmallDeltaLimit)) {
+    assertx(m_allFlags.m_hasExtendedSharedData);
+    return static_cast<const ExtendedSharedData*>(this)->m_bclen;
   }
-  return base() + delta;
+  return len;
 }
 
 inline bool Func::contains(PC pc) const {
-  return contains(Offset(pc - unit()->entry()));
+  return uintptr_t(pc - entry()) < bclen();
 }
 
 inline bool Func::contains(Offset offset) const {
-  return offset >= base() && offset < past();
+  assertx(offset >= 0);
+  return offset < bclen();
 }
 
 inline PC Func::at(Offset off) const {
   // We don't use contains because we want to allow past becase it is often
   // used in loops
-  assertx(off >= base() && off <= past());
-  return unit()->entry() + off;
+  assertx(off >= 0 && off <= bclen());
+  return entry() + off;
 }
 
 inline Offset Func::offsetOf(PC pc) const {
   assertx(contains(pc));
-  return pc - unit()->entry();
+  return pc - entry();
 }
 
 inline Op Func::getOp(Offset instrOffset) const {
   assertx(contains(instrOffset));
-  return peek_op(unit()->entry() + instrOffset);
+  return peek_op(entry() + instrOffset);
 }
 
 inline Offset Func::ctiEntry() const {
@@ -308,7 +345,7 @@ inline void Func::setCtiEntry(Offset base, uint32_t size) {
 
 inline MaybeDataType Func::hniReturnType() const {
   auto const ex = extShared();
-  return ex ? ex->m_hniReturnType : folly::none;
+  return ex ? ex->m_hniReturnType : std::nullopt;
 }
 
 inline RepoAuthType Func::repoReturnType() const {
@@ -398,6 +435,16 @@ inline Id Func::numNamedLocals() const {
   return shared()->m_localNames.size();
 }
 
+inline Id Func::coeffectsLocalId() const {
+  assertx(hasCoeffectsLocal());
+  return numParams() + (hasReifiedGenerics() ? 1 : 0);
+}
+
+inline Id Func::reifiedGenericsLocalId() const {
+  assertx(hasReifiedGenerics());
+  return numParams();
+}
+
 inline const StringData* Func::localVarName(Id id) const {
   assertx(id >= 0);
   return id < numNamedLocals() ? shared()->m_localNames[id] : nullptr;
@@ -456,10 +503,6 @@ inline bool Func::hasThisInBody() const {
   return cls() && !isStatic();
 }
 
-inline bool Func::hasNoContextAttr() const {
-  return m_attrs & AttrNoContext;
-}
-
 inline bool Func::isAbstract() const {
   return m_attrs & AttrAbstract;
 }
@@ -483,6 +526,10 @@ inline bool Func::isMemoizeImpl() const {
 inline const StringData* Func::memoizeImplName() const {
   assertx(isMemoizeWrapper());
   return genMemoizeImplName(name());
+}
+
+inline size_t Func::numKeysForMemoize() const {
+  return numParams() + (hasReifiedGenerics() ? 1 : 0);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -546,18 +593,39 @@ inline bool Func::isResumable() const {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Reactivity.
+// Coeffects.
 
-inline RxLevel Func::rxLevel() const {
-  return rxLevelFromAttr(m_attrs);
+inline RuntimeCoeffects Func::requiredCoeffects() const {
+  return m_requiredCoeffects;
 }
 
-inline bool Func::isRxDisabled() const {
-  return shared()->m_allFlags.m_isRxDisabled;
+inline RuntimeCoeffects Func::coeffectEscapes() const {
+  return extShared() ? extShared()->m_coeffectEscapes
+                     : RuntimeCoeffects::none();
 }
 
-inline bool Func::isRxConditional() const {
-  return rxConditionalFromAttr(m_attrs);
+inline void Func::setRequiredCoeffects(RuntimeCoeffects c) {
+  m_requiredCoeffects = c;
+}
+
+inline StaticCoeffectNamesMap Func::staticCoeffectNames() const {
+  return shared()->m_staticCoeffectNames;
+}
+
+inline bool Func::hasCoeffectsLocal() const {
+  return hasCoeffectRules() &&
+         !(getCoeffectRules().size() == 1 &&
+           getCoeffectRules()[0].isGeneratorThis());
+}
+
+inline bool Func::hasCoeffectRules() const {
+  return attrs() & AttrHasCoeffectRules;
+}
+
+inline const Func::CoeffectRules& Func::getCoeffectRules() const {
+  assertx(extShared());
+  assertx(hasCoeffectRules());
+  return extShared()->m_coeffectRules;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -630,11 +698,11 @@ inline bool Func::isDynamicallyCallable() const {
   return m_attrs & AttrDynamicallyCallable;
 }
 
-inline folly::Optional<int64_t> Func::dynCallSampleRate() const {
+inline Optional<int64_t> Func::dynCallSampleRate() const {
   if (auto const ex = extShared()) {
     if (ex->m_dynCallSampleRate >= 0) return ex->m_dynCallSampleRate;
   }
-  return folly::none;
+  return std::nullopt;
 }
 
 inline bool Func::isMethCaller() const {
@@ -657,7 +725,7 @@ inline const Func::EHEntVec& Func::ehtab() const {
 }
 
 inline const EHEnt* Func::findEH(Offset o) const {
-  assertx(o >= base() && o < past());
+  assertx(o >= 0 && o < bclen());
   return findEH(shared()->m_ehtab, o);
 }
 
@@ -676,10 +744,6 @@ Func::findEH(const Container& ehtab, Offset o) {
 
 ///////////////////////////////////////////////////////////////////////////////
 // JIT data.
-
-inline rds::Handle Func::funcHandle() const {
-  return m_cachedFunc.handle();
-}
 
 inline unsigned char* Func::getFuncBody() const {
   return m_funcBody;
@@ -700,8 +764,12 @@ inline void Func::setPrologue(int index, unsigned char* tca) {
 ///////////////////////////////////////////////////////////////////////////////
 // Other methods.
 
-inline int8_t& Func::maybeIntercepted() const {
-  return m_maybeIntercepted;
+inline bool Func::maybeIntercepted() const {
+  return atomicFlags().check(Func::Flags::MaybeIntercepted);
+}
+
+inline void Func::setMaybeIntercepted() {
+  atomicFlags().set(Func::Flags::MaybeIntercepted);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -715,14 +783,6 @@ inline void Func::setBaseCls(Class* baseCls) {
   m_baseCls = to_low(baseCls);
 }
 
-inline void Func::setFuncHandle(rds::Link<LowPtr<Func>,
-                                          rds::Mode::NonLocal> l) {
-  // TODO(#2950356): This assertion fails for create_function with an existing
-  // declared function named __lambda_func.
-  //assertx(!m_cachedFunc.valid());
-  m_cachedFunc = l;
-}
-
 inline void Func::setHasPrivateAncestor(bool b) {
   m_hasPrivateAncestor = b;
 }
@@ -730,12 +790,6 @@ inline void Func::setHasPrivateAncestor(bool b) {
 inline void Func::setMethodSlot(Slot s) {
   assertx(isMethod());
   m_methodSlot = s;
-}
-
-inline bool Func::serialize() const {
-  if (m_serialized) return false;
-  const_cast<Func*>(this)->m_serialized = true;
-  return true;
 }
 
 //////////////////////////////////////////////////////////////////////

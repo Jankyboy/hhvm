@@ -11,17 +11,9 @@ use crate::{
     token_kind::TokenKind, trivia_kind::TriviaKind,
 };
 
-pub trait LexableToken<'a>: Clone {
+pub trait LexableToken: Clone + Debug {
     type Trivia: LexableTrivia;
 
-    fn make(
-        kind: TokenKind,
-        source_text: &SourceText<'a>,
-        offset: usize,
-        width: usize,
-        leading: Self::Trivia,
-        trailing: Self::Trivia,
-    ) -> Self;
     fn kind(&self) -> TokenKind;
 
     /// Returns the leading offset if meaningful
@@ -39,10 +31,6 @@ pub trait LexableToken<'a>: Clone {
     fn leading_is_empty(&self) -> bool;
     fn trailing_is_empty(&self) -> bool;
 
-    fn with_leading(self, trailing: Self::Trivia) -> Self;
-    fn with_trailing(self, trailing: Self::Trivia) -> Self;
-    fn with_kind(self, kind: TokenKind) -> Self;
-
     fn has_leading_trivia_kind(&self, kind: TriviaKind) -> bool;
     fn has_trailing_trivia_kind(&self, kind: TriviaKind) -> bool;
     fn has_trivia_kind(&self, kind: TriviaKind) -> bool {
@@ -52,16 +40,13 @@ pub trait LexableToken<'a>: Clone {
     fn into_trivia_and_width(self) -> (Self::Trivia, usize, Self::Trivia);
 }
 
-pub trait LexablePositionedToken<'a>: LexableToken<'a>
+pub trait LexablePositionedToken: LexableToken
 where
     Self: Debug,
 {
     fn text<'b>(&self, source_text: &'b SourceText) -> &'b str;
     fn text_raw<'b>(&self, source_text: &'b SourceText) -> &'b [u8];
     fn clone_value(&self) -> Self;
-    fn trim_left(&mut self, n: usize) -> Result<(), String>;
-    fn trim_right(&mut self, n: usize) -> Result<(), String>;
-    fn concatenate(s: &Self, e: &Self) -> Result<Self, String>;
     fn positioned_leading(&self) -> &[PositionedTrivium];
     fn positioned_trailing(&self) -> &[PositionedTrivium];
 }

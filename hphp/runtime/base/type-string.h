@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_TYPE_STRING_H_
-#define incl_HPHP_TYPE_STRING_H_
+#pragma once
 
 #include "hphp/runtime/base/req-ptr.h"
 #include "hphp/runtime/base/static-string-table.h"
@@ -29,9 +28,6 @@
 namespace HPHP {
 
 //////////////////////////////////////////////////////////////////////
-
-// Forward declare to avoid including tv-conversions.h and creating a cycle.
-StringData* tvCastToStringData(TypedValue tv);
 
 struct VarNR;
 struct VariableSerializer;
@@ -199,13 +195,13 @@ public:
   }
 
 public:
-  const String& setSize(int len) {
+  const String& setSize(int64_t len) {
     assertx(m_str);
     m_str->setSize(len);
     return *this;
   }
   const String& shrink(size_t len) {
-    assertx(m_str && !m_str->isImmutable());
+    assertx(m_str && !m_str->hasMultipleRefs());
     if (m_str->capacity() - len > kMinShrinkThreshold) {
       m_str = req::ptr<StringData>::attach(m_str->shrinkImpl(len));
     } else {
@@ -228,10 +224,10 @@ public:
   bool empty() const {
     return m_str ? m_str->empty() : true;
   }
-  int size() const {
+  int64_t size() const {
     return m_str ? m_str->size() : 0;
   }
-  int length() const {
+  int64_t length() const {
     return m_str ? m_str->size() : 0;
   }
   uint32_t capacity() const {
@@ -415,6 +411,34 @@ public:
    */
   void dump() const;
 
+  template <class Op> ALWAYS_INLINE
+  String forEachByte(Op action) const {
+    String ret = String(size(), ReserveString);
+
+    auto srcSlice = slice();
+
+    const char* src = srcSlice.begin();
+    const char* end = srcSlice.end();
+
+    char* dst = ret.mutableData();
+
+    for (; src != end; ++src, ++dst) {
+      *dst = action(*src);
+    }
+
+    ret.setSize(size());
+    return ret;
+  }
+
+  template <class Op> ALWAYS_INLINE
+  String forEachByteFast(Op action) const {
+    if (this->empty()) {
+      return *this;
+    }
+
+    return forEachByte(action);
+  }
+
  private:
   String rvalImpl(int key) const {
     if (m_str) {
@@ -566,11 +590,6 @@ ALWAYS_INLINE const String& asCStrRef(tv_rval tv) {
   return reinterpret_cast<const String&>(val(tv).pstr);
 }
 
-ALWAYS_INLINE String toString(tv_rval tv) {
-  if (isStringType(type(tv))) return String{assert_not_null(val(tv).pstr)};
-  return String::attach(tvCastToStringData(*tv));
-}
-
 }
 
 namespace folly {
@@ -600,5 +619,3 @@ template<> class FormatValue<HPHP::StaticString> {
   const HPHP::StaticString& m_val;
 };
 }
-
-#endif

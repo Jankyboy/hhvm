@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_CPP_BASE_EXCEPTIONS_H_
-#define incl_HPHP_CPP_BASE_EXCEPTIONS_H_
+#pragma once
 
 #include <string>
 #include <atomic>
@@ -143,7 +142,7 @@ struct RequestOOMKilledException : ResourceExceededException {
     : ResourceExceededException(
         folly::sformat("request aborted due to memory pressure, "
                        "used {} bytes", usedBytes),
-        empty_varray())
+        empty_vec_array())
     , m_usedBytes(usedBytes)
   {}
   const size_t m_usedBytes;
@@ -171,6 +170,12 @@ struct PhpFileDoesNotExistException : ExtendedException {
   }
   EXCEPTION_COMMON_IMPL(PhpFileDoesNotExistException);
 };
+
+/*
+ * An exception meant to be caught immediately in the JIT.
+ */
+struct CppDummyException {};
+constexpr CppDummyException kDummyException;
 
 //////////////////////////////////////////////////////////////////////
 
@@ -205,10 +210,15 @@ void throwable_init(ObjectData* throwable);
 void throwable_recompute_backtrace_from_wh(ObjectData* throwable,
                                            c_WaitableWaitHandle* wh);
 
+/*
+ * Mark the result of an array cast on a throwable object so that it's safe
+ * to perform Hack-Array-Migration-sensitive operations on it.
+ */
+void throwable_mark_array(const ObjectData* throwable, Array& props);
+
 String throwable_to_string(ObjectData* throwable);
 
 //////////////////////////////////////////////////////////////////////
 
 }
 
-#endif

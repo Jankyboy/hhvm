@@ -14,16 +14,15 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_SET_ARRAY_H_
-#define incl_HPHP_SET_ARRAY_H_
+#pragma once
 
-#include "hphp/runtime/base/array-data.h"
 #include "hphp/runtime/base/array-common.h"
+#include "hphp/runtime/base/array-data.h"
 #include "hphp/runtime/base/data-walker.h"
 #include "hphp/runtime/base/hash-table.h"
-#include "hphp/runtime/base/tv-val.h"
 #include "hphp/runtime/base/string-data.h"
 #include "hphp/runtime/base/tv-mutate.h"
+#include "hphp/runtime/base/tv-val.h"
 #include "hphp/runtime/base/typed-value.h"
 
 #include <folly/portability/Constexpr.h>
@@ -51,11 +50,14 @@ struct SetArrayElm {
   TypedValueAux tv;
 
   static auto constexpr kTombstone = kInvalidDataType;
-  static auto constexpr kEmpty = KindOfUninit;
+  static auto constexpr kEmpty = kExtraInvalidDataType;
 
+  template <bool Move>
   void setStrKey(StringData* k, strhash_t h) {
     assertx(isEmpty());
-    k->incRefCount();
+    if constexpr (!Move) {
+      k->incRefCount();
+    }
     tv.m_type = KindOfString;
     tv.m_data.pstr = k;
     tv.hash() = h;
@@ -127,6 +129,10 @@ struct SetArrayElm {
     return tv.m_type == kEmpty || isTombstone();
   }
 
+  ALWAYS_INLINE void erase() {
+    tvDecRefGen(&tv);
+  }
+
   static constexpr ptrdiff_t keyOff() {
     return offsetof(SetArrayElm, tv) + offsetof(TypedValue, m_data.pstr);
   }
@@ -178,11 +184,8 @@ public:
    * If withApcTypedValue is true, space for an APCTypedValue will be
    * allocated in front of the returned pointer.
    */
-  static ArrayData* MakeUncounted(ArrayData* array,
-                                  bool withApcTypedValue = false,
-                                  DataWalker::PointerMap* m = nullptr);
-  static ArrayData* MakeUncounted(ArrayData* array, int) = delete;
-  static ArrayData* MakeUncounted(ArrayData* array, size_t) = delete;
+  static ArrayData* MakeUncounted(
+      ArrayData* array, const MakeUncountedEnv& env, bool hasApcTv);
 
   static void Release(ArrayData*);
   static void ReleaseUncounted(ArrayData*);
@@ -213,6 +216,8 @@ private:
 
   static ArrayData* ToDArrayImpl(const SetArray*);
 
+  void eraseNoCompact(RemovePos pos);
+
 private:
   SetArray() = delete;
   SetArray(const SetArray&) = delete;
@@ -228,10 +233,8 @@ private:
 public:
   const TypedValue* tvOfPos(uint32_t) const;
 
-  template <class F, bool inc = true>
+  template <class F>
   static void Iterate(const SetArray* a, F fn) {
-    if (inc) a->incRefCount();
-    SCOPE_EXIT { if (inc) decRefArr(const_cast<SetArray*>(a)); };
     auto const* elm = a->data();
     for (auto i = a->m_used; i--; elm++) {
       if (LIKELY(!elm->isTombstone())) {
@@ -271,12 +274,10 @@ private:
    */
   void insert(int64_t k, inthash_t h);
   void insert(int64_t k);
+  template <bool Move>
   void insert(StringData* k, strhash_t h);
+  template <bool Move>
   void insert(StringData* k);
-
-  ssize_t findElm(const Elm& e) const;
-
-  void erase(RemovePos);
 
   /*
    * Append idx at the end of the linked list containing the set
@@ -358,7 +359,6 @@ private:
   using ArrayData::exists;
   using ArrayData::at;
   using ArrayData::lval;
-  using ArrayData::set;
   using ArrayData::remove;
   using ArrayData::release;
 
@@ -394,26 +394,15 @@ public:
   static bool ExistsStr(const ArrayData*, const StringData*);
   static arr_lval LvalInt(ArrayData*, int64_t);
   static arr_lval LvalStr(ArrayData*, StringData*);
-  static ArrayData* SetInt(ArrayData*, int64_t, TypedValue);
-  static constexpr auto SetIntMove = &SetInt;
-  static ArrayData* SetStr(ArrayData*, StringData*, TypedValue);
-  static constexpr auto SetStrMove = &SetStr;
+  static ArrayData* SetIntMove(ArrayData*, int64_t, TypedValue);
+  static ArrayData* SetStrMove(ArrayData*, StringData*, TypedValue);
   static ArrayData* RemoveInt(ArrayData*, int64_t);
   static ArrayData* RemoveStr(ArrayData*, const StringData*);
   static ArrayData* Copy(const ArrayData*);
   static ArrayData* CopyStatic(const ArrayData*);
-  static ArrayData* Append(ArrayData*, TypedValue);
-  static ArrayData* Merge(ArrayData*, const ArrayData*);
+  static ArrayData* AppendMove(ArrayData*, TypedValue);
   static ArrayData* Pop(ArrayData*, Variant&);
-  static ArrayData* Dequeue(ArrayData*, Variant&);
-  static ArrayData* Prepend(ArrayData*, TypedValue);
-  static ArrayData* Renumber(ArrayData*);
   static void OnSetEvalScalar(ArrayData*);
-  static constexpr auto ToDict = &ArrayCommon::ToDict;
-  static constexpr auto ToVec = &ArrayCommon::ToVec;
-  static ArrayData* ToKeyset(ArrayData*, bool);
-  static constexpr auto ToVArray = &ArrayCommon::ToVArray;
-  static ArrayData* ToDArray(ArrayData*, bool);
   static bool Equal(const ArrayData*, const ArrayData*);
   static bool NotEqual(const ArrayData*, const ArrayData*);
   static bool Same(const ArrayData*, const ArrayData*);
@@ -437,5 +426,3 @@ HASH_TABLE_CHECK_OFFSETS(SetArray, SetArrayElm)
 //////////////////////////////////////////////////////////////////////
 
 }
-
-#endif // incl_HPHP_SET_ARRAY_H_

@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VM_NAMED_ENTITY_H_
-#define incl_HPHP_VM_NAMED_ENTITY_H_
+#pragma once
 
 #include "hphp/runtime/base/rds.h"
 #include "hphp/runtime/base/string-data.h"
@@ -182,22 +181,6 @@ struct NamedEntity {
   void removeClass(Class* goner);
 
   /////////////////////////////////////////////////////////////////////////////
-  // Unique func.
-
-  /*
-   * Return the unique func corresponding to this name, or nullptr if there is
-   * none registered.
-   */
-  Func* uniqueFunc() const;
-
-  /*
-   * Register the unique func corresponding to this name.
-   *
-   * Precondition: func->isUnique()
-   */
-  void setUniqueFunc(Func* func);
-
-  /////////////////////////////////////////////////////////////////////////////
   // RecordDesc.
   RecordDesc* recordList() const;
   void pushRecordDesc(RecordDesc*);
@@ -234,6 +217,9 @@ struct NamedEntity {
    */
   static std::vector<std::pair<const char*, int64_t>> tableStats();
 
+  template<class T>
+  const char* checkSameName();
+
 private:
   static Map* table();
 
@@ -254,7 +240,6 @@ public:
                                    std::memory_order_release>;
 private:
   ListType<Class> m_clsList{nullptr};
-  ListType<Func> m_uniqueFunc{nullptr};
   ListType<RecordDesc> m_recordList{nullptr};
 };
 
@@ -269,4 +254,3 @@ using NamedEntityPair = std::pair<LowStringPtr,LowPtr<const NamedEntity>>;
 #include "hphp/runtime/vm/named-entity-inl.h"
 #undef incl_HPHP_VM_NAMED_ENTITY_INL_H_
 
-#endif

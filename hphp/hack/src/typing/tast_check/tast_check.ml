@@ -17,15 +17,14 @@ let visitor ctx =
   let makers =
     [Xhp_required_check.make_handler; Redundant_generics_check.make_handler]
   in
-  let handlers = List.map makers (( |> ) ctx) |> List.filter_opt in
+  let handlers = List.map makers ~f:(( |> ) ctx) |> List.filter_opt in
   Tast_visitor.iter_with
-    ( handlers
+    (handlers
     @ [
         Shape_field_check.handler;
         String_cast_check.handler;
         Tautology_check.handler;
         Enforceable_hint_check.handler;
-        Redundant_nullsafe_check.handler;
         Const_write_check.handler;
         Switch_check.handler (fun t ->
             if TypecheckerOptions.disallow_scrutinee_case_value_type_mismatch t
@@ -40,7 +39,6 @@ let visitor ctx =
         Xhp_check.handler;
         Discarded_awaitable_check.handler;
         Invalid_index_check.handler;
-        Basic_reactivity_check.handler;
         Pseudofunctions_check.handler;
         Reified_check.handler;
         Instantiability_check.handler;
@@ -48,15 +46,20 @@ let visitor ctx =
         Abstract_class_check.handler;
         Class_parent_check.handler;
         Method_type_param_check.handler;
-        Foreach_collection_reactivity_check.handler;
         Obj_get_check.handler;
         This_hint_check.handler;
         Unresolved_type_variable_check.handler;
         Invalid_arraykey_constraint_check.handler;
         Type_const_check.handler;
-        Pocket_universes_runtime_check.handler;
         Static_method_generics_check.handler;
-      ] )
+        Class_inherited_member_case_check.handler;
+        Ifc_tast_check.handler;
+        Readonly_check.handler;
+        Meth_caller_check.handler;
+        Expression_tree_check.handler;
+        Class_const_origin_check.handler;
+        Enum_classes_check.handler;
+      ])
 
 let program ctx = (visitor ctx)#go ctx
 

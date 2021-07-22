@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_HTTP_CLIENT_H_
-#define incl_HPHP_HTTP_CLIENT_H_
+#pragma once
 
 #include "hphp/runtime/server/transport.h"
 #include "hphp/runtime/base/string-buffer.h"
@@ -41,6 +40,13 @@ struct HttpClient {
   void proxy(const std::string &host, int port,
              const std::string &username = "",
              const std::string &password = "");
+
+  /**
+   * Configure options to connect using TLS to the proxy.
+   */
+  void setHttpsProxy(const std::string &proxyCaBundle,
+      const std::string &proxySSLCertPath = "",
+      const std::string &proxySSLKeyPath = "");
 
   /**
    * StreamContext settings for this connection
@@ -112,6 +118,10 @@ private:
   std::string m_proxyUsername;
   std::string m_proxyPassword;
 
+  std::string m_proxyCaBundle;
+  std::string m_proxySSLCertPath;
+  std::string m_proxySSLKeyPath;
+
   long m_use_ssl = CURLUSESSL_NONE;
   long m_sslversion = CURL_SSLVERSION_DEFAULT;  //try to match remote SSL
 
@@ -127,4 +137,3 @@ private:
 ///////////////////////////////////////////////////////////////////////////////
 }
 
-#endif // incl_HPHP_HTTP_CLIENT_H_

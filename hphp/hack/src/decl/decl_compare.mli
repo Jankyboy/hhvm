@@ -10,42 +10,50 @@
 open Typing_deps
 open Decl_heap
 
-val class_big_diff : Classes.t -> Classes.t -> bool
+val class_big_diff : Class.t -> Class.t -> bool
 
 module ClassDiff : sig
-  val compare : string -> Classes.t -> Classes.t -> DepSet.t * bool
+  val compare :
+    Typing_deps_mode.t -> string -> Class.t -> Class.t -> DepSet.t * bool
 end
 
 module ClassEltDiff : sig
-  val compare : Classes.t -> Classes.t -> DepSet.t * [> `Changed | `Unchanged ]
+  val compare :
+    Typing_deps_mode.t ->
+    Class.t ->
+    Class.t ->
+    DepSet.t * [> `Changed | `Unchanged ]
 end
 
-val get_extend_deps : DepSet.elt -> DepSet.t -> DepSet.t
+val get_extend_deps : Typing_deps_mode.t -> DepSet.elt -> DepSet.t -> DepSet.t
 
 val get_classes_deps :
-  Provider_context.t ->
-  conservative_redecl:bool ->
-  Classes.t option SMap.t ->
-  Classes.t option SMap.t ->
+  ctx:Provider_context.t ->
+  Class.t option SMap.t ->
+  Class.t option SMap.t ->
   SSet.t ->
   DepSet.t * DepSet.t * DepSet.t
 
 val get_funs_deps :
-  conservative_redecl:bool ->
+  ctx:Provider_context.t ->
   Funs.t option SMap.t ->
   SSet.t ->
   DepSet.t * DepSet.t * DepSet.t
 
-val get_types_deps : Typedef.t option SMap.t -> SSet.t -> DepSet.t * DepSet.t
+val get_types_deps :
+  ctx:Provider_context.t ->
+  Typedef.t option SMap.t ->
+  SSet.t ->
+  DepSet.t * DepSet.t
 
 val get_gconsts_deps :
-  conservative_redecl:bool ->
+  ctx:Provider_context.t ->
   GConsts.t option SMap.t ->
   SSet.t ->
   DepSet.t * DepSet.t * DepSet.t
 
 val get_record_defs_deps :
-  conservative_redecl:bool ->
+  ctx:Provider_context.t ->
   Decl_heap.RecordDef.t option SMap.t ->
   SSet.t ->
   Typing_deps.DepSet.t * Typing_deps.DepSet.t * Typing_deps.DepSet.t

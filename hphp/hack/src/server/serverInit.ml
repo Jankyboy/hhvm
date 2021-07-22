@@ -14,7 +14,7 @@ open ServerEnv
 module SLC = ServerLocalConfig
 include ServerInitTypes
 
-let run_search (genv : ServerEnv.genv) (env : ServerEnv.env) (t : float) :
+let run_search (genv : ServerEnv.genv) (env : ServerEnv.env) :
     SearchUtils.si_env =
   let ctx = Provider_utils.ctx_from_server_env env in
   let sienv = env.local_symbol_table in
@@ -22,12 +22,9 @@ let run_search (genv : ServerEnv.genv) (env : ServerEnv.env) (t : float) :
     SearchServiceRunner.should_run_completely
       genv
       sienv.SearchUtils.sie_provider
-  then (
-    (* The duration is already logged by SearchServiceRunner *)
-    let sienv = SearchServiceRunner.run_completely ctx sienv in
-    HackEventLogger.update_search_end t;
-    sienv
-  ) else
+  then
+    SearchServiceRunner.run_completely ctx sienv
+  else
     sienv
 
 let save_state
@@ -73,11 +70,38 @@ let save_state
     let result =
       SaveStateService.save_state
         ~save_decls
+        genv
         env
         output_filename
         ~replace_state_after_saving
     in
     Some result
+
+let post_init genv (env, t) =
+  let (env, _t) = ServerAiInit.ai_check genv env.naming_table env t in
+  (* Configure symbol index settings *)
+  ServerProgress.send_progress "updating search index...";
+  let namespace_map = GlobalOptions.po_auto_namespace_map env.tcopt in
+  let env =
+    {
+      env with
+      local_symbol_table =
+        SymbolIndex.initialize
+          ~globalrev:None
+          ~gleanopt:env.gleanopt
+          ~namespace_map
+          ~provider_name:
+            genv.local_config.ServerLocalConfig.symbolindex_search_provider
+          ~quiet:genv.local_config.ServerLocalConfig.symbolindex_quiet
+          ~ignore_hh_version:(ServerArgs.ignore_hh_version genv.options)
+          ~savedstate_file_opt:
+            genv.local_config.ServerLocalConfig.symbolindex_file
+          ~workers:genv.workers;
+    }
+  in
+  let env = { env with local_symbol_table = run_search genv env } in
+  SharedMem.init_done ();
+  env
 
 let get_lazy_level (genv : ServerEnv.genv) : lazy_level =
   let lazy_decl = Option.is_none (ServerArgs.ai_mode genv.options) in
@@ -88,6 +112,111 @@ let get_lazy_level (genv : ServerEnv.genv) : lazy_level =
   | (true, true, false) -> Parse
   | (true, true, true) -> Init
   | _ -> Off
+
+let remote_init genv env root worker_key nonce check_id _profiling =
+  if not (ServerArgs.check_mode genv.options) then
+    failwith "Remote init is only supported in check (run once) mode";
+  let bin_root = Path.make (Filename.dirname Sys.argv.(0)) in
+  let t = Unix.gettimeofday () in
+  let ctx = Provider_utils.ctx_from_server_env env in
+  let open ServerLocalConfig in
+  let { recli_version; remote_transport_channel = transport_channel; _ } =
+    genv.local_config
+  in
+  let { init_id; ci_info; init_start_t; _ } = env.init_env in
+  ServerRemoteInit.init
+    ctx
+    genv.workers
+    ~worker_key
+    ~nonce
+    ~check_id
+    ~recli_version
+    ~transport_channel
+    ~remote_type_check_config:genv.local_config.remote_type_check
+    ~ci_info
+    ~init_id
+    ~init_start_t
+    ~bin_root
+    ~root;
+  (* TODO(milliechen): sample cgorup memory stats during remote init *)
+  let _ = Hh_logger.log_duration "Remote type check" t in
+  (env, Load_state_declined "Out-of-band naming table initialization only")
+
+let lazy_full_init genv env profiling =
+  ( ServerLazyInit.full_init genv env profiling |> post_init genv,
+    Load_state_declined "No saved-state requested (for lazy init)" )
+
+let lazy_parse_only_init genv env profiling =
+  ( ServerLazyInit.parse_only_init genv env profiling |> fst,
+    Load_state_declined "No saved-state requested (for lazy parse-only init)" )
+
+let lazy_saved_state_init genv env root load_state_approach profiling =
+  let result =
+    ServerLazyInit.saved_state_init ~load_state_approach genv env root profiling
+  in
+  (* Saved-state init is the only kind of init that might error... *)
+  match result with
+  | Ok (res, ({ state_distance; _ }, _)) ->
+    (post_init genv res, Load_state_succeeded state_distance)
+  | Error err ->
+    let (ServerInitTypes.
+           { message; auto_retry; stack = Utils.Callstack stack; environment }
+        as verbose_error) =
+      load_state_error_to_verbose_string err
+    in
+    let (next_step_descr, next_step) =
+      match (genv.local_config.SLC.require_saved_state, auto_retry) with
+      | (true, true) -> ("retry", Exit_status.Failed_to_load_should_retry)
+      | (true, false) -> ("fatal", Exit_status.Failed_to_load_should_abort)
+      | (false, _) -> ("fallback", Exit_status.No_error)
+    in
+    let user_message = Printf.sprintf "%s [%s]" message next_step_descr in
+    let exception_telemetry =
+      Telemetry.create ()
+      |> Telemetry.string_ ~key:"message" ~value:message
+      |> Telemetry.string_ ~key:"stack" ~value:stack
+      |> Telemetry.string_
+           ~key:"environment"
+           ~value:(Option.value environment ~default:"N/A")
+    in
+    HackEventLogger.load_state_exn exception_telemetry;
+    Hh_logger.log
+      "Could not load saved state: %s\n%s\n"
+      (ServerInitTypes.show_load_state_verbose_error verbose_error)
+      stack;
+    (match next_step with
+    | Exit_status.No_error ->
+      ServerProgress.send_warning (Some user_message);
+      (* print the memory stats for saved-state init gathered before it failed *)
+      CgroupProfiler.print_summary_memory_table ~event:`Init;
+      let fall_back_to_full_init profiling =
+        ServerLazyInit.full_init genv env profiling |> post_init genv
+      in
+      ( CgroupProfiler.profile_memory ~event:(`Init "lazy_full_init")
+        @@ fall_back_to_full_init,
+        Load_state_failed (user_message, Utils.Callstack stack) )
+    | _ -> Exit.exit ~msg:user_message ~stack next_step)
+
+let eager_init genv env _lazy_lev profiling =
+  let init_result =
+    Hh_logger.log "Saved-state requested, but overridden by eager init";
+    Load_state_declined "Saved-state requested, but overridden by eager init"
+  in
+  let env =
+    ServerEagerInit.init genv _lazy_lev env profiling |> post_init genv
+  in
+  (env, init_result)
+
+let eager_full_init genv env _lazy_lev profiling =
+  let env =
+    ServerEagerInit.init genv _lazy_lev env profiling |> post_init genv
+  in
+  let init_result = Load_state_declined "No saved-state requested" in
+  (env, init_result)
+
+let lazy_write_symbol_info_init genv env profiling =
+  ( ServerLazyInit.write_symbol_info_init genv env profiling |> post_init genv,
+    Load_state_declined "Write Symobl info state" )
 
 (* entry point *)
 let init
@@ -104,135 +233,29 @@ let init
     ) else
       (lazy_lev, init_approach)
   in
-  let ((env, t), init_result, skip_post_init) =
+  let (init_method, init_method_name) =
+    Hh_logger.log "ServerInit: lazy_lev=%s" (show_lazy_level lazy_lev);
+    Hh_logger.log
+      "ServerInit: init_approach=%s"
+      (show_init_approach init_approach);
     match (lazy_lev, init_approach) with
-    | (_, Remote_init { worker_key; check_id }) ->
-      if not (ServerArgs.check_mode genv.options) then
-        failwith "Remote init is only supported in check (run once) mode";
-      let bin_root = Path.make (Filename.dirname Sys.argv.(0)) in
-      let t = Unix.gettimeofday () in
-      let ctx = Provider_utils.ctx_from_server_env env in
-      let open ServerLocalConfig in
-      let open RemoteTypeCheck in
-      let { recli_version; remote_transport_channel = transport_channel; _ } =
-        genv.local_config
-      in
-      let { file_system_mode; _ } = genv.local_config.remote_type_check in
-      let { init_id; ci_info; init_start_t; _ } = env.init_env in
-      ServerRemoteInit.init
-        ctx
-        genv.workers
-        ~worker_key
-        ~check_id
-        ~recli_version
-        ~transport_channel
-        ~file_system_mode
-        ~ci_info
-        ~init_id
-        ~init_start_t
-        ~bin_root
-        ~root;
-      let t = Hh_logger.log_duration "Remote type check" t in
-      ( (env, t),
-        Load_state_declined "Out-of-band naming table initialization only",
-        true )
-    | (Init, Full_init) ->
-      ( ServerLazyInit.full_init genv env,
-        Load_state_declined "No saved-state requested (for lazy init)",
-        false )
+    | (_, Remote_init { worker_key; nonce; check_id }) ->
+      (remote_init genv env root worker_key nonce check_id, "remote_init")
+    | (Init, Full_init) -> (lazy_full_init genv env, "lazy_full_init")
     | (Init, Parse_only_init) ->
-      ( ServerLazyInit.parse_only_init genv env,
-        Load_state_declined
-          "No saved-state requested (for lazy parse-only init)",
-        true )
+      (lazy_parse_only_init genv env, "lazy_parse_only_init")
     | (Init, Saved_state_init load_state_approach) ->
-      let result =
-        ServerLazyInit.saved_state_init ~load_state_approach genv env root
-      in
-      (* Saved-state init is the only kind of init that might error... *)
-      (match result with
-      | Ok ((env, t), ({ state_distance; _ }, _)) ->
-        ((env, t), Load_state_succeeded state_distance, false)
-      | Error err ->
-        let ( State_loader.
-                {
-                  message;
-                  auto_retry;
-                  stack = Utils.Callstack stack;
-                  environment;
-                } as verbose_error ) =
-          load_state_error_to_verbose_string err
-        in
-        let (next_step_descr, next_step) =
-          match (genv.local_config.SLC.require_saved_state, auto_retry) with
-          | (true, true) -> ("retry", Exit_status.Failed_to_load_should_retry)
-          | (true, false) -> ("fatal", Exit_status.Failed_to_load_should_abort)
-          | (false, _) -> ("fallback", Exit_status.No_error)
-        in
-        let user_message = Printf.sprintf "%s [%s]" message next_step_descr in
-        let exception_telemetry =
-          Telemetry.create ()
-          |> Telemetry.string_ ~key:"message" ~value:message
-          |> Telemetry.string_ ~key:"stack" ~value:stack
-          |> Telemetry.string_
-               ~key:"environment"
-               ~value:(Option.value environment ~default:"N/A")
-        in
-        HackEventLogger.load_state_exn exception_telemetry;
-        Hh_logger.log
-          "Could not load saved state: %s\n%s\n"
-          (State_loader.show_verbose_error verbose_error)
-          stack;
-        (match next_step with
-        | Exit_status.No_error ->
-          ServerProgress.send_to_monitor
-            (MonitorRpc.PROGRESS_WARNING (Some user_message));
-          ( ServerLazyInit.full_init genv env,
-            Load_state_failed (user_message, Utils.Callstack stack),
-            false )
-        | _ -> Exit.exit ~msg:user_message ~stack next_step))
+      ( lazy_saved_state_init genv env root load_state_approach,
+        "lazy_saved_state_init" )
     | (Off, Full_init)
     | (Decl, Full_init)
     | (Parse, Full_init) ->
-      ( ServerEagerInit.init genv lazy_lev env,
-        Load_state_declined "No saved-state requested",
-        false )
+      (eager_full_init genv env lazy_lev, "eager full init")
     | (Off, _)
     | (Decl, _)
     | (Parse, _) ->
-      Hh_logger.log "Saved-state requested, but overridden by eager init";
-      ( ServerEagerInit.init genv lazy_lev env,
-        Load_state_declined
-          "Saved-state requested, but overridden by eager init",
-        false )
+      (eager_init genv env lazy_lev, "eager_init")
     | (_, Write_symbol_info) ->
-      ( ServerLazyInit.write_symbol_info_init genv env,
-        Load_state_declined "Write Symobl info state",
-        false )
+      (lazy_write_symbol_info_init genv env, "lazy_write_symbol_info_init")
   in
-  if skip_post_init then
-    (env, init_result)
-  else
-    let (env, t) = ServerAiInit.ai_check genv env.naming_table env t in
-    (* Configure symbol index settings *)
-    let namespace_map = GlobalOptions.po_auto_namespace_map env.tcopt in
-    let env =
-      {
-        env with
-        local_symbol_table =
-          SymbolIndex.initialize
-            ~globalrev:None
-            ~gleanopt:env.gleanopt
-            ~namespace_map
-            ~provider_name:
-              genv.local_config.ServerLocalConfig.symbolindex_search_provider
-            ~quiet:genv.local_config.ServerLocalConfig.symbolindex_quiet
-            ~ignore_hh_version:(ServerArgs.ignore_hh_version genv.options)
-            ~savedstate_file_opt:
-              genv.local_config.ServerLocalConfig.symbolindex_file
-            ~workers:genv.workers;
-      }
-    in
-    let env = { env with local_symbol_table = run_search genv env t } in
-    SharedMem.init_done ();
-    (env, init_result)
+  CgroupProfiler.profile_memory ~event:(`Init init_method_name) init_method

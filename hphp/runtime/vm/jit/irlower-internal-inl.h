@@ -72,6 +72,7 @@ inline CallDest callDest(Vreg reg0, Vreg reg1) {
 inline CallDest callDest(IRLS& env, const IRInstruction* inst) {
   if (inst->numDsts() == 0) return kVoidDest;
   assertx(inst->numDsts() == 1);
+  if (inst->dst()->isA(TBottom)) return kVoidDest;
 
   auto const loc = dstLoc(env, inst, 0);
   DEBUG_ONLY auto const maybe_lval = inst->dst()->type().maybe(TLvalToCell);
@@ -132,6 +133,33 @@ inline Vreg materialize(Vout& v, Vptr data) {
 }
 inline Vreg materialize(Vout&, Vreg data) { return data; }
 
+template <class JmpFn>
+void emitBespokeLayoutTest(Vout& v, ArrayLayout layout, Vreg r, JmpFn doJcc) {
+  auto const test = layout.bespokeLayoutTest();
+  auto const imm = static_cast<int16_t>(test.imm);
+  auto const sf = v.makeReg();
+
+  switch (test.mode) {
+    case LayoutTest::And1Byte:
+      v << testbim{imm, r[ArrayData::offsetOfBespokeIndex() + 1], sf};
+      break;
+    case LayoutTest::And2Byte:
+      v << testwim{imm, r[ArrayData::offsetOfBespokeIndex()], sf};
+      break;
+    case LayoutTest::Cmp1Byte:
+      v << cmpbim{imm, r[ArrayData::offsetOfBespokeIndex() + 1], sf};
+      break;
+    case LayoutTest::Cmp2Byte:
+      v << cmpwim{imm, r[ArrayData::offsetOfBespokeIndex()], sf};
+      break;
+  }
+
+  doJcc(CC_Z, sf);
+  auto const doneBlock = v.makeBlock();
+  v << jmp{doneBlock};
+  v = doneBlock;
+}
+
 /*
  * Test whether the value given by `dataSrc' has the same type specialization
  * as `type' does.
@@ -140,7 +168,7 @@ inline Vreg materialize(Vout&, Vreg data) { return data; }
  */
 template <class Loc, class JmpFn>
 void emitSpecializedTypeTest(Vout& v, IRLS& /*env*/, Type type, Loc dataSrc,
-                             Vreg sf, JmpFn doJcc) {
+                             JmpFn doJcc) {
   if (type < TRes) {
     // No cls field in Resource.
     always_assert(false && "unexpected guard on specialized Resource");
@@ -159,6 +187,7 @@ void emitSpecializedTypeTest(Vout& v, IRLS& /*env*/, Type type, Loc dataSrc,
             type.clsSpec().cls()->attrs() & AttrNoOverride);
 
     auto const data = materialize(v, dataSrc);
+    auto const sf = v.makeReg();
     if (type < TObj) {
       emitCmpLowPtr(v, sf, type.clsSpec().cls(),
                     data[ObjectData::getVMClassOffset()]);
@@ -169,14 +198,20 @@ void emitSpecializedTypeTest(Vout& v, IRLS& /*env*/, Type type, Loc dataSrc,
     return;
   }
 
-  DEBUG_ONLY auto const arrSpec = type.arrSpec();
+  auto const spec = type.arrSpec();
   assertx(allowBespokeArrayLikes());
-  assertx(arrSpec.vanilla());
-  assertx(!arrSpec.type());
+  assertx(!spec.type());
 
   auto const r = materialize(v, dataSrc);
-  v << testbim{ArrayData::kBespokeKindMask, r[HeaderKindOffset], sf};
-  doJcc(CC_Z, sf);
+  auto const layout = spec.layout();
+  if (layout == ArrayLayout::Vanilla() || layout == ArrayLayout::Bespoke()) {
+    auto const sf = v.makeReg();
+    auto const cc = layout == ArrayLayout::Vanilla() ? CC_Z : CC_NZ;
+    v << testbim{ArrayData::kBespokeKindMask, r[HeaderKindOffset], sf};
+    doJcc(cc, sf);
+  } else {
+    emitBespokeLayoutTest(v, layout, r, doJcc);
+  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -206,70 +241,53 @@ void emitTypeTest(Vout& v, IRLS& env, Type type,
   }
 
   auto const cc = [&] {
+    auto const test = [&] (DataType kind) {
+      assertx(kind == dt_modulo_persistence(kind));
+      auto const mask = ~static_cast<data_type_t>(kind);
+      emitTestTVType(v, sf, mask, typeSrc);
+      return CC_E;
+    };
+
     auto const cmp = [&] (DataType kind, ConditionCode cc) {
       emitCmpTVType(v, sf, kind, typeSrc);
       return cc;
     };
 
-    auto const persistent_type = [&](DataType dt) {
-      auto const masked = emitMaskTVType(v, ~kRefCountedBit, typeSrc);
-      emitCmpTVType(v, sf, dt, masked);
-      return CC_E;
-    };
-
-    auto const vec_or_dict = [&] {
-      auto const mask = ~0b11;
-      auto const test = int(KindOfVec) & mask;
-      static_assert(test == (int(KindOfDict) & mask), "");
-      static_assert(test == (int(KindOfPersistentVec) & mask), "");
-      static_assert(test == (int(KindOfPersistentDict) & mask), "");
-      auto const masked = emitMaskTVType(v, mask, typeSrc);
-      emitCmpTVType(v, sf, safe_cast<DataType>(test), masked);
-      return CC_E;
-    };
-
-    // Type-tests of union types that may be specialized.
     auto const base = type.unspecialize();
-    if (base == TVArr)      return persistent_type(KindOfPersistentVArray);
-    if (base == TDArr)      return cmp(KindOfDArray, CC_LE);
-    if (base == TVec)       return persistent_type(KindOfPersistentVec);
-    if (base == TDict)      return persistent_type(KindOfPersistentDict);
-    if (base == TKeyset)    return persistent_type(KindOfPersistentKeyset);
-    if (base == (TVArr|TDArr))  return cmp(KindOfVArray, CC_LE);
-    if (base == (TVec|TDict))   return vec_or_dict(); // Needed post HADVAs
-    if (base == TArrLike)   return cmp(KindOfVec, CC_LE);
+    if (type == TStaticStr)     return test(KindOfString);
+    if (type.isKnownDataType()) return test(type.toDataType());
+    if (base == TArrLike)       return cmp(KindOfKeyset, CC_BE);
+    if (type == (TVec|TDict))   return cmp(KindOfVec, CC_BE);
+    if (type == TNull)          return cmp(KindOfUninit, CC_AE);
 
-    // Type-tests of union types that should not be specialized.
-    if (type == TNull)      return cmp(KindOfNull, CC_BE);
-    if (type == TStr)       return cmp(KindOfPersistentString, CC_AE);
-    if (type == TStaticStr) return cmp(KindOfPersistentString, CC_AE);
     if (type == TUncountedInit) {
       auto const rtype = emitGetTVType(v, typeSrc);
       auto const sf2 = v.makeReg();
       emitTestTVType(v, sf2, kRefCountedBit, rtype);
       doJcc(CC_Z, sf2);
 
-      static_assert(KindOfUninit == static_cast<DataType>(0),
-                    "KindOfUninit == 0 in codegen");
-      v << testb{rtype, rtype, sf};
+      v << cmpbi{static_cast<data_type_t>(KindOfUninit), rtype, sf};
       return CC_NZ;
     }
+
     if (type == TUncounted) {
       return ccNegate(emitIsTVTypeRefCounted(v, sf, typeSrc));
     }
 
+    if (type == TInitCell) {
+      auto const rtype = emitGetTVType(v, typeSrc);
+      v << cmpbi{static_cast<data_type_t>(KindOfUninit), rtype, sf};
+      return CC_NZ;
+    }
+
     // All other valid types must not be unions.
-    always_assert_flog(type.isKnownDataType(), "Unknown DataType: {}", type);
-    always_assert_flog(!type.isUnion(), "Union type: {}", type);
-    auto const dt = type.toDataType();
-    return cmp(dt, CC_E);
+    always_assert_flog(false, "Uncheckable type: {}", type);
   }();
 
   doJcc(cc, sf);
 
   if (type.isSpecialized() || type == TStaticStr) {
-    auto const sf2 = v.makeReg();
-    detail::emitSpecializedTypeTest(v, env, type, dataSrc, sf2, doJcc);
+    detail::emitSpecializedTypeTest(v, env, type, dataSrc, doJcc);
   }
 }
 

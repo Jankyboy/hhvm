@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_RUNTIME_VM_VM_REGS_H_
-#define incl_HPHP_RUNTIME_VM_VM_REGS_H_
+#pragma once
 
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/base/rds-header.h"
@@ -143,11 +142,6 @@ inline void interp_set_regs(ActRec* ar, TypedValue* sp, Offset pcOff) {
   vmpc() = ar->func()->at(pcOff);
   vmJitReturnAddr() = nullptr; // We never elide frames around an interpOne
 }
-
-/*
- * Return the first VM frame that is a parent of this function's call frame.
- */
-ActRec* callerFrameHelper();
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -277,4 +271,3 @@ struct VMRegGuard {
 
 }
 
-#endif

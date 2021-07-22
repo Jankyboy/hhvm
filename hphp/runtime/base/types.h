@@ -14,11 +14,14 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_TYPES_H_
-#define incl_HPHP_TYPES_H_
+#pragma once
 
 #include <cstdint>
+#include <folly/Format.h>
+
 #include "hphp/util/low-ptr.h"
+
+#include "hphp/runtime/vm/func-id.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -116,14 +119,5 @@ constexpr Offset kInvalidOffset = std::numeric_limits<Offset>::max();
 using Slot = uint32_t;
 constexpr Slot kInvalidSlot = -1;
 
-/*
- * Unique identifier for a Func*.
- */
-using FuncId = uint32_t;
-constexpr FuncId InvalidFuncId = -1;
-constexpr FuncId DummyFuncId = -2;
-
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif

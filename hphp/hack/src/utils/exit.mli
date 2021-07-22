@@ -25,4 +25,4 @@ val show_finale_data : finale_data -> string
 
 val exit : ?msg:string -> ?stack:string -> Exit_status.t -> 'a
 
-val set_finale_file_for_eventual_exit : string -> unit
+val add_hook_upon_clean_exit : (finale_data -> unit) -> unit

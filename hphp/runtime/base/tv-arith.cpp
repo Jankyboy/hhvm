@@ -45,10 +45,9 @@ void throw_bad_array_operand(const ArrayData* ad) {
     if (ad->isVecType()) return "vecs";
     if (ad->isDictType()) return "dicts";
     if (ad->isKeysetType()) return "keysets";
-    assertx(ad->isPHPArrayType());
-    return "arrays";
+    always_assert(false);
   }();
-  throw ExtendedException(
+  SystemLib::throwInvalidOperationExceptionObject(
     folly::sformat(
       "Invalid operand type was used: "
       "cannot perform this operation with {}", type
@@ -97,12 +96,29 @@ TypedValue make_dbl(double d)  { return make_tv<KindOfDouble>(d); }
 TypedNum numericConvHelper(TypedValue cell) {
   assertx(tvIsPlausible(cell));
 
+
+  auto handleConvToIntNotice = [&](const char* from) {
+    handleConvNoticeLevel(
+      flagToConvNoticeLevel(RuntimeOption::EvalNoticeOnCoerceForMath),
+      from,
+      "int",
+      s_ConvNoticeReasonMath.get());
+  };
+
+  auto stringToNumeric_ = [](const StringData* str) {
+    return stringToNumeric(str,
+      flagToConvNoticeLevel(RuntimeOption::EvalNoticeOnCoerceForMath),
+      s_ConvNoticeReasonMath.get());
+  };
+
   switch (cell.m_type) {
     case KindOfUninit:
     case KindOfNull:
+      handleConvToIntNotice("null");
       return make_int(0);
 
     case KindOfBoolean:
+      handleConvToIntNotice("bool");
       return make_int(cell.m_data.num);
 
     case KindOfRFunc:
@@ -112,19 +128,15 @@ TypedNum numericConvHelper(TypedValue cell) {
       invalidFuncConversion("int");
 
     case KindOfClass:
-      return stringToNumeric(classToStringHelper(cell.m_data.pclass));
+      return stringToNumeric_(classToStringHelper(cell.m_data.pclass));
 
     case KindOfLazyClass:
-      return stringToNumeric(lazyClassToStringHelper(cell.m_data.plazyclass));
+      return stringToNumeric_(lazyClassToStringHelper(cell.m_data.plazyclass));
 
     case KindOfString:
     case KindOfPersistentString:
-      return stringToNumeric(cell.m_data.pstr);
+      return stringToNumeric_(cell.m_data.pstr);
 
-    case KindOfPersistentDArray:
-    case KindOfDArray:
-    case KindOfPersistentVArray:
-    case KindOfVArray:
     case KindOfPersistentVec:
     case KindOfVec:
     case KindOfPersistentDict:
@@ -141,10 +153,17 @@ TypedNum numericConvHelper(TypedValue cell) {
 
     case KindOfRecord:
       raise_error(Strings::RECORD_NOT_SUPPORTED);
-    case KindOfObject:
-      return make_int(cell.m_data.pobj->toInt64());
+    case KindOfObject: {
+      // do the conversion first as it often throws due to handling of the
+      // unconditional Object->num warning. Soon that should be an unconditional
+      // exception
+      const auto res = make_int(cell.m_data.pobj->toInt64());
+      handleConvToIntNotice("object");
+      return res;
+    }
 
     case KindOfResource:
+      handleConvToIntNotice("resource");
       return make_int(cell.m_data.pres->data()->o_toInt64());
 
     case KindOfInt64:
@@ -215,8 +234,8 @@ struct Add {
     return make_int(add_ignore_overflow(a, b));
   }
 
-  ArrayData* operator()(ArrayData* a1, ArrayData* a2) const {
-    throwInvalidAdditionException(a1);
+  ArrayData* operator()(ArrayData* a1, ArrayData* /*ad2*/) const {
+    throw_bad_array_operand(a1);
   }
 };
 
@@ -249,11 +268,7 @@ struct Mul {
 struct Div {
   TypedValue operator()(int64_t t, int64_t u) const {
     if (UNLIKELY(u == 0)) {
-      if (RuntimeOption::EvalForbidDivisionByZero) {
-        SystemLib::throwDivisionByZeroExceptionObject();
-      }
-      raise_warning(Strings::DIVISION_BY_ZERO);
-      return make_tv<KindOfBoolean>(false);
+      SystemLib::throwDivisionByZeroExceptionObject();
     }
 
     // Avoid SIGFPE when dividing the miniumum respresentable integer
@@ -272,11 +287,7 @@ struct Div {
     TypedValue
   >::type operator()(T t, U u) const {
     if (UNLIKELY(u == 0)) {
-      if (RuntimeOption::EvalForbidDivisionByZero) {
-        SystemLib::throwDivisionByZeroExceptionObject();
-      }
-      raise_warning(Strings::DIVISION_BY_ZERO);
-      return make_tv<KindOfBoolean>(false);
+      SystemLib::throwDivisionByZeroExceptionObject();
     }
     return make_dbl(t / u);
   }
@@ -288,52 +299,30 @@ struct Div {
 
 template<class Op>
 void tvOpEq(Op op, tv_lval c1, TypedValue c2) {
-again:
-  if (type(c1) == KindOfInt64) {
-    for (;;) {
-      if (c2.m_type == KindOfInt64) {
-        val(c1).num = op(val(c1).num, c2.m_data.num);
-        return;
-      }
-      if (c2.m_type == KindOfDouble) {
-        type(c1) = KindOfDouble;
-        val(c1).dbl = op(val(c1).num, c2.m_data.dbl);
-        return;
-      }
-      tvCopy(numericConvHelper(c2), c2);
-      assertx(c2.m_type == KindOfInt64 || c2.m_type == KindOfDouble);
-    }
-  }
-
-  if (type(c1) == KindOfDouble) {
-    for (;;) {
-      if (c2.m_type == KindOfInt64) {
-        val(c1).dbl = op(val(c1).dbl, c2.m_data.num);
-        return;
-      }
-      if (c2.m_type == KindOfDouble) {
-        val(c1).dbl = op(val(c1).dbl, c2.m_data.dbl);
-        return;
-      }
-      tvCopy(numericConvHelper(c2), c2);
-      assertx(c2.m_type == KindOfInt64 || c2.m_type == KindOfDouble);
-    }
-  }
-
-  if (isArrayLikeType(type(c1)) && isArrayLikeType(c2.m_type)) {
-    auto const ad1    = val(c1).parr;
-    auto const newArr = op(ad1, c2.m_data.parr);
-    type(c1) = newArr->toDataType();
-    if (newArr != ad1) {
-      val(c1).parr = newArr;
-      decRefArr(ad1);
-    }
+  if (UNLIKELY(isArrayLikeType(type(c1)) && isArrayLikeType(c2.m_type))) {
+    throw_bad_array_operand(val(c1).parr);
     return;
   }
 
-  tvSet(numericConvHelper(*c1), c1);
-  assertx(type(c1) == KindOfInt64 || type(c1) == KindOfDouble);
-  goto again;
+  auto lhs = *c1;
+  if (UNLIKELY(!tvIsInt(lhs) && !tvIsDouble(lhs))) tvCopy(numericConvHelper(lhs), lhs);
+  if (UNLIKELY(!tvIsInt(c2)  && !tvIsDouble(c2)))  tvCopy(numericConvHelper(c2), c2);
+  assertx(tvIsInt(c2) || tvIsDouble(c2));
+  tvSet(lhs, c1); // do the write-back after both conversions in case one throws
+
+  if (tvIsDouble(c1)) {
+    val(c1).dbl = op(val(c1).dbl, tvIsInt(c2) ? c2.m_data.num : c2.m_data.dbl);
+    return;
+  }
+
+  assertx(tvIsInt(c1));
+  if (tvIsInt(c2)) {
+    val(c1).num = op(val(c1).num, c2.m_data.num);
+  } else {
+    type(c1) = KindOfDouble;
+    val(c1).dbl = op(val(c1).num, c2.m_data.dbl);
+  }
+
 }
 
 struct AddEq {
@@ -343,10 +332,6 @@ struct AddEq {
   double  operator()(double  a, int64_t b) const { return a + b; }
   double  operator()(int64_t a, double  b) const { return a + b; }
   double  operator()(double  a, double  b) const { return a + b; }
-
-  ArrayData* operator()(ArrayData* ad1, ArrayData* ad2) const {
-    throwInvalidAdditionException(ad1);
-  }
 };
 
 struct SubEq {
@@ -356,10 +341,6 @@ struct SubEq {
   double  operator()(double  a, int64_t b) const { return a - b; }
   double  operator()(int64_t a, double  b) const { return a - b; }
   double  operator()(double  a, double  b) const { return a - b; }
-
-  ArrayData* operator()(ArrayData* ad1, ArrayData* /*ad2*/) const {
-    throw_bad_array_operand(ad1);
-  }
 };
 
 struct MulEq {
@@ -367,10 +348,6 @@ struct MulEq {
   double  operator()(double  a, int64_t b) const { return a * b; }
   double  operator()(int64_t a, double  b) const { return a * b; }
   double  operator()(double  a, double  b) const { return a * b; }
-
-  ArrayData* operator()(ArrayData* ad1, ArrayData* /*ad2*/) const {
-    throw_bad_array_operand(ad1);
-  }
 };
 
 template<class SzOp, class BitOp>
@@ -396,7 +373,6 @@ template<template<class> class BitOp, class StrLenOp>
 TypedValue tvBitOp(StrLenOp strLenOp, TypedValue c1, TypedValue c2) {
   assertx(tvIsPlausible(c1));
   assertx(tvIsPlausible(c2));
-
   if (isStringType(c1.m_type) && isStringType(c2.m_type)) {
     return make_tv<KindOfString>(
       stringBitOp(
@@ -408,7 +384,12 @@ TypedValue tvBitOp(StrLenOp strLenOp, TypedValue c1, TypedValue c2) {
     );
   }
 
-  return make_int(BitOp<int64_t>()(tvToInt(c1), tvToInt(c2)));
+  const ConvNoticeLevel notice_level =
+    flagToConvNoticeLevel(RuntimeOption::EvalNoticeOnCoerceForBitOp);
+  // pull out of fn invocation to prevent reordering making testing a nightmare
+  auto i1 = tvToInt(c1, notice_level, s_ConvNoticeReasonBitOp.get());
+  auto i2 = tvToInt(c2, notice_level, s_ConvNoticeReasonBitOp.get());
+  return make_int(BitOp<int64_t>()(i1, i2));
 }
 
 template<class Op>
@@ -434,6 +415,15 @@ void stringIncDecOp(Op op, tv_lval cell, StringData* sd) {
   int64_t ival;
   double dval;
   auto const dt = sd->isNumericWithVal(ival, dval, false /* allow_errors */);
+
+  if (RuntimeOption::EvalNoticeOnCoerceForIncDec > 0 &&
+      (dt == KindOfInt64 || dt == KindOfDouble)) {
+    handleConvNoticeLevel(
+      flagToConvNoticeLevel(RuntimeOption::EvalNoticeOnCoerceForIncDec),
+      "string",
+      dt == KindOfInt64 ? "int" : "double",
+      s_ConvNoticeReasonIncDec.get());
+  }
 
   if (dt == KindOfInt64) {
     decRefStr(sd);
@@ -528,10 +518,6 @@ void tvIncDecOp(Op op, tv_lval cell) {
     case KindOfDict:
     case KindOfPersistentKeyset:
     case KindOfKeyset:
-    case KindOfPersistentDArray:
-    case KindOfDArray:
-    case KindOfPersistentVArray:
-    case KindOfVArray:
     case KindOfObject:
     case KindOfResource:
     case KindOfClsMeth:
@@ -549,9 +535,28 @@ const StaticString s_1("1");
 
 struct IncBase {
   void dblCase(tv_lval cell) const { ++val(cell).dbl; }
-  void nullCase(tv_lval cell) const { tvCopy(make_int(1), cell); }
+  void nullCase(tv_lval cell) const {
+    if (RuntimeOption::EvalNoticeOnCoerceForIncDec > 0) {
+      handleConvNoticeLevel(
+        flagToConvNoticeLevel(RuntimeOption::EvalNoticeOnCoerceForIncDec),
+        "null",
+        "int",
+        s_ConvNoticeReasonIncDec.get());
+    }
+    tvCopy(make_int(1), cell);
+  }
 
   TypedValue emptyString() const {
+    if (RuntimeOption::EvalNoticeOnCoerceForIncDec > 0) {
+      const auto level =
+        flagToConvNoticeLevel(RuntimeOption::EvalNoticeOnCoerceForIncDec);
+      const auto str = "Increment on empty string";
+      if (level == ConvNoticeLevel::Throw) {
+        SystemLib::throwInvalidOperationExceptionObject(str);
+      } else if (level == ConvNoticeLevel::Log) {
+        raise_notice(str);
+      }
+    }
     return make_tv<KindOfPersistentString>(s_1.get());
   }
 
@@ -591,7 +596,16 @@ struct IncO : IncBase {
 
 struct DecBase {
   void dblCase(tv_lval cell) { --val(cell).dbl; }
-  TypedValue emptyString() const { return make_int(-1); }
+  TypedValue emptyString() const {
+    if (RuntimeOption::EvalNoticeOnCoerceForIncDec > 0) {
+      handleConvNoticeLevel(
+        flagToConvNoticeLevel(RuntimeOption::EvalNoticeOnCoerceForIncDec),
+        "string",
+        "int",
+        s_ConvNoticeReasonIncDec.get());
+    }
+    return make_int(-1);
+  }
   void nullCase(tv_lval) const {}
   void nonNumericString(tv_lval cell) const {
     raise_notice("Decrement on string '%s'", val(cell).pstr->data());
@@ -676,15 +690,17 @@ TypedValue tvPow(TypedValue c1, TypedValue c2) {
 }
 
 TypedValue tvMod(TypedValue c1, TypedValue c2) {
-  auto const i1 = tvToInt(c1);
-  auto const i2 = tvToInt(c2);
+  auto toIntWithNotice = [](TypedValue i) {
+    return tvToInt(
+          i,
+          flagToConvNoticeLevel(RuntimeOption::EvalNoticeOnCoerceForMath),
+          s_ConvNoticeReasonMath.get(),
+          false);
+  };
+  auto const i1 = toIntWithNotice(c1);
+  auto const i2 = toIntWithNotice(c2);
   if (UNLIKELY(i2 == 0)) {
-    if (RuntimeOption::EvalForbidDivisionByZero) {
-      SystemLib::throwDivisionByZeroExceptionObject();
-    } else {
-      raise_warning(Strings::DIVISION_BY_ZERO);
-      return make_tv<KindOfBoolean>(false);
-    }
+    SystemLib::throwDivisionByZeroExceptionObject();
   }
 
   // This is to avoid SIGFPE in the case of INT64_MIN % -1.
@@ -713,15 +729,20 @@ TypedValue tvBitXor(TypedValue c1, TypedValue c2) {
 }
 
 TypedValue tvShl(TypedValue c1, TypedValue c2) {
-  int64_t lhs = tvToInt(c1);
-  int64_t shift = tvToInt(c2);
+  const ConvNoticeLevel notice_level =
+    flagToConvNoticeLevel(RuntimeOption::EvalNoticeOnCoerceForBitOp);
+  int64_t lhs = tvToInt(c1, notice_level, s_ConvNoticeReasonBitOp.get());
+  int64_t shift = tvToInt(c2, notice_level, s_ConvNoticeReasonBitOp.get());
 
   return make_int(shl_ignore_overflow(lhs, shift));
 }
 
 TypedValue tvShr(TypedValue c1, TypedValue c2) {
-  int64_t lhs = tvToInt(c1);
-  int64_t shift = tvToInt(c2);
+  const ConvNoticeLevel notice_level =
+    flagToConvNoticeLevel(RuntimeOption::EvalNoticeOnCoerceForBitOp);
+
+  int64_t lhs = tvToInt(c1, notice_level, s_ConvNoticeReasonBitOp.get());
+  int64_t shift = tvToInt(c2, notice_level, s_ConvNoticeReasonBitOp.get());
 
   return make_int(lhs >> (shift & 63));
 }
@@ -788,6 +809,12 @@ void tvBitNot(TypedValue& cell) {
       break;
 
     case KindOfDouble:
+      {
+        const ConvNoticeLevel notice_level =
+          flagToConvNoticeLevel(RuntimeOption::EvalNoticeOnCoerceForBitOp);
+        handleConvNoticeLevel(
+          notice_level, "double", "int", s_ConvNoticeReasonBitOp.get());
+      }
       cell.m_type     = KindOfInt64;
       cell.m_data.num = ~double_to_int64(cell.m_data.dbl);
       break;
@@ -840,10 +867,6 @@ void tvBitNot(TypedValue& cell) {
     case KindOfDict:
     case KindOfPersistentKeyset:
     case KindOfKeyset:
-    case KindOfPersistentDArray:
-    case KindOfDArray:
-    case KindOfPersistentVArray:
-    case KindOfVArray:
     case KindOfObject:
     case KindOfResource:
     case KindOfClsMeth:

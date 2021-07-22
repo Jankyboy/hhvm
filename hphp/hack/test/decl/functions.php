@@ -47,29 +47,7 @@ function takes_returns_dict(dict<string, bool> $m): dict<string, bool> {
   return $m;
 }
 
-<<__Rx>>
-function reactive_function(): void {}
-
-<<__RxShallow>>
-function shallow_reactive_function(): void {}
-
-<<__RxLocal>>
-function local_reactive_function(): void {}
-
-<<__Rx>>
-function reactive_function_mutable_args(
-  <<__Mutable>> Typedef $a,
-  <<__MaybeMutable>> Typedef $b,
-  <<__OwnedMutable>> Typedef $c,
-): void {
-}
-
 class C {}
-
-<<__Rx, __MutableReturn>>
-function make(): C {
-  return \HH\Rx\mutable(new C());
-}
 
 function null_type_hint<T as nothing>(?T $x): null {
   return $x;

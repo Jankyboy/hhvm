@@ -19,32 +19,35 @@
      Full Parsing -> Naming -> Full Typecheck (with lazy decl)
 *)
 
+(* module Hack_bucket = Bucket *)
 open Hh_prelude
+
+(* module Bucket = Hack_bucket *)
 open GlobalOptions
 open Result.Export
 open Reordered_argument_collections
 open SearchServiceRunner
 open ServerCheckUtils
 open ServerEnv
-open ServerInitCommon
 open ServerInitTypes
 open String_utils
-module DepSet = Typing_deps.DepSet
-module Dep = Typing_deps.Dep
 module SLC = ServerLocalConfig
 
 type deptable =
   | SQLiteDeptable of string
   | CustomDeptable of string
 
-let deptable_with_sqlite_file (genv : genv) (sqlite_fn : string) : deptable =
-  match ServerArgs.with_dep_graph_v2 genv.options with
-  | None -> SQLiteDeptable sqlite_fn
-  | Some fn -> CustomDeptable fn
+let deptable_with_filename ~(is_64bit : bool) (fn : string) : deptable =
+  if is_64bit then
+    CustomDeptable fn
+  else
+    SQLiteDeptable fn
 
 let lock_and_load_deptable
-    (deptable : deptable) ~(ignore_hh_version : bool) ~(fail_if_missing : bool)
-    : unit =
+    ~(base_file_name : string)
+    ~(deptable : deptable)
+    ~(ignore_hh_version : bool)
+    ~(fail_if_missing : bool) : unit =
   match deptable with
   | SQLiteDeptable fn ->
     if String.length fn = 0 && not fail_if_missing then
@@ -70,18 +73,38 @@ let lock_and_load_deptable
         Caml.Printexc.raise_with_backtrace e stack
     end
   | CustomDeptable fn ->
-    Hh_logger.log "Loading custom dependency graph from %s" fn;
-    (match Typing_deps.load_custom_dep_graph fn with
-    | Ok () -> ()
-    | Error msg -> failwith msg)
+    let () =
+      if not ignore_hh_version then
+        let build_revision =
+          SaveStateService.saved_state_build_revision_read ~base_file_name
+        in
+        if not (String.equal build_revision Build_id.build_revision) then
+          raise
+          @@ Failure
+               (Printf.sprintf
+                  ("Saved-state build mismatch, this saved-state was built "
+                  ^^ " for version '%s', but we expected '%s'")
+                  build_revision
+                  Build_id.build_revision)
+    in
+    (* The new dependency graph is threaded through function calls
+     * instead of stored in a global *)
+    Hh_logger.log "Custom dependency graph will be loaded lazily from %s" fn
 
 let merge_saved_state_futures
     (genv : genv)
     (ctx : Provider_context.t)
     (dependency_table_saved_state_future :
-      (State_loader.native_load_result, State_loader.error) result Future.t)
+      ( ( Saved_state_loader.Naming_and_dep_table_info.main_artifacts,
+          Saved_state_loader.Naming_and_dep_table_info.additional_info )
+        Saved_state_loader.load_result,
+        ServerInitTypes.load_state_error )
+      result
+      Future.t)
     (naming_table_saved_state_future :
-      ( Saved_state_loader.Naming_table_info.t Saved_state_loader.load_result
+      ( ( Saved_state_loader.Naming_table_info.main_artifacts,
+          Saved_state_loader.Naming_table_info.additional_info )
+        Saved_state_loader.load_result
         option,
         string )
       result
@@ -93,79 +116,137 @@ let merge_saved_state_futures
     match dependency_table_saved_state_result with
     | Error error ->
       Hh_logger.log
-        "Unhandled error from State_loader: %s"
-        (Future.show_error error);
+        "Unhandled Future.error from state loader: %s"
+        (Future.error_to_string error);
       let e = Exception.wrap_unraised (Future.error_to_exn error) in
       let exn = Exception.to_exn e in
       let stack = Utils.Callstack (Exception.get_backtrace_string e) in
       Error (Load_state_unhandled_exception { exn; stack })
-    | Ok (Error error) -> Error (Load_state_loader_failure error)
-    | Ok (Ok result) ->
-      let (downloaded_naming_table_path, dirty_naming_files) =
+    | Ok (Error error) -> Error error
+    | Ok (Ok deptable_result) ->
+      let ( downloaded_naming_table_path,
+            naming_table_manifold_path,
+            dirty_naming_files ) =
         match naming_table_saved_state_result with
-        | Ok (Ok None) -> (None, [])
+        | Ok (Ok None) -> (None, None, [])
         | Ok
             (Ok
-              (Some { Saved_state_loader.saved_state_info; changed_files; _ }))
-          ->
+              (Some
+                {
+                  Saved_state_loader.main_artifacts;
+                  additional_info = ();
+                  changed_files;
+                  manifold_path;
+                  corresponding_rev = _;
+                  mergebase_rev = _;
+                  is_cached = _;
+                })) ->
           let (_ : float) =
-            Hh_logger.log_duration "Finished downloading naming table." t
+            Hh_logger.log_duration
+              "Finished downloading naming table and dependency graph."
+              t
           in
           let path =
-            saved_state_info
+            main_artifacts
               .Saved_state_loader.Naming_table_info.naming_table_path
           in
-          (Some (Path.to_string path), changed_files)
+          (Some (Path.to_string path), Some manifold_path, changed_files)
         | Ok (Error err) ->
           Hh_logger.warn "Failed to download naming table saved state: %s" err;
-          (None, [])
+          (None, None, [])
         | Error error ->
           Hh_logger.warn
             "Failed to download the naming table saved state: %s"
             (Future.error_to_string error);
-          (None, [])
+          (None, None, [])
       in
       let ignore_hh_version =
         ServerArgs.ignore_hh_version genv.ServerEnv.options
       in
       let fail_if_missing = not genv.local_config.SLC.can_skip_deptable in
-      let deptable =
-        deptable_with_sqlite_file genv result.State_loader.deptable_fn
+      let {
+        Saved_state_loader.main_artifacts;
+        additional_info;
+        changed_files = _;
+        manifold_path = _;
+        corresponding_rev;
+        mergebase_rev;
+        is_cached = _;
+      } =
+        deptable_result
       in
-      lock_and_load_deptable deptable ~ignore_hh_version ~fail_if_missing;
+      let {
+        Saved_state_loader.Naming_and_dep_table_info.naming_table_path =
+          deptable_naming_table_blob_path;
+        dep_table_path;
+        legacy_hot_decls_path;
+        shallow_hot_decls_path;
+        errors_path;
+      } =
+        main_artifacts
+      in
+      let {
+        Saved_state_loader.Naming_and_dep_table_info.mergebase_global_rev;
+        dep_table_is_64bit;
+        dirty_files_promise;
+      } =
+        additional_info
+      in
+      let deptable =
+        deptable_with_filename
+          ~is_64bit:dep_table_is_64bit
+          (Path.to_string dep_table_path)
+      in
+      lock_and_load_deptable
+        ~base_file_name:(Path.to_string deptable_naming_table_blob_path)
+        ~deptable
+        ~ignore_hh_version
+        ~fail_if_missing;
       let load_decls = genv.local_config.SLC.load_decls_from_saved_state in
+      let shallow_decls = genv.local_config.SLC.shallow_class_decl in
       let naming_table_fallback_path =
         get_naming_table_fallback_path genv downloaded_naming_table_path
       in
       let (old_naming_table, old_errors) =
         SaveStateService.load_saved_state
           ctx
-          result.State_loader.saved_state_fn
+          ~naming_table_path:(Path.to_string deptable_naming_table_blob_path)
           ~naming_table_fallback_path
           ~load_decls
+          ~shallow_decls
+          ~legacy_hot_decls_path:(Path.to_string legacy_hot_decls_path)
+          ~shallow_hot_decls_path:(Path.to_string shallow_hot_decls_path)
+          ~errors_path:(Path.to_string errors_path)
       in
       let t = Unix.time () in
-      (match result.State_loader.dirty_files |> Future.get ~timeout:200 with
+      (match dirty_files_promise |> Future.get ~timeout:200 with
       | Error error -> Error (Load_state_dirty_files_failure error)
-      | Ok (dirty_master_files, dirty_local_files) ->
+      | Ok
+          {
+            Saved_state_loader.Naming_and_dep_table_info.master_changes =
+              dirty_master_files;
+            local_changes = dirty_local_files;
+          } ->
         let () = HackEventLogger.state_loader_dirty_files t in
         let dirty_naming_files = Relative_path.Set.of_list dirty_naming_files in
-        let dirty_master_files = Relative_path.Set.of_list dirty_master_files in
-        let dirty_local_files = Relative_path.Set.of_list dirty_local_files in
+        let dirty_master_files = dirty_master_files in
+        let dirty_local_files = dirty_local_files in
         Ok
           {
-            saved_state_fn = result.State_loader.saved_state_fn;
-            deptable_fn = result.State_loader.deptable_fn;
-            naming_table_fn = naming_table_fallback_path;
-            corresponding_rev = result.State_loader.corresponding_rev;
-            mergebase_rev = result.State_loader.mergebase_rev;
-            mergebase = result.State_loader.mergebase;
+            naming_table_fn = Path.to_string deptable_naming_table_blob_path;
+            deptable_fn = Path.to_string dep_table_path;
+            deptable_is_64bit = dep_table_is_64bit;
+            naming_table_fallback_fn = naming_table_fallback_path;
+            corresponding_rev = Hg.Hg_rev corresponding_rev;
+            mergebase_rev = mergebase_global_rev;
+            mergebase = Future.of_value (Some mergebase_rev);
             dirty_naming_files;
             dirty_master_files;
             dirty_local_files;
             old_naming_table;
             old_errors;
-            state_distance = Some result.State_loader.state_distance;
+            state_distance = None;
+            naming_table_manifold_path;
           })
   in
   let merge left right = Ok (merge left right) in
@@ -192,30 +273,11 @@ let merge_saved_state_futures
   wait_until_ready future
 
 let download_and_load_state_exn
-    ~(use_canary : bool)
-    ~(target : ServerMonitorUtils.target_saved_state option)
-    ~(genv : ServerEnv.genv)
-    ~(ctx : Provider_context.t)
-    ~(root : Path.t) : (loaded_info, load_state_error) result =
-  let open ServerMonitorUtils in
-  let saved_state_handle =
-    match target with
-    | None -> None
-    | Some
-        { saved_state_everstore_handle; target_global_rev; watchman_mergebase }
-      ->
-      Some
-        {
-          State_loader.saved_state_everstore_handle;
-          saved_state_for_rev = Hg.Global_rev target_global_rev;
-          watchman_mergebase;
-        }
-  in
+    ~(genv : ServerEnv.genv) ~(ctx : Provider_context.t) ~(root : Path.t) :
+    (loaded_info, load_state_error) result =
   let ignore_hh_version = ServerArgs.ignore_hh_version genv.options in
-  let ignore_hhconfig = ServerArgs.saved_state_ignore_hhconfig genv.options in
-  let use_prechecked_files =
-    ServerPrecheckedFiles.should_use genv.options genv.local_config
-  in
+  (* TODO(hverr): Support the ignore_hhconfig flag, how to do this with Watchman? *)
+  let _ignore_hhconfig = ServerArgs.saved_state_ignore_hhconfig genv.options in
   let naming_table_saved_state_future =
     if genv.local_config.ServerLocalConfig.enable_naming_table_fallback then begin
       Hh_logger.log "Starting naming table download.";
@@ -236,16 +298,32 @@ let download_and_load_state_exn
       Future.of_value (Ok None)
   in
   let dependency_table_saved_state_future :
-      (State_loader.native_load_result, State_loader.error) result Future.t =
-    State_loader.mk_state_future
-      ~config:genv.local_config.SLC.state_loader_timeouts
-      ~use_canary
-      ?saved_state_handle
-      ~config_hash:(ServerConfig.config_hash genv.config)
-      root
-      ~ignore_hh_version
-      ~ignore_hhconfig
-      ~use_prechecked_files
+      ( ( Saved_state_loader.Naming_and_dep_table_info.main_artifacts,
+          Saved_state_loader.Naming_and_dep_table_info.additional_info )
+        Saved_state_loader.load_result,
+        ServerInitTypes.load_state_error )
+      result
+      Future.t =
+    Hh_logger.log "Downloading dependency graph from DevX infra";
+    let loader_future =
+      State_loader_futures.load
+        ~watchman_opts:
+          Saved_state_loader.Watchman_options.{ root; sockname = None }
+        ~ignore_hh_version
+        ~saved_state_type:
+          (Saved_state_loader.Naming_and_dep_table
+             {
+               is_64bit =
+                 genv.local_config.ServerLocalConfig.load_state_natively_64bit;
+             })
+      |> Future.with_timeout ~timeout:60
+    in
+    let loader_future =
+      Future.continue_with loader_future @@ function
+      | Error e -> Error (Load_state_saved_state_loader_failure e)
+      | Ok v -> Ok v
+    in
+    loader_future
   in
   merge_saved_state_futures
     genv
@@ -256,11 +334,13 @@ let download_and_load_state_exn
 let use_precomputed_state_exn
     (genv : ServerEnv.genv)
     (ctx : Provider_context.t)
-    (info : ServerArgs.saved_state_target_info) : loaded_info =
+    (info : ServerArgs.saved_state_target_info)
+    (profiling : CgroupProfiler.Profiling.t) : loaded_info =
   let {
-    ServerArgs.saved_state_fn;
+    ServerArgs.naming_table_path;
     corresponding_base_revision;
     deptable_fn;
+    deptable_is_64bit;
     changes;
     naming_changes;
     prechecked_changes;
@@ -269,24 +349,47 @@ let use_precomputed_state_exn
   in
   let ignore_hh_version = ServerArgs.ignore_hh_version genv.ServerEnv.options in
   let fail_if_missing = not genv.local_config.SLC.can_skip_deptable in
-  let deptable = deptable_with_sqlite_file genv deptable_fn in
-  lock_and_load_deptable deptable ~ignore_hh_version ~fail_if_missing;
+  let deptable =
+    deptable_with_filename ~is_64bit:deptable_is_64bit deptable_fn
+  in
+  CgroupProfiler.collect_cgroup_stats ~profiling ~stage:"load deptable"
+  @@ fun () ->
+  lock_and_load_deptable
+    ~base_file_name:naming_table_path
+    ~deptable
+    ~ignore_hh_version
+    ~fail_if_missing;
   let changes = Relative_path.set_of_list changes in
   let naming_changes = Relative_path.set_of_list naming_changes in
   let prechecked_changes = Relative_path.set_of_list prechecked_changes in
   let load_decls = genv.local_config.SLC.load_decls_from_saved_state in
+  let shallow_decls = genv.local_config.SLC.shallow_class_decl in
   let naming_table_fallback_path = get_naming_table_fallback_path genv None in
+  let legacy_hot_decls_path =
+    ServerArgs.legacy_hot_decls_path_for_target_info info
+  in
+  let shallow_hot_decls_path =
+    ServerArgs.shallow_hot_decls_path_for_target_info info
+  in
+  let errors_path = ServerArgs.errors_path_for_target_info info in
   let (old_naming_table, old_errors) =
+    CgroupProfiler.collect_cgroup_stats ~profiling ~stage:"load saved state"
+    @@ fun () ->
     SaveStateService.load_saved_state
       ctx
-      saved_state_fn
+      ~naming_table_path
       ~naming_table_fallback_path
       ~load_decls
+      ~shallow_decls
+      ~legacy_hot_decls_path
+      ~shallow_hot_decls_path
+      ~errors_path
   in
   {
-    saved_state_fn;
+    naming_table_fn = naming_table_path;
     deptable_fn;
-    naming_table_fn = naming_table_fallback_path;
+    deptable_is_64bit;
+    naming_table_fallback_fn = naming_table_fallback_path;
     corresponding_rev =
       Hg.Global_rev (int_of_string corresponding_base_revision);
     mergebase_rev = None;
@@ -297,82 +400,66 @@ let use_precomputed_state_exn
     old_naming_table;
     old_errors;
     state_distance = None;
+    naming_table_manifold_path = None;
   }
 
-(* Run naming from a fast generated from saved state.
- * No errors are generated because we assume the fast is directly from
- * a clean state.
- *)
-let naming_with_fast
-    (ctx : Provider_context.t)
-    (fast : FileInfo.names Relative_path.Map.t)
-    (t : float) : float =
-  Relative_path.Map.iter fast ~f:(fun k info ->
-      let {
-        FileInfo.n_classes = classes;
-        n_record_defs = record_defs;
-        n_types = typedefs;
-        n_funs = funs;
-        n_consts = consts;
-      } =
-        info
-      in
-      Naming_global.ndecl_file_fast
-        ctx
-        k
-        ~funs
-        ~classes
-        ~record_defs
-        ~typedefs
-        ~consts);
-  HackEventLogger.fast_naming_end t;
-  let hs = SharedMem.heap_size () in
-  Hh_logger.log "Heap size: %d" hs;
-  Hh_logger.log_duration "Naming fast" t
-
+(** This function ensures the naming-table is ready for us to do "naming" on the dirty files
+("parsing_files"), i.e. check all the symbols in them, add them to the naming table, and report
+errors if any of the dirty files had duplicate names.
+*)
 let naming_from_saved_state
     (ctx : Provider_context.t)
     (old_naming_table : Naming_table.t)
     (parsing_files : Relative_path.Set.t)
-    (naming_table_fn : string option)
-    (t : float) : float =
-  (* If we're falling back to SQLite we don't need to explicitly do a naming
-     pass, but if we're not then we do. *)
-  match naming_table_fn with
-  | Some _ ->
-    (* Set the SQLite fallback path for the reverse naming table, then block out all entries in
-      any dirty files to make sure we properly handle file deletes. *)
-    Relative_path.Set.iter parsing_files (fun k ->
-        match Naming_table.get_file_info old_naming_table k with
-        | None ->
-          (* If we can't find the file in [old_naming_table] we don't consider that an error, since
-           * it could be a new file that was added. *)
-          ()
-        | Some v ->
-          let backend = Provider_context.get_backend ctx in
-          Naming_provider.remove_type_batch
-            backend
-            (v.FileInfo.classes |> List.map ~f:snd |> SSet.of_list);
-          Naming_provider.remove_type_batch
-            backend
-            (v.FileInfo.typedefs |> List.map ~f:snd |> SSet.of_list);
-          Naming_provider.remove_type_batch
-            backend
-            (v.FileInfo.record_defs |> List.map ~f:snd |> SSet.of_list);
-          Naming_provider.remove_fun_batch
-            backend
-            (v.FileInfo.funs |> List.map ~f:snd |> SSet.of_list);
-          Naming_provider.remove_const_batch
-            backend
-            (v.FileInfo.consts |> List.map ~f:snd |> SSet.of_list));
-    Unix.gettimeofday ()
-  | None ->
-    (* Name all the files from the old fast (except the new ones we parsed) *)
-    let old_hack_names =
-      Naming_table.filter old_naming_table (fun k _v ->
-          not (Relative_path.Set.mem parsing_files k))
-    in
-    naming_with_fast ctx (Naming_table.to_fast old_hack_names) t
+    (naming_table_fallback_fn : string option)
+    (t : float)
+    ~(profiling : CgroupProfiler.Profiling.t) : float =
+  CgroupProfiler.collect_cgroup_stats
+    ~profiling
+    ~stage:"naming from saved state"
+  @@ fun () ->
+  begin
+    match naming_table_fallback_fn with
+    | Some _ ->
+      (* Set the SQLite fallback path for the reverse naming table, then block out all entries in
+         any dirty files to make sure we properly handle file deletes. *)
+      Relative_path.Set.iter parsing_files ~f:(fun k ->
+          match Naming_table.get_file_info old_naming_table k with
+          | None ->
+            (* If we can't find the file in [old_naming_table] we don't consider that an error, since
+             * it could be a new file that was added. *)
+            ()
+          | Some v ->
+            let backend = Provider_context.get_backend ctx in
+            Naming_provider.remove_type_batch
+              backend
+              (v.FileInfo.classes |> List.map ~f:snd);
+            Naming_provider.remove_type_batch
+              backend
+              (v.FileInfo.typedefs |> List.map ~f:snd);
+            Naming_provider.remove_type_batch
+              backend
+              (v.FileInfo.record_defs |> List.map ~f:snd);
+            Naming_provider.remove_fun_batch
+              backend
+              (v.FileInfo.funs |> List.map ~f:snd);
+            Naming_provider.remove_const_batch
+              backend
+              (v.FileInfo.consts |> List.map ~f:snd))
+    | None ->
+      (* Name all the files from the old naming-table (except the new ones we parsed since
+         they'll be named by our caller, next). We assume the old naming-table came from a clean
+         state, which is why we skip checking for "already bound" conditions. *)
+      let old_hack_names =
+        Naming_table.filter old_naming_table ~f:(fun k _v ->
+            not (Relative_path.Set.mem parsing_files k))
+      in
+      Naming_table.fold old_hack_names ~init:() ~f:(fun k info () ->
+          Naming_global.ndecl_file_skip_if_already_bound ctx k info);
+      ServerInitCommon.hh_log_heap ()
+  end;
+  HackEventLogger.naming_from_saved_state_end t;
+  Hh_logger.log_duration "NAMING_FROM_SAVED_STATE_END" t
 
 (* Prechecked files are gated with a flag and not supported in AI/check/saving
  * of saved state modes. *)
@@ -398,7 +485,7 @@ let get_dirty_fast
           |> Option.map ~f:FileInfo.simplify
         in
         let fast =
-          Option.merge dirty_old_fast dirty_fast FileInfo.merge_names
+          Option.merge dirty_old_fast dirty_fast ~f:FileInfo.merge_names
         in
         match fast with
         | Some fast -> Relative_path.Map.add acc ~key:fn ~data:fast
@@ -406,19 +493,22 @@ let get_dirty_fast
       end
     ~init:Relative_path.Map.empty
 
-let names_to_deps (names : FileInfo.names) : DepSet.t =
+let names_to_deps (deps_mode : Typing_deps_mode.t) (names : FileInfo.names) :
+    Typing_deps.DepSet.t =
+  let open Typing_deps in
   let { FileInfo.n_funs; n_classes; n_record_defs; n_types; n_consts } =
     names
   in
   let add_deps_of_sset dep_ctor sset depset =
     SSet.fold sset ~init:depset ~f:(fun n acc ->
-        DepSet.add acc (Dep.make (dep_ctor n)))
+        DepSet.add acc (Dep.make (hash_mode deps_mode) (dep_ctor n)))
   in
-  let deps = add_deps_of_sset (fun n -> Dep.Fun n) n_funs DepSet.empty in
-  let deps = add_deps_of_sset (fun n -> Dep.FunName n) n_funs deps in
-  let deps = add_deps_of_sset (fun n -> Dep.Class n) n_classes deps in
-  let deps = add_deps_of_sset (fun n -> Dep.RecordDef n) n_record_defs deps in
-  let deps = add_deps_of_sset (fun n -> Dep.Class n) n_types deps in
+  let deps =
+    add_deps_of_sset (fun n -> Dep.Fun n) n_funs (DepSet.make deps_mode)
+  in
+  let deps = add_deps_of_sset (fun n -> Dep.Type n) n_classes deps in
+  let deps = add_deps_of_sset (fun n -> Dep.Type n) n_record_defs deps in
+  let deps = add_deps_of_sset (fun n -> Dep.Type n) n_types deps in
   let deps = add_deps_of_sset (fun n -> Dep.GConst n) n_consts deps in
   let deps = add_deps_of_sset (fun n -> Dep.GConstName n) n_consts deps in
   deps
@@ -427,13 +517,14 @@ let names_to_deps (names : FileInfo.names) : DepSet.t =
     the current versions of dirty files. This lets us check a smaller set of
     files than the set we'd check if old declarations were not available.
     To be used only when load_decls_from_saved_state is enabled. *)
-let get_files_to_recheck
+let get_files_to_undecl_and_recheck
     (genv : ServerEnv.genv)
     (env : ServerEnv.env)
     (old_naming_table : Naming_table.t)
     (new_fast : FileInfo.names Relative_path.Map.t)
     (dirty_fast : FileInfo.names Relative_path.Map.t)
-    (files_to_redeclare : Relative_path.Set.t) : Relative_path.Set.t =
+    (files_to_redeclare : Relative_path.Set.t) :
+    Relative_path.Set.t * Relative_path.Set.t =
   let bucket_size = genv.local_config.SLC.type_decl_bucket_size in
   let fast =
     Relative_path.Set.fold
@@ -441,7 +532,7 @@ let get_files_to_recheck
       ~init:Relative_path.Map.empty
       ~f:(fun path acc ->
         match Relative_path.Map.find_opt dirty_fast path with
-        | Some info -> Relative_path.Map.add acc path info
+        | Some info -> Relative_path.Map.add acc ~key:path ~data:info
         | None -> acc)
   in
   let get_classes path =
@@ -451,9 +542,9 @@ let get_files_to_recheck
     in
     let new_names = Relative_path.Map.find_opt new_fast path in
     let classes_from_names x = x.FileInfo.n_classes in
-    let old_classes = Option.map old_names classes_from_names in
-    let new_classes = Option.map new_names classes_from_names in
-    Option.merge old_classes new_classes SSet.union
+    let old_classes = Option.map old_names ~f:classes_from_names in
+    let new_classes = Option.map new_names ~f:classes_from_names in
+    Option.merge old_classes new_classes ~f:SSet.union
     |> Option.value ~default:SSet.empty
   in
   let dirty_names =
@@ -470,7 +561,6 @@ let get_files_to_recheck
     ~defs:dirty_names;
   let { Decl_redecl_service.to_redecl; to_recheck; _ } =
     Decl_redecl_service.redo_type_decl
-      ~conservative_redecl:false
       ~bucket_size
       ctx
       genv.workers
@@ -479,9 +569,28 @@ let get_files_to_recheck
       ~defs:fast
   in
   Decl_redecl_service.remove_old_defs ctx ~bucket_size genv.workers dirty_names;
-  let deps = Typing_deps.add_all_deps to_redecl in
-  let deps = Typing_deps.DepSet.union deps to_recheck in
-  Typing_deps.get_files deps
+  let to_recheck_deps = Typing_deps.add_all_deps env.deps_mode to_redecl in
+  let to_recheck_deps = Typing_deps.DepSet.union to_recheck_deps to_recheck in
+  let files_to_undecl = Typing_deps.Files.get_files to_redecl in
+  let files_to_recheck = Typing_deps.Files.get_files to_recheck_deps in
+  (* we use lazy here to avoid expensive string generation when logging
+       * is not enabled *)
+  Hh_logger.log_lazy ~category:"fanout_information"
+  @@ lazy
+       Hh_json.(
+         json_to_string
+         @@ JSON_Object
+              [
+                ("tag", string_ "saved_state_init_fanout");
+                ( "hashes",
+                  array_
+                    string_
+                    Typing_deps.(
+                      List.map ~f:Dep.to_hex_string
+                      @@ DepSet.elements to_recheck_deps) );
+              ]);
+
+  (files_to_undecl, files_to_recheck)
 
 (* We start off with a list of files that have changed since the state was
  * saved (dirty_files), and two maps of the class / function declarations
@@ -510,7 +619,8 @@ let type_check_dirty
     ~(dirty_master_files_changed_hash : Relative_path.Set.t)
     ~(dirty_local_files_unchanged_hash : Relative_path.Set.t)
     ~(dirty_local_files_changed_hash : Relative_path.Set.t)
-    (t : float) : ServerEnv.env * float =
+    (t : float)
+    (profiling : CgroupProfiler.Profiling.t) : ServerEnv.env * float =
   let start_t = Unix.gettimeofday () in
   let telemetry =
     Telemetry.create ()
@@ -543,28 +653,34 @@ let type_check_dirty
         end
       ~init:FileInfo.empty_names
   in
-  let master_deps = names dirty_master_files_changed_hash |> names_to_deps in
-  let local_deps = names dirty_local_files_changed_hash |> names_to_deps in
+  let ctx = Provider_utils.ctx_from_server_env env in
+  let deps_mode = Provider_context.get_deps_mode ctx in
+  let master_deps =
+    names dirty_master_files_changed_hash |> names_to_deps deps_mode
+  in
+  let local_deps =
+    names dirty_local_files_changed_hash |> names_to_deps deps_mode
+  in
   (* Include similar_files in the dirty_fast used to determine which loaded
      declarations to oldify. This is necessary because the positions of
      declarations may have changed, which affects error messages and FIXMEs. *)
-  let get_files_to_recheck =
-    get_files_to_recheck genv env old_naming_table new_fast
+  let get_files_to_undecl_and_recheck =
+    get_files_to_undecl_and_recheck genv env old_naming_table new_fast
     @@ extend_fast
          genv
          dirty_changed_fast
          env.naming_table
          dirty_files_unchanged_hash
   in
-  let (env, to_recheck) =
+  let (env, to_undecl, to_recheck) =
     if use_prechecked_files genv then
       (* Start with dirty files and fan-out of local changes only *)
-      let to_recheck =
+      let (to_undecl, to_recheck) =
         if genv.local_config.SLC.load_decls_from_saved_state then
-          get_files_to_recheck dirty_local_files_changed_hash
+          get_files_to_undecl_and_recheck dirty_local_files_changed_hash
         else
-          let deps = Typing_deps.add_all_deps local_deps in
-          Typing_deps.get_files deps
+          let deps = Typing_deps.add_all_deps env.deps_mode local_deps in
+          (Relative_path.Set.empty, Typing_deps.Files.get_files deps)
       in
       ( ServerPrecheckedFiles.set
           env
@@ -573,20 +689,21 @@ let type_check_dirty
                rechecked_files = Relative_path.Set.empty;
                dirty_local_deps = local_deps;
                dirty_master_deps = master_deps;
-               clean_local_deps = Typing_deps.DepSet.empty;
+               clean_local_deps = Typing_deps.(DepSet.make deps_mode);
              }),
+        to_undecl,
         to_recheck )
     else
       (* Start with full fan-out immediately *)
-      let to_recheck =
+      let (to_undecl, to_recheck) =
         if genv.local_config.SLC.load_decls_from_saved_state then
-          get_files_to_recheck dirty_files_changed_hash
+          get_files_to_undecl_and_recheck dirty_files_changed_hash
         else
           let deps = Typing_deps.DepSet.union master_deps local_deps in
-          let deps = Typing_deps.add_all_deps deps in
-          Typing_deps.get_files deps
+          let deps = Typing_deps.add_all_deps env.deps_mode deps in
+          (Relative_path.Set.empty, Typing_deps.Files.get_files deps)
       in
-      (env, to_recheck)
+      (env, to_undecl, to_recheck)
   in
   (* We still need to typecheck files whose declarations did not change *)
   let to_recheck =
@@ -596,9 +713,9 @@ let type_check_dirty
   let files_to_check = Relative_path.Map.keys fast in
 
   (* HACK: dump the fanout that we calculated and exit. This is for
-  `hh_fanout`'s regression testing vs. `hh_server`. This can be deleted once
-  we no longer worry about `hh_fanout` regressing vs. `hh_server`. Deletion
-  is tracked at T65464119. *)
+     `hh_fanout`'s regression testing vs. `hh_server`. This can be deleted once
+     we no longer worry about `hh_fanout` regressing vs. `hh_server`. Deletion
+     is tracked at T65464119. *)
   if ServerArgs.dump_fanout genv.options then (
     Hh_json.json_to_multiline_output
       stdout
@@ -606,13 +723,57 @@ let type_check_dirty
          [
            ( "recheck_files",
              Hh_json.JSON_Array
-               ( files_to_check
+               (files_to_check
                |> List.map ~f:Relative_path.to_absolute
-               |> List.map ~f:Hh_json.string_ ) );
+               |> List.map ~f:Hh_json.string_) );
          ]);
     exit 0
   ) else
+    (* In case we saw that any hot decls had become invalid, we have to remove them.
+       Note: we don't need to do a full "redecl" of them since their fanout has
+       already been encompassed by to_recheck. *)
+    let names_to_undecl =
+      Relative_path.Set.fold
+        to_undecl
+        ~init:FileInfo.empty_names
+        ~f:(fun file acc ->
+          match Naming_table.get_file_info old_naming_table file with
+          | None -> acc
+          | Some info ->
+            let names = FileInfo.simplify info in
+            FileInfo.merge_names acc names)
+    in
+    let ctx = Provider_utils.ctx_from_server_env env in
+    Decl_redecl_service.remove_defs
+      ctx
+      names_to_undecl
+      SMap.empty
+      ~collect_garbage:false;
+
     let env = { env with changed_files = dirty_files_changed_hash } in
+    let files_to_check =
+      if
+        not
+          genv.ServerEnv.local_config
+            .ServerLocalConfig.enable_type_check_filter_files
+      then
+        files_to_check
+      else
+        Relative_path.Set.elements
+        @@ ServerCheckUtils.user_filter_type_check_files
+             ~to_recheck:(Relative_path.Set.of_list files_to_check)
+             ~reparsed:
+               (Relative_path.Set.union
+                  dirty_files_unchanged_hash
+                  dirty_files_changed_hash)
+             ~is_ide_file:(fun _ -> false)
+    in
+    let files_to_check =
+      if genv.ServerEnv.local_config.ServerLocalConfig.re_worker then
+        []
+      else
+        files_to_check
+    in
     let init_telemetry =
       telemetry
       |> Telemetry.int_
@@ -637,7 +798,16 @@ let type_check_dirty
            ~key:"to_recheck"
            ~value:(Relative_path.Set.cardinal to_recheck)
     in
-    let result = type_check genv env files_to_check init_telemetry t in
+    let result =
+      ServerInitCommon.type_check
+        genv
+        env
+        files_to_check
+        init_telemetry
+        t
+        ~profile_label:"type_check_dirty"
+        ~profiling
+    in
     HackEventLogger.type_check_dirty
       ~start_t
       ~dirty_count:(Relative_path.Set.cardinal dirty_files_changed_hash)
@@ -668,10 +838,10 @@ let get_updates_exn ~(genv : ServerEnv.genv) ~(root : Path.t) :
         |> Relative_path.relativize_set Relative_path.Root)
   in
   ignore
-    ( Hh_logger.log_duration
-        "Finished getting files changed while parsing"
-        start_t
-      : float );
+    (Hh_logger.log_duration
+       "Finished getting files changed while parsing"
+       start_t
+      : float);
   HackEventLogger.changed_while_parsing_end start_t;
   files_changed_while_parsing
 
@@ -680,9 +850,10 @@ let initialize_naming_table
     ?(fnl : Relative_path.t list option = None)
     ?(do_naming : bool = false)
     (genv : ServerEnv.genv)
-    (env : ServerEnv.env) : ServerEnv.env * float =
+    (env : ServerEnv.env)
+    (profiling : CgroupProfiler.Profiling.t) : ServerEnv.env * float =
   SharedMem.cleanup_sqlite ();
-  ServerProgress.send_progress_to_monitor "%s" progress_message;
+  ServerProgress.send_progress "%s" progress_message;
   let (get_next, count, t) =
     match fnl with
     | Some fnl ->
@@ -690,7 +861,9 @@ let initialize_naming_table
         Some (List.length fnl),
         Unix.gettimeofday () )
     | None ->
-      let (get_next, t) = indexing genv in
+      let (get_next, t) =
+        ServerInitCommon.indexing ~profile_label:"lazy.nt.indexing" genv
+      in
       (get_next, None, t)
   in
   (* The full_fidelity_parser currently works better in both memory and time
@@ -698,82 +871,80 @@ let initialize_naming_table
   let lazy_parse = not genv.local_config.SLC.use_full_fidelity_parser in
   (* full init - too many files to trace all of them *)
   let trace = false in
-  let (env, t) = parsing ~lazy_parse genv env ~get_next ?count t ~trace in
+  let (env, t) =
+    ServerInitCommon.parsing
+      ~lazy_parse
+      genv
+      env
+      ~get_next
+      ?count
+      t
+      ~trace
+      ~profile_label:"lazy.nt.parsing"
+      ~profiling
+  in
   if not do_naming then
     (env, t)
   else
-    let t = update_files genv env.naming_table t in
-    naming env t
-
-let load_naming_table (genv : ServerEnv.genv) (env : ServerEnv.env) :
-    ServerEnv.env * float =
-  let ignore_hh_version = ServerArgs.ignore_hh_version genv.options in
-  let loader_future =
-    State_loader_futures.load
-      ~watchman_opts:
-        Saved_state_loader.Watchman_options.
-          {
-            root = Path.make Relative_path.(path_of_prefix Root);
-            sockname = None;
-          }
-      ~ignore_hh_version
-      ~saved_state_type:Saved_state_loader.Naming_table
-  in
-  match
-    State_loader_futures.wait_for_finish_with_debug_details loader_future
-  with
-  | Ok { Saved_state_loader.saved_state_info; changed_files; _ } ->
-    let { Saved_state_loader.Naming_table_info.naming_table_path } =
-      saved_state_info
-    in
     let ctx = Provider_utils.ctx_from_server_env env in
-    let naming_table_path = Path.to_string naming_table_path in
-    let naming_table = Naming_table.load_from_sqlite ctx naming_table_path in
-    let (env, t) =
-      initialize_naming_table
-        ~fnl:(Some changed_files)
-        ~do_naming:true
-        "full initialization (with loaded naming table)"
-        genv
-        env
-    in
     let t =
-      naming_from_saved_state
-        ctx
+      ServerInitCommon.update_files
+        genv
         env.naming_table
-        (Relative_path.set_of_list changed_files)
-        (Some naming_table_path)
+        ctx
         t
+        ~profile_label:"lazy.nt.do_naming.update"
+        ~profiling
     in
-    ( {
-        env with
-        naming_table = Naming_table.combine naming_table env.naming_table;
-      },
-      t )
-  | Error e ->
-    Hh_logger.log "Failed to load naming table: %s" e;
+    ServerInitCommon.naming
+      env
+      t
+      ~profile_label:"lazy.nt.do_naming.naming"
+      ~profiling
+
+let write_symbol_info_init
+    (genv : ServerEnv.genv)
+    (env : ServerEnv.env)
+    (profiling : CgroupProfiler.Profiling.t) : ServerEnv.env * float =
+  let (env, t) =
     initialize_naming_table
-      ~do_naming:true
-      "full initialization (failed to load naming table)"
+      "write symbol info initialization"
       genv
       env
-
-let write_symbol_info_init (genv : ServerEnv.genv) (env : ServerEnv.env) :
-    ServerEnv.env * float =
-  let out_dir =
-    match ServerArgs.write_symbol_info genv.options with
-    | None -> failwith "No write directory specified for --write-symbol-info"
-    | Some s -> s
+      profiling
+  in
+  let ctx = Provider_utils.ctx_from_server_env env in
+  let t =
+    ServerInitCommon.update_files
+      genv
+      env.naming_table
+      ctx
+      t
+      ~profile_label:"write_symbol_info.update"
+      ~profiling
   in
   let (env, t) =
-    initialize_naming_table "write symbol info initialization" genv env
+    ServerInitCommon.naming
+      env
+      t
+      ~profile_label:"write_symbol_info.naming"
+      ~profiling
   in
-  let t = update_files genv env.naming_table t in
-  let (env, t) = naming env t in
   let index_paths = env.swriteopt.symbol_write_index_paths in
+  let index_paths_file = env.swriteopt.symbol_write_index_paths_file in
   let files =
-    if List.length index_paths > 0 then
-      List.map index_paths (fun path -> Relative_path.from_root ~suffix:path)
+    if List.length index_paths > 0 || Option.is_some index_paths_file then
+      let relative_path_exists r =
+        Sys.file_exists (Relative_path.to_absolute r)
+      in
+      List.concat
+        [
+          Option.value_map index_paths_file ~default:[] ~f:In_channel.read_lines
+          |> List.map ~f:Relative_path.storage_of_string;
+          index_paths
+          |> List.map ~f:(fun path -> Relative_path.from_root ~suffix:path)
+          |> List.filter ~f:relative_path_exists;
+        ]
     else
       let fast = Naming_table.to_fast env.naming_table in
       let failed_parsing = Errors.get_failed_files env.errorl Errors.Parsing in
@@ -791,86 +962,163 @@ let write_symbol_info_init (genv : ServerEnv.genv) (env : ServerEnv.env) :
           | Some _ ->
             if
               (exclude_hhi && Relative_path.is_hhi (Relative_path.prefix path))
-              || List.exists ignore_paths (fun ignore ->
+              || List.exists ignore_paths ~f:(fun ignore ->
                      String.equal (Relative_path.S.to_string path) ignore)
             then
               acc
             else
               path :: acc)
   in
-  (* Ensure we are writing to fresh files *)
-  let is_invalid =
-    try
-      if not (Sys.is_directory out_dir) then
-        true
-      else
-        Array.length (Sys.readdir out_dir) > 0
-    with _ ->
-      Sys_utils.mkdir_p out_dir;
-      false
-  in
-  if is_invalid then failwith "JSON write directory is invalid or non-empty";
+  match env.swriteopt.symbol_write_index_paths_file_output with
+  | Some output ->
+    List.map ~f:Relative_path.storage_to_string files
+    |> Out_channel.write_lines output;
+    (env, t)
+  | None ->
+    let out_dir =
+      match ServerArgs.write_symbol_info genv.options with
+      | None -> failwith "No write directory specified for --write-symbol-info"
+      | Some s -> s
+    in
+    (* Ensure we are writing to fresh files *)
+    let is_invalid =
+      try
+        if not (Sys.is_directory out_dir) then
+          true
+        else
+          Array.length (Sys.readdir out_dir) > 0
+      with
+      | _ ->
+        Sys_utils.mkdir_p out_dir;
+        false
+    in
+    if is_invalid then failwith "JSON write directory is invalid or non-empty";
 
-  Hh_logger.log "Writing JSON to: %s" out_dir;
+    Hh_logger.log "Indexing: %d files" (List.length files);
+    Hh_logger.log "Writing JSON to: %s" out_dir;
 
-  let ctx = Provider_utils.ctx_from_server_env env in
-  let root_path = env.swriteopt.symbol_write_root_path in
-  let hhi_path = env.swriteopt.symbol_write_hhi_path in
-  Symbol_info_writer.go genv.workers ctx out_dir root_path hhi_path files;
+    let ctx = Provider_utils.ctx_from_server_env env in
+    let root_path = env.swriteopt.symbol_write_root_path in
+    let hhi_path = env.swriteopt.symbol_write_hhi_path in
+    (* TODO(milliechen): log memory for this step *)
+    Symbol_info_writer.go genv.workers ctx out_dir root_path hhi_path files;
 
-  (env, t)
+    (env, t)
 
 (* If we fail to load a saved state, fall back to typechecking everything *)
-let full_init (genv : ServerEnv.genv) (env : ServerEnv.env) :
-    ServerEnv.env * float =
+let full_init
+    (genv : ServerEnv.genv)
+    (env : ServerEnv.env)
+    (profiling : CgroupProfiler.Profiling.t) : ServerEnv.env * float =
   let init_telemetry =
     Telemetry.create ()
     |> Telemetry.float_ ~key:"start_time" ~value:(Unix.gettimeofday ())
     |> Telemetry.string_ ~key:"reason" ~value:"lazy_full_init"
   in
   let is_check_mode = ServerArgs.check_mode genv.options in
-  let (env, t) =
-    if
-      not
-        genv.ServerEnv.local_config.SLC.remote_type_check
-          .SLC.RemoteTypeCheck.load_naming_table_on_full_init
-    then
-      initialize_naming_table ~do_naming:true "full initialization" genv env
-    else
-      load_naming_table genv env
-  in
-  if not is_check_mode then
-    SearchServiceRunner.update_fileinfo_map env.naming_table SearchUtils.Init;
-  let fast = Naming_table.to_fast env.naming_table in
-  let failed_parsing = Errors.get_failed_files env.errorl Errors.Parsing in
-  let fast =
-    Relative_path.Set.fold
-      failed_parsing
-      ~f:(fun x m -> Relative_path.Map.remove m x)
-      ~init:fast
-  in
-  let fnl = Relative_path.Map.keys fast in
-  let env =
-    if is_check_mode then
-      let should_start_delegate =
-        ServerCheckUtils.should_do_remote
-          genv
-          env.tcopt
-          ~file_count:(List.length fnl)
-          env.errorl
-      in
-      if should_start_delegate then
-        start_typing_delegate genv env
+  let run () =
+    let (env, t) =
+      initialize_naming_table
+        ~do_naming:true
+        "full initialization"
+        genv
+        env
+        profiling
+    in
+    if not is_check_mode then
+      SearchServiceRunner.update_fileinfo_map
+        env.naming_table
+        ~source:SearchUtils.Init;
+    let fast = Naming_table.to_fast env.naming_table in
+    let failed_parsing = Errors.get_failed_files env.errorl Errors.Parsing in
+    let fast =
+      Relative_path.Set.fold
+        failed_parsing
+        ~f:(fun x m -> Relative_path.Map.remove m x)
+        ~init:fast
+    in
+    let fnl = Relative_path.Map.keys fast in
+    let env =
+      if is_check_mode then
+        start_delegate_if_needed env genv (List.length fnl) env.errorl
       else
         env
-    else
+    in
+    ServerInitCommon.type_check
+      genv
       env
+      fnl
+      init_telemetry
+      t
+      ~profile_label:"lazy.full.type_check"
+      ~profiling
   in
-  type_check genv env fnl init_telemetry t
+  let run_experiment () =
+    let ctx = Provider_utils.ctx_from_server_env env in
+    let t_full_init = Unix.gettimeofday () in
+    let fast =
+      Direct_decl_service.go
+        ctx
+        genv.workers
+        (fst
+           (ServerInitCommon.indexing
+              ~profile_label:"lazy.full.experiment.indexing"
+              genv))
+    in
+    let t = Hh_logger.log_duration "parsing decl" t_full_init in
+    let naming_table = Naming_table.update_many env.naming_table fast in
+    let t = Hh_logger.log_duration "updating naming table" t in
+    let env = { env with naming_table } in
+    let t =
+      ServerInitCommon.update_files
+        genv
+        env.naming_table
+        ctx
+        t
+        ~profile_label:"lazy.full.experiment.update"
+        ~profiling
+    in
+    let (env, t) =
+      ServerInitCommon.naming
+        env
+        t
+        ~profile_label:"lazy.full.experiment.naming"
+        ~profiling
+    in
+    let fnl = Relative_path.Map.keys fast in
+    if not is_check_mode then
+      SearchServiceRunner.update_fileinfo_map
+        env.naming_table
+        ~source:SearchUtils.Init;
+    let type_check_result =
+      ServerInitCommon.type_check
+        genv
+        env
+        fnl
+        init_telemetry
+        t
+        ~profile_label:"lazy.full.experiment.type_check"
+        ~profiling
+    in
+    Hh_logger.log_duration "full init" t_full_init |> ignore;
+    type_check_result
+  in
+  if
+    GlobalOptions.tco_use_direct_decl_parser
+      (ServerConfig.parser_options genv.config)
+  then (
+    Hh_logger.log "full init experiment";
+    run_experiment ()
+  ) else (
+    Hh_logger.log "full init";
+    run ()
+  )
 
-let parse_only_init (genv : ServerEnv.genv) (env : ServerEnv.env) :
-    ServerEnv.env * float =
-  initialize_naming_table "parse-only initialization" genv env
+let parse_only_init
+    (genv : ServerEnv.genv)
+    (env : ServerEnv.env)
+    (profiling : CgroupProfiler.Profiling.t) : ServerEnv.env * float =
+  initialize_naming_table "parse-only initialization" genv env profiling
 
 let get_mergebase (mergebase_future : Hg.hg_rev option Future.t) :
     Hg.hg_rev option =
@@ -891,15 +1139,14 @@ let get_mergebase (mergebase_future : Hg.hg_rev option Future.t) :
 let post_saved_state_initialization
     ~(genv : ServerEnv.genv)
     ~(env : ServerEnv.env)
-    ~(state_result : loaded_info * Relative_path.Set.t) : ServerEnv.env * float
-    =
+    ~(state_result : loaded_info * Relative_path.Set.t)
+    (profiling : CgroupProfiler.Profiling.t) : ServerEnv.env * float =
   let ((loaded_info : ServerInitTypes.loaded_info), changed_while_parsing) =
     state_result
   in
   let trace = genv.local_config.SLC.trace_parsing in
-  let hg_aware = genv.local_config.SLC.hg_aware in
   let {
-    naming_table_fn;
+    naming_table_fallback_fn;
     dirty_naming_files;
     dirty_local_files;
     dirty_master_files;
@@ -907,15 +1154,41 @@ let post_saved_state_initialization
     mergebase_rev;
     mergebase;
     old_errors;
-    _;
+    deptable_fn;
+    deptable_is_64bit;
+    naming_table_fn = _;
+    corresponding_rev = _;
+    state_distance = _;
+    naming_table_manifold_path;
   } =
     loaded_info
   in
-  if hg_aware then Option.iter mergebase_rev ~f:ServerRevisionTracker.initialize;
+  if genv.local_config.SLC.hg_aware then
+    if ServerArgs.is_using_precomputed_saved_state genv.options then begin
+      HackEventLogger.tried_to_be_hg_aware_with_precomputed_saved_state_warning
+        ();
+      Hh_logger.log
+        "Warning: disabling restart on rebase (server was started with precomputed saved-state)"
+    end else
+      Option.iter mergebase_rev ~f:ServerRevisionTracker.initialize;
   let env =
     {
       env with
-      init_env = { env.init_env with mergebase = get_mergebase mergebase };
+      init_env =
+        {
+          env.init_env with
+          mergebase = get_mergebase mergebase;
+          naming_table_manifold_path;
+        };
+      deps_mode =
+        (if deptable_is_64bit then
+          match ServerArgs.save_64bit genv.options with
+          | Some new_edges_dir ->
+            Typing_deps_mode.SaveCustomMode
+              { graph = Some deptable_fn; new_edges_dir }
+          | None -> Typing_deps_mode.CustomMode (Some deptable_fn)
+        else
+          Typing_deps_mode.SQLiteMode);
     }
   in
 
@@ -964,12 +1237,19 @@ let post_saved_state_initialization
   let parsing_files =
     Relative_path.Set.filter dirty_files ~f:FindUtils.path_filter
   in
-  Fixme_provider.remove_batch parsing_files;
+  ( CgroupProfiler.collect_cgroup_stats ~stage:"remove fixmes" ~profiling
+  @@ fun () -> Fixme_provider.remove_batch parsing_files );
   let parsing_files_list = Relative_path.Set.elements parsing_files in
   (* Parse dirty files only *)
-  let next = MultiWorker.next genv.workers parsing_files_list in
+  let max_size =
+    if genv.local_config.ServerLocalConfig.small_buckets_for_dirty_names then
+      Some 1
+    else
+      None
+  in
+  let next = MultiWorker.next genv.workers parsing_files_list ?max_size in
   let (env, t) =
-    parsing
+    ServerInitCommon.parsing
       genv
       env
       ~lazy_parse:true
@@ -977,18 +1257,36 @@ let post_saved_state_initialization
       ~count:(List.length parsing_files_list)
       t
       ~trace
+      ~profile_label:"post_ss1.parsing"
+      ~profiling
   in
   SearchServiceRunner.update_fileinfo_map
     env.naming_table
-    SearchUtils.TypeChecker;
-
-  let t = update_files genv env.naming_table t in
+    ~source:SearchUtils.TypeChecker;
+  let ctx = Provider_utils.ctx_from_server_env env in
   let t =
-    let ctx = Provider_utils.ctx_from_server_env env in
-    naming_from_saved_state ctx old_naming_table parsing_files naming_table_fn t
+    ServerInitCommon.update_files
+      genv
+      env.naming_table
+      ctx
+      t
+      ~profile_label:"post_ss1.update"
+      ~profiling
+  in
+  let t =
+    naming_from_saved_state
+      ctx
+      old_naming_table
+      parsing_files
+      naming_table_fallback_fn
+      t
+      ~profiling
   in
   (* Do global naming on all dirty files *)
-  let (env, t) = naming env t in
+  let (env, t) =
+    ServerInitCommon.naming env t ~profile_label:"post_ss1.naming" ~profiling
+  in
+
   (* Add all files from fast to the files_info object *)
   let fast = Naming_table.to_fast env.naming_table in
   let failed_parsing = Errors.get_failed_files env.errorl Errors.Parsing in
@@ -1019,7 +1317,7 @@ let post_saved_state_initialization
         match (info1, info2) with
         | (Some x, Some y) ->
           (match (x.FileInfo.hash, y.FileInfo.hash) with
-          | (Some x, Some y) -> OpaqueDigest.equal x y
+          | (Some x, Some y) -> Int64.equal x y
           | _ -> false)
         | _ -> false)
       dirty_files
@@ -1042,7 +1340,19 @@ let post_saved_state_initialization
     }
   in
   (* Update the fileinfo object's dependencies now that we have full fast *)
-  let t = update_files genv env.naming_table t in
+  (* TODO(ljw): We're temporarily suppressing "warn_on_naming_costly_iter" because this
+     is the only known place that does a naming_costly_iter, and we know about it
+     and are trying to solve it, so there's no use logging it. *)
+  let t =
+    ServerInitCommon.update_files
+      genv
+      env.naming_table
+      ctx
+      t
+      ~warn_on_naming_costly_iter:false
+      ~profile_label:"post_ss2.update"
+      ~profiling
+  in
   type_check_dirty
     genv
     env
@@ -1053,12 +1363,14 @@ let post_saved_state_initialization
     ~dirty_local_files_unchanged_hash
     ~dirty_local_files_changed_hash
     t
+    profiling
 
 let saved_state_init
     ~(load_state_approach : load_state_approach)
     (genv : ServerEnv.genv)
     (env : ServerEnv.env)
-    (root : Path.t) :
+    (root : Path.t)
+    (profiling : CgroupProfiler.Profiling.t) :
     ( (ServerEnv.env * float) * (loaded_info * Relative_path.Set.t),
       load_state_error )
     result =
@@ -1079,7 +1391,7 @@ let saved_state_init
         t
   in
 
-  ServerProgress.send_progress_to_monitor "loading saved state";
+  ServerProgress.send_progress "loading saved state";
 
   let ctx = Provider_utils.ctx_from_server_env env in
   (* A historical quirk: we allowed the timeout once while downloading+loading *)
@@ -1087,18 +1399,17 @@ let saved_state_init
   let timeout = 2 * genv.local_config.SLC.load_state_script_timeout in
   (* following function will be run under the timeout *)
   let do_ (_id : Timeout.t) : (loaded_info, load_state_error) result =
-    match load_state_approach with
-    | Precomputed info -> Ok (use_precomputed_state_exn genv ctx info)
-    | Load_state_natively use_canary ->
-      download_and_load_state_exn ~use_canary ~target:None ~genv ~ctx ~root
-    | Load_state_natively_with_target target ->
-      download_and_load_state_exn
-        ~use_canary:false
-        ~target:(Some target)
-        ~genv
-        ~ctx
-        ~root
+    let state_result =
+      CgroupProfiler.collect_cgroup_stats ~profiling ~stage:"load saved state"
+      @@ fun () ->
+      match load_state_approach with
+      | Precomputed info ->
+        Ok (use_precomputed_state_exn genv ctx info profiling)
+      | Load_state_natively -> download_and_load_state_exn ~genv ~ctx ~root
+    in
+    state_result
   in
+  let t = Unix.gettimeofday () in
   let state_result =
     try
       match
@@ -1109,15 +1420,28 @@ let saved_state_init
       with
       | Error error -> Error error
       | Ok loaded_info ->
-        let changed_while_parsing = get_updates_exn genv root in
+        let changed_while_parsing = get_updates_exn ~genv ~root in
         Ok (loaded_info, changed_while_parsing)
-    with exn ->
+    with
+    | exn ->
       let stack = Utils.Callstack (Printexc.get_backtrace ()) in
       Error (Load_state_unhandled_exception { exn; stack })
   in
+  HackEventLogger.saved_state_download_and_load_done
+    ~load_state_approach:(show_load_state_approach load_state_approach)
+    ~success:(Result.is_ok state_result)
+    ~state_result:
+      (match state_result with
+      | Error _ -> None
+      | Ok (i, _) -> Some (show_loaded_info i))
+    ~load_state_natively_64bit:
+      genv.local_config.ServerLocalConfig.load_state_natively_64bit
+    t;
   match state_result with
   | Error err -> Error err
   | Ok state_result ->
-    ServerProgress.send_progress_to_monitor "loading saved state succeeded";
-    let (env, t) = post_saved_state_initialization ~state_result ~env ~genv in
+    ServerProgress.send_progress "loading saved state succeeded";
+    let (env, t) =
+      post_saved_state_initialization ~state_result ~env ~genv profiling
+    in
     Ok ((env, t), state_result)

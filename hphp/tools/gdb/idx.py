@@ -243,23 +243,15 @@ def _un_quick_index(qi):
 
 
 def tv_layout_at(layout_type, props_base, idx):
-    layout_type = layout_type.strip_typedefs()
     try:
-        if layout_type == T("HPHP::tv_layout::TvArray"):
-            prop_vec = props_base.cast(T("HPHP::TypedValue").pointer())
-            return prop_vec[idx]
-    except:
-        pass
-    try:
-        if layout_type == T("HPHP::tv_layout::Tv7Up"):
-            idx = int(idx)
-            quot = idx // 7
-            rem = idx % 7
-            chunk = props_base + T("HPHP::Value").sizeof * 8 * quot
-            ty = (chunk + rem).cast(T("HPHP::DataType").pointer()).dereference()
-            valaddr = chunk + T("HPHP::Value").sizeof * (1 + rem)
-            val = valaddr.cast(T("HPHP::Value").pointer()).dereference()
-            return pretty_tv(ty, val)
+        idx = int(idx)
+        quot = idx // 7
+        rem = idx % 7
+        chunk = props_base + T("HPHP::Value").sizeof * 8 * quot
+        ty = (chunk + rem).cast(T("HPHP::DataType").pointer()).dereference()
+        valaddr = chunk + T("HPHP::Value").sizeof * (1 + rem)
+        val = valaddr.cast(T("HPHP::Value").pointer()).dereference()
+        return pretty_tv(ty, val)
     except:
         pass
 
@@ -284,6 +276,22 @@ def object_data_at(obj, cls, prop_name_or_slot, hasher=None):
     props_base = (obj.address + 1).cast(T('char').pointer())
 
     return tv_layout_at(T("HPHP::ObjectProps"), props_base, idx)
+
+
+def packed_array_at(base, idx):
+    try:
+        idx = int(idx)
+        base = base.cast(T('char').pointer())
+        quot = idx // 8
+        rem = idx % 8
+        chunk = base + T("HPHP::PackedBlock").sizeof * quot
+        tyaddr = chunk + rem
+        ty = tyaddr.cast(T("HPHP::DataType").pointer()).dereference()
+        valaddr = chunk + T("HPHP::Value").sizeof * (1 + rem)
+        val = valaddr.cast(T("HPHP::Value").pointer()).dereference()
+        return pretty_tv(ty, val)
+    except:
+        pass
 
 
 #------------------------------------------------------------------------------

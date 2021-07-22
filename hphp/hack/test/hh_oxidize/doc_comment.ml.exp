@@ -5,6 +5,8 @@
 //
 // @generated <<SignedSource::*O*zOeWoEQle#+L!plEphiEmie@IsG>>
 use arena_trait::TrivialDrop;
+use eq_modulo_pos::EqModuloPos;
+use no_pos_hash::NoPosHash;
 use ocamlrep_derive::FromOcamlRep;
 use ocamlrep_derive::FromOcamlRepIn;
 use ocamlrep_derive::ToOcamlRep;
@@ -61,8 +63,10 @@ pub type D = isize;
     Debug,
     Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -83,9 +87,11 @@ pub struct Record {
     Debug,
     Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRep,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -101,3 +107,4 @@ pub enum Variant {
     Bar,
 }
 impl TrivialDrop for Variant {}
+arena_deserializer::impl_deserialize_in_arena!(Variant);

@@ -12,10 +12,12 @@ open ClientEnv
 open Utils
 open ClientRefactor
 open Ocaml_overrides
-module Cmd = ServerCommandLwt
 module Rpc = ServerCommandTypes
 module SyntaxTree =
-  Full_fidelity_syntax_tree.WithSyntax (Full_fidelity_minimal_syntax)
+  Full_fidelity_syntax_tree.WithSyntax (Full_fidelity_positioned_syntax)
+
+(** This is initialized at the start of [main] *)
+let ref_local_config : ServerLocalConfig.t option ref = ref None
 
 module SaveStateResultPrinter = ClientResultPrinter.Make (struct
   type t = SaveStateServiceTypes.save_state_result
@@ -52,12 +54,19 @@ end)
 
 let parse_function_or_method_id ~func_action ~meth_action name =
   let pieces = Str.split (Str.regexp "::") name in
+  let default_namespace str =
+    match Str.first_chars str 1 with
+    | "\\" -> str
+    | _ -> "\\" ^ str
+  in
   try
     match pieces with
-    | class_name :: method_name :: _ -> meth_action class_name method_name
-    | fun_name :: _ -> func_action fun_name
+    | class_name :: method_name :: _ ->
+      meth_action (default_namespace class_name) method_name
+    | fun_name :: _ -> func_action (default_namespace fun_name)
     | _ -> raise Exit
-  with _ ->
+  with
+  | _ ->
     Printf.eprintf "Invalid input\n";
     raise Exit_status.(Exit_with Input_error)
 
@@ -66,7 +75,8 @@ let print_all ic =
     while true do
       Printf.printf "%s\n" (Timeout.input_line ic)
     done
-  with End_of_file -> ()
+  with
+  | End_of_file -> ()
 
 let expand_path file =
   let path = Path.make file in
@@ -88,7 +98,8 @@ let parse_position_string arg =
     match tpos with
     | [line; char] -> (int_of_string line, int_of_string char)
     | _ -> raise Exit
-  with _ ->
+  with
+  | _ ->
     Printf.eprintf "Invalid position\n";
     raise Exit_status.(Exit_with Input_error)
 
@@ -107,8 +118,10 @@ let connect ?(use_priority_pipe = false) args =
     ai_mode;
     show_spinner;
     ignore_hh_version;
+    save_64bit;
     saved_state_ignore_hhconfig;
     prechecked;
+    mini_state;
     config;
     allow_non_opt_build;
     custom_telemetry_data;
@@ -122,6 +135,7 @@ let connect ?(use_priority_pipe = false) args =
     replace_state_after_saving = _;
     sort_results = _;
     stdin_name = _;
+    desc = _;
   } =
     args
   in
@@ -130,6 +144,7 @@ let connect ?(use_priority_pipe = false) args =
       {
         root;
         from;
+        local_config = Option.value_exn !ref_local_config;
         autostart;
         force_dormant_start;
         deadline;
@@ -143,9 +158,11 @@ let connect ?(use_priority_pipe = false) args =
           Option.some_if show_spinner (ClientConnect.tty_progress_reporter ());
         do_post_handoff_handshake = true;
         ignore_hh_version;
+        save_64bit;
         saved_state_ignore_hhconfig;
         use_priority_pipe;
         prechecked;
+        mini_state;
         config;
         custom_telemetry_data;
         allow_non_opt_build;
@@ -158,13 +175,14 @@ type connect_fun = unit -> ClientConnect.conn Lwt.t
 let rpc
     (args : ClientEnv.client_check_env)
     (command : 'a ServerCommandTypes.t)
-    (call : connect_fun -> 'a ServerCommandTypes.t -> 'b Lwt.t) : 'b Lwt.t =
+    (call : connect_fun -> desc:string -> 'a ServerCommandTypes.t -> 'b Lwt.t) :
+    'b Lwt.t =
   let use_priority_pipe =
     (not @@ ServerCommand.rpc_command_needs_full_check command)
     && (not @@ ServerCommand.rpc_command_needs_writes command)
   in
   let conn () = connect args ~use_priority_pipe in
-  let%lwt result = call conn @@ command in
+  let%lwt result = call conn ~desc:args.desc @@ command in
   Lwt.return result
 
 let rpc_with_retry
@@ -174,21 +192,23 @@ let rpc_with_retry
   let%lwt result = rpc args command ClientConnect.rpc_with_retry in
   Lwt.return result
 
-let rpc (args : ClientEnv.client_check_env) (command : 'a ServerCommandTypes.t)
-    : ('a * Telemetry.t) Lwt.t =
-  rpc args command (fun conn_f command ->
+let rpc
+    (args : ClientEnv.client_check_env) (command : 'result ServerCommandTypes.t)
+    : ('result * Telemetry.t) Lwt.t =
+  rpc args command (fun conn_f ~desc command ->
       let%lwt conn = conn_f () in
-      let%lwt (result, telemetry) = ClientConnect.rpc conn command in
+      let%lwt (result, telemetry) = ClientConnect.rpc conn ~desc command in
       Lwt.return (result, telemetry))
 
 let parse_positions positions =
-  List.map positions (fun pos ->
+  List.map positions ~f:(fun pos ->
       try
         match Str.split (Str.regexp ":") pos with
         | [filename; line; char] ->
           (expand_path filename, int_of_string line, int_of_string char)
         | _ -> raise Exit
-      with _ ->
+      with
+      | _ ->
         Printf.eprintf "Invalid position\n";
         raise Exit_status.(Exit_with Input_error))
 
@@ -201,18 +221,22 @@ let filter_real_paths paths =
         prerr_endlinef "Could not find file '%s'" fn;
         None)
 
-let main (args : client_check_env) : Exit_status.t Lwt.t =
+let main (args : client_check_env) (local_config : ServerLocalConfig.t) :
+    Exit_status.t Lwt.t =
+  ref_local_config := Some local_config;
+  (* That's a hack, just to avoid having to pass local_config into loads of callsites
+     in this module. *)
   let mode_s = ClientEnv.mode_to_string args.mode in
   HackEventLogger.set_from args.from;
   HackEventLogger.client_set_mode mode_s;
 
-  HackEventLogger.client_check ();
+  HackEventLogger.client_check_start ();
 
   let%lwt (exit_status, telemetry) =
     match args.mode with
     | MODE_LIST_FILES ->
       let%lwt (infol, telemetry) = rpc args @@ Rpc.LIST_FILES_WITH_ERRORS in
-      List.iter infol (Printf.printf "%s\n");
+      List.iter infol ~f:(Printf.printf "%s\n");
       Lwt.return (Exit_status.No_error, telemetry)
     | MODE_COLORING file ->
       let file_input =
@@ -319,11 +343,13 @@ let main (args : client_check_env) : Exit_status.t Lwt.t =
       Lwt.return (Exit_status.No_error, telemetry)
     | MODE_DUMP_SYMBOL_INFO files ->
       let%lwt conn = connect args in
-      let%lwt () = ClientSymbolInfo.go conn files expand_path in
+      let%lwt () = ClientSymbolInfo.go conn ~desc:args.desc files expand_path in
       Lwt.return (Exit_status.No_error, Telemetry.create ())
     | MODE_REFACTOR (ref_mode, before, after) ->
       let conn () = connect args in
-      let%lwt () = ClientRefactor.go conn args ref_mode before after in
+      let%lwt () =
+        ClientRefactor.go conn ~desc:args.desc args ref_mode before after
+      in
       Lwt.return (Exit_status.No_error, Telemetry.create ())
     | MODE_IDE_REFACTOR arg ->
       let conn () = connect args in
@@ -335,12 +361,20 @@ let main (args : client_check_env) : Exit_status.t Lwt.t =
             let filename = expand_path filename in
             (filename, int_of_string line, int_of_string char, new_name)
           | _ -> raise Exit
-        with _ ->
+        with
+        | _ ->
           Printf.eprintf "Invalid input\n";
           raise Exit_status.(Exit_with Input_error)
       in
       let%lwt () =
-        ClientRefactor.go_ide conn args filename line char new_name
+        ClientRefactor.go_ide
+          conn
+          ~desc:args.desc
+          args
+          filename
+          line
+          char
+          new_name
       in
       Lwt.return (Exit_status.No_error, Telemetry.create ())
     | MODE_EXTRACT_STANDALONE name ->
@@ -417,7 +451,8 @@ let main (args : client_check_env) : Exit_status.t Lwt.t =
               int_of_string line,
               int_of_string char )
           | _ -> raise Exit
-        with _ ->
+        with
+        | _ ->
           Printf.eprintf "Invalid position\n";
           raise Exit_status.(Exit_with Input_error)
       in
@@ -428,7 +463,7 @@ let main (args : client_check_env) : Exit_status.t Lwt.t =
       Lwt.return (Exit_status.No_error, telemetry)
     | MODE_TYPE_AT_POS_BATCH positions ->
       let positions =
-        List.map positions (fun pos ->
+        List.map positions ~f:(fun pos ->
             try
               match Str.split (Str.regexp ":") pos with
               | [filename; line; char] ->
@@ -444,28 +479,89 @@ let main (args : client_check_env) : Exit_status.t Lwt.t =
                 let end_char = int_of_string end_char in
                 (filename, start_line, start_char, Some (end_line, end_char))
               | _ -> raise Exit
-            with _ ->
+            with
+            | _ ->
               Printf.eprintf "Invalid position\n";
               raise Exit_status.(Exit_with Input_error))
       in
       let%lwt (responses, telemetry) =
         rpc args @@ Rpc.INFER_TYPE_BATCH (positions, args.dynamic_view)
       in
-      List.iter responses print_endline;
+      List.iter responses ~f:print_endline;
+      Lwt.return (Exit_status.No_error, telemetry)
+    | MODE_TYPE_ERROR_AT_POS arg ->
+      let tpos = Str.split (Str.regexp ":") arg in
+      let (fn, line, char) =
+        try
+          match tpos with
+          | [filename; line; char] ->
+            let fn = expand_path filename in
+            ( ServerCommandTypes.FileName fn,
+              int_of_string line,
+              int_of_string char )
+          | [line; char] ->
+            let content = Sys_utils.read_stdin_to_string () in
+            ( ServerCommandTypes.FileContent content,
+              int_of_string line,
+              int_of_string char )
+          | _ -> raise Exit
+        with
+        | _ ->
+          Printf.eprintf
+            "Invalid position; expected an argument of the form [filename]:[line]:[column] or [line]:[column]\n";
+          raise Exit_status.(Exit_with Input_error)
+      in
+      let%lwt (ty, telemetry) =
+        rpc args @@ Rpc.INFER_TYPE_ERROR (fn, line, char)
+      in
+      ClientTypeErrorAtPos.go ty args.output_json;
+      Lwt.return (Exit_status.No_error, telemetry)
+    | MODE_TAST_HOLES arg ->
+      let parse_hole_filter = function
+        | "any" -> Some Rpc.Tast_hole.Any
+        | "typing" -> Some Rpc.Tast_hole.Typing
+        | "cast" -> Some Rpc.Tast_hole.Cast
+        | _ -> None
+      in
+
+      let (filename, hole_src_opt) =
+        try
+          match Str.(split (regexp ":") arg) with
+          | [filename; filter_str] ->
+            let fn = expand_path filename in
+            (match parse_hole_filter filter_str with
+            | Some filter -> (ServerCommandTypes.FileName fn, filter)
+            | _ -> raise Exit)
+          | [part] ->
+            (match parse_hole_filter part with
+            | Some src_opt ->
+              let content = Sys_utils.read_stdin_to_string () in
+              (ServerCommandTypes.FileContent content, src_opt)
+            | _ ->
+              let fn = expand_path part in
+              (* No hole source specified; default to `Typing` *)
+              (ServerCommandTypes.FileName fn, Rpc.Tast_hole.Typing))
+          | _ -> raise Exit
+        with
+        | Exit ->
+          Printf.eprintf
+            "Invalid argument; expected an argument of the form [filename](:[any|typing|cast])? or [any|typing|cast]\n";
+          raise Exit_status.(Exit_with Input_error)
+        | exn ->
+          Printf.eprintf "An unexpected error occured: %s" (Exn.to_string exn);
+          raise exn
+      in
+      let%lwt (ty, telemetry) =
+        rpc args @@ Rpc.TAST_HOLES (filename, hole_src_opt)
+      in
+      ClientTastHoles.go ty args.output_json;
       Lwt.return (Exit_status.No_error, telemetry)
     | MODE_FUN_DEPS_AT_POS_BATCH positions ->
       let positions = parse_positions positions in
       let%lwt (responses, telemetry) =
         rpc args @@ Rpc.FUN_DEPS_BATCH (positions, args.dynamic_view)
       in
-      List.iter responses print_endline;
-      Lwt.return (Exit_status.No_error, telemetry)
-    | MODE_FUN_IS_LOCALLABLE_AT_POS_BATCH positions ->
-      let positions = parse_positions positions in
-      let%lwt (responses, telemetry) =
-        rpc args @@ Rpc.FUN_IS_LOCALLABLE_BATCH positions
-      in
-      List.iter responses print_endline;
+      List.iter responses ~f:print_endline;
       Lwt.return (Exit_status.No_error, telemetry)
     | MODE_AUTO_COMPLETE ->
       let content = Sys_utils.read_stdin_to_string () in
@@ -578,9 +674,14 @@ let main (args : client_check_env) : Exit_status.t Lwt.t =
           args.error_format
           args.max_errors
       in
-      Lwt.return
-        ( exit_status,
-          Telemetry.object_ telemetry ~key:"no_prechecked" ~value:telemetry1 )
+      let telemetry =
+        telemetry
+        |> Telemetry.object_ ~key:"no_prechecked" ~value:telemetry1
+        |> Telemetry.object_opt
+             ~key:"last_recheck_stats"
+             ~value:status.Rpc.Server_status.last_recheck_stats
+      in
+      Lwt.return (exit_status, telemetry)
     | MODE_STATUS_SINGLE filename ->
       let file_input =
         match filename with
@@ -609,6 +710,48 @@ let main (args : client_check_env) : Exit_status.t Lwt.t =
           args.max_errors
       in
       Lwt.return (exit_status, telemetry)
+    | MODE_STATUS_REMOTE_EXECUTION x ->
+      let%lwt ((error_list, dropped_count), telemetry) =
+        rpc args (Rpc.STATUS_REMOTE_EXECUTION (x, args.max_errors))
+      in
+      let status =
+        {
+          error_list;
+          dropped_count;
+          Rpc.Server_status.liveness = Rpc.Live_status;
+          has_unsaved_changes = false;
+          last_recheck_stats = None;
+        }
+      in
+      let exit_status =
+        ClientCheckStatus.go
+          status
+          args.output_json
+          args.from
+          args.error_format
+          args.max_errors
+      in
+      Lwt.return (exit_status, telemetry)
+    | MODE_STATUS_SINGLE_REMOTE_EXECUTION filename ->
+      let file_input = expand_path filename in
+      let%lwt ((error_list, deps), telemetry) =
+        rpc args (Rpc.STATUS_SINGLE_REMOTE_EXECUTION file_input)
+      in
+      print_endline "DISCOVERED DEP EDGES:";
+      print_endline deps;
+      print_endline "ERRORS:";
+      print_endline error_list;
+      Lwt.return (Exit_status.No_error, telemetry)
+    | MODE_STATUS_MULTI_REMOTE_EXECUTION ->
+      let paths = filter_real_paths args.paths in
+      let%lwt ((error_list, deps), telemetry) =
+        rpc args (Rpc.STATUS_MULTI_REMOTE_EXECUTION paths)
+      in
+      print_endline "DISCOVERED DEP EDGES:";
+      print_endline deps;
+      print_endline "ERRORS:";
+      print_endline error_list;
+      Lwt.return (Exit_status.No_error, telemetry)
     | MODE_SEARCH (query, type_) ->
       let%lwt (results, telemetry) = rpc args @@ Rpc.SEARCH (query, type_) in
       ClientSearch.go results args.output_json;
@@ -683,7 +826,8 @@ let main (args : client_check_env) : Exit_status.t Lwt.t =
             in
             ClientLint.go results args.output_json args.error_format;
             Lwt.return (Exit_status.No_error, telemetry)
-        with Exit -> Lwt.return (Exit_status.Input_error, Telemetry.create ())
+        with
+        | Exit -> Lwt.return (Exit_status.Input_error, Telemetry.create ())
       end
     | MODE_CREATE_CHECKPOINT x ->
       let%lwt ((), telemetry) = rpc args @@ Rpc.CREATE_CHECKPOINT x in
@@ -693,7 +837,7 @@ let main (args : client_check_env) : Exit_status.t Lwt.t =
       begin
         match results with
         | Some results ->
-          List.iter results print_endline;
+          List.iter results ~f:print_endline;
           Lwt.return (Exit_status.No_error, telemetry)
         | None -> Lwt.return (Exit_status.Checkpoint_error, telemetry)
       end
@@ -716,7 +860,7 @@ let main (args : client_check_env) : Exit_status.t Lwt.t =
        *)
       let%lwt conn = connect args in
       let%lwt (response, telemetry) =
-        ClientConnect.rpc conn @@ Rpc.REMOVE_DEAD_FIXMES codes
+        ClientConnect.rpc conn ~desc:args.desc @@ Rpc.REMOVE_DEAD_FIXMES codes
       in
       begin
         match response with
@@ -733,7 +877,8 @@ let main (args : client_check_env) : Exit_status.t Lwt.t =
     | MODE_REWRITE_LAMBDA_PARAMETERS files ->
       let%lwt conn = connect args in
       let%lwt (patches, telemetry) =
-        ClientConnect.rpc conn @@ Rpc.REWRITE_LAMBDA_PARAMETERS files
+        ClientConnect.rpc conn ~desc:args.desc
+        @@ Rpc.REWRITE_LAMBDA_PARAMETERS files
       in
       if args.output_json then
         print_patches_json patches
@@ -743,7 +888,8 @@ let main (args : client_check_env) : Exit_status.t Lwt.t =
     | MODE_REWRITE_TYPE_PARAMS_TYPE files ->
       let%lwt conn = connect args in
       let%lwt (patches, telemetry) =
-        ClientConnect.rpc conn @@ Rpc.REWRITE_TYPE_PARAMS_TYPE files
+        ClientConnect.rpc conn ~desc:args.desc
+        @@ Rpc.REWRITE_TYPE_PARAMS_TYPE files
       in
       if args.output_json then
         print_patches_json patches
@@ -763,7 +909,7 @@ let main (args : client_check_env) : Exit_status.t Lwt.t =
       Lwt.return (Exit_status.No_error, telemetry)
     | MODE_FULL_FIDELITY_PARSE file ->
       (* We can cheaply do this on the client today, but we might want to
-      do it on the server and cache the results in the future. *)
+         do it on the server and cache the results in the future. *)
       let do_it_on_server = false in
       let%lwt (results, telemetry) =
         if do_it_on_server then
@@ -814,8 +960,8 @@ let main (args : client_check_env) : Exit_status.t Lwt.t =
     | MODE_BIGCODE arg ->
       let filename = arg in
       let fn =
-        try expand_path filename
-        with _ ->
+        try expand_path filename with
+        | _ ->
           Printf.eprintf "Invalid filename: %s\n" filename;
           raise Exit_status.(Exit_with Input_error)
       in
@@ -837,7 +983,8 @@ let main (args : client_check_env) : Exit_status.t Lwt.t =
     | MODE_GLOBAL_INFERENCE (submode, files) ->
       let%lwt conn = connect args in
       let%lwt (results, telemetry) =
-        ClientConnect.rpc conn @@ Rpc.GLOBAL_INFERENCE (submode, files)
+        ClientConnect.rpc conn ~desc:args.desc
+        @@ Rpc.GLOBAL_INFERENCE (submode, files)
       in
       (match results with
       | ServerGlobalInferenceTypes.RError error -> print_endline error
@@ -852,5 +999,5 @@ let main (args : client_check_env) : Exit_status.t Lwt.t =
       let%lwt ((), telemetry) = rpc args @@ Rpc.VERBOSE verbose in
       Lwt.return (Exit_status.No_error, telemetry)
   in
-  HackEventLogger.client_check_finish exit_status telemetry;
+  HackEventLogger.client_check exit_status telemetry;
   Lwt.return exit_status

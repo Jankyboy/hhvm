@@ -15,14 +15,16 @@
 */
 #include "hphp/runtime/base/apc-handle.h"
 
-#include "hphp/runtime/base/apc-typed-value.h"
-#include "hphp/runtime/base/apc-string.h"
 #include "hphp/runtime/base/apc-array.h"
-#include "hphp/runtime/base/apc-object.h"
+#include "hphp/runtime/base/apc-bespoke.h"
+#include "hphp/runtime/base/apc-clsmeth.h"
 #include "hphp/runtime/base/apc-collection.h"
 #include "hphp/runtime/base/apc-named-entity.h"
+#include "hphp/runtime/base/apc-object.h"
 #include "hphp/runtime/base/apc-rclass-meth.h"
 #include "hphp/runtime/base/apc-rfunc.h"
+#include "hphp/runtime/base/apc-string.h"
+#include "hphp/runtime/base/apc-typed-value.h"
 #include "hphp/runtime/base/mixed-array.h"
 #include "hphp/runtime/ext/apc/ext_apc.h"
 #include "hphp/runtime/vm/class-meth-data-ref.h"
@@ -31,8 +33,9 @@ namespace HPHP {
 
 //////////////////////////////////////////////////////////////////////
 
+const StaticString s_invalidMethCaller("Cannot store meth_caller in APC");
+
 APCHandle::Pair APCHandle::Create(const_variant_ref source,
-                                  bool serialized,
                                   APCHandleLevel level,
                                   bool unserializeObj) {
   auto const cell = source.asTypedValue();
@@ -62,6 +65,11 @@ APCHandle::Pair APCHandle::Create(const_variant_ref source,
       return APCRFunc::Construct(val(cell).prfunc);
     case KindOfFunc: {
       auto const func = val(cell).pfunc;
+      if (func->isMethCaller()) {
+        SystemLib::throwInvalidOperationExceptionObject(
+          VarNR{s_invalidMethCaller.get()}
+        );
+      }
       auto const serialize_func =
         RuntimeOption::EvalAPCSerializeFuncs &&
         // Right now cls_meth() can serialize as an array, and attempting to
@@ -78,36 +86,32 @@ APCHandle::Pair APCHandle::Create(const_variant_ref source,
       }
       invalidFuncConversion("string");
     }
-    case KindOfClass:
-    case KindOfLazyClass:
+    case KindOfClass: {
+      auto const cls = val(cell).pclass;
+      if (cls->isPersistent()) {
+        auto const value = new APCTypedValue(cls);
+        return {value->getHandle(), sizeof(APCTypedValue)};
+      }
+      auto const value = new APCNamedEntity(cls);
+      return {value->getHandle(), sizeof(APCNamedEntity)};
+    }
+    case KindOfLazyClass: {
+      auto const value = new APCTypedValue(val(cell).plazyclass);
+      return {value->getHandle(), sizeof(APCTypedValue)};
+    }
     case KindOfPersistentString:
     case KindOfString: {
-      auto const s =
-        isClassType(cell.type())
-          ? const_cast<StringData*>(classToStringHelper(val(cell).pclass)) :
-        isLazyClassType(cell.type())
-          ? const_cast<StringData*>(lazyClassToStringHelper(val(cell).plazyclass))
-          : val(cell).pstr;
-      if (serialized) {
-        // It is priming, and there might not be the right class definitions
-        // for unserialization.
-        return APCString::MakeSerializedObject(apc_reserialize(String{s}));
-      }
-      if (auto const value = APCTypedValue::HandlePersistent(
-            APCTypedValue::StaticStr{}, APCTypedValue::UncountedStr{}, s)) {
+      auto const s = val(cell).pstr;
+      if (auto const value = APCTypedValue::HandlePersistent(s)) {
         return value;
       }
-      auto const st = lookupStaticString(s);
-      if (st) {
+      if (auto const st = lookupStaticString(s)) {
         auto const value = new APCTypedValue(APCTypedValue::StaticStr{}, st);
         return {value->getHandle(), sizeof(APCTypedValue)};
       }
-      if (apcExtension::UseUncounted) {
-        auto const st = StringData::MakeUncounted(s->slice());
-        auto const value = new APCTypedValue(APCTypedValue::UncountedStr{}, st);
-        return {value->getHandle(), st->size() + sizeof(APCTypedValue)};
-      }
-      return APCString::MakeSharedString(s);
+      auto const st = StringData::MakeUncounted(s->slice());
+      auto const value = new APCTypedValue(APCTypedValue::UncountedStr{}, st);
+      return {value->getHandle(), st->size() + sizeof(APCTypedValue)};
     }
 
     case KindOfPersistentVec:
@@ -131,15 +135,6 @@ APCHandle::Pair APCHandle::Create(const_variant_ref source,
       return APCArray::MakeSharedKeyset(ad, level, unserializeObj);
     }
 
-    case KindOfPersistentDArray:
-    case KindOfDArray:
-    case KindOfPersistentVArray:
-    case KindOfVArray: {
-      auto const ad = val(cell).parr;
-      assertx(ad->isPHPArrayType());
-      return APCArray::MakeSharedArray(ad, level, unserializeObj);
-    }
-
     case KindOfObject:
       if (val(cell).pobj->isCollection()) {
         return APCCollection::Make(val(cell).pobj,
@@ -150,21 +145,18 @@ APCHandle::Pair APCHandle::Create(const_variant_ref source,
              APCString::MakeSerializedObject(apc_serialize(source));
 
     case KindOfResource:
-      // TODO Task #2661075: Here and elsewhere in the runtime, we convert
-      // Resources to the empty array during various serialization operations,
-      // which does not match Zend behavior. We should fix this.
-      return APCArray::MakeSharedEmptyArray();
-    case KindOfClsMeth: {
-      raiseClsMethToVecWarningHelper();
-      auto arr = clsMethToVecHelper(val(cell).pclsmeth);
-      if (RuntimeOption::EvalHackArrDVArrs) {
-        assertx(arr->isVecType());
-        return APCArray::MakeSharedVec(arr.detach(), level, unserializeObj);
-      } else {
-        assertx(arr->isPHPArrayType());
-        return APCArray::MakeSharedArray(arr.detach(), level, unserializeObj);
+      return APCArray::MakeSharedEmptyVec();
+
+    case KindOfClsMeth:
+      if (RO::EvalAPCSerializeClsMeth) {
+        auto const meth = val(cell).pclsmeth;
+        if (meth->getCls()->isPersistent()) {
+          auto const value = new APCTypedValue(meth);
+          return {value->getHandle(), sizeof(APCTypedValue)};
+        }
+        auto const value = new APCClsMeth(meth->getCls(), meth->getFunc());
+        return {value->getHandle(), sizeof(APCClsMeth)};
       }
-    }
 
     case KindOfRClsMeth:
       return APCRClsMeth::Construct(val(cell).prclsmeth);
@@ -184,31 +176,26 @@ Variant APCHandle::toLocalHelper() const {
     case APCKind::Int:
     case APCKind::Double:
     case APCKind::PersistentFunc:
-    case APCKind::StaticString:
-    case APCKind::UncountedString:
+    case APCKind::PersistentClass:
+    case APCKind::LazyClass:
+    case APCKind::PersistentClsMeth:
     case APCKind::StaticArray:
+    case APCKind::StaticBespoke:
+    case APCKind::StaticString:
     case APCKind::UncountedArray:
-    case APCKind::StaticVec:
-    case APCKind::UncountedVec:
-    case APCKind::StaticDict:
-    case APCKind::UncountedDict:
-    case APCKind::StaticKeyset:
-    case APCKind::UncountedKeyset:
+    case APCKind::UncountedBespoke:
+    case APCKind::UncountedString:
       not_reached();
 
     case APCKind::FuncEntity:
       return APCNamedEntity::fromHandle(this)->getEntityOrNull();
 
-    case APCKind::SharedString:
-      return Variant::attach(
-        StringData::MakeProxy(APCString::fromHandle(this))
-      );
-    case APCKind::SerializedArray: {
-      auto const serArr = APCString::fromHandle(this)->getStringData();
-      auto const v = apc_unserialize(serArr->data(), serArr->size());
-      assertx(v.isPHPArray());
-      return v;
-    }
+    case APCKind::ClassEntity:
+      return APCNamedEntity::fromHandle(this)->getEntityOrNull();
+
+    case APCKind::ClsMeth:
+      return APCClsMeth::fromHandle(this)->getEntityOrNull();
+
     case APCKind::SerializedVec: {
       auto const serVec = APCString::fromHandle(this)->getStringData();
       auto const v = apc_unserialize(serVec->data(), serVec->size());
@@ -227,31 +214,6 @@ Variant APCHandle::toLocalHelper() const {
       assertx(v.isKeyset());
       return v;
     }
-    case APCKind::SharedArray:
-    case APCKind::SharedPackedArray:
-      return Variant::attach(
-        APCArray::fromHandle(this)->toLocalArray()
-      );
-    case APCKind::SharedVArray:
-      assertx(!RuntimeOption::EvalHackArrDVArrs);
-      return Variant::attach(
-        APCArray::fromHandle(this)->toLocalVArray()
-      );
-    case APCKind::SharedMarkedVArray:
-      assertx(!RuntimeOption::EvalHackArrDVArrs);
-      return Variant::attach(
-        APCArray::fromHandle(this)->toLocalMarkedVArray()
-      );
-    case APCKind::SharedDArray:
-      assertx(!RuntimeOption::EvalHackArrDVArrs);
-      return Variant::attach(
-        APCArray::fromHandle(this)->toLocalDArray()
-      );
-    case APCKind::SharedMarkedDArray:
-      assertx(!RuntimeOption::EvalHackArrDVArrs);
-      return Variant::attach(
-        APCArray::fromHandle(this)->toLocalMarkedDArray()
-      );
     case APCKind::SharedVec:
       return Variant::attach(
         APCArray::fromHandle(this)->toLocalVec()
@@ -297,21 +259,27 @@ void APCHandle::deleteShared() {
       return;
     case APCKind::Int:
     case APCKind::Double:
-    case APCKind::StaticString:
     case APCKind::StaticArray:
-    case APCKind::StaticVec:
-    case APCKind::StaticDict:
-    case APCKind::StaticKeyset:
+    case APCKind::StaticString:
     case APCKind::PersistentFunc:
+    case APCKind::PersistentClass:
+    case APCKind::LazyClass:
+    case APCKind::PersistentClsMeth:
       delete APCTypedValue::fromHandle(this);
+      return;
+
+    case APCKind::ClsMeth:
+      delete APCClsMeth::fromHandle(this);
       return;
 
     case APCKind::FuncEntity:
       delete APCNamedEntity::fromHandle(this);
       return;
 
-    case APCKind::SharedString:
-    case APCKind::SerializedArray:
+    case APCKind::ClassEntity:
+      delete APCNamedEntity::fromHandle(this);
+      return;
+
     case APCKind::SerializedVec:
     case APCKind::SerializedDict:
     case APCKind::SerializedKeyset:
@@ -319,13 +287,6 @@ void APCHandle::deleteShared() {
       APCString::Delete(APCString::fromHandle(this));
       return;
 
-    case APCKind::SharedVArray:
-    case APCKind::SharedMarkedVArray:
-    case APCKind::SharedDArray:
-    case APCKind::SharedMarkedDArray:
-      assertx(!RuntimeOption::EvalHackArrDVArrs);
-    case APCKind::SharedPackedArray:
-    case APCKind::SharedArray:
     case APCKind::SharedVec:
     case APCKind::SharedLegacyVec:
     case APCKind::SharedDict:
@@ -350,10 +311,12 @@ void APCHandle::deleteShared() {
       APCRClsMeth::Delete(this);
       return;
 
+    case APCKind::StaticBespoke:
+      freeAPCBespoke(APCTypedValue::fromHandle(this));
+      return;
+
     case APCKind::UncountedArray:
-    case APCKind::UncountedVec:
-    case APCKind::UncountedDict:
-    case APCKind::UncountedKeyset:
+    case APCKind::UncountedBespoke:
     case APCKind::UncountedString:
       assertx(false);
       return;
@@ -381,38 +344,32 @@ bool APCHandle::checkInvariants() const {
     case APCKind::PersistentFunc:
       assertx(m_type == KindOfFunc);
       return true;
+    case APCKind::PersistentClass:
+      assertx(m_type == KindOfClass);
+      return true;
+    case APCKind::LazyClass:
+      assertx(m_type == KindOfLazyClass);
+      return true;
+    case APCKind::PersistentClsMeth:
+      assertx(m_type == KindOfClsMeth);
+      return true;
     case APCKind::StaticString:
     case APCKind::UncountedString:
       assertx(m_type == KindOfPersistentString);
       return true;
     case APCKind::StaticArray:
+    case APCKind::StaticBespoke:
     case APCKind::UncountedArray:
-      assertx(isArrayType(m_type));
-      assertx(!isRefcountedType(m_type));
+    case APCKind::UncountedBespoke:
+      assertx(m_type == KindOfPersistentVec ||
+              m_type == KindOfPersistentDict ||
+              m_type == KindOfPersistentKeyset);
       return true;
-    case APCKind::StaticVec:
-    case APCKind::UncountedVec:
-      assertx(m_type == KindOfPersistentVec);
-      return true;
-    case APCKind::StaticDict:
-    case APCKind::UncountedDict:
-      assertx(m_type == KindOfPersistentDict);
-      return true;
-    case APCKind::StaticKeyset:
-    case APCKind::UncountedKeyset:
-      assertx(m_type == KindOfPersistentKeyset);
-      return true;
-    case APCKind::SharedVArray:
-    case APCKind::SharedMarkedVArray:
-    case APCKind::SharedDArray:
-    case APCKind::SharedMarkedDArray:
-      assertx(!RuntimeOption::EvalHackArrDVArrs);
     case APCKind::FuncEntity:
+    case APCKind::ClassEntity:
+    case APCKind::ClsMeth:
     case APCKind::RFunc:
     case APCKind::RClsMeth:
-    case APCKind::SharedString:
-    case APCKind::SharedArray:
-    case APCKind::SharedPackedArray:
     case APCKind::SharedVec:
     case APCKind::SharedLegacyVec:
     case APCKind::SharedDict:
@@ -420,7 +377,6 @@ bool APCHandle::checkInvariants() const {
     case APCKind::SharedKeyset:
     case APCKind::SharedObject:
     case APCKind::SharedCollection:
-    case APCKind::SerializedArray:
     case APCKind::SerializedVec:
     case APCKind::SerializedDict:
     case APCKind::SerializedKeyset:
@@ -430,6 +386,17 @@ bool APCHandle::checkInvariants() const {
   }
   not_reached();
   return false;
+}
+
+void APCHandle::unreferenceRoot(size_t size) {
+  assertx(isSingletonKind() || m_unref_root_count++ == 0);
+  if (!isUncounted()) {
+    atomicDecRef();
+  } else if (APCTypedValue::UseHazardPointers()) {
+    APCTypedValue::fromHandle(this)->deleteUncounted();
+  } else {
+    g_context->enqueueAPCHandle(this, size);
+  }
 }
 
 //////////////////////////////////////////////////////////////////////

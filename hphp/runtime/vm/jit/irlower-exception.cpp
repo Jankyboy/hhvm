@@ -25,6 +25,7 @@
 #include "hphp/runtime/vm/jit/ir-opcode.h"
 #include "hphp/runtime/vm/jit/ssa-tmp.h"
 #include "hphp/runtime/vm/jit/tc.h"
+#include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/runtime/vm/jit/unique-stubs.h"
 #include "hphp/runtime/vm/jit/unwind-itanium.h"
 #include "hphp/runtime/vm/jit/vasm-gen.h"
@@ -54,6 +55,28 @@ void cgEndCatch(IRLS& env, const IRInstruction* inst) {
   auto& v = vmain(env);
 
   auto const data = inst->extra<EndCatch>();
+  if (data->stublogue == EndCatchData::FrameMode::Stublogue) {
+    assertx(data->teardown == EndCatchData::Teardown::NA);
+    assertx(inst->marker().prologue());
+
+    // The caller is allowed to optimize away writes to the space reserved for
+    // ActRec and inouts. In order to unwind the stack, we need to initialize
+    // it to uninits. Do it in the catch blocks for inouts (which are uncommon)
+    // and initialize the ActRec space in the helper (to reduce the code size).
+    auto const spReg = srcLoc(env, inst, 1).reg();
+    auto const defStackData = inst->src(1)->inst()->extra<DefStackData>();
+    auto const numUninit = defStackData->irSPOff.offset;
+    assertx(numUninit >= kNumActRecCells);
+    for (auto i = kNumActRecCells; i < numUninit; ++i) {
+      auto const offset = cellsToBytes(i) + TVOFF(m_type);
+      v << storebi{static_cast<int8_t>(KindOfUninit), spReg[offset]};
+    }
+
+    v << syncvmsp{spReg};
+    v << jmpi{tc::ustubs().endCatchStubloguePrologueHelper, vm_regs_with_sp()};
+    return;
+  }
+
   if (data->teardown == EndCatchData::Teardown::None ||
       data->teardown == EndCatchData::Teardown::OnlyThis) {
     auto const vmsp = v.makeReg();
@@ -64,10 +87,6 @@ void cgEndCatch(IRLS& env, const IRInstruction* inst) {
   }
 
   auto const helper = [&]() -> TCA {
-    if (data->stublogue == EndCatchData::FrameMode::Stublogue) {
-      assertx(data->teardown == EndCatchData::Teardown::NA);
-      return tc::ustubs().endCatchStublogueHelper;
-    }
     switch (data->teardown) {
       case EndCatchData::Teardown::None:
         return tc::ustubs().endCatchSkipTeardownHelper;
@@ -88,6 +107,7 @@ void cgEndCatch(IRLS& env, const IRInstruction* inst) {
 void cgUnwindCheckSideExit(IRLS& env, const IRInstruction* inst) {
   auto& v = vmain(env);
 
+  markRDSAccess(v, g_unwind_rds.handle());
   auto const sf = v.makeReg();
   v << cmpbim{0, rvmtl()[unwinderSideExitOff()], sf};
   fwdJcc(v, env, CC_E, sf, inst->taken());
@@ -98,17 +118,27 @@ void cgUnwindCheckSideExit(IRLS& env, const IRInstruction* inst) {
 
 void cgLdUnwinderValue(IRLS& env, const IRInstruction* inst) {
   auto& v = vmain(env);
+  markRDSAccess(v, g_unwind_rds.handle());
   loadTV(v, inst->dst(), dstLoc(env, inst, 0), rvmtl()[unwinderTVOff()]);
 }
 
 void cgEnterTCUnwind(IRLS& env, const IRInstruction* inst) {
+  auto const extra = inst->extra<EnterTCUnwind>();
+  auto const sp = srcLoc(env, inst, 0).reg();
+  auto const fp = srcLoc(env, inst, 1).reg();
+  auto const exn = srcLoc(env, inst, 2).reg();
   auto& v = vmain(env);
-  auto const exn = srcLoc(env, inst, 0).reg();
+
+  auto const syncSP = v.makeReg();
+  v << lea{sp[cellsToBytes(extra->offset.offset)], syncSP};
+  emitEagerSyncPoint(v, inst->marker().fixupSk().pc(), rvmtl(), fp, syncSP);
+
+  markRDSAccess(v, g_unwind_rds.handle());
+  markRDSAccess(v, g_unwind_rds.handle());
   v << storebi{1, rvmtl()[unwinderSideEnterOff()]};
   v << store{exn, rvmtl()[unwinderExnOff()]};
 
   auto const target = [&] {
-    auto const extra = inst->extra<EnterTCUnwindData>();
     if (extra->teardown) return tc::ustubs().endCatchHelper;
     if (inst->func()->hasThisInBody()) {
       return tc::ustubs().endCatchTeardownThisHelper;
@@ -120,18 +150,8 @@ void cgEnterTCUnwind(IRLS& env, const IRInstruction* inst) {
 }
 
 IMPL_OPCODE_CALL(DebugBacktrace)
-IMPL_OPCODE_CALL(DebugBacktraceFast)
 
 ///////////////////////////////////////////////////////////////////////////////
-
-static void raiseHackArrCompatNotice(const StringData* msg) {
-  raise_hackarr_compat_notice(msg->toCppString());
-}
-
-void cgRaiseHackArrCompatNotice(IRLS& env, const IRInstruction* inst) {
-  cgCallHelper(vmain(env), env, CallSpec::direct(raiseHackArrCompatNotice),
-               kVoidDest, SyncOptions::Sync, argGroup(env, inst).ssa(0));
-}
 
 static void raiseForbiddenDynCall(const Func* func) {
   auto dynCallable = func->isDynamicallyCallable();
@@ -142,6 +162,7 @@ static void raiseForbiddenDynCall(const Func* func) {
         : RO::EvalForbidDynamicCallsToInstMeth)
     : RO::EvalForbidDynamicCallsToFunc;
   if (level <= 0) return;
+  if (dynCallable && level < 2) return;
 
   if (auto const rate = func->dynCallSampleRate()) {
     if (folly::Random::rand32(*rate) != 0) return;
@@ -213,14 +234,15 @@ IMPL_OPCODE_CALL(CheckClsMethFunc)
 IMPL_OPCODE_CALL(CheckClsReifiedGenericMismatch)
 IMPL_OPCODE_CALL(CheckFunReifiedGenericMismatch)
 IMPL_OPCODE_CALL(RaiseErrorOnInvalidIsAsExpressionType)
-IMPL_OPCODE_CALL(RaiseClsMethPropConvertNotice)
+IMPL_OPCODE_CALL(RaiseCoeffectsCallViolation)
+IMPL_OPCODE_CALL(RaiseCoeffectsFunParamCoeffectRulesViolation)
+IMPL_OPCODE_CALL(RaiseCoeffectsFunParamTypeViolation)
 IMPL_OPCODE_CALL(RaiseError)
 IMPL_OPCODE_CALL(RaiseTooManyArg)
 IMPL_OPCODE_CALL(RaiseNotice)
 IMPL_OPCODE_CALL(RaiseUndefProp)
-IMPL_OPCODE_CALL(RaiseUninitLoc)
+IMPL_OPCODE_CALL(ThrowUninitLoc)
 IMPL_OPCODE_CALL(RaiseWarning)
-IMPL_OPCODE_CALL(RaiseRxCallViolation)
 IMPL_OPCODE_CALL(ThrowArrayIndexException)
 IMPL_OPCODE_CALL(ThrowArrayKeyException)
 IMPL_OPCODE_CALL(ThrowAsTypeStructException)
@@ -231,6 +253,8 @@ IMPL_OPCODE_CALL(ThrowInvalidArrayKey)
 IMPL_OPCODE_CALL(ThrowInvalidOperation)
 IMPL_OPCODE_CALL(ThrowMissingArg)
 IMPL_OPCODE_CALL(ThrowMissingThis)
+IMPL_OPCODE_CALL(ThrowMustBeMutableException)
+IMPL_OPCODE_CALL(ThrowMustBeReadOnlyException)
 IMPL_OPCODE_CALL(ThrowOutOfBounds)
 IMPL_OPCODE_CALL(ThrowParameterWrongType)
 IMPL_OPCODE_CALL(ThrowParamInOutMismatch)

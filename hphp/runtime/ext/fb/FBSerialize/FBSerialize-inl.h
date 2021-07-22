@@ -15,8 +15,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_FBSERIALIZE_INL_H_
-#define incl_HPHP_FBSERIALIZE_INL_H_
+#pragma once
 
 #include <folly/Bits.h>
 #include <folly/Conv.h>
@@ -28,6 +27,10 @@ struct SerializeError : std::runtime_error {
   explicit SerializeError(const std::string& msg)
       : std::runtime_error(msg) {
   }
+};
+
+struct MethCallerSerializeError : SerializeError {
+  MethCallerSerializeError() : SerializeError{""} {}
 };
 
 struct HackArraySerializeError : SerializeError {
@@ -196,8 +199,6 @@ void FBSerializer<V>::serializeThing(const Variant& thing, size_t depth) {
   if (depth > 256) {
     throw SerializeError("link depth > 256");
   }
-
-  V::traceSerialization(thing);
 
   switch (V::type(thing)) {
     case Type::NULLT:
@@ -710,4 +711,3 @@ inline void FBUnserializer<V>::advance(size_t delta) {
 
 }}
 
-#endif // incl_HPHP_FBSERIALIZE_INL_H_

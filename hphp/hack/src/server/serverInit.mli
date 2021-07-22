@@ -9,15 +9,12 @@
 
 type load_state_approach =
   | Precomputed of ServerArgs.saved_state_target_info
-  (* Load a saved state using Ocaml implementation of saved state loader.
-   * Bool is true when using canary, i.e. look up saved state by hg commit
-   * hash instead of nearest SVN rev. *)
-  | Load_state_natively of bool
-  (* Use the supplied saved state target to skip lookup in XDB. *)
-  | Load_state_natively_with_target of ServerMonitorUtils.target_saved_state
+  (* Load a saved state using Ocaml implementation of saved state loader. *)
+  | Load_state_natively
 
 type remote_init = {
   worker_key: string;
+  nonce: Int64.t;
   check_id: string;
 }
 
@@ -45,9 +42,8 @@ type init_result =
   (* This option means we didn't even try to load a saved state *)
   | Load_state_declined of string
 
-(* will parse, name, typecheck, the next set of files
- * and refresh the environment and update the many shared heaps
- *)
+(** Parse, name, typecheck the next set of files,
+    refresh the environment and update the many shared heaps *)
 val init :
   init_approach:init_approach ->
   ServerEnv.genv ->

@@ -23,10 +23,10 @@ let expected_errors =
   {|
 File "/bar2.php", line 4, characters 10-14:
 Invalid return type (Typing[4110])
-File "/bar2.php", line 3, characters 19-21:
-Expected `int`
-File "/foo.php", line 3, characters 18-23:
-But got `string`
+  File "/bar2.php", line 3, characters 19-21:
+  Expected `int`
+  File "/foo.php", line 3, characters 18-23:
+  But got `string`
 |}
 
 let root = "/"
@@ -75,14 +75,16 @@ let test () =
   let fnl = Relative_path.Map.keys fast in
   let check_info =
     {
-      Typing_check_service.init_id = "";
+      Typing_service_types.init_id = "";
       recheck_id = Some "";
       profile_log = false;
       profile_type_check_twice = false;
       profile_type_check_duration_threshold = 0.;
+      profile_type_check_memory_threshold_mb = 0;
+      profile_decling = Typing_service_types.DeclingOff;
     }
   in
-  let (errors, _delegate_state, _telemetry, (), cancelled) =
+  let (errors, _delegate_state, _telemetry, (), diag_pusher, cancelled) =
     Typing_check_service.go_with_interrupt
       ctx
       workers
@@ -92,8 +94,12 @@ let test () =
       fnl
       ~interrupt
       ~memory_cap:None
+      ~longlived_workers:false
+      ~remote_execution:None
       ~check_info
+      ~profiling:CgroupProfiler.Profiling.empty
   in
+  assert (Option.is_none diag_pusher);
   (* Assert that we got the errors in bar2 only... *)
   Test.assert_errors errors expected_errors;
 

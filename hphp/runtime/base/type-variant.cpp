@@ -92,18 +92,49 @@ Variant::Variant(const_variant_ref v) noexcept {
   implCopyConstruct(*v.rval(), *this);
 }
 
-namespace {
-
-void keysetReleaseWrapper(ArrayData* ad) noexcept {
-  ad->isVanilla() ? SetArray::Release(ad) : BespokeArray::Release(ad);
+Variant Variant::fromDynamic(const folly::dynamic& dy) {
+  if (dy.isNull()) {
+    return Variant{Variant::NullInit{}};
+  } else if (dy.isInt()) {
+    return {dy.getInt()};
+  } else if (dy.isDouble()) {
+    return {dy.getDouble()};
+  } else if (dy.isString()) {
+    return {dy.getString()};
+  } else if (dy.isBool()) {
+    return {dy.getBool()};
+  } else if (dy.isArray()) {
+    VecInit ret{dy.size()};
+    for (auto const& v : dy) {
+      ret.append(Variant::fromDynamic(v));
+    }
+    return ret.toVariant();
+  } else {
+    always_assert(dy.isObject());
+    DictInit ret{dy.size()};
+    for (auto const& [k, v] : dy.items()) {
+      if (k.isString()) {
+        ret.set(String{k.getString()}, Variant::fromDynamic(v));
+      } else if (k.isInt()) {
+        ret.set(k.getInt(), Variant::fromDynamic(v));
+      }
+    }
+    return ret.toVariant();
+  }
 }
 
-void mixedReleaseWrapper(ArrayData* ad) noexcept {
+namespace {
+
+void vecReleaseWrapper(ArrayData* ad) noexcept {
+  ad->isVanilla() ? PackedArray::Release(ad) : BespokeArray::Release(ad);
+}
+
+void dictReleaseWrapper(ArrayData* ad) noexcept {
   ad->isVanilla() ? MixedArray::Release(ad) : BespokeArray::Release(ad);
 }
 
-void packedReleaseWrapper(ArrayData* ad) noexcept {
-  ad->isVanilla() ? PackedArray::Release(ad) : BespokeArray::Release(ad);
+void keysetReleaseWrapper(ArrayData* ad) noexcept {
+  ad->isVanilla() ? SetArray::Release(ad) : BespokeArray::Release(ad);
 }
 
 void objReleaseWrapper(ObjectData* obj) noexcept {
@@ -113,51 +144,40 @@ void objReleaseWrapper(ObjectData* obj) noexcept {
 
 }
 
-static_assert(typeToDestrIdx(KindOfDArray)   == 0, "Array destruct index");
-static_assert(typeToDestrIdx(KindOfVArray)   == 1, "Array destruct index");
-static_assert(typeToDestrIdx(KindOfKeyset)   == 2, "Keyset destruct index");
-static_assert(typeToDestrIdx(KindOfDict)     == 3, "Dict destruct index");
-static_assert(typeToDestrIdx(KindOfVec)      == 4, "Vec destruct index");
-static_assert(typeToDestrIdx(KindOfRecord)   == 5, "Record destruct index");
-static_assert(typeToDestrIdx(KindOfString)   == 6, "String destruct index");
-static_assert(typeToDestrIdx(KindOfObject)   == 8, "Object destruct index");
-static_assert(typeToDestrIdx(KindOfResource) == 9, "Resource destruct index");
-#ifndef USE_LOWPTR
-static_assert(typeToDestrIdx(KindOfClsMeth)  == 10, "ClsMeth destruct index");
-#endif
-static_assert(typeToDestrIdx(KindOfRFunc)    == 11, "RFunc destruct index");
-static_assert(typeToDestrIdx(KindOfRClsMeth) == 12, "RFunc destruct index");
+RawDestructors computeDestructors() {
+  RawDestructors result;
+  for (auto i = 0; i < kDestrTableSize; i++) {
+    result[i] = nullptr;
+  }
+  auto const set = [&](auto const type, auto const destructor) {
+    result[typeToDestrIdx(type)] = (RawDestructor)destructor;
+  };
+  set(KindOfVec,      &vecReleaseWrapper);
+  set(KindOfDict,     &dictReleaseWrapper);
+  set(KindOfKeyset,   &keysetReleaseWrapper);
+  set(KindOfRecord,   getMethodPtr(&RecordData::release));
+  set(KindOfString,   getMethodPtr(&StringData::release));
+  set(KindOfObject,   &objReleaseWrapper);
+  set(KindOfResource, getMethodPtr(&ResourceHdr::release));
+  set(KindOfRClsMeth, getMethodPtr(&RClsMethData::release));
+  set(KindOfRFunc,    getMethodPtr(&RFuncData::release));
+#define DT(name, ...)                                       \
+  assertx(IMPLIES(isRefcountedType(KindOf##name),           \
+          result[typeToDestrIdx(KindOf##name)] != nullptr));
+#undef DT
+  return result;
+}
 
-static_assert(kDestrTableSize == 13,
-              "size of g_destructors[] must be kDestrTableSize");
-
-RawDestructor g_destructors[] = {
-  (RawDestructor)&mixedReleaseWrapper,                // KindOfDArray
-  (RawDestructor)&packedReleaseWrapper,               // KindOfVArray
-  (RawDestructor)&keysetReleaseWrapper,               // KindOfKeyset
-  (RawDestructor)&mixedReleaseWrapper,                // KindOfDict
-  (RawDestructor)&packedReleaseWrapper,               // KindOfVec
-  (RawDestructor)getMethodPtr(&RecordData::release),  // KindOfRecord
-  (RawDestructor)getMethodPtr(&StringData::release),  // KindOfString
-  nullptr, // hole
-  (RawDestructor)&objReleaseWrapper,                  // KindOfObject
-  (RawDestructor)getMethodPtr(&ResourceHdr::release), // KindOfResource
-#ifndef USE_LOWPTR
-  (RawDestructor)&ClsMethDataRef::Release,            // KindOfClsMeth
-#else
-  nullptr,
-#endif
-  (RawDestructor)getMethodPtr(&RFuncData::release),   // KindOfRFunc
-  (RawDestructor)getMethodPtr(&RClsMethData::release),// KindOfRClsMeth
-};
+RawDestructors g_destructors = computeDestructors();
 
 void specializeVanillaDestructors() {
-  using Dtor = RawDestructor;
-  g_destructors[typeToDestrIdx(KindOfVArray)] = (Dtor)&PackedArray::Release;
-  g_destructors[typeToDestrIdx(KindOfDArray)] = (Dtor)&MixedArray::Release;
-  g_destructors[typeToDestrIdx(KindOfVec)] = (Dtor)&PackedArray::Release;
-  g_destructors[typeToDestrIdx(KindOfDict)] = (Dtor)&MixedArray::Release;
-  g_destructors[typeToDestrIdx(KindOfKeyset)] = (Dtor)&SetArray::Release;
+  auto const specialize = [](auto const type, auto const destructor) {
+    if (allowBespokeArrayLikes() && arrayTypeCouldBeBespoke(type)) return;
+    g_destructors[typeToDestrIdx(type)] = (RawDestructor)destructor;
+  };
+  specialize(KindOfVec,    &PackedArray::Release);
+  specialize(KindOfDict,   &MixedArray::Release);
+  specialize(KindOfKeyset, &SetArray::Release);
 }
 
 #define IMPLEMENT_SET(argType, setOp)                     \
@@ -282,10 +302,6 @@ DataType Variant::toNumeric(int64_t &ival, double &dval,
     case KindOfDict:
     case KindOfPersistentKeyset:
     case KindOfKeyset:
-    case KindOfPersistentDArray:
-    case KindOfDArray:
-    case KindOfPersistentVArray:
-    case KindOfVArray:
     case KindOfObject:
     case KindOfRecord:
     case KindOfResource:
@@ -322,10 +338,6 @@ bool Variant::isScalar() const noexcept {
     case KindOfDict:
     case KindOfPersistentKeyset:
     case KindOfKeyset:
-    case KindOfPersistentDArray:
-    case KindOfDArray:
-    case KindOfPersistentVArray:
-    case KindOfVArray:
     case KindOfObject:
     case KindOfResource:
     case KindOfClsMeth:
@@ -359,15 +371,12 @@ static Variant::AllowedAsConstantValue isAllowedAsConstantValueImpl(TypedValue t
     case KindOfPersistentDict:
     case KindOfPersistentKeyset:
     case KindOfKeyset:
-    case KindOfPersistentDArray:
-    case KindOfPersistentVArray:
     case KindOfResource:
     case KindOfFunc:
     case KindOfClsMeth:
+    case KindOfLazyClass:
       return Variant::AllowedAsConstantValue::Allowed;
 
-    case KindOfDArray:
-    case KindOfVArray:
     case KindOfVec:
     case KindOfDict: {
       auto allowed = Variant::AllowedAsConstantValue::Allowed;
@@ -396,7 +405,6 @@ static Variant::AllowedAsConstantValue isAllowedAsConstantValueImpl(TypedValue t
 
     case KindOfUninit:
     case KindOfClass:
-    case KindOfLazyClass:
     case KindOfRFunc:
     case KindOfRClsMeth:
     case KindOfRecord:
@@ -429,10 +437,6 @@ bool Variant::toBooleanHelper() const {
     case KindOfDouble:        return m_data.dbl != 0;
     case KindOfPersistentString:
     case KindOfString:        return m_data.pstr->toBoolean();
-    case KindOfPersistentDArray:
-    case KindOfDArray:
-    case KindOfPersistentVArray:
-    case KindOfVArray:
     case KindOfPersistentVec:
     case KindOfVec:
     case KindOfPersistentDict:
@@ -465,10 +469,6 @@ int64_t Variant::toInt64Helper(int base /* = 10 */) const {
     case KindOfDouble:        return double_to_int64(m_data.dbl);
     case KindOfPersistentString:
     case KindOfString:        return m_data.pstr->toInt64(base);
-    case KindOfPersistentDArray:
-    case KindOfDArray:
-    case KindOfPersistentVArray:
-    case KindOfVArray:
     case KindOfPersistentVec:
     case KindOfVec:
     case KindOfPersistentDict:
@@ -487,8 +487,7 @@ int64_t Variant::toInt64Helper(int base /* = 10 */) const {
     case KindOfLazyClass:
       return lazyClassToStringHelper(m_data.plazyclass)->toInt64();
     case KindOfClsMeth:
-      raiseClsMethConvertWarningHelper("int");
-      return 1;
+      throwInvalidClsMethToType("int");
     case KindOfRClsMeth:
       SystemLib::throwInvalidOperationExceptionObject(
         "RClsMeth to Int64 conversion");
@@ -503,7 +502,7 @@ int64_t Variant::toInt64Helper(int base /* = 10 */) const {
 Array Variant::toPHPArrayHelper() const {
   switch (m_type) {
     case KindOfUninit:
-    case KindOfNull:          return empty_array();
+    case KindOfNull:          return empty_dict_array();
 
     // These scalars all get converted into single-element arrays.
     case KindOfBoolean:
@@ -511,44 +510,39 @@ Array Variant::toPHPArrayHelper() const {
     case KindOfDouble:
     case KindOfPersistentString:
     case KindOfString:
-      return Array::attach(ArrayData::Create(*this));
+      return make_dict_array(0, *this);
 
     case KindOfPersistentVec:
     case KindOfVec:
     case KindOfPersistentDict:
     case KindOfDict:
     case KindOfPersistentKeyset:
-    case KindOfKeyset:        return ArrNR{m_data.parr}.asArray().toPHPArray();
-    case KindOfPersistentDArray:
-    case KindOfDArray:
-    case KindOfPersistentVArray:
-    case KindOfVArray:        return Array(m_data.parr);
-    case KindOfObject:        return m_data.pobj->toArray().toPHPArray();
+    case KindOfKeyset:        return ArrNR{m_data.parr}.asArray().toDict();
+    case KindOfObject:        return m_data.pobj->toArray().toDict();
     case KindOfResource:      return m_data.pres->data()->o_toArray();
     case KindOfRFunc:
       SystemLib::throwInvalidOperationExceptionObject("RFunc to PHPArray conversion");
-      return empty_array();
+      return empty_dict_array();
     case KindOfFunc:
       invalidFuncConversion("array");
-    case KindOfClass:
-      return Array::attach(ArrayData::Create(
-        Variant{classToStringHelper(m_data.pclass),
-                PersistentStrInit{}}));
-    case KindOfLazyClass:
-      return Array::attach(ArrayData::Create(
-        Variant{lazyClassToStringHelper(m_data.plazyclass),
-                PersistentStrInit{}}));
+    case KindOfClass: {
+      auto const str = classToStringHelper(m_data.pclass);
+      return make_dict_array(0, Variant{str, PersistentStrInit{}});
+    }
+    case KindOfLazyClass: {
+      auto const str = lazyClassToStringHelper(m_data.plazyclass);
+      return make_dict_array(0, Variant{str, PersistentStrInit{}});
+    }
     case KindOfClsMeth:
-      raiseClsMethConvertWarningHelper("array");
-      return make_map_array(0, m_data.pclsmeth->getClsStr(),
-                            1, m_data.pclsmeth->getFuncStr());
+      throwInvalidClsMethToType("array");
+      return empty_dict_array();
     case KindOfRClsMeth:
       SystemLib::throwInvalidOperationExceptionObject(
         "RClsMeth to PHPArray conversion");
-      return empty_array();
+      return empty_dict_array();
     case KindOfRecord:
       raise_convert_record_to_type("array");
-      return empty_array();
+      return empty_dict_array();
   }
   not_reached();
 }
@@ -568,10 +562,6 @@ Resource Variant::toResourceHelper() const {
     case KindOfDict:
     case KindOfPersistentKeyset:
     case KindOfKeyset:
-    case KindOfPersistentDArray:
-    case KindOfDArray:
-    case KindOfPersistentVArray:
-    case KindOfVArray:
     case KindOfObject:
     case KindOfRFunc:
     case KindOfFunc:
@@ -658,18 +648,6 @@ void Variant::setEvalScalar() {
       do_array();
       return;
 
-    case KindOfDArray:
-      m_type = KindOfPersistentDArray;
-    case KindOfPersistentDArray:
-      do_array();
-      return;
-
-    case KindOfVArray:
-      m_type = KindOfPersistentVArray;
-    case KindOfPersistentVArray:
-      do_array();
-      return;
-
     case KindOfObject:
     case KindOfResource:
     case KindOfFunc:
@@ -686,14 +664,7 @@ void Variant::setEvalScalar() {
       raise_error(Strings::RCLS_METH_NOT_SUPPORTED);
 
     case KindOfClsMeth:
-      raiseClsMethToVecWarningHelper();
-      auto const clsMeth = m_data.pclsmeth;
-      m_data.parr = clsMethToVecHelper(clsMeth).detach();
-      m_type = RuntimeOption::EvalHackArrDVArrs ?
-               KindOfPersistentVec : KindOfPersistentVArray;
-      decRefClsMeth(clsMeth);
-      do_array();
-      return;
+      raise_error(Strings::CLS_METH_NOT_SUPPORTED);
   }
   not_reached();
 }

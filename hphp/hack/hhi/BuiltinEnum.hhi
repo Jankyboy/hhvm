@@ -28,51 +28,87 @@ abstract class BuiltinEnum<+T> {
    * Get the values of the public consts defined on this class,
    * indexed by the string name of those consts.
    *
-   * @return array ('CONST_NAME' => $value, ....)
+   * @return darray['CONST_NAME' => $value, ...]
    */
-  <<__Pure>>
-  final public static function getValues(): darray<string, T>;
+  final public static function getValues()[]: darray<string, T>;
 
   /**
    * Get the names of all the const values, indexed by value. Calls
    * invariant_exception if multiple constants have the same value.
    *
-   * @return array($value => 'CONST_NAME', ....)
+   * @return darray[$value => 'CONST_NAME', ...]
    */
-  <<__Pure>>
-  final public static function getNames(): darray<T, string> where T as arraykey;
+  final public static function getNames()[]: darray<T, string> where T as arraykey;
 
   /**
    * Returns whether or not the value is defined as a constant.
    */
-  <<__Pure>>
-  final public static function isValid(mixed $value): bool;
+  final public static function isValid(mixed $value)[]: bool;
 
   /**
    * Coerce to a valid value or null.
    * This is useful for typing deserialized enum values.
    */
-  <<__Pure>>
-  final public static function coerce(mixed $value): ?T;
+  final public static function coerce(mixed $value)[]: ?T;
 
   /**
    * Coerce to valid value or throw UnexpectedValueException
    * This is useful for typing deserialized enum values.
    */
-  <<__Pure>>
-  final public static function assert(mixed $value): T;
+  final public static function assert(mixed $value)[]: T;
 
   /**
    * Coerce all the values in a traversable. If the value is not an
    * array of valid items, an UnexpectedValueException is thrown
    */
-  <<__Pure, __AtMostRxAsArgs>>
   final public static function assertAll(
-    <<__OnlyRxIfImpl(\HH\Rx\Traversable::class), __MaybeMutable>> Traversable<mixed> $values,
-  ): Container<T>;
+    Traversable<mixed> $values,
+  )[]: Container<T>;
 }
 
 type enumname<T> = classname<BuiltinEnum<T>>;
 
 const enumname<arraykey> BUILTIN_ENUM = BuiltinEnum::class;
+
+/**
+ * Wrapper for enum class
+ */
+newtype MemberOf<-TEnumClass, +TType> as TType = TType;
+
+/**
+ * Base helper class for the enum class feature, if sane switch semantic is
+ * needed.
+ */
+final class SwitchableClass<+T> {
+  public function __construct(private T $data)[] {}
+
+  public function data()[]: T {
+    return $this->data;
+  }
+}
+
+/**
+ * BuiltinEnumClass contains the utility methods provided by enum classes.
+ * Under the hood, an enum class Foo : Bar will extend
+ * BuiltinEnumClass<HH\MemberOf<this, Bar>>.
+ *
+ * HHVM provides a native implementation for this class. The PHP class
+ * definition below is not actually used at run time; it is simply
+ * provided for the typechecker and for developer reference.
+ */
+<<__EnumClass>>
+abstract class BuiltinEnumClass<+T> {
+  /**
+   * Get the values of the public consts defined on this class,
+   * indexed by the string name of those consts.
+   *
+   * @return array ('CONST_NAME' => $value, ....)
+   */
+  final public static function getValues()[write_props]: darray<string, T>;
+
+  final public static function nameOf<TType>(\HH\EnumClass\Label<this, TType> $atom): string;
+
+  final public static function valueOf<TEnum super this, TType>(\HH\EnumClass\Label<TEnum, TType> $atom): MemberOf<TEnum, TType>;
+}
+
 }

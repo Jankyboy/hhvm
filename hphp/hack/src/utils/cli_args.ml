@@ -143,7 +143,8 @@ let get_path (key : string) json_obj : Relative_path.t option =
 let get_spec (spec_json : Hh_json.json) : files_to_check_spec =
   try
     Prefix (Relative_path.from_root ~suffix:(Hh_json.get_string_exn spec_json))
-  with _ ->
+  with
+  | _ ->
     let from_prefix_incl = get_path "from_prefix_incl" (spec_json, []) in
     let to_prefix_excl = get_path "to_prefix_excl" (spec_json, []) in
     Range { from_prefix_incl; to_prefix_excl }
@@ -199,6 +200,10 @@ let parse_saved_state_json (json, _keytrace) =
     json >>= get_string "corresponding_base_revision"
     >>= fun (for_base_rev, _for_base_rev_keytrace) ->
     json >>= get_string "deptable" >>= fun (deptable, _deptable_keytrace) ->
+    (match json >>= get_bool "deptable_is_64bit" with
+    | Error (Missing_key_error _) -> return false
+    | result -> result)
+    >>= fun (deptable_is_64bit, _) ->
     json >>= get_array "changes" >>= fun (changes, _) ->
     let naming_changes =
       match json >>= get_val "naming_changes" with
@@ -209,9 +214,10 @@ let parse_saved_state_json (json, _keytrace) =
     let changes = array_to_path_list changes in
     return
       {
-        saved_state_fn = state;
+        naming_table_path = state;
         corresponding_base_revision = for_base_rev;
         deptable_fn = deptable;
+        deptable_is_64bit;
         prechecked_changes;
         changes;
         naming_changes;
@@ -239,8 +245,8 @@ let get_saved_state_spec (v : string option) :
       | (Ok (parsed_data_dump, _), Ok (_parsed_from_file, _)) ->
         Hh_logger.log
           "Warning - %s"
-          ( "Parsed saved state target from both JSON blob data dump"
-          ^ " and from contents of file." );
+          ("Parsed saved state target from both JSON blob data dump"
+          ^ " and from contents of file.");
         Hh_logger.log "Preferring data dump result";
         Ok (Some parsed_data_dump)
       | (Ok (parsed_data_dump, _), Error _) -> Ok (Some parsed_data_dump)
@@ -254,3 +260,12 @@ let get_saved_state_spec (v : string option) :
             blob
         in
         Error message))
+
+let legacy_hot_decls_path_for_target_info { naming_table_path; _ } =
+  naming_table_path ^ ".decls"
+
+let shallow_hot_decls_path_for_target_info { naming_table_path; _ } =
+  naming_table_path ^ ".shallowdecls"
+
+let errors_path_for_target_info { naming_table_path; _ } =
+  naming_table_path ^ ".err"

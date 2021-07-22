@@ -14,10 +14,6 @@ const int CLOCK_REALTIME = 0;
 const int CLOCK_THREAD_CPUTIME_ID = 3;
 
 <<__PHPStdLib>>
-function assert_options(int $what, $value = null);
-<<__PHPStdLib>>
-function assert($assertion);
-<<__PHPStdLib>>
 function dl(string $_library);
 <<__PHPStdLib>>
 function extension_loaded(string $name);
@@ -111,8 +107,8 @@ function set_pre_timeout_handler(
   int $seconds, (function(HH\Awaitable<mixed>): void) $callback): void;
 <<__PHPStdLib>>
 function sys_get_temp_dir();
-<<__PHPStdLib, __Pure>>
-function version_compare(string $version1, string $version2, string $sop = "");
+<<__PHPStdLib>>
+function version_compare(string $version1, string $version2, string $sop = "")[];
 <<__PHPStdLib>>
 function gc_enabled();
 <<__PHPStdLib>>

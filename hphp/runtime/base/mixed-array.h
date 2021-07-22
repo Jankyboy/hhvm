@@ -14,16 +14,16 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_HPHP_ARRAY_H_
-#define incl_HPHP_HPHP_ARRAY_H_
+#pragma once
 
 #include "hphp/runtime/base/array-common.h"
 #include "hphp/runtime/base/array-data.h"
 #include "hphp/runtime/base/data-walker.h"
 #include "hphp/runtime/base/hash-table.h"
 #include "hphp/runtime/base/mixed-array-keys.h"
-#include "hphp/runtime/base/tv-val.h"
 #include "hphp/runtime/base/string-data.h"
+#include "hphp/runtime/base/tv-layout.h"
+#include "hphp/runtime/base/tv-val.h"
 #include "hphp/runtime/base/typed-value.h"
 
 #include <folly/portability/Constexpr.h>
@@ -142,6 +142,13 @@ struct MixedArrayElm {
     return isTombstone();
   }
 
+  ALWAYS_INLINE void erase() {
+    if (hasStrKey()) {
+      decRefStr(skey);
+    }
+    tvDecRefGen(data);
+  }
+
   // Elm's data.m_type == kInvalidDataType for deleted slots.
   ALWAYS_INLINE bool isTombstone() const {
     assertx(isRealType(data.m_type) || data.m_type == kInvalidDataType);
@@ -182,29 +189,21 @@ struct MixedArray final : ArrayData,
   };
 
   /*
-   * Initialize an empty small mixed array with given field. This should be
-   * inlined.
-   */
-  static void InitSmall(MixedArray* a, uint32_t size, int64_t nextIntKey);
-
-  /*
    * Allocate a new, empty, request-local array in (mixed|dict) mode, with
    * enough space reserved for `capacity' members.
    *
    * The returned array is already incref'd.
    */
-  static ArrayData* MakeReserveMixed(uint32_t size);
-  static ArrayData* MakeReserveDArray(uint32_t size);
   static ArrayData* MakeReserveDict(uint32_t size);
-  static constexpr auto MakeReserve = &MakeReserveMixed;
+  static auto constexpr MakeReserve = &MakeReserveDict;
 
   /*
    * Allocates a new request-local array with given key,value,key,value,... in
    * natural order. Returns nullptr if there are duplicate keys. Does not check
    * for integer-like keys. Takes ownership of keys and values iff successful.
    */
-  static MixedArray* MakeDArray(uint32_t size, const TypedValue* kvs);
   static MixedArray* MakeDict(uint32_t size, const TypedValue* kvs);
+
 private:
   template<HeaderKind hdr>
   static MixedArray* MakeMixedImpl(uint32_t size, const TypedValue* kvs);
@@ -226,7 +225,7 @@ public:
   /*
    * Same semantics as PackedArray::MakeNatural().
    */
-  static MixedArray* MakeDArrayNatural(uint32_t size, const TypedValue* vals);
+  static MixedArray* MakeDictNatural(uint32_t size, const TypedValue* vals);
 
   /*
    * Like MakePacked, but given static strings, make a struct-like array.
@@ -235,42 +234,27 @@ public:
   static MixedArray* MakeStructDict(uint32_t size,
                                     const StringData* const* keys,
                                     const TypedValue* values);
-  static MixedArray* MakeStructDArray(uint32_t size,
-                                      const StringData* const* keys,
-                                      const TypedValue* values);
 
   /*
    * Allocate a struct-like array (with string literal keys), but only init
    * the hash table and the header, leaving elms uninit. Requires size > 0.
    */
   static MixedArray* AllocStructDict(uint32_t size, const int32_t* hash);
-  static MixedArray* AllocStructDArray(uint32_t size, const int32_t* hash);
 
   /*
    * Allocate an uncounted MixedArray and copy the values from the
    * input 'array' into the uncounted one. All values copied are made
    * uncounted as well.  An uncounted array can only contain uncounted
    * values (primitive values, uncounted or static strings and
-   * uncounted or static arrays).  The Packed version does the same
-   * when the array has a kPackedKind.
+   * uncounted or static arrays).
    *
    * If withApcTypedValue is true, space for an APCTypedValue will be
    * allocated in front of the returned pointer.
    */
   static ArrayData* MakeUncounted(
-      ArrayData* array, bool withApcTypedValue,
-      DataWalker::PointerMap* seen = nullptr
-  );
-  static ArrayData* MakeUncounted(
-      ArrayData* array, int, DataWalker::PointerMap* seen = nullptr
-  ) = delete;
-  static ArrayData* MakeUncounted(
-      ArrayData* array, size_t extra, DataWalker::PointerMap* seen = nullptr
-  ) = delete;
+      ArrayData* array, const MakeUncountedEnv& env, bool hasApcTv);
 
   static ArrayData* MakeDictFromAPC(const APCArray* apc, bool isLegacy = false);
-  static ArrayData* MakeDArrayFromAPC(const APCArray* apc,
-                                      bool isMarked = false);
 
   static bool DictEqual(const ArrayData*, const ArrayData*);
   static bool DictNotEqual(const ArrayData*, const ArrayData*);
@@ -302,7 +286,6 @@ private:
   using ArrayData::exists;
   using ArrayData::at;
   using ArrayData::lval;
-  using ArrayData::set;
   using ArrayData::remove;
   using ArrayData::release;
 
@@ -316,26 +299,19 @@ public:
   static bool ExistsStr(const ArrayData*, const StringData* k);
   static arr_lval LvalInt(ArrayData* ad, int64_t k);
   static arr_lval LvalStr(ArrayData* ad, StringData* k);
-  static ArrayData* SetInt(ArrayData*, int64_t k, TypedValue v);
   static ArrayData* SetIntMove(ArrayData*, int64_t k, TypedValue v);
-  static ArrayData* SetStr(ArrayData*, StringData* k, TypedValue v);
   static ArrayData* SetStrMove(ArrayData*, StringData* k, TypedValue v);
+  static ArrayData* SetIntMoveSkipConflict(ArrayData* ad, int64_t k, TypedValue v);
+  static ArrayData* SetStrMoveSkipConflict(ArrayData* ad, StringData* k, TypedValue v);
   static ArrayData* AddInt(ArrayData*, int64_t k, TypedValue v, bool copy);
   static ArrayData* AddStr(ArrayData*, StringData* k, TypedValue v, bool copy);
   static ArrayData* RemoveInt(ArrayData*, int64_t k);
   static ArrayData* RemoveStr(ArrayData*, const StringData* k);
   static ArrayData* Copy(const ArrayData*);
   static ArrayData* CopyStatic(const ArrayData*);
-  static ArrayData* Append(ArrayData*, TypedValue v);
+  static ArrayData* AppendMove(ArrayData*, TypedValue v);
   static ArrayData* Merge(ArrayData*, const ArrayData* elems);
   static ArrayData* Pop(ArrayData*, Variant& value);
-  static ArrayData* Dequeue(ArrayData*, Variant& value);
-  static ArrayData* Prepend(ArrayData*, TypedValue v);
-  static ArrayData* ToDict(ArrayData*, bool);
-  static constexpr auto ToVec = &ArrayCommon::ToVec;
-  static constexpr auto ToKeyset = &ArrayCommon::ToKeyset;
-  static constexpr auto ToVArray = &ArrayCommon::ToVArray;
-  static ArrayData* ToDArray(ArrayData*, bool);
 
   static ArrayData* Renumber(ArrayData*);
   static void OnSetEvalScalar(ArrayData*);
@@ -368,14 +344,14 @@ public:
   static arr_lval LvalSilentInt(ArrayData* ad, int64_t k);
   static arr_lval LvalSilentStr(ArrayData* ad, StringData* k);
 
+  // When we escalate a MonotypeDict to a vanilla MixedArray, we must ensure
+  // that iterator positions match (local iterators rely on this invariant).
+  static void AppendTombstoneInPlace(ArrayData* ad);
+
   //////////////////////////////////////////////////////////////////////
 
 private:
   MixedArray* copyMixed() const;
-  static ArrayData* MakeReserveImpl(uint32_t capacity, HeaderKind hk);
-  static MixedArray* MakeStructImpl(uint32_t, const StringData* const*,
-                                    const TypedValue*, HeaderKind);
-  static MixedArray* AllocStructImpl(uint32_t, const int32_t*, HeaderKind);
 
   static bool DictEqualHelper(const ArrayData*, const ArrayData*, bool);
 
@@ -417,37 +393,33 @@ private:
 public:
   // Safe downcast helpers
   static MixedArray* asMixed(ArrayData* ad) {
-    assertx(ad->hasVanillaMixedLayout());
+    assertx(ad->isVanillaDict());
     auto a = static_cast<MixedArray*>(ad);
     assertx(a->checkInvariants());
     return a;
   }
   static const MixedArray* asMixed(const ArrayData* ad) {
-    assertx(ad->hasVanillaMixedLayout());
+    assertx(ad->isVanillaDict());
     auto a = static_cast<const MixedArray*>(ad);
     assertx(a->checkInvariants());
     return a;
   }
 
   // Fast iteration
-  template <class F, bool inc = true>
+  template <class F>
   static void IterateV(const MixedArray* arr, F fn) {
-    assertx(arr->hasVanillaMixedLayout());
+    assertx(arr->isVanillaDict());
     auto elm = arr->data();
-    if (inc) arr->incRefCount();
-    SCOPE_EXIT { if (inc) decRefArr(const_cast<MixedArray*>(arr)); };
     for (auto i = arr->m_used; i--; elm++) {
       if (LIKELY(!elm->isTombstone())) {
         if (ArrayData::call_helper(fn, elm->data)) break;
       }
     }
   }
-  template <class F, bool inc = true>
+  template <class F>
   static void IterateKV(const MixedArray* arr, F fn) {
-    assertx(arr->hasVanillaMixedLayout());
+    assertx(arr->isVanillaDict());
     auto elm = arr->data();
-    if (inc) arr->incRefCount();
-    SCOPE_EXIT { if (inc) decRefArr(const_cast<MixedArray*>(arr)); };
     for (auto i = arr->m_used; i--; elm++) {
       if (LIKELY(!elm->isTombstone())) {
         TypedValue key;
@@ -490,12 +462,6 @@ private:
   static void copyElmsNextUnsafe(MixedArray* to, const MixedArray* from,
                                  uint32_t nElems);
 
-  // TODO(kshaunak): Delete this method and use CopyMixed.
-  //
-  // There are subtleties which make it tricky, though; this method clears the
-  // m_nextKI and m_pos fields in the result array, which CopyMixed does not.
-  static ArrayData* ToDArrayImpl(const MixedArray* adIn);
-
   template <typename AccessorT>
   SortFlavor preSort(const AccessorT& acc, bool checkTypes);
   void postSort(bool resetKeys);
@@ -519,30 +485,18 @@ private:
 
   using HashTable<MixedArray, MixedArrayElm>::findForRemove;
 
-  static ArrayData* RemoveIntImpl(ArrayData*, int64_t, bool);
-  static ArrayData* RemoveStrImpl(ArrayData*, const StringData*, bool);
-  static ArrayData* AppendImpl(ArrayData*, TypedValue v, bool copy);
-
+  template <bool Move>
   void nextInsert(TypedValue);
   ArrayData* addVal(int64_t ki, TypedValue data);
   ArrayData* addVal(StringData* key, TypedValue data);
   ArrayData* addValNoAsserts(StringData* key, TypedValue data);
 
   template <class K> arr_lval addLvalImpl(K k);
-  // If "move" is false, this method will inc-ref data.
-  template <class K, bool move = false> ArrayData* update(K k, TypedValue data);
+  template <class K> ArrayData* update(K k, TypedValue data);
+  template <class K> ArrayData* updateSkipConflict(K k, TypedValue data);
 
   void updateNextKI(int64_t removedKey, bool updateNext);
   void eraseNoCompact(RemovePos pos);
-  void erase(RemovePos pos) {
-    eraseNoCompact(pos);
-    if (m_size <= m_used / 2) {
-      // Compact in order to keep elms from being overly sparse.
-      compact(false);
-    }
-  }
-
-  MixedArray* copyImpl(MixedArray* target) const;
 
   MixedArray* moveVal(TypedValue& tv, TypedValue v);
 
@@ -572,7 +526,7 @@ private:
    * for elements. compact() rebuilds the hash table and compacts the
    * elements into the slots with lower addresses.
    */
-  void compact(bool renumber);
+  void compact(bool renumber = false);
 
   bool isZombie() const { return m_used + 1 == 0; }
   void setZombie() { m_used = -uint32_t{1}; }
@@ -584,14 +538,8 @@ private:
   struct DictInitializer;
   static DictInitializer s_dict_initializer;
 
-  struct DArrayInitializer;
-  static DArrayInitializer s_darr_initializer;
-
   struct MarkedDictArrayInitializer;
   static MarkedDictArrayInitializer s_marked_dict_initializer;
-
-  struct MarkedDArrayInitializer;
-  static MarkedDArrayInitializer s_marked_darr_initializer;
 
   int64_t  m_nextKI;        // Next integer key to use for append.
 };
@@ -600,5 +548,3 @@ HASH_TABLE_CHECK_OFFSETS(MixedArray, MixedArrayElm)
 //////////////////////////////////////////////////////////////////////
 
 }
-
-#endif // incl_HPHP_HPHP_ARRAY_H_

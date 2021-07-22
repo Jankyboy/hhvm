@@ -15,10 +15,11 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EXT_XENON_H_
-#define incl_HPHP_EXT_XENON_H_
+#pragma once
 
+#include "hphp/util/timer.h"
 #include "hphp/runtime/ext/extension.h"
+#include "hphp/runtime/vm/event-hook.h"
 #include <semaphore.h>
 
 /*
@@ -123,11 +124,16 @@ struct Xenon final {
   int64_t getAndClearMissedSampleCount();
   // Log a sample if XenonSignalFlag is set. Also clear it, unless
   // in always-on mode.
-  void log(SampleType t, c_WaitableWaitHandle* wh = nullptr) const;
+  void log(
+    SampleType t,
+    EventHook::Source sourceType,
+    c_WaitableWaitHandle* wh = nullptr
+  ) const;
   void surpriseAll();
   void onTimer();
   bool getIsProfiledRequest();
 
+  int64_t   m_lastSurpriseTime;
   bool      m_stopping;
  private:
   std::atomic<int64_t> m_missedSampleCount;
@@ -136,5 +142,3 @@ struct Xenon final {
 #endif
 };
 }
-
-#endif // incl_HPHP_EXT_XENON_H_

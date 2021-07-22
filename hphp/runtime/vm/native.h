@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_RUNTIME_VM_NATIVE_H
-#define incl_HPHP_RUNTIME_VM_NATIVE_H
+#pragma once
 
 #include "hphp/runtime/base/type-string.h"
 #include "hphp/runtime/base/typed-value.h"
@@ -223,21 +222,6 @@ enum Attr {
 void coerceFCallArgsFromLocals(const ActRec* fp,
                                int32_t numArgs,
                                const Func* func);
-void coerceFCallArgsFromStack(TypedValue* args,
-                              int32_t numArgs,
-                              const Func* func);
-
-/**
- * Dispatches a call to the native function bound to <func>
- * If <ctx> is not nullptr, it is prepended to <args> when
- * calling.
- */
-void callFunc(const Func* func,
-              const ActRec* fp,
-              const void* ctx,
-              TypedValue* args,
-              TypedValue& ret,
-              bool isFCallBuiltin);
 
 #define NATIVE_TYPES                                  \
   /* kind       arg type              return type */  \
@@ -432,7 +416,7 @@ struct NativeFunctionInfo {
  * values, ignoring their inputs.
  */
 MaybeDataType builtinOutType(const TypeConstraint&, const UserAttributeMap&);
-folly::Optional<TypedValue> builtinInValue(const Func* builtin, uint32_t i);
+Optional<TypedValue> builtinInValue(const Func* builtin, uint32_t i);
 
 /////////////////////////////////////////////////////////////////////////////
 
@@ -668,4 +652,3 @@ const ConstantMap* getClassConstants(const StringData* clsName) {
 //////////////////////////////////////////////////////////////////////////////
 }} // namespace HPHP::Native
 
-#endif

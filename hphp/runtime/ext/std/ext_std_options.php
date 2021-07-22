@@ -2,27 +2,6 @@
 
 namespace {
 
-/* Set the various assert() control options or just query their current
- * settings.
- */
-<<__Native>>
-function assert_options(int $what,
-                        mixed $value = null): mixed;
-
-/* assert() will check the given assertion and take appropriate action if its
- * result is FALSE.  Assertions should be used as a debugging feature only. You
- * may use them for sanity-checks that test for conditions that should always
- * be TRUE and that indicate some programming errors if not or to check for
- * the presence of certain features like extension functions or certain system
- * limits and features.  Assertions should not be used for normal runtime
- * operations like input parameter checks. As a rule of thumb your code should
- * always be able to work correctly if assertion checking is not activated.
- * The behavior of assert() may be configured by assert_options() or by
- * .ini-settings described in that functions manual page.
- */
-<<__Native>>
-function assert(mixed $assertion, mixed $message = null): mixed;
-
 /* Loads the PHP extension given by the parameter library.  Use
  * extension_loaded() to test whether a given extension is already available
  * or not. This works on both built-in extensions and dynamically loaded ones
@@ -213,13 +192,13 @@ function memory_get_usage(bool $real_usage = false): int;
 
 /* Returns the total memory, in bytes, that your PHP script has allocated.
  */
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function memory_get_allocation(): int;
 
 /* Returns the request-heap memory currently in use by the script.
  * Does not trigger OOM.
  */
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function hphp_memory_heap_usage(): int;
 
 /* Returns the current total capacity of the request-heap, including
@@ -227,13 +206,13 @@ function hphp_memory_heap_usage(): int;
  * external fragmentation, and heap management overhead.
  * Does not trigger OOM.
  */
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function hphp_memory_heap_capacity(): int;
 
 /* Returns the peak of memory, in bytes, that's been allocated to your PHP
  * script since calling memory_start_usage_interval.
  */
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function hphp_memory_get_interval_peak_usage(bool $real_usage = false): int;
 
 /* Starts per-interval usage tracking to allow peak usage to be tracked
@@ -241,7 +220,7 @@ function hphp_memory_get_interval_peak_usage(bool $real_usage = false): int;
  *
  * Returns whether the state of interval tracking was changed.
  */
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function hphp_memory_start_interval(): bool;
 
 /* Stops per-interval usage tracking to allow peak usage to be tracked
@@ -249,7 +228,7 @@ function hphp_memory_start_interval(): bool;
  *
  * Returns whether the state of interval tracking was changed.
  */
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function hphp_memory_stop_interval(): bool;
 
 /* Retrieve a path to the loaded php.ini file.
@@ -354,10 +333,10 @@ function sys_get_temp_dir(): string;
  * only versions with different levels like '4.1' and '4.1.2' can be compared
  * but also any PHP specific version containing development state.
  */
-<<__IsFoldable, __Pure, __Native>>
+<<__IsFoldable, __Native>>
 function version_compare(string $version1,
                          string $version2,
-                         string $sop = ""): mixed;
+                         string $sop = "")[]: mixed;
 
 } // root namespace
 

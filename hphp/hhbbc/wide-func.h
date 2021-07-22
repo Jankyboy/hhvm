@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HHBBC_WIDE_FUNC_H_
-#define incl_HHBBC_WIDE_FUNC_H_
+#pragma once
 
 #include "hphp/hhbbc/representation.h"
 
@@ -94,6 +93,27 @@ private:
 
 //////////////////////////////////////////////////////////////////////
 
-}}}
+}
 
-#endif
+//////////////////////////////////////////////////////////////////////
+
+struct BlockUpdateInfo;
+
+/*
+ * Analysis results are now are largest single data structure. In order to
+ * keep them small, we compress them until we need them for optimization.
+ */
+struct CompressedBlockUpdate {
+  explicit CompressedBlockUpdate(BlockUpdateInfo&& in);
+
+  // Not const; a logical move from this. You can't call expand twice on the
+  // same CompressedBlockUpdate. This awkward API avoids including interp.h.
+  void expand(BlockUpdateInfo& out);
+
+private:
+  CompactVector<char> raw;
+};
+
+//////////////////////////////////////////////////////////////////////
+
+}}

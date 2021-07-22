@@ -20,10 +20,11 @@
 #include <cstdint>
 
 #include "hphp/runtime/base/array-data-defs.h"
+#include "hphp/runtime/base/bespoke-iter.h"
 #include "hphp/runtime/base/collections.h"
+#include "hphp/runtime/base/mixed-array.h"
 #include "hphp/runtime/base/packed-array.h"
 #include "hphp/runtime/base/packed-array-defs.h"
-#include "hphp/runtime/base/mixed-array.h"
 #include "hphp/runtime/base/tv-val.h"
 #include "hphp/runtime/base/set-array.h"
 #include "hphp/runtime/base/type-variant.h"
@@ -255,15 +256,17 @@ private:
  */
 
 // Overload for the case where we already know we have an array
-template <typename ArrFn, bool IncRef = true>
+template <typename ArrFn>
 void IterateV(const ArrayData* adata, ArrFn arrFn) {
   if (adata->empty()) return;
-  if (adata->hasVanillaPackedLayout()) {
-    PackedArray::IterateV<ArrFn, IncRef>(adata, arrFn);
-  } else if (adata->hasVanillaMixedLayout()) {
-    MixedArray::IterateV<ArrFn, IncRef>(MixedArray::asMixed(adata), arrFn);
-  } else if (adata->isKeysetKind()) {
-    SetArray::Iterate<ArrFn, IncRef>(SetArray::asSet(adata), arrFn);
+  if (adata->isVanillaVec()) {
+    PackedArray::IterateV(adata, arrFn);
+  } else if (adata->isVanillaDict()) {
+    MixedArray::IterateV(MixedArray::asMixed(adata), arrFn);
+  } else if (bespoke::IsStructDict(adata)) {
+    bespoke::StructDictIterateV(adata, arrFn);
+  } else if (adata->isVanillaKeyset()) {
+    SetArray::Iterate(SetArray::asSet(adata), arrFn);
   } else {
     for (ArrayIter iter(adata); iter; ++iter) {
       if (ArrayData::call_helper(arrFn, iter.secondVal())) {
@@ -271,11 +274,6 @@ void IterateV(const ArrayData* adata, ArrFn arrFn) {
       }
     }
   }
-}
-
-template <typename ArrFn>
-ALWAYS_INLINE void IterateVNoInc(const ArrayData* adata, ArrFn arrFn) {
-  IterateV<ArrFn, false>(adata, std::move(arrFn));
 }
 
 template <typename PreArrFn, typename ArrFn, typename PreCollFn, typename ObjFn>
@@ -289,17 +287,10 @@ bool IterateV(const TypedValue& it,
     adata = it.m_data.parr;
    do_array:
     adata->incRefCount();
-   do_array_no_incref:
     SCOPE_EXIT { decRefArr(adata); };
     if (ArrayData::call_helper(preArrFn, adata)) return true;
-    IterateV<ArrFn, false>(adata, arrFn);
+    IterateV(adata, arrFn);
     return true;
-  }
-  if (isClsMethType(it.m_type)) {
-    raiseClsMethToVecWarningHelper();
-    adata = clsMethToVecHelper(it.m_data.pclsmeth).detach();
-    if (adata) goto do_array_no_incref;
-    return false;
   }
   if (it.m_type != KindOfObject) return false;
   auto odata = it.m_data.pobj;
@@ -340,16 +331,18 @@ bool IterateV(const TypedValue& it, ArrFn arrFn) {
  */
 
 // Overload for the case where we already know we have an array
-template <typename ArrFn, bool IncRef = true>
+template <typename ArrFn>
 void IterateKV(const ArrayData* adata, ArrFn arrFn) {
   if (adata->empty()) return;
-  if (adata->hasVanillaMixedLayout()) {
-    MixedArray::IterateKV<ArrFn, IncRef>(MixedArray::asMixed(adata), arrFn);
-  } else if (adata->hasVanillaPackedLayout()) {
-    PackedArray::IterateKV<ArrFn, IncRef>(adata, arrFn);
-  } else if (adata->isKeysetKind()) {
+  if (adata->isVanillaDict()) {
+    MixedArray::IterateKV(MixedArray::asMixed(adata), arrFn);
+  } else if (bespoke::IsStructDict(adata)) {
+    bespoke::StructDictIterateKV(adata, arrFn);
+  } else if (adata->isVanillaVec()) {
+    PackedArray::IterateKV(adata, arrFn);
+  } else if (adata->isVanillaKeyset()) {
     auto fun = [&](TypedValue v) { return arrFn(v, v); };
-    SetArray::Iterate<decltype(fun), IncRef>(SetArray::asSet(adata), fun);
+    SetArray::Iterate(SetArray::asSet(adata), fun);
   } else {
     for (ArrayIter iter(adata); iter; ++iter) {
       if (ArrayData::call_helper(arrFn, iter.nvFirst(), iter.secondVal())) {
@@ -357,11 +350,6 @@ void IterateKV(const ArrayData* adata, ArrFn arrFn) {
       }
     }
   }
-}
-
-template <typename ArrFn>
-ALWAYS_INLINE void IterateKVNoInc(const ArrayData* adata, ArrFn arrFn) {
-  IterateKV<ArrFn, false>(adata, std::move(arrFn));
 }
 
 template <typename PreArrFn, typename ArrFn, typename PreCollFn, typename ObjFn>
@@ -375,17 +363,10 @@ bool IterateKV(const TypedValue& it,
     adata = it.m_data.parr;
    do_array:
     adata->incRefCount();
-   do_array_no_incref:
     SCOPE_EXIT { decRefArr(adata); };
     if (ArrayData::call_helper(preArrFn, adata)) return true;
-    IterateKV<ArrFn, false>(adata, arrFn);
+    IterateKV(adata, arrFn);
     return true;
-  }
-  if (isClsMethType(it.m_type)) {
-    raiseClsMethToVecWarningHelper();
-    adata = clsMethToVecHelper(it.m_data.pclsmeth).detach();
-    if (adata) goto do_array_no_incref;
-    return false;
   }
   if (it.m_type != KindOfObject) return false;
   auto odata = it.m_data.pobj;

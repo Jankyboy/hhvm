@@ -29,7 +29,6 @@ let overload_extract_from_awaitable env ~p opt_ty_maybe =
         env
         p
         opt_ty_maybe
-        Errors.unify_error
     in
     match get_node e_opt_ty with
     | Tunion tyl ->
@@ -54,6 +53,7 @@ let overload_extract_from_awaitable env ~p opt_ty_maybe =
     | Tvarray _
     | Tdarray _
     | Tvarray_or_darray _
+    | Tvec_or_dict _
     | Tnonnull
     | Tprim _
     | Tvar _
@@ -65,8 +65,8 @@ let overload_extract_from_awaitable env ~p opt_ty_maybe =
     | Ttuple _
     | Tobject
     | Tshape _
-    | Tpu _
-    | Tpu_type_access _ ->
+    | Taccess _
+    | Tneg _ ->
       let (env, type_var) = Env.fresh_type env p in
       let expected_type = MakeType.awaitable r type_var in
       let return_type =
@@ -80,6 +80,7 @@ let overload_extract_from_awaitable env ~p opt_ty_maybe =
         | Tvarray _
         | Tdarray _
         | Tvarray_or_darray _
+        | Tvec_or_dict _
         | Tprim _
         | Tvar _
         | Tfun _
@@ -93,8 +94,8 @@ let overload_extract_from_awaitable env ~p opt_ty_maybe =
         | Tunion _
         | Tobject
         | Tshape _
-        | Tpu _
-        | Tpu_type_access _ ->
+        | Taccess _
+        | Tneg _ ->
           type_var
       in
       let env =
@@ -110,9 +111,7 @@ let overload_extract_from_awaitable env ~p opt_ty_maybe =
   in
   let env = Env.open_tyvars env p in
   let (env, ty) = extract_inner env opt_ty_maybe in
-  let env =
-    Typing_solver.close_tyvars_and_solve env (Errors.unify_error_at p)
-  in
+  let env = Typing_solver.close_tyvars_and_solve env in
   (env, ty)
 
 let overload_extract_from_awaitable_list env p tyl =
@@ -120,17 +119,17 @@ let overload_extract_from_awaitable_list env p tyl =
     ~f:
       begin
         fun ty (env, rtyl) ->
-        let (env, rty) = overload_extract_from_awaitable env p ty in
+        let (env, rty) = overload_extract_from_awaitable env ~p ty in
         (env, rty :: rtyl)
       end
     tyl
     ~init:(env, [])
 
 let overload_extract_from_awaitable_shape env p fdm =
-  Nast.ShapeMap.map_env
+  TShapeMap.map_env
     begin
       fun env _key (tk, tv) ->
-      let (env, rtv) = overload_extract_from_awaitable env p tv in
+      let (env, rtv) = overload_extract_from_awaitable env ~p tv in
       (env, (tk, rtv))
     end
     env

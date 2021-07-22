@@ -13,44 +13,37 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_INTERCEPT_H_
-#define incl_HPHP_INTERCEPT_H_
+#pragma once
 
 #include <stdint.h>
 
 namespace HPHP {
 
 struct Array;
+struct Func;
 struct String;
 struct Variant;
 
 ///////////////////////////////////////////////////////////////////////////////
-// fb_intercept()
+// fb_intercept2()
 
 /**
  * When an interceptable point is hit, invoke handler with all parameters
  * instead. If it returns FALSE, continues execution. Otherwise, return its
  * return.
  */
-bool register_intercept(const String& name, const Variant& callback,
-                        const Variant& data, bool checkForDebugger,
-                        bool newCallback);
+bool register_intercept(const String& name, const Variant& callback);
 
 /**
  * Check to see if it is actually intercepted for current request.
  */
-Variant* get_intercept_handler(const String& name, int8_t* flag);
+Variant* get_intercept_handler(const Func* func);
 
 /**
  * Call intercept handler with original parameters.
  */
 bool handle_intercept(const Variant& handler, const String& name,
                       const Array& params, Variant& ret);
-
-/**
- * Removes a previously registered flag.
- */
-void unregister_intercept_flag(const String& name, int8_t* flag);
 
 ///////////////////////////////////////////////////////////////////////////////
 // fb_rename_function()
@@ -61,4 +54,3 @@ void rename_function(const String& old_name, const String& new_name);
 
 }
 
-#endif // incl_HPHP_INTERCEPT_H_

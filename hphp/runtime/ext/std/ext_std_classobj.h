@@ -15,8 +15,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EXT_CLASS_H_
-#define incl_HPHP_EXT_CLASS_H_
+#pragma once
 
 #include "hphp/runtime/ext/std/ext_std.h"
 
@@ -56,6 +55,10 @@ Array HHVM_FUNCTION(get_object_vars, const Object& object);
 
 void getMethodNames(Class* cls, Class* ctx, Array& result);
 
+Func* getFuncFromMethCallerFunc(const Func*);
+Func* getFuncFromMethCallerHelperClass(const ObjectData*);
+Func* getFuncFromDynMethCallerHelperClass(const ObjectData*);
+
 String HHVM_FUNCTION(HH_class_meth_get_class, TypedValue v);
 String HHVM_FUNCTION(HH_class_meth_get_method, TypedValue v);
 String HHVM_FUNCTION(HH_meth_caller_get_class, TypedValue v);
@@ -64,4 +67,3 @@ String HHVM_FUNCTION(HH_class_get_class_name, TypedValue v);
 ///////////////////////////////////////////////////////////////////////////////
 }
 
-#endif // incl_HPHP_EXT_CLASS_H_

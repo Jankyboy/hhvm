@@ -17,6 +17,7 @@
 #include "hphp/runtime/base/type-array.h"
 
 #include "hphp/runtime/base/array-init.h"
+#include "hphp/runtime/base/tv-type.h"
 #include "hphp/runtime/base/types.h"
 #include "hphp/runtime/base/array-util.h"
 #include "hphp/runtime/base/comparisons.h"
@@ -45,7 +46,7 @@ const Array null_array{};
 
 void Array::setEvalScalar() const {
   Array* thisPtr = const_cast<Array*>(this);
-  if (!m_arr) thisPtr->m_arr = Ptr::attach(ArrayData::Create());
+  if (!m_arr) thisPtr->m_arr = Ptr::attach(ArrayData::CreateDict());
   if (!m_arr->isStatic()) {
     thisPtr->m_arr = ArrayData::GetScalarArray(std::move(*thisPtr));
   }
@@ -142,7 +143,7 @@ Array Array::diffImpl(const Array& array, bool by_key, bool by_value, bool match
     value_cmp_as_string_function = CompareAsStrings;
   }
 
-  Array ret = Array::CreateDArray();
+  Array ret = Array::CreateDict();
   if (by_key && !key_cmp_function) {
     // Fast case
     for (ArrayIter iter(*this); iter; ++iter) {
@@ -264,30 +265,11 @@ Array Array::diffImpl(const Array& array, bool by_key, bool by_value, bool match
   return ret;
 }
 
-Array& Array::merge(const Array& arr) {
-  return mergeImpl(arr.get());
-}
-
-Array& Array::mergeImpl(ArrayData *data) {
-  if (m_arr == nullptr || data == nullptr) {
-    throw_bad_array_merge();
-  }
-  auto const escalated = data->empty() ? m_arr->renumber() : m_arr->merge(data);
-  if (escalated != m_arr) m_arr = Ptr::attach(escalated);
-  return *this;
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // Type conversions.
 
 String Array::toString() const {
   if (m_arr == nullptr) return empty_string();
-  if (m_arr->isPHPArrayType()) {
-    SystemLib::throwInvalidOperationExceptionObject(
-      "Array to string conversion"
-    );
-  }
-  assertx(m_arr->isHackArrayType());
   if (m_arr->isVecType()) {
     SystemLib::throwInvalidOperationExceptionObject(
       "Vec to string conversion"
@@ -308,12 +290,8 @@ String Array::toString() const {
 
 void Array::setLegacyArray(bool isLegacy) {
   auto const ad = get();
-  if (isLegacy == ad->isLegacyArray()) return;
-
-  if (ad->cowCheck()) {
-    m_arr = Ptr::attach(ad->copy());
-  }
-  m_arr->setLegacyArray(isLegacy);
+  auto const result = ad->setLegacyArray(ad->cowCheck(), isLegacy);
+  if (result != ad) m_arr = Ptr::attach(result);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -326,22 +304,10 @@ TypedValue Array::lookupImpl(const T& key, AccessFlags flags) const {
 
 template<typename T> ALWAYS_INLINE
 tv_lval Array::lvalImpl(const T& key, AccessFlags) {
-  if (!m_arr) m_arr = Ptr::attach(ArrayData::Create());
+  if (!m_arr) m_arr = Ptr::attach(ArrayData::CreateDict());
   auto const lval = m_arr->lval(key);
   if (lval.arr != m_arr) m_arr = Ptr::attach(lval.arr);
   assertx(lval);
-  return lval;
-}
-
-template<typename T> ALWAYS_INLINE
-tv_lval Array::lvalForceImpl(const T& key, AccessFlags flags) {
-  if (!m_arr) m_arr = Ptr::attach(ArrayData::Create());
-  if (!m_arr->exists(key)) {
-    auto const escalated = m_arr->set(key, make_tv<KindOfNull>());
-    if (escalated != m_arr) m_arr = Ptr::attach(escalated);
-  }
-  auto const lval = m_arr->lval(key);
-  if (lval.arr != m_arr) m_arr = Ptr::attach(lval.arr);
   return lval;
 }
 
@@ -362,10 +328,24 @@ void Array::removeImpl(const T& key) {
 template<typename T> ALWAYS_INLINE
 void Array::setImpl(const T& key, TypedValue v) {
   if (!m_arr) {
-    m_arr = Ptr::attach(ArrayData::Create(key, v));
+    DictInit init(1);
+    if constexpr (std::is_same_v<T, TypedValue> ) {
+      if (tvIsInt(key)) {
+        init.set(key.val().num, v);
+      } else if (tvIsString(key)) {
+        init.set(key.val().pstr, v);
+      } else {
+        throwInvalidArrayKeyException(&key, staticEmptyDictArray());
+      }
+    } else {
+      init.set(key, v);
+    }
+    m_arr = Ptr::attach(init.toArray().detach());
   } else {
-    auto const escalated = m_arr->set(key, v);
-    if (escalated != m_arr) m_arr = Ptr::attach(escalated);
+    m_arr.mutateInPlace([&](ArrayData* ad) {
+      return ad->setMove(key, tvToInit(v));
+    });
+    tvIncRefGen(v);
   }
 }
 
@@ -402,7 +382,7 @@ decltype(auto) elem(const Array& arr, Fn fn, bool is_key,
                     const String& key, Args&&... args) {
   if (is_key) return fn(key, std::forward<Args>(args)...);
 
-  auto const ad = arr.get() ? arr.get() : ArrayData::Create();
+  auto const ad = arr.get() ? arr.get() : ArrayData::CreateDict();
 
   // The logic here is a specialization of tvToKey().
   if (key.isNull()) {
@@ -462,7 +442,6 @@ decltype(auto) elem(const Array& arr, Fn fn, bool is_key,
 
 FOR_EACH_KEY_TYPE(lookup, TypedValue, const)
 FOR_EACH_KEY_TYPE(lval, tv_lval, )
-FOR_EACH_KEY_TYPE(lvalForce, tv_lval, )
 
 #undef I
 #undef V
@@ -524,33 +503,18 @@ FOR_EACH_KEY_TYPE(set)
 ///////////////////////////////////////////////////////////////////////////////
 
 void Array::append(TypedValue v) {
-  if (!m_arr) operator=(Create());
+  if (!m_arr) operator=(CreateDict());
   assertx(m_arr);
-  auto const escalated = m_arr->append(tvToInit(v));
-  if (escalated != m_arr) m_arr = Ptr::attach(escalated);
-}
-
-void Array::prepend(TypedValue v) {
-  if (!m_arr) operator=(Create());
-  assertx(m_arr);
-  auto const escalated = m_arr->prepend(tvToInit(v));
-  if (escalated != m_arr) m_arr = Ptr::attach(escalated);
+  m_arr.mutateInPlace([&](ArrayData* ad) {
+    return ad->appendMove(tvToInit(v));
+  });
+  tvIncRefGen(v);
 }
 
 Variant Array::pop() {
   if (m_arr) {
     Variant ret;
     ArrayData *newarr = m_arr->pop(ret);
-    if (newarr != m_arr) m_arr = Ptr::attach(newarr);
-    return ret;
-  }
-  return init_null();
-}
-
-Variant Array::dequeue() {
-  if (m_arr) {
-    Variant ret;
-    ArrayData *newarr = m_arr->dequeue(ret);
     if (newarr != m_arr) m_arr = Ptr::attach(newarr);
     return ret;
   }
@@ -633,7 +597,9 @@ void Array::SortImpl(std::vector<int> &indices, const Array& source,
 
 void Array::sort(PFUNC_CMP cmp_func, bool by_key, bool renumber,
                  const void *data /* = NULL */) {
-  Array sorted = Array::CreateDArray();
+  Array sorted = Array::CreateDict();
+  if (m_arr && m_arr->isLegacyArray()) sorted.setLegacyArray(true);
+
   SortData opaque;
   std::vector<int> indices;
   SortImpl(indices, *this, opaque, cmp_func, by_key, data);
@@ -691,14 +657,16 @@ bool Array::MultiSort(std::vector<SortData> &data) {
   for (unsigned int ki = 0; ki < data.size(); ki++) {
     SortData &opaque = data[ki];
     const Array& arr = *opaque.array;
-    Array sorted;
+    Array sorted = Array::CreateDict();
+    if (arr->isLegacyArray()) sorted.setLegacyArray(true);
+    int64_t nextKI = 0;
     for (int i = 0; i < count; i++) {
       ssize_t pos = opaque.positions[indices[i]];
       Variant k(arr->getKey(pos));
       if (k.isInteger()) {
-        sorted.append(arr->nvGetVal(pos));
+        sorted.set(nextKI++, arr->nvGetVal(pos));
       } else {
-        sorted.set(k, arr->nvGetVal(pos));
+        sorted.set(k, arr->nvGetVal(pos), true);
       }
     }
     *opaque.original = sorted;

@@ -23,6 +23,9 @@
 
 #include <folly/Format.h>
 
+#include <cassert>
+#include <cmath>
+#include <string>
 #include <sstream>
 
 namespace HPHP { namespace jit {
@@ -36,20 +39,18 @@ IterSpecialization getIterSpecialization(const ArrayData* arr) {
   auto result = IterSpecialization::generic();
 
   switch (arr->kind()) {
-    case ArrayData::kPackedKind:
     case ArrayData::kVecKind: {
       result.specialized = true;
-      result.base_type = arr->isPHPArrayType() ? S::Packed : S::Vec;
+      result.base_type = S::Vec;
       result.key_types = S::Int;
       return result;
     }
 
-    case ArrayData::kMixedKind:
     case ArrayData::kDictKind: {
       auto const keys = MixedArray::asMixed(arr)->keyTypes();
       if (keys.mayIncludeTombstone()) return result;
       result.specialized = true;
-      result.base_type = arr->isPHPArrayType() ? S::Mixed : S::Dict;
+      result.base_type = S::Dict;
       result.key_types = [&]{
         if (keys.mustBeStaticStrs()) return S::StaticStr;
         if (keys.mustBeInts()) return S::Int;
@@ -59,7 +60,7 @@ IterSpecialization getIterSpecialization(const ArrayData* arr) {
       return result;
     }
 
-  default: return result;
+    default: return result;
   }
 }
 
@@ -94,18 +95,21 @@ ArrayIterProfile::Result ArrayIterProfile::result() const {
   auto const strs    = statics + counts[IterSpecialization::Str];
   result.top_specialization.key_types = [&]{
     auto const type = result.top_specialization.base_type;
-    if (type == IterSpecialization::Packed || type == IterSpecialization::Vec) {
-      return IterSpecialization::Int;
-    }
-    if (statics == key_types_total) return IterSpecialization::StaticStr;
-    if (ints    == key_types_total) return IterSpecialization::Int;
-    if (strs    == key_types_total) return IterSpecialization::Str;
+    if (type == IterSpecialization::Vec) return IterSpecialization::Int;
+    if (statics == key_types_total)      return IterSpecialization::StaticStr;
+    if (ints    == key_types_total)      return IterSpecialization::Int;
+    if (strs    == key_types_total)      return IterSpecialization::Str;
     return IterSpecialization::ArrayKey;
   }();
   return result;
 }
 
 void ArrayIterProfile::update(const ArrayData* arr, bool is_kviter) {
+  // Generally speaking, bespoke arrays that we encounter during profiling
+  // should be LoggingArrays. Don't include them in our profile.
+  if (!arr->isVanilla()) return;
+
+  auto const size = arr->size();
   auto const specialization = getIterSpecialization(arr);
   if (specialization.specialized) {
     if (arr->empty()) {
@@ -113,10 +117,10 @@ void ArrayIterProfile::update(const ArrayData* arr, bool is_kviter) {
     } else {
       m_key_types_counts[specialization.key_types]++;
     }
-    m_num_iterations += arr->size();
+    m_num_iterations += size;
     m_base_type_counts[specialization.base_type]++;
     size_t num_profiled_values = 0;
-    IterateKVNoInc(arr, [&](TypedValue k, TypedValue v) {
+    IterateKV(arr, [&](TypedValue k, TypedValue v) {
       m_value_type |= typeFromTV(&v, nullptr);
       return ++num_profiled_values == kNumProfiledValues;
     });
@@ -126,6 +130,9 @@ void ArrayIterProfile::update(const ArrayData* arr, bool is_kviter) {
     // value_type, or the num_iterations for these bases.
     m_generic_base_count++;
   }
+  auto const array_index = size == 0 ? 0 : 1 + (size_t)std::floor(std::log2(size));
+  assertx(array_index < kNumApproximateCountBuckets);
+  m_approximate_iteration_buckets[array_index]++;
 }
 
 void ArrayIterProfile::reduce(ArrayIterProfile& l, const ArrayIterProfile& r) {
@@ -139,6 +146,9 @@ void ArrayIterProfile::reduce(ArrayIterProfile& l, const ArrayIterProfile& r) {
   l.m_generic_base_count += r.m_generic_base_count;
   l.m_empty_count += r.m_empty_count;
   l.m_value_type |= r.m_value_type;
+  for (uint32_t i = 0; i < kNumApproximateCountBuckets; ++i) {
+    l.m_approximate_iteration_buckets[i] += r.m_approximate_iteration_buckets[i];
+  }
 }
 
 folly::dynamic ArrayIterProfile::toDynamic() const {
@@ -158,10 +168,23 @@ folly::dynamic ArrayIterProfile::toDynamic() const {
   }
   key_types["Empty"] = m_empty_count;
 
+  dynamic approx_counts = dynamic::object();
+  for (uint32_t i = 0; i < kNumApproximateCountBuckets; ++i) {
+    auto const count_for_bucket = m_approximate_iteration_buckets[i];
+    if (count_for_bucket == 0) {
+      continue;
+    }
+    approx_counts[std::to_string(i)] = count_for_bucket;
+  }
+
   return dynamic::object("keyTypes", key_types)
                         ("baseType", base_type)
                         ("valueType", m_value_type.toString())
+                        // consider adding the base here so you know
+                        // what the buckets refer to without having to
+                        // assert it
                         ("numIterations", m_num_iterations)
+                        ("approximateCounts", approx_counts)
                         ("profileType", "ArrayIterProfile");
 }
 

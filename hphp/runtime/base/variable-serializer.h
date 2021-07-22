@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VARIABLE_SERIALIZER_H_
-#define incl_HPHP_VARIABLE_SERIALIZER_H_
+#pragma once
 
 #include "hphp/runtime/base/req-hash-map.h"
 #include "hphp/runtime/base/req-vector.h"
@@ -55,12 +54,6 @@ struct VariableSerializer {
     PHPOutput, //used by compiler to output scalar values into byte code
     Last = PHPOutput,
   };
-
-  /*
-   * Set in m_option for APCSerialize to disable serializing static
-   * datastructures as their address
-   */
-  static constexpr auto kAPC_PRIME_SERIALIZE = 1;
 
   /**
    * Constructor and destructor.
@@ -128,21 +121,14 @@ struct VariableSerializer {
     m_serializeProvenanceAndLegacy = true;
   }
 
+  // Should we be calling the pure callbacks
+  void setPure() { m_pure = true; }
+
   // MarkedVArray and MarkedDArray are used for serialization formats, which
   // can distinguish between all 3 possible array states (unmarked varray,
-  // unmarked vec, marked varray/vec).
-  // In post-EvalHackArrDVArrs MarkedVArray/MarkedDArray correspond to marked
-  // vec/dict.
+  // unmarked vec, marked varray/vec). Now corresponds to marked vec/dict.
   enum class ArrayKind { PHP, Dict, Vec, Keyset, VArray, DArray,
                          MarkedVArray, MarkedDArray };
-
-  // One entry for each vec or dict in the value being serialized (in a
-  // pre-order walk). If the bool is true, and mode is PHPOutput, the vec or
-  // dict will be output like a varray or darray.
-  using DVOverrides = std::vector<bool>;
-  void setDVOverrides(const DVOverrides* overrides) {
-    m_dvOverrides = overrides;
-  }
 
   void setUnitFilename(const StringData* name) {
     assertx(name->isStatic());
@@ -190,7 +176,7 @@ private:
    * Helpers.
    */
   void indent();
-  void setRefCount(int count) { m_refCount = count;}
+  void setRefCount(RefCount count) { m_refCount = count; }
   bool incNestedLevel(tv_rval tv);
   void decNestedLevel(tv_rval tv);
   void pushObjectInfo(const String& objClass, char objCode);
@@ -294,11 +280,11 @@ private:
   bool m_hasHackWarned{false};   // have we already warned on Hack arrays?
   bool m_hasDictWarned{false};   // have we already warned on dicts?
   bool m_hasKeysetWarned{false};   // have we already warned on dicts?
-  bool m_hasPHPWarned{false};    // have we already warned on PHP arrays?
   bool m_hasEDWarned{false};     // have we already warned on empty darrays?
   bool m_hasVDWarned{false};     // have we already warned on vec-like darrays?
   bool m_hasDDWarned{false};  // have we already warned on non-vec-like darrays?
-  int m_refCount{1};             // current variable's reference count
+  bool m_pure{false};            // should we call the pure callbacks?
+  RefCount m_refCount{OneReference}; // current variable's reference count
   String m_objClass;             // for object serialization
   char m_objCode{0};             // for object serialization
   String m_rsrcName;             // for resource serialization
@@ -331,8 +317,6 @@ private:
    * an adata for a unit in the repo--it is needed to correctly
    * compress the provenance tag */
   const StringData* m_unitFilename{nullptr};
-  const DVOverrides* m_dvOverrides{nullptr};
-  size_t m_dvOverridesIndex{0};
 };
 
 inline String internal_serialize(const Variant& v) {
@@ -360,5 +344,3 @@ extern const StaticString s_serializedNativeDataKey;
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif // incl_HPHP_VARIABLE_SERIALIZER_H_

@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_APC_HANDLE_H_
-#define incl_HPHP_APC_HANDLE_H_
+#pragma once
 
 #include <atomic>
 
@@ -39,29 +38,26 @@ enum class APCKind: uint8_t {
   Uninit, Null, Bool,  // see APCHandle::isSingletonKind before updating
   Int, Double,
   PersistentFunc,
-  UncountedString,
+  PersistentClass,
+  LazyClass,
+  PersistentClsMeth,
   UncountedArray,
-  UncountedVec,
-  UncountedDict,
-  UncountedKeyset,
-  StaticString,
+  UncountedBespoke,
+  UncountedString,
   StaticArray,
-  StaticVec,
-  StaticDict,
-  StaticKeyset,
-  SharedString, SharedArray,
-  SharedPackedArray,
+  StaticBespoke,
+  StaticString,
   SharedVec, SharedLegacyVec,
   SharedDict, SharedLegacyDict,
   SharedKeyset,
-  SharedVArray, SharedMarkedVArray,
-  SharedDArray, SharedMarkedDArray,
   SharedObject, SharedCollection,
-  SerializedArray, SerializedVec,
+  SerializedVec,
   SerializedDict,
   SerializedKeyset,
   SerializedObject,
   FuncEntity,
+  ClassEntity,
+  ClsMeth,
   RFunc,
   RClsMeth
 };
@@ -108,28 +104,17 @@ enum class APCKind: uint8_t {
  *  Bool              APCTypedValue   KindOfBool
  *  Int               APCTypedValue   KindOfInt64
  *  Double            APCTypedValue   KindOfDouble
+ *  StaticArray       APCTypedValue   (a persistent array type)
+ *  StaticBespoke     APCTypedValue   (a persistent array type)
  *  StaticString      APCTypedValue   KindOfPersistentString
+ *  UncountedArray    APCTypedValue   (a persistent array type)
+ *  UncountedBespoke  APCTypedValue   (a persistent array type)
  *  UncountedString   APCTypedValue   KindOfPersistentString
- *  StaticArray       APCTypedValue   KindOfPersistentArray
- *  UncountedArray    APCTypedValue   KindOfPersistentArray
- *  StaticVec         APCTypedValue   KindOfPersistentVec
- *  UncountedVec      APCTypedValue   KindOfPersistentVec
- *  StaticDict        APCTypedValue   KindOfPersistentDict
- *  UncountedDict     APCTypedValue   KindOfPersistentDict
- *  StaticKeyset      APCTypedValue   KindOfPersistentKeyset
- *  UncountedKeyset   APCTypedValue   KindOfPersistentKeyset
- *  SharedString      APCString       kInvalidDataType
- *  SharedArray       APCArray        kInvalidDataType
- *  SharedPackedArray APCArray        kInvalidDataType
  *  SharedVec         APCArray        kInvalidDataType
  *  SharedLegacyVec   APCArray        kInvalidDataType
  *  SharedDict        APCArray        kInvalidDataType
  *  SharedLegacyDict  APCArray        kInvalidDataType
  *  SharedKeyset      APCArray        kInvalidDataType
- *  SharedDArray      APCArray        kInvalidDataType
- *  SharedMarkedDArray APCArray       kInvalidDataType
- *  SharedVArray      APCArray        kInvalidDataType
- *  SharedMarkedVArray APCArray       kInvalidDataType
  *  SharedObject      APCObject       kInvalidDataType
  *  SharedCollection  APCObject       kInvalidDataType
  *  SerializedArray   APCString       kInvalidDataType
@@ -166,15 +151,11 @@ struct APCHandle {
    * Create an instance of an APC object according to the type of source and
    * the various flags. This is the only entry point to create APC entities.
    */
-  static Pair Create(const_variant_ref source,
-                     bool serialized,
-                     APCHandleLevel level,
+  static Pair Create(const_variant_ref source, APCHandleLevel level,
                      bool unserializeObj);
-  static Pair Create(const Variant& var,
-                     bool serialized,
-                     APCHandleLevel level,
+  static Pair Create(const Variant& var, APCHandleLevel level,
                      bool unserializeObj) {
-    return Create(const_variant_ref{var}, serialized, level, unserializeObj);
+    return Create(const_variant_ref{var}, level, unserializeObj);
   }
 
   /*
@@ -253,23 +234,12 @@ struct APCHandle {
 
   /*
    * If true, this APCHandle is an APCTypedValue holding an "uncounted"
-   * string or array; (not static or refcounted).
+   * array-like or string (not a static or refcounted value).
    */
   bool isUncounted() const {
-    static_assert(APCKind::UncountedString < APCKind::UncountedArray &&
-                  APCKind::UncountedArray < APCKind::UncountedVec &&
-                  APCKind::UncountedVec < APCKind::UncountedDict &&
-                  APCKind::UncountedDict < APCKind::UncountedKeyset &&
-                  static_cast<int>(APCKind::UncountedKeyset) -
-                  static_cast<int>(APCKind::UncountedString) == 4,
-                  "The Uncounted APCKinds must be consecutive, and "
-                  "in the following order so that gcc can optimize "
-                  "this to a range check.");
-    return m_kind == APCKind::UncountedString ||
-           m_kind == APCKind::UncountedArray ||
-           m_kind == APCKind::UncountedVec ||
-           m_kind == APCKind::UncountedDict ||
-           m_kind == APCKind::UncountedKeyset;
+    return m_kind == APCKind::UncountedArray ||
+           m_kind == APCKind::UncountedBespoke ||
+           m_kind == APCKind::UncountedString;
   }
 
   bool isTypedValue() const {
@@ -307,4 +277,3 @@ private:
 
 }
 
-#endif

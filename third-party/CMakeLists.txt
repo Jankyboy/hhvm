@@ -37,10 +37,6 @@ endfunction()
 
 ##### easy stuff #####
 
-if(JEMALLOC_ENABLED)
-  list(APPEND THIRD_PARTY_MODULES jemalloc)
-endif()
-
 list(APPEND THIRD_PARTY_MODULES forks/libmbfl)
 list(APPEND EXTRA_INCLUDE_PATHS
   "${TP_DIR}/forks/libmbfl"
@@ -51,8 +47,15 @@ list(APPEND EXTRA_INCLUDE_PATHS
 list(APPEND THIRD_PARTY_MODULES forks/timelib)
 list(APPEND EXTRA_INCLUDE_PATHS "${TP_DIR}/forks/timelib")
 
-list(APPEND THIRD_PARTY_MODULES folly)
-list(APPEND EXTRA_INCLUDE_PATHS "${TP_DIR}/forks/folly/src")
+# Required by folly
+add_subdirectory(double-conversion)
+add_subdirectory(boost)
+add_subdirectory(fmt)
+add_subdirectory(jemalloc)
+add_subdirectory(libsodium)
+add_subdirectory(zstd)
+
+add_subdirectory(folly)
 
 # Fatal is a header-only library, so there's nothing to build.
 list(APPEND EXTRA_INCLUDE_PATHS "${TP_DIR}/fatal")
@@ -68,9 +71,6 @@ list(APPEND EXTRA_INCLUDE_PATHS "${TP_DIR}/wangle/src")
 list(APPEND THIRD_PARTY_MODULES proxygen)
 list(APPEND EXTRA_INCLUDE_PATHS "${TP_DIR}/proxygen/src")
 
-list(APPEND THIRD_PARTY_MODULES fmt)
-list(APPEND EXTRA_INCLUDE_PATHS "${TP_DIR}/fmt/fmt/include")
-
 list(APPEND THIRD_PARTY_MODULES thrift)
 list(APPEND EXTRA_INCLUDE_PATHS "${TP_DIR}/thrift/src")
 list(APPEND EXTRA_INCLUDE_PATHS "${TP_DIR}/thrift/gen")
@@ -81,7 +81,6 @@ if (NOT MSVC)
 endif()
 
 add_subdirectory(lz4)
-add_subdirectory(zstd)
 
 # fb-mysql must go after lz4 and zstd because it needs to know its <INSTALL_DIR>
 add_subdirectory(fb-mysql)
@@ -113,12 +112,6 @@ if(NOT LIBSQLITE3_LIBRARY)
   list(APPEND EXTRA_INCLUDE_PATHS "${TP_DIR}/forks/libsqlite3")
 endif()
 
-# Add bundled double-conversion if the system one will not be used
-if(NOT DOUBLE_CONVERSION_FOUND)
-  list(APPEND THIRD_PARTY_MODULES double-conversion)
-  list(APPEND EXTRA_INCLUDE_PATHS "${TP_DIR}/double-conversion")
-endif()
-
 # Add bundled PCRE if the system one will not be used
 find_package(PCRE)
 if(NOT PCRE_LIBRARY)
@@ -142,27 +135,6 @@ if(ENABLE_XED AND NOT LibXed_FOUND)
   list(APPEND EXTRA_INCLUDE_PATHS "${TP_DIR}/xed/xed/build/include/xed")
 endif()
 
-##### boost #####
-
-add_subdirectory(boost)
-
-##### libsodium #####
-
-add_library(libsodium INTERFACE)
-add_custom_target(libsodiumMaybeBuild)
-find_package(LibSodium 1.0.9)
-if (LIBSODIUM_INCLUDE_DIRS AND LIBSODIUM_LIBRARIES)
-  message(STATUS "Using system libsodium ${LIBSODIUM_VERSION}")
-else()
-  message(STATUS "Using third-party bundled libsodium")
-  add_dependencies(libsodiumMaybeBuild libsodiumBuild)
-  add_subdirectory(libsodium EXCLUDE_FROM_ALL)
-endif()
-target_include_directories(libsodium INTERFACE ${LIBSODIUM_INCLUDE_DIRS})
-target_link_libraries(libsodium INTERFACE ${LIBSODIUM_LIBRARIES})
-add_definitions("-DHAVE_LIBSODIUM")
-list(APPEND EXTRA_INCLUDE_PATHS "${LIBSODIUM_INCLUDE_DIRS}")
-list(APPEND THIRD_PARTY_DEFINITIONS "-DHAVE_LIBSODIUM")
 
 ##### rustc #####
 
@@ -172,13 +144,7 @@ add_subdirectory("rustc")
 
 foreach(MODULE ${THIRD_PARTY_MODULES})
   add_subdirectory(${MODULE})
-  # Install headers here, rather than in the individual submodules, so that we
-  # can easily control the destination. Put them in include/hphp/third-party.
-  if(MODULE STREQUAL folly)
-    TP_INSTALL_HEADERS(folly folly/src/folly folly)
-  else()
-    TP_INSTALL_HEADERS(${MODULE} ${MODULE} ${MODULE})
-  endif()
+  TP_INSTALL_HEADERS(${MODULE} ${MODULE} ${MODULE})
 endforeach()
 set(THIRD_PARTY_INCLUDE_PATHS ${EXTRA_INCLUDE_PATHS} CACHE INTERNAL "" FORCE)
 
@@ -187,3 +153,5 @@ if(NOT PCRE_LIBRARY)
   target_compile_definitions(pcre PUBLIC "PCRE_STATIC=1")
 endif()
 
+##### --- new style, but only depends on old style --- #####
+add_subdirectory(watchman)

@@ -267,7 +267,7 @@ inline bool Class::isDynamicallyConstructible() const {
   return attrs() & AttrDynamicallyConstructible;
 }
 
-inline folly::Optional<int64_t> Class::dynConstructSampleRate() const {
+inline Optional<int64_t> Class::dynConstructSampleRate() const {
   auto const rate = preClass()->dynConstructSampleRate();
   if (rate < 0) return {};
   return rate;
@@ -418,16 +418,6 @@ inline bool Class::forbidsDynamicProps() const {
   return attrs() & AttrForbidDynamicProps;
 }
 
-inline bool Class::serialize() const {
-  if (m_serialized) return false;
-  m_serialized = true;
-  return true;
-}
-
-inline bool Class::wasSerialized() const {
-  return m_serialized;
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // Property initialization.
 
@@ -498,10 +488,6 @@ Class::sPropLink(Slot index) const {
   return m_sPropCache[index];
 }
 
-inline rds::Link<bool, rds::Mode::NonLocal> Class::sPropInitLink() const {
-  return m_sPropCacheInit;
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // Constants.
 
@@ -518,15 +504,15 @@ inline bool Class::hasConstant(const StringData* clsCnsName) const {
   auto clsCnsInd = m_constants.findIndex(clsCnsName);
   return (clsCnsInd != kInvalidSlot) &&
     !m_constants[clsCnsInd].isAbstract() &&
-    !m_constants[clsCnsInd].isType();
+    m_constants[clsCnsInd].kind() == ConstModifiers::Kind::Value;
 }
 
 inline bool Class::hasTypeConstant(const StringData* typeConstName,
                                    bool includeAbs) const {
   auto typeConstInd = m_constants.findIndex(typeConstName);
   return (typeConstInd != kInvalidSlot) &&
-    (!m_constants[typeConstInd].isAbstract() || includeAbs) &&
-    m_constants[typeConstInd].isType();
+    (!m_constants[typeConstInd].isAbstractAndUninit() || includeAbs) &&
+    m_constants[typeConstInd].kind() == ConstModifiers::Kind::Type;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -539,6 +525,14 @@ inline folly::Range<const ClassPtr*> Class::declInterfaces() const {
 
 inline const Class::InterfaceMap& Class::allInterfaces() const {
   return m_interfaces;
+}
+
+inline const bool Class::hasIncludedEnums() const {
+  return m_extra && (m_extra->m_includedEnums.size() != 0);
+}
+
+inline const Class::IncludedEnumMap& Class::allIncludedEnums() const {
+  return m_extra->m_includedEnums;
 }
 
 inline Slot Class::traitsBeginIdx() const {
@@ -677,12 +671,21 @@ inline bool isEnum(const Class* cls) {
   return cls->attrs() & AttrEnum;
 }
 
+inline bool isEnumClass(const Class* cls) {
+  return cls->attrs() & AttrEnumClass;
+}
+
+inline bool isAnyEnum(const Class* cls) {
+  return isEnum(cls) || isEnumClass(cls);
+}
+
 inline bool isInterface(const Class* cls) {
   return cls->attrs() & AttrInterface;
 }
 
 inline bool isNormalClass(const Class* cls) {
-  return !(cls->attrs() & (AttrTrait | AttrInterface | AttrEnum));
+  return !(cls->attrs() & (AttrTrait | AttrInterface | AttrEnum |
+                           AttrEnumClass));
 }
 
 inline bool isAbstract(const Class* cls) {
@@ -700,5 +703,85 @@ inline const StringData* classToStringHelper(const Class* cls) {
  }
  return cls->name();
 }
+
+///////////////////////////////////////////////////////////////////////////////
+// Lookup.
+
+inline Class* Class::lookup(const NamedEntity* ne) {
+  return ne->getCachedClass();
+}
+
+inline Class* Class::lookup(const StringData* name) {
+  if (name->isSymbol()) {
+    if (auto const result = name->getCachedClass()) return result;
+  }
+  auto const result = lookup(NamedEntity::get(name));
+  if (name->isSymbol() && result && classHasPersistentRDS(result)) {
+    const_cast<StringData*>(name)->setCachedClass(result);
+  }
+  return result;
+}
+
+inline const Class* Class::lookupUniqueInContext(const NamedEntity* ne,
+                                                 const Class* ctx,
+                                                 const Unit* unit) {
+  Class* cls = ne->clsList();
+  if (UNLIKELY(cls == nullptr)) return nullptr;
+  if (cls->attrs() & AttrUnique) return cls;
+  if (unit && cls->preClass()->unit() == unit) return cls;
+  if (!ctx) return nullptr;
+  return ctx->getClassDependency(cls->name());
+}
+
+inline const Class* Class::lookupUniqueInContext(const StringData* name,
+                                                 const Class* ctx,
+                                                 const Unit* unit) {
+  return lookupUniqueInContext(NamedEntity::get(name), ctx, unit);
+}
+
+inline Class* Class::load(const StringData* name) {
+  if (name->isSymbol()) {
+    if (auto const result = name->getCachedClass()) return result;
+  }
+  auto const orig = name;
+
+  auto const result = [&]() -> Class* {
+    String normStr;
+    auto ne = NamedEntity::get(name, true, &normStr);
+
+    // Try to fetch from cache
+    Class* class_ = ne->getCachedClass();
+    if (LIKELY(class_ != nullptr)) return class_;
+
+    // Normalize the namespace
+    if (normStr) name = normStr.get();
+
+    // Autoload the class
+    return load(ne, name);
+  }();
+
+  if (orig->isSymbol() && result && classHasPersistentRDS(result)) {
+    const_cast<StringData*>(orig)->setCachedClass(result);
+  }
+  return result;
+}
+
+inline Class* Class::get(const StringData* name, bool tryAutoload) {
+  if (name->isSymbol()) {
+    if (auto const result = name->getCachedClass()) return result;
+  }
+  auto const orig = name;
+  String normStr;
+  auto ne = NamedEntity::get(name, true, &normStr);
+  if (normStr) {
+    name = normStr.get();
+  }
+  auto const result = get(ne, name, tryAutoload);
+  if (orig->isSymbol() && result && classHasPersistentRDS(result)) {
+    const_cast<StringData*>(orig)->setCachedClass(result);
+  }
+  return result;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 }

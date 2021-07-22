@@ -10,101 +10,23 @@
 open Hh_prelude
 open ClientEnv
 
-let compare_pos pos1 pos2 =
-  let (char_start1, char_end1) = Pos.info_raw pos1 in
-  let (char_start2, char_end2) = Pos.info_raw pos2 in
-  if char_end1 <= char_start2 then
-    -1
-  else if char_end2 <= char_start1 then
-    1
-  else
-    0
+let get_pos = ServerRefactorTypes.get_pos
 
-let get_pos = function
-  | ServerRefactorTypes.Insert patch
-  | ServerRefactorTypes.Replace patch ->
-    patch.ServerRefactorTypes.pos
-  | ServerRefactorTypes.Remove p -> p
-
-let compare_result res1 res2 = compare_pos (get_pos res1) (get_pos res2)
-
-let map_patches_to_filename acc res =
-  let pos = get_pos res in
-  let fn = Pos.filename pos in
-  match SMap.find_opt fn acc with
-  | Some lst -> SMap.add fn (res :: lst) acc
-  | None -> SMap.add fn [res] acc
-
-let write_string_to_file fn str =
-  let oc = Out_channel.create fn in
-  Out_channel.output_string oc str;
-  Out_channel.close oc
-
-let write_patches_to_buffer buf original_content patch_list =
-  let i = ref 0 in
-  let trim_leading_whitespace = ref false in
-  let len = String.length original_content in
-  let is_whitespace c =
-    match c with
-    | '\n'
-    | ' '
-    | '\012'
-    | '\r'
-    | '\t' ->
-      true
-    | _ -> false
-  in
-  (* advances to requested character and adds the original content
-     from the current position to that point to the buffer *)
-  let add_original_content j =
-    while
-      !trim_leading_whitespace
-      && !i < len
-      && is_whitespace original_content.[!i]
-    do
-      i := !i + 1
-    done;
-    if j <= !i then
-      ()
-    else
-      let size = j - !i in
-      let size = min (- !i + len) size in
-      let str_to_write = String.sub original_content !i size in
-      Buffer.add_string buf str_to_write;
-      i := !i + size
-  in
-  List.iter patch_list (fun res ->
-      let pos = get_pos res in
-      let (char_start, char_end) = Pos.info_raw pos in
-      add_original_content char_start;
-      trim_leading_whitespace := false;
-      match res with
-      | ServerRefactorTypes.Insert patch ->
-        Buffer.add_string buf patch.ServerRefactorTypes.text
-      | ServerRefactorTypes.Replace patch ->
-        Buffer.add_string buf patch.ServerRefactorTypes.text;
-        i := char_end
-      | ServerRefactorTypes.Remove _ ->
-        (* We only expect `Remove` to be used with HH_FIXMEs, in which case
-         * char_end will point to the last character. Consequently, we should
-         * increment it by 1 *)
-        i := char_end + 1;
-        trim_leading_whitespace := true);
-  add_original_content len
+let compare_result = ServerRefactorTypes.compare_result
 
 let apply_patches_to_string old_content patch_list =
   let buf = Buffer.create (String.length old_content) in
   let patch_list = List.sort ~compare:compare_result patch_list in
-  write_patches_to_buffer buf old_content patch_list;
+  ServerRefactorTypes.write_patches_to_buffer buf old_content patch_list;
   Buffer.contents buf
 
 let apply_patches_to_file fn patch_list =
   let old_content = Sys_utils.cat fn in
   let new_file_contents = apply_patches_to_string old_content patch_list in
-  write_string_to_file fn new_file_contents
+  ServerRefactorTypes.write_string_to_file fn new_file_contents
 
 let list_to_file_map =
-  List.fold_left ~f:map_patches_to_filename ~init:SMap.empty
+  List.fold_left ~f:ServerRefactorTypes.map_patches_to_filename ~init:SMap.empty
 
 let apply_patches_to_file_contents file_contents patches =
   let file_map = list_to_file_map patches in
@@ -115,10 +37,20 @@ let apply_patches_to_file_contents file_contents patches =
   in
   SMap.mapi apply file_contents
 
+let plural count one many =
+  let obj =
+    if count = 1 then
+      one
+    else
+      many
+  in
+  string_of_int count ^ " " ^ obj
+
 let apply_patches patches =
   let file_map = list_to_file_map patches in
   SMap.iter apply_patches_to_file file_map;
-  print_endline ("Rewrote " ^ string_of_int (SMap.cardinal file_map) ^ " files.")
+  print_endline
+    ("Rewrote " ^ plural (SMap.cardinal file_map) "file" "files" ^ ".")
 
 let patch_to_json res =
   let (type_, replacement) =
@@ -152,7 +84,8 @@ let patches_to_json_string patches =
         Hh_json.JSON_Object
           [
             ("filename", Hh_json.JSON_String fn);
-            ("patches", Hh_json.JSON_Array (List.map patch_list patch_to_json));
+            ( "patches",
+              Hh_json.JSON_Array (List.map patch_list ~f:patch_to_json) );
           ]
         :: acc
       end
@@ -165,13 +98,14 @@ let print_patches_json patches = print_endline (patches_to_json_string patches)
 
 let go_ide
     (conn : unit -> ClientConnect.conn Lwt.t)
+    ~(desc : string)
     (args : client_check_env)
     (filename : string)
     (line : int)
     (char : int)
     (new_name : string) : unit Lwt.t =
   let%lwt patches =
-    ClientConnect.rpc_with_retry conn
+    ClientConnect.rpc_with_retry conn ~desc
     @@ ServerCommandTypes.IDE_REFACTOR
          { ServerCommandTypes.Ide_refactor_type.filename; line; char; new_name }
   in
@@ -188,6 +122,7 @@ let go_ide
 
 let go
     (conn : unit -> ClientConnect.conn Lwt.t)
+    ~(desc : string)
     (args : client_check_env)
     (mode : string)
     (before : string)
@@ -207,14 +142,10 @@ let go
     | "Method" ->
       let befores = Str.split (Str.regexp "::") before in
       if List.length befores <> 2 then
-        failwith "Before string should be of the format class::method"
-      else
-        ();
+        failwith "Before string should be of the format class::method";
       let afters = Str.split (Str.regexp "::") after in
       if List.length afters <> 2 then
-        failwith "After string should be of the format class::method"
-      else
-        ();
+        failwith "After string should be of the format class::method";
       let before_class = List.hd_exn befores in
       let before_method = List.hd_exn (List.tl_exn befores) in
       let after_class = List.hd_exn afters in
@@ -236,7 +167,8 @@ let go
     | _ -> failwith "Unexpected Mode"
   in
   let%lwt patches =
-    ClientConnect.rpc_with_retry conn @@ ServerCommandTypes.REFACTOR command
+    ClientConnect.rpc_with_retry conn ~desc
+    @@ ServerCommandTypes.REFACTOR command
   in
   if args.output_json then
     print_patches_json patches

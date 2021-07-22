@@ -16,7 +16,6 @@
 
 #include "hphp/test/ext/test.h"
 #include "hphp/runtime/base/array-init.h"
-#include "hphp/runtime/base/apc-file-storage.h"
 #include "hphp/runtime/base/comparisons.h"
 #include "hphp/compiler/option.h"
 #include <folly/Format.h>
@@ -106,7 +105,7 @@ bool Test::logTestResults(std::string name, std::string details, int pass,
     summary += folly::sformat("FAILED ({})", fail);
   }
 
-  ArrayInit data(8, ArrayInit::Map{});
+  DictInit data(8);
   data.set(String("type"),         "hphp");
   data.set(String("name"),         name);
   data.set(String("contacts"),     null_array);

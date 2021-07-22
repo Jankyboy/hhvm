@@ -29,6 +29,7 @@
 #include <folly/portability/SysMman.h>
 #include <folly/portability/SysResource.h>
 
+#include "hphp/util/address-range.h"
 #include "hphp/util/bump-mapper.h"
 #include "hphp/util/extent-hooks.h"
 #include "hphp/util/hugetlb.h"
@@ -274,7 +275,11 @@ unsigned allocate2MPagesToRange(AddrRangeClass c, unsigned pages) {
 }
 
 void setup_low_arena(PageSpec s) {
-  assert(reinterpret_cast<uintptr_t>(sbrk(0)) <= kLowArenaMinAddr);
+  auto const lowArenaStart = lowArenaMinAddr();
+  assert(reinterpret_cast<uintptr_t>(sbrk(0)) <= lowArenaStart);
+  always_assert_flog(lowArenaStart <= (2ull << 30),
+                     "low arena min addr ({}) must be <= 2GB",
+                     lowArenaStart);
   // Initialize mappers for the VeryLow and Low address ranges.
   auto& veryLowRange = getRange(AddrRangeClass::VeryLow);
   auto& lowRange = getRange(AddrRangeClass::Low);
@@ -554,6 +559,7 @@ void arenas_thread_exit() {
 #endif // USE_JEMALLOC_EXTENT_HOOKS
 
 std::vector<SlabManager*> s_slab_managers;
+
 void setup_local_arenas(PageSpec spec, unsigned slabs) {
   s_slab_managers.reserve(num_numa_nodes());
   slabs /= num_numa_nodes();
@@ -639,6 +645,12 @@ unsigned get_local_arena(uint32_t node) {
 SlabManager* get_local_slab_manager(uint32_t node) {
   if (node >= s_slab_managers.size()) return nullptr;
   return s_slab_managers[node];
+}
+
+void shutdown_slab_managers() {
+  for (auto slab_manager : s_slab_managers) {
+    if (slab_manager) slab_manager->shutdown();
+  }
 }
 
 #endif // USE_JEMALLOC

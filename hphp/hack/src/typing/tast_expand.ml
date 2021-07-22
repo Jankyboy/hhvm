@@ -9,7 +9,6 @@
 
 open Hh_prelude
 open Typing_defs
-module T = Aast
 module MakeType = Typing_make_type
 
 (* Eliminate residue of type inference:
@@ -29,7 +28,7 @@ let expand_ty ?var_hook ?pos env ty =
     let (_, ety) = Tast_env.expand_type env ty in
     let ety =
       match deref ety with
-      | (_, (Tany _ | Tnonnull | Tprim _ | Tobject | Tdynamic)) -> ety
+      | (_, (Tany _ | Tnonnull | Tprim _ | Tobject | Tdynamic | Tneg _)) -> ety
       | (p, Tgeneric (name, args)) -> mk (p, Tgeneric (name, exp_tys args))
       | (p, Tclass (n, e, tyl)) -> mk (p, Tclass (n, e, exp_tys tyl))
       | (p, Tunion tyl) -> mk (p, Tunion (exp_tys tyl))
@@ -41,11 +40,13 @@ let expand_ty ?var_hook ?pos env ty =
         mk (p, Tnewtype (n, exp_tys tyl, exp_ty ty))
       | (p, Tdependent (n, ty)) -> mk (p, Tdependent (n, exp_ty ty))
       | (p, Tshape (shape_kind, fields)) ->
-        mk (p, Tshape (shape_kind, Nast.ShapeMap.map exp_sft fields))
+        mk (p, Tshape (shape_kind, TShapeMap.map exp_sft fields))
       | (p, Tvarray ty) -> mk (p, Tvarray (exp_ty ty))
       | (p, Tdarray (ty1, ty2)) -> mk (p, Tdarray (exp_ty ty1, exp_ty ty2))
       | (p, Tvarray_or_darray (ty1, ty2)) ->
         mk (p, Tvarray_or_darray (exp_ty ty1, exp_ty ty2))
+      | (p, Tvec_or_dict (ty1, ty2)) ->
+        mk (p, Tvec_or_dict (exp_ty ty1, exp_ty ty2))
       | (p, Tvar v) ->
         (match pos with
         | None -> mk (p, Tvar v)
@@ -58,8 +59,7 @@ let expand_ty ?var_hook ?pos env ty =
           mk (p, Tvar v))
       | (p, Terr) -> MakeType.err p
       (* TODO(T36532263) see if that needs updating *)
-      | (p, Tpu (base, enum)) -> mk (p, Tpu (exp_ty base, enum))
-      | (_, Tpu_type_access (_, _)) -> ety
+      | (_, Taccess _) -> ety
       | (_, Tunapplied_alias _) -> ety
     in
     ety
@@ -73,12 +73,12 @@ let expand_ty ?var_hook ?pos env ty =
         ft_flags;
         ft_params;
         ft_implicit_params;
-        ft_reactive;
+        ft_ifc_decl;
       } =
     {
       ft_arity;
       ft_flags;
-      ft_reactive;
+      ft_ifc_decl;
       ft_tparams = List.map ~f:exp_tparam ft_tparams;
       ft_where_constraints =
         List.map ~f:exp_where_constraint ft_where_constraints;
@@ -86,16 +86,15 @@ let expand_ty ?var_hook ?pos env ty =
       ft_params = List.map ~f:exp_fun_param ft_params;
       ft_implicit_params = exp_fun_implicit_params ft_implicit_params;
     }
-  and exp_fun_param { fp_pos; fp_name; fp_type; fp_rx_annotation; fp_flags } =
-    {
-      fp_pos;
-      fp_name;
-      fp_type = exp_possibly_enforced_ty fp_type;
-      fp_rx_annotation;
-      fp_flags;
-    }
+  and exp_fun_param { fp_pos; fp_name; fp_type; fp_flags } =
+    { fp_pos; fp_name; fp_type = exp_possibly_enforced_ty fp_type; fp_flags }
   and exp_fun_implicit_params { capability } =
-    { capability = exp_ty capability }
+    let capability =
+      match capability with
+      | CapTy ty -> CapTy (exp_ty ty)
+      | CapDefaults p -> CapDefaults p
+    in
+    { capability }
   and exp_possibly_enforced_ty { et_type; et_enforced } =
     { et_type = exp_ty et_type; et_enforced }
   and exp_sft { sft_optional; sft_ty } =
@@ -110,12 +109,16 @@ let expand_ty ?var_hook ?pos env ty =
   exp_ty ty
 
 let expander =
-  object
+  object (self)
     inherit Tast_visitor.endo
 
-    method! on_'ex env (pos, ty) = (pos, expand_ty ~pos env ty)
+    method! on_expr env (ty, pos, expr_) =
+      (expand_ty ~pos env ty, pos, self#on_expr_ env expr_)
 
-    method! on_'hi env ty = expand_ty env ty
+    method! on_class_id env (ty, pos, cid_) =
+      (expand_ty ~pos env ty, pos, self#on_class_id_ env cid_)
+
+    method! on_'ex env ty = expand_ty env ty
   end
 
 (* Replace all types in a program AST by their expansions *)

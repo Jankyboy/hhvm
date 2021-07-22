@@ -48,17 +48,57 @@ const StaticString s_switchProfile("SwitchProfile");
 
 //////////////////////////////////////////////////////////////////////
 
-struct DFS {
-  DFS(const ProfData* p, const TransCFG& c, int32_t maxBCInstrs, bool inlining,
-      bool* truncated)
+struct Former {
+  Former(const ProfData* p, const TransCFG& c, const TransIDSet& entries,
+         int32_t maxBCInstrs, bool inlining, bool* truncated)
     : m_profData(p)
     , m_cfg(c)
+    , m_entries(entries)
     , m_numBCInstrs(maxBCInstrs)
     , m_inlining(inlining)
     , m_truncated(truncated)
   {}
 
-  RegionDescPtr formRegion(TransID head) {
+  void countPredsHelper(TransID tid) {
+    assertx(!m_visited.contains(tid));
+
+    m_visited.insert(tid);
+    m_visiting.insert(tid);
+
+    auto const arcs = m_cfg.outArcs(tid);
+
+    for (auto const arc : arcs) {
+      auto const dst = arc->dst();
+
+      if (m_visiting.contains(dst)) continue; // backedge
+      m_pendingPreds[dst]++;
+      if (!m_visited.contains(dst)) {
+        countPredsHelper(dst);
+      }
+    }
+
+    m_visiting.erase(tid);
+  }
+
+  void countPreds(TransID head) {
+    m_visited.clear();
+    m_visiting.clear();
+
+    // Traverse all the CFG reachable from the main entry (head).
+    countPredsHelper(head);
+
+    // If we didn't reach the other entries, do a search starting at them too.
+    for (auto entry : m_entries) {
+      if (!m_visited.contains(entry)) {
+        countPredsHelper(entry);
+      }
+    }
+
+    m_visited.clear();
+    m_visiting.clear();
+  }
+
+  RegionDescPtr go(TransID head) {
     m_region = std::make_shared<RegionDesc>();
     if (RuntimeOption::EvalJitPGORegionSelector == "wholecfg") {
       m_minBlockWeight = 0;
@@ -68,15 +108,67 @@ struct DFS {
       m_minBlockWeight = minBlkPerc * m_cfg.weight(head) / 100.0;
       m_minArcProb = RuntimeOption::EvalJitPGOMinArcProbability;
     }
-    ITRACE(3, "formRegion: starting at head = {} (weight = {})\n"
+
+    countPreds(head);
+
+    auto cmpPriority = [&] (const TransID& tid1, const TransID& tid2) -> bool {
+      return m_cfg.weight(tid1) < m_cfg.weight(tid2);
+    };
+
+    std::priority_queue<TransID, std::vector<TransID>,
+                        decltype(cmpPriority)> pqueue(cmpPriority);
+    for (auto entry : m_entries) {
+      if (entry != head) pqueue.push(entry);
+      m_pendingPreds[entry] = 0;
+      m_reachable.insert(entry);
+    }
+
+    ITRACE(3, "Former::go: starting at head = {} (weight = {})\n"
            "   minBlockWeight = {:.2}\n"
            "   minArcProb = {:.2}\n",
            head, m_cfg.weight(head), m_minBlockWeight, m_minArcProb);
     Trace::Indent indent;
-    visit(head);
-    for (auto& arc : m_arcs) {
-      m_region->addArc(arc.src, arc.dst);
+
+    m_visited.insert(head);
+    visit(pqueue, head);
+
+    // If we couldn't add the head block (due to exceeding the bytecode budget),
+    // return an empty region instead of one with a different entry.
+    if (m_region->empty()) return m_region;
+
+    while (!pqueue.empty()) {
+      auto const tid = pqueue.top();
+      pqueue.pop();
+      m_visited.insert(tid);
+      visit(pqueue, tid);
     }
+
+    // Add to the region any arc involving the blocks that were added to the
+    // region and that satisty the minimum probability (m_minArcProb).
+    auto const blocks = m_region->blocks();
+    for (auto const block : blocks) {
+      auto const src = block->id();
+      auto const srcWgt = m_cfg.weight(src);
+      auto const outArcs = m_cfg.outArcs(src);
+      for (auto const arc : outArcs) {
+        auto const dst = arc->dst();
+        if (!m_region->hasBlock(dst)) continue;
+        auto const wgt = arc->weight();
+        if (wgt >= m_minArcProb * srcWgt) {
+          m_region->addArc(src, dst);
+        } else {
+          ITRACE(5, "- visit: skipping arc {} -> {} due to low probability "
+                 "({:.2})\n", src, dst, wgt / (srcWgt + 0.001));
+        }
+      }
+    }
+
+    always_assert_flog(
+      m_region->empty() || m_region->entry()->id() == head,
+      "Former::go() produced region with wrong entry: "
+      "entry id ({}) != head ({})",
+      m_region->entry()->id(), head
+    );
     return m_region;
   }
 
@@ -99,7 +191,7 @@ private:
     assertx(sk.op() == OpSwitch);
     TargetProfile<SwitchProfile> profile({tid},
                                          TransKind::Optimize,
-                                         sk.offset(),
+                                         sk,
                                          s_switchProfile.get());
     assertx(!profile.profiling());
     if (!profile.optimizing()) {
@@ -167,7 +259,22 @@ private:
     arcs.erase(firstDead, end(arcs));
   }
 
-  void visit(TransID tid) {
+  template<class PQ>
+  void visit(PQ& pqueue, TransID tid) {
+    bool addToRegion = m_reachable.contains(tid);
+
+    // Skip if tid is a non-entry block for which we already have a region
+    // starting at the same SrcKey.  This check is excluded if we're inlining.
+    if (!m_inlining && !m_entries.contains(tid)) {
+      auto const rec = m_profData->transRec(tid);
+      auto const sk = rec->srcKey();
+      if (m_profData->optimized(sk)) {
+        ITRACE(5, "- visit: skipping {} because SrcKey was already "
+               "optimized", showShort(sk));
+        addToRegion = false;
+      }
+    }
+
     // Skip tid if its weight is below the JitPGOMinBlockPercent
     // percentage of the weight of the block where this region
     // started.
@@ -175,7 +282,7 @@ private:
     if (tidWeight < m_minBlockWeight) {
       ITRACE(5, "- visit: skipping {} due to low weight ({})\n",
              tid, tidWeight);
-      return;
+      addToRegion = false;
     }
 
     auto rec = m_profData->transRec(tid);
@@ -196,14 +303,19 @@ private:
           }
         );
       }
-      return;
+      addToRegion = false;
     }
 
-    if (!m_visited.insert(tid).second) return;
-    m_visiting.insert(tid);
-    m_numBCInstrs -= tidInstrs;
-    ITRACE(5, "- visit: adding {} ({})\n", tid, tidWeight);
+    if (addToRegion) {
+      m_numBCInstrs -= tidInstrs;
+      always_assert(m_numBCInstrs >= 0);
 
+      ITRACE(5, "- visit: adding {} ({})\n", tid, tidWeight);
+
+      m_region->append(*tidRegion);
+    }
+
+    // Now check if we should add any successor to the priority queue.
     auto const termSk = rec->lastSrcKey();
     auto const termOp = termSk.op();
     if (!breaksRegion(termSk)) {
@@ -220,74 +332,188 @@ private:
       for (auto const arc : arcs) {
         auto dst = arc->dst();
 
-        // Skip if the probability of taking this arc is below the specified
-        // threshold.
-        if (arc->weight() < m_minArcProb * tidWeight) {
-          ITRACE(5, "- visit: skipping arc {} -> {} due to low probability "
-                 "({:.2})\n", tid, dst, arc->weight() / (tidWeight + 0.001));
-          continue;
-        }
+        if (addToRegion) m_reachable.insert(dst);
 
-        // Skip dst if we already generated a region starting at that SrcKey.
-        auto dstRec = m_profData->transRec(dst);
-        auto dstSK = dstRec->srcKey();
-        if (!m_inlining && m_profData->optimized(dstSK)) {
-          ITRACE(5, "- visit: skipping {} because SrcKey was already "
-                 "optimize", showShort(dstSK));
-          continue;
-        }
-        always_assert(dst == dstRec->region()->entry()->id());
-
-        visit(dst);
-
-        // Record the arc if dstBlockId was included in the region.  (Note that
-        // it may not be included in the region due to the
-        // EvalJitMaxRegionInstrs limit.)
-        if (m_visited.count(dst)) {
-          m_arcs.push_back({srcBlockId, dst});
+        // If tid was the last pending predecessor of dst, add dst to the queue.
+        if (m_pendingPreds[dst] > 0) {
+          m_pendingPreds[dst]--;
+          if (m_pendingPreds[dst] == 0) {
+            pqueue.push(dst);
+          }
         }
       }
     }
-
-    // Now insert the region for tid in the front of m_region.  We do
-    // this last so that the region ends up in (quasi-)topological order
-    // (it'll be in topological order for acyclic regions).
-    m_region->prepend(*tidRegion);
-    always_assert(m_numBCInstrs >= 0);
-
-    m_visiting.erase(tid);
   }
 
 private:
-  const ProfData*              m_profData;
-  const TransCFG&              m_cfg;
-  RegionDescPtr                m_region;
-  int32_t                      m_numBCInstrs;
-  jit::hash_set<TransID>       m_visiting;
-  jit::hash_set<TransID>       m_visited;
-  jit::vector<RegionDesc::Arc> m_arcs;
-  double                       m_minBlockWeight;
-  double                       m_minArcProb;
-  bool                         m_inlining;
-  bool*                        m_truncated;
+  const ProfData*                 m_profData;
+  const TransCFG&                 m_cfg;
+  const TransIDSet&               m_entries;
+  RegionDescPtr                   m_region;
+  int32_t                         m_numBCInstrs;
+  jit::hash_set<TransID>          m_visiting;
+  jit::hash_set<TransID>          m_visited;
+  jit::hash_set<TransID>          m_reachable;
+  jit::hash_map<TransID,uint16_t> m_pendingPreds;
+  double                          m_minBlockWeight;
+  double                          m_minArcProb;
+  bool                            m_inlining;
+  bool*                           m_truncated;
 };
 
 //////////////////////////////////////////////////////////////////////
 
+/*
+ * blockProfCount() for a given block is the number of times that block was
+ * executed from all possible paths. However, the region we've formed might not
+ * contain all of those paths. Therefore the block counts might reflect
+ * execution that cannot happen in this region. For example, a block with a
+ * single predecessor might have a much higher prof count than its predecessor
+ * (because there was another predecessor which got pruned off).
+ *
+ * Attempt to scale the prof counts in the blocks to reflect this (in an
+ * approximate way). For each block, sum together the combined prof count of all
+ * its original predecessors, as well as sum only the precessors in the
+ * region. Scale the block's prof count by the ratio between the two.
+ */
+void scaleProfCounts(HotTransContext& ctx, RegionDescPtr region) {
+  jit::fast_map<TransID, double> scales;
+  jit::fast_set<TransID> inRegion;
+  jit::fast_set<TransID> inEntryChain;
+  jit::fast_map<TransID, TransIDSet> merged;
+
+  ITRACE(4, "scaleProfCounts:\n");
+
+  for (auto const& block : region->blocks()) {
+    auto const bid = block->id();
+    inRegion.emplace(bid);
+    for (auto const m : region->merged(bid)) {
+      inRegion.emplace(m);
+      merged[bid].emplace(m);
+    }
+  }
+
+  TransID ebid = region->entry()->id();
+  while (true) {
+    inEntryChain.insert(ebid);
+    auto const next = region->nextRetrans(ebid);
+    if (!next) break;
+    ebid = *next;
+  }
+
+  auto const setScale = [&] (TransID tid, double scale) {
+    assertx(!scales.count(tid));
+    scales.emplace(tid, scale);
+    for (auto const b : merged[tid]) {
+      assertx(!scales.count(b));
+      scales.emplace(b, scale);
+    }
+  };
+
+  for (auto const& block : region->blocks()) {
+    auto const bid = block->id();
+    ITRACE(5, "  {} (weight {})\n", bid, region->blockProfCount(bid));
+
+    assertx(region->blockProfCountScale(bid) == 1.0);
+
+    if (inEntryChain.count(bid)) {
+      ITRACE(5, "    entry block. No scaling\n");
+      setScale(bid, 1.0);
+      continue;
+    }
+
+    int64_t totalPredWeight = 0;
+    int64_t includedPredWeight = 0;
+    auto const& inArcs = ctx.cfg->inArcs(bid);
+    for (auto const inArc : inArcs) {
+      auto const pred = inArc->src();
+      auto const predWeight = ctx.cfg->weight(pred);
+      ITRACE(5, "    pred {} (weight {})\n", pred, predWeight);
+
+      if (!inRegion.count(pred)) {
+        ITRACE(5, "      not in region\n");
+        totalPredWeight += predWeight;
+        continue;
+      }
+
+      // The predecessor wasn't processed yet. This can only happen if its loop
+      // back-edge. In this case, don't add the prof count to either
+      // total. We'll just totally ignore the loop and assume the loop counts
+      // will scale according to the non-loop predecessors.
+      auto const it = scales.find(pred);
+      if (it == scales.end()) {
+        ITRACE(5, "      not processed yet. Part of cycle, so ignoring\n");
+        continue;
+      }
+
+      ITRACE(5, "      scale = {}\n", it->second);
+      totalPredWeight += predWeight;
+      includedPredWeight += (predWeight * it->second);
+    }
+
+    auto const scale = [&] {
+      if (totalPredWeight == 0) return 0.0;
+      return includedPredWeight / (double)totalPredWeight;
+    }();
+
+    ITRACE(5, "    total pred = {}, included pred = {}, scale = {:.6f}\n",
+           totalPredWeight, includedPredWeight, scale);
+    setScale(bid, scale);
+  }
+
+  for (auto const& block : region->blocks()) {
+    auto const bid = block->id();
+    auto const it = scales.find(bid);
+    assertx(it != scales.end());
+    ITRACE(
+      4, "  {}: scale = {:.6f} (old weight = {}, new weight = {})\n",
+      bid,
+      it->second,
+      region->blockProfCount(bid),
+      int64_t(region->blockProfCount(bid) * it->second)
+    );
+    region->setBlockProfCountScale(bid, it->second);
+  }
 }
+
+/*
+ * Finds the TransID with highest profile count among ctx's entries.
+ */
+TransID selectMainEntry(const HotTransContext& ctx) {
+  TransID ret = kInvalidTransID;
+  int64_t maxCount = -1;
+  auto const profData = ctx.profData;
+  for (auto tid : ctx.entries) {
+    auto const count = profData->transCounter(tid);
+    if (count > maxCount) {
+      maxCount = count;
+      ret = tid;
+    }
+  }
+  return ret;
+}
+
+}
+
+//////////////////////////////////////////////////////////////////////
 
 RegionDescPtr selectHotCFG(HotTransContext& ctx, bool* truncated) {
   if (truncated) *truncated = false;
   ITRACE(1, "selectHotCFG: starting with maxBCInstrs = {}\n", ctx.maxBCInstrs);
+  assertx(ctx.entries.size() >= 1);
+  auto const mainEntryTid = selectMainEntry(ctx);
+  ITRACE(1, "  selected mainEntry: {}\n", mainEntryTid);
+  assertx(mainEntryTid != kInvalidTransID);
   auto const region =
-    DFS(ctx.profData, *ctx.cfg, ctx.maxBCInstrs, ctx.inlining, truncated)
-      .formRegion(ctx.tid);
+    Former(ctx.profData, *ctx.cfg, ctx.entries, ctx.maxBCInstrs, ctx.inlining,
+           truncated).go(mainEntryTid);
 
   if (region->empty()) return nullptr;
 
   ITRACE(3, "selectHotCFG: before region_prune_arcs:\n{}\n",
          show(*region));
   region_prune_arcs(*region, ctx.inputTypes);
+
   ITRACE(3, "selectHotCFG: before chainRetransBlocks:\n{}\n",
          show(*region));
   region->chainRetransBlocks();
@@ -298,8 +524,12 @@ RegionDescPtr selectHotCFG(HotTransContext& ctx, bool* truncated) {
            show(*region));
     optimizeProfiledGuards(*region, *ctx.profData);
   }
+
   ITRACE(1, "selectHotCFG: final version after optimizeProfiledGuards:\n{}\n",
          show(*region));
+
+  scaleProfCounts(ctx, region);
+
   return region;
 }
 

@@ -30,6 +30,13 @@ type pos = Ast_defs.pos [@@deriving eq, show, ord]
 
 type byte_string = Ast_defs.byte_string [@@deriving eq, show, ord]
 
+type visibility = Ast_defs.visibility =
+  | Private [@visitors.name "visibility_Private"]
+  | Public [@visitors.name "visibility_Public"]
+  | Protected [@visitors.name "visibility_Protected"]
+  | Internal [@visitors.name "visibility_Internal"]
+[@@deriving eq, ord, show { with_path = false }]
+
 type local_id = (Local_id.t[@visitors.opaque])
 
 and lid = pos * local_id
@@ -37,18 +44,6 @@ and lid = pos * local_id
 and sid = Ast_defs.id
 
 and is_reified = bool
-
-and func_reactive =
-  | FPure
-  | FReactive
-  | FLocal
-  | FShallow
-  | FNonreactive
-
-and param_mutability =
-  | PMutable
-  | POwnedMutable
-  | PMaybeMutable
 
 and import_flavor =
   | Include
@@ -69,18 +64,26 @@ and xhp_child_op =
 
 and hint = pos * hint_
 
-and mutable_return = bool
-
 and variadic_hint = hint option
 
+and contexts = pos * hint list
+
+and hf_param_info = {
+  hfparam_kind: Ast_defs.param_kind option;
+  hfparam_readonlyness: Ast_defs.readonly_kind option;
+}
+
 and hint_fun = {
-  hf_reactive_kind: func_reactive;
+  hf_is_readonly: Ast_defs.readonly_kind option;
   hf_param_tys: hint list;
-  hf_param_kinds: Ast_defs.param_kind option list;
-  hf_param_mutability: param_mutability option list;
+  (* hf_param_info is None when all three are none, for perf optimization reasons.
+     It is not semantically incorrect for the record to appear with 3 None values,
+     but in practice we shouldn't lower to that, since it wastes CPU/space *)
+  hf_param_info: hf_param_info option list;
   hf_variadic_ty: variadic_hint;
+  hf_ctxs: contexts option;
   hf_return_ty: hint;
-  hf_is_mutable_return: mutable_return;
+  hf_is_readonly_return: Ast_defs.readonly_kind option;
 }
 
 and hint_ =
@@ -94,12 +97,14 @@ and hint_ =
       (** This represents the use of a type const. Type consts are accessed like
        * regular consts in Hack, i.e.
        *
-       * [self | static | Class]::TypeConst
+       * [$x | self | static | Class]::TypeConst
        *
        * Class  => Happly "Class"
        * self   => Happly of the class of definition
        * static => Habstr ("static",
        *           Habstr ("this", (Constraint_as, Happly of class of definition)))
+       * $x     => Hvar "$x"
+       *
        * Type const access can be chained such as
        *
        * Class::TC1::TC2::TC3
@@ -117,17 +122,18 @@ and hint_ =
   | Hmixed
   | Hnonnull
   | Habstr of string * hint list
-  | Harray of hint option * hint option
   | Hdarray of hint * hint
   | Hvarray of hint
   | Hvarray_or_darray of hint option * hint
+  | Hvec_or_dict of hint option * hint
   | Hprim of tprim
   | Hthis
   | Hdynamic
   | Hnothing
-  | Hpu_access of hint * sid
   | Hunion of hint list
   | Hintersection of hint list
+  | Hfun_context of string
+  | Hvar of string
 
 (** AST types such as Happly("int", []) are resolved to Hprim values *)
 and tprim =
@@ -141,9 +147,6 @@ and tprim =
   | Tnum
   | Tarraykey
   | Tnoreturn
-  | Tatom of string
-      (** plain Pocket Universe atom when we don't know which enum it is in.
-       * E.g. `:@MyAtom` *)
 
 and shape_field_info = {
   sfi_optional: bool;
@@ -168,14 +171,8 @@ and vc_kind =
   | Vec
   | Set
   | ImmSet
-  | Pair_
   | Keyset
 [@@visitors.opaque]
-
-and visibility =
-  | Private [@visitors.name "visibility_Private"]
-  | Public [@visitors.name "visibility_Public"]
-  | Protected [@visitors.name "visibility_Protected"]
 
 and use_as_visibility =
   | UseAsPublic
@@ -186,14 +183,21 @@ and use_as_visibility =
 and typedef_visibility =
   | Transparent
   | Opaque
+  | Tinternal
 
 and enum_ = {
   e_base: hint;
   e_constraint: hint option;
   e_includes: hint list;
+  e_enum_class: bool;
 }
 
-and where_constraint = hint * Ast_defs.constraint_kind * hint
+and where_constraint_hint = hint * Ast_defs.constraint_kind * hint
+
+and reify_kind =
+  | Erased
+  | SoftReified
+  | Reified
 [@@deriving
   show { with_path = false },
     eq,
@@ -231,19 +235,12 @@ and where_constraint = hint * Ast_defs.constraint_kind * hint
         ancestors = ["endo_defs_base"];
       }]
 
-let is_f_non_reactive = function
-  | FNonreactive -> true
-  | FPure
-  | FReactive
-  | FLocal
-  | FShallow ->
-    false
-
 let string_of_visibility vis =
   match vis with
   | Private -> "private"
   | Public -> "public"
   | Protected -> "protected"
+  | Internal -> "internal"
 
 let string_of_use_as_visibility vis =
   match vis with

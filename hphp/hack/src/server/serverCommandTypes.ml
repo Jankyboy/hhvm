@@ -1,3 +1,11 @@
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the "hack" directory of this source tree.
+ *
+ *)
+
 open Hh_prelude
 open Ide_api_types
 
@@ -15,7 +23,7 @@ module Server_status = struct
   type t = {
     liveness: status_liveness;
     has_unsaved_changes: bool;
-    error_list: Pos.absolute Errors.error_ list;
+    error_list: Errors.finalized_error list;
     dropped_count: int;
     last_recheck_stats: Telemetry.t option;
   }
@@ -44,6 +52,34 @@ module Method_jumps = struct
     | Class
     | Interface
     | Trait
+  [@@deriving show]
+
+  let readable_place name pos p_name =
+    let readable = Pos.string pos in
+    if String.length p_name <> 0 then
+      readable ^ " " ^ Utils.strip_ns p_name ^ "::" ^ Utils.strip_ns name
+    else
+      readable ^ " " ^ Utils.strip_ns name
+
+  let print_readable res ~find_children =
+    List.iter res ~f:(fun res ->
+        let origin_readable =
+          readable_place res.orig_name res.orig_pos res.orig_p_name
+        in
+        let dest_readable =
+          readable_place res.dest_name res.dest_pos res.dest_p_name
+        in
+        let extended =
+          "inherited "
+          ^
+          if find_children then
+            "by"
+          else
+            "from"
+        in
+        print_endline
+          (origin_readable ^ "\n    " ^ extended ^ " " ^ dest_readable));
+    ()
 end
 
 module Done_or_retry = struct
@@ -73,12 +109,12 @@ module Done_or_retry = struct
   (* Note: this is designed to work with calls that always will succeed on second try
    * (the reason for retrying is a one time event that is resolved during first call).
    * If this ends up throwing, it's a bug in hh_server. *)
-  let rec call ~(f : unit -> 'a t Lwt.t) ~(depth : int) : 'a Lwt.t =
+  let rec call ~(f : unit -> 'a t Lwt.t) ~(depth : int) : _ Lwt.t =
     Lwt.Infix.(
-      ( if depth = 2 then
+      (if depth = 2 then
         Lwt.fail Two_retries_in_a_row
       else
-        Lwt.return_unit )
+        Lwt.return_unit)
       >>= fun () ->
       f () >>= fun result ->
       match result with
@@ -87,7 +123,7 @@ module Done_or_retry = struct
 
   (* Call the function returning Done_or_retry.t with at most one retry, expecting
    * that this is enough to yield a non-Retry value, which is returned *)
-  let call ~(f : unit -> 'a t Lwt.t) : 'a Lwt.t = call ~f ~depth:0
+  let call ~(f : unit -> 'a t Lwt.t) : _ Lwt.t = call ~f ~depth:0
 
   (* Helper function useful when mapping over results from functions that (in addition
    * to Done_or_retry.t result) thread through some kind of environment. *)
@@ -103,9 +139,11 @@ module Find_refs = struct
     | Property of string
     | Class_const of string
     | Typeconst of string
+  [@@deriving show]
 
   type action =
     | Class of string
+    | ExplicitClass of string
     | Record of string
     | Member of string * member
     | Function of string
@@ -116,6 +154,7 @@ module Find_refs = struct
         line: int;
         char: int;
       }
+  [@@deriving show]
 
   type server_result = (string * Pos.t) list
 
@@ -153,6 +192,7 @@ module Symbol_type = struct
     type_: string;
     ident_: int;
   }
+  [@@deriving show]
 end
 
 module Symbol_info_service = struct
@@ -160,7 +200,7 @@ module Symbol_info_service = struct
     | Function
     | Method
     | Constructor
-  [@@deriving ord]
+  [@@deriving ord, show]
 
   type symbol_fun_call = {
     name: string;
@@ -168,11 +208,50 @@ module Symbol_info_service = struct
     pos: string Pos.pos;
     caller: string;
   }
+  [@@deriving show]
 
   type result = {
     fun_calls: symbol_fun_call list;
     symbol_types: Symbol_type.t list;
   }
+
+  let fun_call_to_json fun_call_results =
+    let open Hh_json in
+    List.map fun_call_results ~f:(fun item ->
+        let item_type =
+          match item.type_ with
+          | Function -> "Function"
+          | Method -> "Method"
+          | Constructor -> "Constructor"
+        in
+        JSON_Object
+          [
+            ("name", JSON_String item.name);
+            ("type", JSON_String item_type);
+            ("pos", Pos.json item.pos);
+            ("caller", JSON_String item.caller);
+          ])
+
+  let symbol_type_to_json symbol_type_results =
+    let open Hh_json in
+    Symbol_type.(
+      List.rev_map symbol_type_results ~f:(fun item ->
+          JSON_Object
+            [
+              ("pos", Pos.json item.pos);
+              ("type", JSON_String item.type_);
+              ("ident", int_ item.ident_);
+            ]))
+
+  let to_json result =
+    let open Hh_json in
+    let fun_call_json = fun_call_to_json result.fun_calls in
+    let symbol_type_json = symbol_type_to_json result.symbol_types in
+    JSON_Object
+      [
+        ("function_calls", JSON_Array fun_call_json);
+        ("symbol_types", JSON_Array symbol_type_json);
+      ]
 end
 
 module Outline = struct
@@ -194,6 +273,7 @@ module Ide_refactor_type = struct
     char: int;
     new_name: string;
   }
+  [@@deriving show]
 end
 
 module Go_to_definition = struct
@@ -208,6 +288,15 @@ module Extract_standalone = struct
   type target =
     | Function of string
     | Method of string * string
+  [@@deriving show]
+end
+
+module Tast_hole = struct
+  type filter =
+    | Typing
+    | Cast
+    | Any
+  [@@deriving show]
 end
 
 type file_input =
@@ -227,12 +316,20 @@ type lint_stdin_input = {
   filename: string;
   contents: string;
 }
+[@@deriving show]
 
 type cst_search_input = {
   sort_results: bool;
   input: Hh_json.json;
   files_to_search: string list option; (* if None, search all files *)
 }
+[@@deriving show]
+
+type subscribe_diagnostic = {
+  id: int;
+  error_limit: int option;
+}
+[@@deriving show]
 
 (* The following datatypes can be interpreted as follows:
  * MESSAGE_TAG : Argument type (sent from client to server) -> return type t *)
@@ -245,11 +342,18 @@ type _ t =
       -> Server_status.t t
   | STATUS_SINGLE :
       file_input * int option
-      -> (Pos.absolute Errors.error_ list * int) t
+      -> (Errors.finalized_error list * int) t
+  | STATUS_SINGLE_REMOTE_EXECUTION : string -> (string * string) t
+  | STATUS_REMOTE_EXECUTION :
+      string * int option
+      -> (Errors.finalized_error list * int) t
+  | STATUS_MULTI_REMOTE_EXECUTION : string list -> (string * string) t
   | INFER_TYPE : file_input * int * int * bool -> InferAtPosService.result t
   | INFER_TYPE_BATCH :
       (string * int * int * (int * int) option) list * bool
       -> string list t
+  | INFER_TYPE_ERROR : file_input * int * int -> InferErrorAtPosService.result t
+  | TAST_HOLES : file_input * Tast_hole.filter -> TastHolesService.result t
   | IDE_HOVER : string * int * int -> HoverService.result t
   | DOCBLOCK_AT :
       (string * int * int * string option * SearchUtils.si_kind)
@@ -317,7 +421,7 @@ type _ t =
       -> AutocompleteTypes.ide_result t
   | IDE_FFP_AUTOCOMPLETE : string * position -> AutocompleteTypes.ide_result t
   | DISCONNECT : unit t
-  | SUBSCRIBE_DIAGNOSTIC : int -> unit t
+  | SUBSCRIBE_DIAGNOSTIC : subscribe_diagnostic -> unit t
   | UNSUBSCRIBE_DIAGNOSTIC : int -> unit t
   | OUTLINE : string -> Outline.outline t
   | IDE_IDLE : unit t
@@ -327,7 +431,6 @@ type _ t =
   | NO_PRECHECKED_FILES : unit t
   | GEN_HOT_CLASSES : int -> string t
   | FUN_DEPS_BATCH : (string * int * int) list * bool -> string list t
-  | FUN_IS_LOCALLABLE_BATCH : (string * int * int) list -> string list t
   | LIST_FILES_WITH_ERRORS : string list t
   | FILE_DEPENDENTS : string list -> string list t
   | IDENTIFY_TYPES : labelled_file * int * int -> (Pos.absolute * string) list t
@@ -340,6 +443,14 @@ type _ t =
       ServerGlobalInferenceTypes.mode * string list
       -> ServerGlobalInferenceTypes.result t
   | VERBOSE : bool -> unit t
+
+type cmd_metadata = {
+  from: string;
+  (* a short human-readable string, used in "hh_server is busy [desc]" *)
+  desc: string;
+}
+
+let default_subscribe_diagnostic = { id = 0; error_limit = None }
 
 let is_disconnect_rpc : type a. a t -> bool = function
   | DISCONNECT -> true
@@ -359,19 +470,35 @@ let is_critical_rpc : type a. a t -> bool = function
   | _ -> false
 
 type 'a command =
-  | Rpc of 'a t
-  | Debug
+  | Rpc of cmd_metadata * 'a t
+  | Debug_DO_NOT_USE
+      (** this unused constructor is part of the binary protocol
+      between client and server; removing it would alter the protocol. *)
 
 and streamed =
   | SHOW of string
   | LIST_MODES
 
+type errors = Errors.finalized_error list [@@deriving show]
+
+let equal_errors errors1 errors2 =
+  let errors1 = Errors.FinalizedErrorSet.of_list errors1 in
+  let errors2 = Errors.FinalizedErrorSet.of_list errors2 in
+  Errors.FinalizedErrorSet.equal errors1 errors2
+
+type diagnostic_errors = errors SMap.t [@@deriving eq, show]
+
 type push =
-  | DIAGNOSTIC of int * Pos.absolute Errors.error_ list SMap.t
+  | DIAGNOSTIC of {
+      errors: diagnostic_errors;
+      is_truncated: int option;
+          (** Whether the list of errors has been truncated
+              to preserve IDE perf. *)
+    }
   | BUSY_STATUS of busy_status
   | NEW_CLIENT_CONNECTED
-  | FATAL_EXCEPTION of Marshal_tools.remote_exception_data
-  | NONFATAL_EXCEPTION of Marshal_tools.remote_exception_data
+  | FATAL_EXCEPTION of (Marshal_tools.remote_exception_data[@opaque])
+  | NONFATAL_EXCEPTION of (Marshal_tools.remote_exception_data[@opaque])
 
 and busy_status =
   | Needs_local_typecheck
@@ -379,27 +506,44 @@ and busy_status =
   | Done_local_typecheck
   | Doing_global_typecheck of global_typecheck_kind
   | Done_global_typecheck of {
-      is_truncated: bool;
-      shown: int;
-      total: int;
+      shown: int;  (** How many errors did we push in DIAGNOSTICS? *)
+      total: int;  (** How many errors total were there? *)
     }
 
 and global_typecheck_kind =
   | Blocking
   | Interruptible
   | Remote_blocking of string
+[@@deriving eq, show]
+
+type pushes = push list [@@deriving eq, show]
 
 type 'a message_type =
-  (* Only sent to persistent connections. *)
-  | Push of push
-  (* records the time at which hh_server started handling *)
-  | Response of 'a * Connection_tracker.t
-  (* Hello is the first message sent after handoff. It's used for both *)
-  (* persistent and non-persistent connections. *)
   | Hello
-  (* Pings can be sent to non-persistent connection after Hello and before
-   * sending RPC response. *)
+      (** Hello is the first message sent to the client by the server, for both persistent and non-persistent *)
+  | Monitor_failed_to_handoff
+      (** However, if the handoff failed, this will be sent instead of Hello, and the connection terminated. *)
   | Ping
+      (** Server sometimes sends these, after Hello and before Response, to check if client fd is still open *)
+  | Response of 'a * Connection_tracker.t
+      (** Response message is the response to an RPC. For non-persistent, the server will close fd after this. *)
+  | Push of push
+      (** This is how errors are sent; only sent to persistent connections. *)
 
 (** Timeout on reading the command from the client - client probably frozen. *)
 exception Read_command_timeout
+
+(** Invariant: the progress file is created almost immediately upon server startup,
+certainly before any messages are exchanged; it is deleted upon clean exit.
+The server_finale_file is created by Exit.exit and left there. *)
+type server_specific_files = {
+  server_finale_file: string;  (** just before exit, server will write here *)
+  server_progress_file: string;  (** server will write progress to this file *)
+}
+
+(** These are human-readable messages, shown at command-line and within the editor. *)
+type server_progress = {
+  server_progress: string;  (** e.g. "typechecking 5/15 files" *)
+  server_warning: string option;  (** e.g. "typechecking will be slow" *)
+  server_timestamp: float;
+}

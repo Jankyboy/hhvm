@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_RINGBUFFER_H_
-#define incl_HPHP_RINGBUFFER_H_
+#pragma once
 
 #include <cstdlib>
 #include <cstdarg>
@@ -38,9 +37,10 @@ namespace Trace {
   RBTYPE(FuncExit) \
   RBTYPE(FuncPrologue) \
   RBTYPE(BytecodeStart) \
-  RBTYPE(ServiceReq) \
   RBTYPE(DispatchBB) \
   RBTYPE(InterpOne) \
+  RBTYPE(APCHandleEnqueue) \
+  RBTYPE(APCHandleDelete) \
   RBTYPE(Generic)
 
 enum RingBufferType : uint8_t {
@@ -73,6 +73,12 @@ struct RingBufferEntry {
       uint32_t truncatedRip;
     } msg;
 
+    // used by APCHandle tracing
+    struct {
+      void* handle;
+      void* value;
+    } apcHandleInfo;
+
     // Used by ringbufferGeneric()
     struct {
       const char* name;
@@ -103,9 +109,9 @@ void ringbufferMsg(const char* msg, size_t msgLen,
                    RingBufferType t = RBTypeMsg);
 void ringbufferEntry(RingBufferType t, uint64_t sk, uint64_t data);
 void ringbufferEntryRip(RingBufferType t, uint64_t sk);
+void ringbufferAPCEnqueue(void* handle, void* value);
+void ringbufferAPCDelete(void* handle, void* value);
 void ringbufferGeneric(const char* name, uint64_t data = 0);
 void ringbufferGeneric(const char* name, const void* data);
 }
 }
-
-#endif

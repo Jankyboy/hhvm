@@ -14,8 +14,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_EXT_INTERVALTIMER_H_
-#define incl_HPHP_EXT_INTERVALTIMER_H_
+#pragma once
 
 #include <condition_variable>
 #include <mutex>
@@ -64,7 +63,7 @@ private:
   std::thread m_thread;
   std::condition_variable m_cv;
   std::mutex m_mutex;
-  bool m_done{false};
+  bool m_stopping{false};
   std::mutex m_signalMutex;
   int m_count{0};   // # of times hit since last surprise check
 };
@@ -78,4 +77,3 @@ void HHVM_METHOD(IntervalTimer, stop);
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-#endif

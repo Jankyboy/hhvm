@@ -13,6 +13,10 @@ type t = env [@@deriving show]
 
 exception Not_in_class
 
+type class_or_typedef_result =
+  | ClassResult of Decl_provider.class_decl
+  | TypedefResult of Typing_defs.typedef_type
+
 (** Return a string representation of the given type using Hack-like syntax. *)
 val print_ty : env -> Typing_defs.locl_ty -> string
 
@@ -54,9 +58,19 @@ val get_self_ty : env -> Tast.ty option
     When not in a class definition, raise {!Not_in_class}. *)
 val get_self_ty_exn : env -> Tast.ty
 
+(** Return the name of the parent of the enclosing class definition.
+    When not in a class definition or no parent exists, return {!None}. *)
+val get_parent_id : env -> string option
+
 (** Return the info of the given class from the typing heap. *)
-val get_class :
-  env -> Decl_provider.class_key -> Decl_provider.class_decl option
+val get_class : env -> Decl_provider.type_key -> Decl_provider.class_decl option
+
+val get_class_or_typedef :
+  env -> Decl_provider.type_key -> class_or_typedef_result option
+
+val is_in_expr_tree : env -> bool
+
+val set_in_expr_tree : env -> bool -> env
 
 (** Return {true} when in the definition of a static property or method. *)
 val is_static : env -> bool
@@ -75,6 +89,8 @@ val get_ctx : env -> Provider_context.t
 
 val get_file : env -> Relative_path.t
 
+val get_deps_mode : env -> Typing_deps_mode.t
+
 (* Return the {!Relative_path.t} of the file the env is from *)
 
 (** Expand a type variable ({!Typing_defs.Tvar}) to the type it refers to. *)
@@ -90,21 +106,25 @@ val get_class_ids : env -> Tast.ty -> string list
 
 (** Strip away all Toptions that we possibly can in a type, expanding type
     variables along the way, turning ?T -> T. *)
-val non_null : env -> Pos.t -> Tast.ty -> env * Tast.ty
+val non_null : env -> Pos_or_decl.t -> Tast.ty -> env * Tast.ty
 
 (** Get the "as" constraints from an abstract type or generic parameter, or
     return the type itself if there is no "as" constraint. In the case of a
     generic parameter whose "as" constraint is another generic parameter, repeat
     the process until a type is reached that is not a generic parameter. Don't
-    loop on cycles. (For example, function foo<Tu as Tv, Tv as Tu>(...)) *)
-val get_concrete_supertypes : env -> Tast.ty -> env * Tast.ty list
+    loop on cycles. (For example, function foo<Tu as Tv, Tv as Tu>(...))
+    The abstract_enum flag controls whether arraykey bound enums are considered
+    abstract, or as arraykey bound.
+     *)
+val get_concrete_supertypes :
+  abstract_enum:bool -> env -> Tast.ty -> env * Tast.ty list
 
 (** Return {true} if the given {Decl_provider.class_decl} (referred to by the given
     {class_id_}, if provided) allows the current class (the one returned by
     {!get_self}) to access its members with the given {visibility}. *)
 val is_visible :
   env ->
-  Typing_defs.visibility * bool ->
+  Typing_defs.ce_visibility * bool ->
   Nast.class_id_ option ->
   Decl_provider.class_decl ->
   bool
@@ -140,13 +160,8 @@ val localize :
     {!quiet} silences certain errors because those errors have already fired
     and/or are not appropriate at the time we call localize.
     *)
-val localize_with_self :
-  env ->
-  ?pos:Pos.t ->
-  ?quiet:bool ->
-  ?report_cycle:Pos.t * string ->
-  Typing_defs.decl_ty ->
-  env * Tast.ty
+val localize_no_subst :
+  env -> ignore_errors:bool -> Typing_defs.decl_ty -> env * Tast.ty
 
 (** Get the upper bounds of the type parameter with the given name.
   FIXME: This function cannot return correct bounds at this time, because
@@ -242,10 +257,6 @@ val restore_method_env : env -> Tast.method_ -> env
     it appears in. *)
 val restore_fun_env : env -> Tast.fun_ -> env
 
-(** Construct an {!env} from a pocket universe definition and the {!env} of the context
-    it appears in. *)
-val restore_pu_enum_env : env -> Tast.pu_enum -> env
-
 val typing_env_as_tast_env : Typing_env_types.env -> env
 
 val tast_env_as_typing_env : env -> Typing_env_types.env
@@ -253,28 +264,39 @@ val tast_env_as_typing_env : env -> Typing_env_types.env
 (** Verify that an XHP body expression is legal. *)
 val is_xhp_child : env -> Pos.t -> Tast.ty -> bool
 
-val get_enum : env -> string -> Decl_provider.class_decl option
+val get_enum : env -> Decl_provider.type_key -> Decl_provider.class_decl option
 
-val is_typedef : env -> string -> bool
+val is_typedef : env -> Decl_provider.type_key -> bool
 
-val get_typedef : env -> string -> Decl_provider.typedef_decl option
+val is_typedef_visible :
+  env -> ?expand_visible_newtype:bool -> Typing_defs.typedef_type -> bool
 
-val is_enum : env -> string -> bool
+val get_typedef :
+  env -> Decl_provider.type_key -> Decl_provider.typedef_decl option
 
-val env_reactivity : env -> Typing_defs.reactivity
-
-val function_is_mutable : env -> Tast.type_param_mutability option
-
-val local_is_mutable : include_borrowed:bool -> env -> Local_id.t -> bool
-
-val get_env_mutability : env -> Typing_mutability_env.mutability_env
+val is_enum : env -> Decl_provider.type_key -> bool
 
 val get_fun : env -> Decl_provider.fun_key -> Decl_provider.fun_decl option
-
-val set_env_reactive : env -> Typing_defs.reactivity -> env
 
 val set_allow_wildcards : env -> env
 
 val get_allow_wildcards : env -> bool
 
-val condition_type_matches : is_self:bool -> env -> Tast.ty -> Tast.ty -> bool
+(*val is_enum_class : env -> Decl_provider.type_key -> bool*)
+
+val is_enum_class : env -> string -> bool
+
+val fun_has_implicit_return : env -> bool
+
+val named_fun_body_is_unsafe : env -> bool
+
+val get_const :
+  env -> Decl_provider.class_decl -> string -> Typing_defs.class_const option
+
+val consts :
+  env -> Decl_provider.class_decl -> (string * Typing_defs.class_const) list
+
+(** Check that the position is in the current decl and if it is, resolve
+    it with the current file. *)
+val fill_in_pos_filename_if_in_current_decl :
+  env -> Pos_or_decl.t -> Pos.t option

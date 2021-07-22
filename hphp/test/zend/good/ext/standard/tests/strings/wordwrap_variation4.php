@@ -14,9 +14,6 @@ $str = 'testing wordwrap function';
 $width = 10;
 $break = '<br />\n';
 
-// get an unset variable
-$unset_var = true;
-unset($unset_var);
 
 // resource variable
 $fp = fopen(__FILE__, "r");
@@ -49,17 +46,13 @@ $values =  varray [
   'string',
 
   // objects
-  new stdclass(),
+  new stdClass(),
 
   // empty string
   "",
   '',
 
-  // undefined variable
-  @$undefined_var,
 
-  // unset variable
-  @$unset_var
 ];
 
 // loop though each element of the array and check the working of wordwrap()

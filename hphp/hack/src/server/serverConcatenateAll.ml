@@ -9,8 +9,6 @@
 
 open Hh_prelude
 open ServerEnv
-module DepSet = Typing_deps.DepSet
-module Dep = Typing_deps.Dep
 module SourceText = Full_fidelity_source_text
 module Syntax = Full_fidelity_editable_syntax
 module SyntaxTree = Full_fidelity_syntax_tree.WithSyntax (Syntax)
@@ -41,7 +39,7 @@ let normalize_namespace_body node =
       | Syntax.SyntaxList declarations ->
         begin
           match
-            List.find_mapi declarations (fun i f ->
+            List.find_mapi declarations ~f:(fun i f ->
                 match Syntax.syntax f with
                 | Syntax.NamespaceDeclaration ns ->
                   begin
@@ -122,9 +120,11 @@ let get_normalized_content (path : Relative_path.t) =
  * - rewrite namespace statements so that concatenation is valid
  *)
 let go (genv : ServerEnv.genv) (env : ServerEnv.env) (prefixes : string list) =
+  let ctx = Provider_utils.ctx_from_server_env env in
+  let deps_mode = Provider_context.get_deps_mode ctx in
   let file_filter (path : string) =
     FindUtils.file_filter path
-    && List.exists prefixes (fun prefix ->
+    && List.exists prefixes ~f:(fun prefix ->
            String_utils.string_starts_with path prefix)
   in
   let path_filter (path : Relative_path.t) =
@@ -140,15 +140,16 @@ let go (genv : ServerEnv.genv) (env : ServerEnv.env) (prefixes : string list) =
     match fileinfo with
     | Some FileInfo.{ classes; _ } ->
       let classes =
+        let open Typing_deps in
         List.fold_left
-          ~init:DepSet.empty
+          ~init:(DepSet.make deps_mode)
           ~f:(fun acc (_, class_id) ->
-            DepSet.add acc (Dep.make (Dep.Class class_id)))
+            DepSet.add acc (Dep.make (hash_mode deps_mode) (Dep.Type class_id)))
           classes
       in
       let deps =
-        Typing_deps.add_extend_deps classes
-        |> Typing_deps.get_files
+        Typing_deps.add_extend_deps deps_mode classes
+        |> Typing_deps.Files.get_files
         |> Relative_path.Set.filter ~f:path_filter
       in
       Relative_path.Set.remove deps path
@@ -200,7 +201,7 @@ let go (genv : ServerEnv.genv) (env : ServerEnv.env) (prefixes : string list) =
   in
   let rec sort (visited : Relative_path.t list) (rest : Relative_path.Set.t) =
     let files_without_deps =
-      Relative_path.Set.filter rest (fun path ->
+      Relative_path.Set.filter rest ~f:(fun path ->
           match Relative_path.Map.find_opt recursive_dependencies path with
           | Some deps ->
             (* any dependencies that aren't in `rest` must have already
@@ -209,7 +210,7 @@ let go (genv : ServerEnv.genv) (env : ServerEnv.env) (prefixes : string list) =
             Relative_path.Set.is_empty pending_deps
           | None -> true)
     in
-    ( if Relative_path.Set.is_empty files_without_deps then
+    (if Relative_path.Set.is_empty files_without_deps then
       (* everything has an unsatisifed dependency, so error out *)
       let visited_pretty =
         List.map ~f:Relative_path.to_absolute visited |> String.concat ~sep:", "
@@ -217,7 +218,7 @@ let go (genv : ServerEnv.genv) (env : ServerEnv.env) (prefixes : string list) =
       let rest_pretty =
         List.map
           (Relative_path.Set.elements rest)
-          (fun (path : Relative_path.t) ->
+          ~f:(fun (path : Relative_path.t) ->
             let deps =
               Relative_path.Map.find recursive_dependencies path
               |> Relative_path.Set.inter rest
@@ -230,10 +231,10 @@ let go (genv : ServerEnv.genv) (env : ServerEnv.env) (prefixes : string list) =
       in
       raise
         (CircularDependency
-           ( "circular dependency detected:\nvisited: "
+           ("circular dependency detected:\nvisited: "
            ^ visited_pretty
            ^ "\nrest: "
-           ^ rest_pretty )) );
+           ^ rest_pretty)));
     let rest = Relative_path.Set.diff rest files_without_deps in
     let visited = visited @ Relative_path.Set.elements files_without_deps in
     if Relative_path.Set.is_empty rest then

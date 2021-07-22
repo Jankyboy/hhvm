@@ -18,7 +18,7 @@ class SoapServer {
    *
    */
   <<__Native>>
-  public function setclass(string $name, ...$argv): void;
+  public function setClass(string $name, ...$argv): void;
 
   /**
    * This sets a specific object as the handler for SOAP requests, rather than
@@ -43,7 +43,7 @@ class SoapServer {
    *
    */
   <<__Native>>
-  public function addfunction(mixed $func): void;
+  public function addFunction(mixed $func): void;
 
   /**
    * Returns a list of the defined functions in the SoapServer object. This
@@ -112,7 +112,7 @@ class SoapServer {
    *
    */
   <<__Native>>
-  public function addsoapheader(mixed $fault): void;
+  public function addSoapHeader(mixed $fault): void;
 }
 
 <<__NativeData("SoapClient")>>
@@ -177,14 +177,14 @@ class SoapClient {
     darray $options = darray[],
     mixed $input_headers = null,
   ): mixed {
-    $args = self::cleanArrays($args, darray[]);
+    $args = self::cleanArrays($args, HH\array_mark_legacy(darray[]));
     $ret = $this->soapcallImpl(
       $name,
       varray($args),
       $options,
       $input_headers,
     );
-    return self::cleanArrays($ret, darray[]);
+    return self::cleanArrays($ret, HH\array_mark_legacy(darray[]));
   }
 
   <<__Native>>
@@ -200,10 +200,10 @@ class SoapClient {
   public function __getlastresponseheaders(): mixed;
 
   <<__Native>>
-  public function __getfunctions(): mixed;
+  public function __getFunctions(): mixed;
 
   <<__Native>>
-  public function __gettypes(): mixed;
+  public function __getTypes(): mixed;
 
   <<__Native>>
   public function __dorequest(string $buf,

@@ -288,7 +288,7 @@ static bool filter_var(Variant& ret, const Variant& variable, int64_t filter,
 
 static bool filter_recursive(Variant& ret, const Variant& variable,
                              int64_t filter, const Variant& options) {
-  Array arr = Array::CreateDArray();
+  Array arr = Array::CreateDict();
   for (ArrayIter iter(variable.toArray()); iter; ++iter) {
     Variant v;
     if (iter.second().isArray()) {
@@ -359,7 +359,7 @@ Variant HHVM_FUNCTION(filter_var,
   Variant ret;
   FAIL_IF(!filter_var(ret, variable, filter, options));
   if (filter_flags & k_FILTER_FORCE_ARRAY && !ret.isArray()) {
-    ret = make_varray(ret);
+    ret = make_vec_array(ret);
   }
   return ret;
 }

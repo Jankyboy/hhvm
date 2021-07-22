@@ -84,9 +84,9 @@ module type ReverseNamingTable = sig
 
   val is_defined : Naming_sqlite.db_path option -> string -> bool
 
-  val remove_batch : Naming_sqlite.db_path option -> SSet.t -> unit
+  val remove_batch : Naming_sqlite.db_path option -> string list -> unit
 
-  val heap_string_of_key : string -> string
+  module Position : Value.Type with type t = pos
 end
 
 (* The Types module records both class names and typedefs since they live in the
@@ -95,25 +95,27 @@ end
 module Types = struct
   type pos = FileInfo.pos * Naming_types.kind_of_type
 
+  module CanonName = struct
+    type t = string
+
+    let prefix = Prefix.make ()
+
+    let description = "Naming_TypeCanon"
+  end
+
+  module Position = struct
+    type t = pos
+
+    let prefix = Prefix.make ()
+
+    let description = "Naming_TypePos"
+  end
+
   module TypeCanonHeap =
-    SharedMem.NoCache (SharedMem.ProfiledImmediate) (StringKey)
-      (struct
-        type t = string
-
-        let prefix = Prefix.make ()
-
-        let description = "Naming_TypeCanon"
-      end)
+    SharedMem.NoCache (SharedMem.ProfiledImmediate) (StringKey) (CanonName)
 
   module TypePosHeap =
-    SharedMem.WithCache (SharedMem.ProfiledImmediate) (StringKey)
-      (struct
-        type t = pos
-
-        let prefix = Prefix.make ()
-
-        let description = "Naming_TypePos"
-      end)
+    SharedMem.WithCache (SharedMem.ProfiledImmediate) (StringKey) (Position)
       (struct
         let capacity = 1000
       end)
@@ -154,8 +156,7 @@ module Types = struct
       Some (FileInfo.File (name_type, path), entry_type)
     in
     let fallback_get_func_opt =
-      Option.map db_path_opt ~f:(fun db_path ->
-          Naming_sqlite.get_type_pos db_path ~case_insensitive:false)
+      Option.map db_path_opt ~f:Naming_sqlite.get_type_path_by_name
     in
     get_and_cache
       ~map_result
@@ -189,9 +190,7 @@ module Types = struct
       match entry_type with
       | Naming_types.TClass ->
         begin
-          match
-            Ast_provider.find_class_in_file ~case_insensitive:true ctx path id
-          with
+          match Ast_provider.find_iclass_in_file ctx path id with
           | Some cls -> Some (snd cls.Aast.c_name)
           | None ->
             Hh_logger.log
@@ -202,9 +201,7 @@ module Types = struct
         end
       | Naming_types.TTypedef ->
         begin
-          match
-            Ast_provider.find_typedef_in_file ~case_insensitive:true ctx path id
-          with
+          match Ast_provider.find_itypedef_in_file ctx path id with
           | Some typedef -> Some (snd typedef.Aast.t_name)
           | None ->
             Hh_logger.log
@@ -215,7 +212,7 @@ module Types = struct
         end
       | Naming_types.TRecordDef ->
         begin
-          match Ast_provider.find_record_def_in_file ctx path id with
+          match Ast_provider.find_irecord_def_in_file ctx path id with
           | Some cls -> Some (snd cls.Aast.rd_name)
           | None ->
             Hh_logger.log
@@ -229,8 +226,7 @@ module Types = struct
       Db_path_provider.get_naming_db_path (Provider_context.get_backend ctx)
     in
     let fallback_get_func_opt =
-      Option.map db_path_opt ~f:(fun db_path ->
-          Naming_sqlite.get_type_pos db_path ~case_insensitive:true)
+      Option.map db_path_opt ~f:Naming_sqlite.get_itype_path_by_name
     in
     get_and_cache
       ~map_result
@@ -242,6 +238,7 @@ module Types = struct
       ~key:id
 
   let remove_batch db_path_opt types =
+    let types = SSet.of_list types in
     let canon_key_types = canonize_set types in
     TypeCanonHeap.remove_batch canon_key_types;
     TypePosHeap.remove_batch types;
@@ -251,32 +248,32 @@ module Types = struct
       SSet.iter
         (fun id -> BlockedEntries.add id Blocked)
         (SSet.union types canon_key_types)
-
-  let heap_string_of_key = TypePosHeap.string_of_key
 end
 
 module Funs = struct
   type pos = FileInfo.pos
 
+  module CanonName = struct
+    type t = string
+
+    let prefix = Prefix.make ()
+
+    let description = "Naming_FunCanon"
+  end
+
   module FunCanonHeap =
-    SharedMem.NoCache (SharedMem.ProfiledImmediate) (StringKey)
-      (struct
-        type t = string
+    SharedMem.NoCache (SharedMem.ProfiledImmediate) (StringKey) (CanonName)
 
-        let prefix = Prefix.make ()
+  module Position = struct
+    type t = pos
 
-        let description = "Naming_FunCanon"
-      end)
+    let prefix = Prefix.make ()
+
+    let description = "Naming_FunPos"
+  end
 
   module FunPosHeap =
-    SharedMem.NoCache (SharedMem.ProfiledImmediate) (StringKey)
-      (struct
-        type t = pos
-
-        let prefix = Prefix.make ()
-
-        let description = "Naming_FunPos"
-      end)
+    SharedMem.NoCache (SharedMem.ProfiledImmediate) (StringKey) (Position)
 
   module BlockedEntries =
     SharedMem.NoCache (SharedMem.ProfiledImmediate) (StringKey)
@@ -297,8 +294,7 @@ module Funs = struct
   let get_pos db_path_opt ?bypass_cache:(_ = false) id =
     let map_result path = Some (FileInfo.File (FileInfo.Fun, path)) in
     let fallback_get_func_opt =
-      Option.map db_path_opt ~f:(fun db_path ->
-          Naming_sqlite.get_fun_pos db_path ~case_insensitive:false)
+      Option.map db_path_opt ~f:Naming_sqlite.get_fun_path_by_name
     in
     get_and_cache
       ~map_result
@@ -317,10 +313,8 @@ module Funs = struct
 
   let get_canon_name ctx name =
     let map_result path =
-      match
-        Ast_provider.find_fun_in_file ~case_insensitive:true ctx path name
-      with
-      | Some f -> Some (snd f.Aast.f_name)
+      match Ast_provider.find_ifun_in_file ctx path name with
+      | Some f -> Some (snd f.Aast.fd_fun.Aast.f_name)
       | None ->
         let path_str = Relative_path.S.to_string path in
         Hh_logger.log
@@ -333,8 +327,7 @@ module Funs = struct
       Db_path_provider.get_naming_db_path (Provider_context.get_backend ctx)
     in
     let fallback_get_func_opt =
-      Option.map db_path_opt ~f:(fun db_path ->
-          Naming_sqlite.get_fun_pos db_path ~case_insensitive:true)
+      Option.map db_path_opt ~f:Naming_sqlite.get_ifun_path_by_name
     in
     get_and_cache
       ~map_result
@@ -346,6 +339,7 @@ module Funs = struct
       ~key:name
 
   let remove_batch db_path_opt funs =
+    let funs = SSet.of_list funs in
     let canon_key_funs = canonize_set funs in
     FunCanonHeap.remove_batch canon_key_funs;
     FunPosHeap.remove_batch funs;
@@ -355,22 +349,21 @@ module Funs = struct
       SSet.iter
         (fun id -> BlockedEntries.add id Blocked)
         (SSet.union funs canon_key_funs)
-
-  let heap_string_of_key = FunPosHeap.string_of_key
 end
 
 module Consts = struct
   type pos = FileInfo.pos
 
+  module Position = struct
+    type t = pos
+
+    let prefix = Prefix.make ()
+
+    let description = "Naming_ConstPos"
+  end
+
   module ConstPosHeap =
-    SharedMem.NoCache (SharedMem.ProfiledImmediate) (StringKey)
-      (struct
-        type t = pos
-
-        let prefix = Prefix.make ()
-
-        let description = "Naming_ConstPos"
-      end)
+    SharedMem.NoCache (SharedMem.ProfiledImmediate) (StringKey) (Position)
 
   module BlockedEntries =
     SharedMem.NoCache (SharedMem.ProfiledImmediate) (StringKey)
@@ -391,7 +384,7 @@ module Consts = struct
     let map_result path = Some (FileInfo.File (FileInfo.Const, path)) in
     let fallback_get_func_opt =
       Option.map db_path_opt ~f:(fun db_path ->
-          Naming_sqlite.get_const_pos db_path)
+          Naming_sqlite.get_const_path_by_name db_path)
     in
     get_and_cache
       ~map_result
@@ -409,12 +402,11 @@ module Consts = struct
   let is_defined db_path_opt id = Option.is_some (get_pos db_path_opt id)
 
   let remove_batch db_path_opt consts =
+    let consts = SSet.of_list consts in
     ConstPosHeap.remove_batch consts;
     match db_path_opt with
     | None -> ()
     | Some _ -> SSet.iter (fun id -> BlockedEntries.add id Blocked) consts
-
-  let heap_string_of_key = ConstPosHeap.string_of_key
 end
 
 let push_local_changes () =

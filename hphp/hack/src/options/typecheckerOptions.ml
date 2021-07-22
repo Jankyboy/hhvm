@@ -14,8 +14,14 @@ let num_local_workers = GlobalOptions.tco_num_local_workers
 let parallel_type_checking_threshold =
   GlobalOptions.tco_parallel_type_checking_threshold
 
+let max_typechecker_worker_memory_mb =
+  GlobalOptions.tco_max_typechecker_worker_memory_mb
+
 let defer_class_declaration_threshold =
   GlobalOptions.tco_defer_class_declaration_threshold
+
+let defer_class_memory_mb_threshold =
+  GlobalOptions.tco_defer_class_memory_mb_threshold
 
 let max_times_to_defer_type_checking =
   GlobalOptions.tco_max_times_to_defer_type_checking
@@ -36,6 +42,8 @@ let remote_min_batch_size = GlobalOptions.tco_remote_min_batch_size
 
 let num_remote_workers = GlobalOptions.tco_num_remote_workers
 
+let stream_errors = GlobalOptions.tco_stream_errors
+
 let remote_version_specifier = GlobalOptions.so_remote_version_specifier
 
 let disallow_array_typehint = GlobalOptions.tco_disallow_array_typehint
@@ -43,8 +51,6 @@ let disallow_array_typehint = GlobalOptions.tco_disallow_array_typehint
 let disallow_array_literal = GlobalOptions.tco_disallow_array_literal
 
 let language_feature_logging = GlobalOptions.tco_language_feature_logging
-
-let unsafe_rx = GlobalOptions.tco_unsafe_rx
 
 let experimental_feature_enabled =
   GlobalOptions.tco_experimental_feature_enabled
@@ -55,14 +61,12 @@ let log_inference_constraints = GlobalOptions.tco_log_inference_constraints
 
 let default = GlobalOptions.default
 
-let experimental_isarray = GlobalOptions.tco_experimental_isarray
-
 let experimental_generics_arity = GlobalOptions.tco_experimental_generics_arity
 
 let experimental_forbid_nullable_cast =
   GlobalOptions.tco_experimental_forbid_nullable_cast
 
-let experimental_coroutines = GlobalOptions.tco_experimental_coroutines
+let experimental_infer_flows = GlobalOptions.tco_experimental_infer_flows
 
 let experimental_disallow_static_memoized =
   GlobalOptions.tco_experimental_disallow_static_memoized
@@ -72,6 +76,9 @@ let experimental_type_param_shadowing =
 
 let experimental_abstract_type_const_with_default =
   GlobalOptions.tco_experimental_abstract_type_const_with_default
+
+let experimental_case_sensitive_inheritance =
+  GlobalOptions.tco_experimental_case_sensitive_inheritance
 
 let experimental_all = GlobalOptions.tco_experimental_all
 
@@ -95,9 +102,17 @@ let log_levels = GlobalOptions.log_levels
 
 let shallow_class_decl = GlobalOptions.tco_shallow_class_decl
 
-let coeffects = GlobalOptions.coeffects
+let call_coeffects = GlobalOptions.tco_call_coeffects
 
-let set_coeffects = GlobalOptions.set_coeffects
+let local_coeffects = GlobalOptions.tco_local_coeffects
+
+let any_coeffects t = call_coeffects t || local_coeffects t
+
+let strict_contexts = GlobalOptions.tco_strict_contexts
+
+let enable_ifc = GlobalOptions.enable_ifc
+
+let ifc_enabled = GlobalOptions.ifc_enabled
 
 let like_type_hints = GlobalOptions.tco_like_type_hints
 
@@ -109,6 +124,9 @@ let complex_coercion = GlobalOptions.tco_complex_coercion
 
 let disable_partially_abstract_typeconsts =
   GlobalOptions.tco_disable_partially_abstract_typeconsts
+
+let disallow_partially_abstract_typeconst_definitions =
+  GlobalOptions.tco_disallow_partially_abstract_typeconst_definitions
 
 let check_xhp_attribute = GlobalOptions.tco_check_xhp_attribute
 
@@ -147,3 +165,48 @@ let higher_kinded_types = GlobalOptions.tco_higher_kinded_types
 let method_call_inference = GlobalOptions.tco_method_call_inference
 
 let report_pos_from_reason = GlobalOptions.tco_report_pos_from_reason
+
+let enable_sound_dynamic = GlobalOptions.tco_enable_sound_dynamic
+
+let use_direct_decl_parser = GlobalOptions.tco_use_direct_decl_parser
+
+let interpret_soft_types_as_like_types =
+  GlobalOptions.po_interpret_soft_types_as_like_types
+
+let enable_strict_string_concat_interp =
+  GlobalOptions.tco_enable_strict_string_concat_interp
+
+let ignore_unsafe_cast = GlobalOptions.tco_ignore_unsafe_cast
+
+let set_readonly = GlobalOptions.set_tco_readonly
+
+let readonly = GlobalOptions.tco_readonly
+
+let set_tco_enable_expression_trees =
+  GlobalOptions.set_tco_enable_expression_trees
+
+let expression_trees_enabled = GlobalOptions.expression_trees_enabled
+
+let enable_modules = GlobalOptions.tco_enable_modules
+
+let set_modules = GlobalOptions.set_tco_enable_modules
+
+let allowed_expression_tree_visitors =
+  GlobalOptions.allowed_expression_tree_visitors
+
+let math_new_code = GlobalOptions.tco_math_new_code
+
+let typeconst_concrete_concrete_error =
+  GlobalOptions.tco_typeconst_concrete_concrete_error
+
+let meth_caller_only_public_visibility =
+  GlobalOptions.tco_meth_caller_only_public_visibility
+
+let require_extends_implements_ancestors =
+  GlobalOptions.tco_require_extends_implements_ancestors
+
+let strict_value_equality = GlobalOptions.tco_strict_value_equality
+
+let enforce_sealed_subclasses = GlobalOptions.tco_enforce_sealed_subclasses
+
+let enable_enum_supertyping = GlobalOptions.po_enable_enum_supertyping

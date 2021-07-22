@@ -2,9 +2,11 @@
 
 <<file:__EnableUnstableFeatures('expression_trees')>>
 
-// Placeholder definitions so we don't get naming errors.
-class Code {}
-function bar(mixed $_): int { return 1; }
+async function bar(
+  ExampleContext $_,
+): Awaitable<ExprTree<Code, Code::TAst, (function(ExampleString): ExampleInt)>> {
+  throw new Exception();
+}
 
 function foo(): void {
   $fun_call = Code`bar("baz")`;

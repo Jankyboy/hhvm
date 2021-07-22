@@ -9,7 +9,7 @@ function getStr() {
 }
 
 function getFunc() {
-  return __hhvm_intrinsics\launder_value(HH\fun("foo"));
+  return __hhvm_intrinsics\launder_value(foo<>);
 }
 
 function wrap($fun) {
@@ -33,7 +33,7 @@ function comp($x, $y) {
 function getTestcase(int $num) {
   $test_cases = varray[
     true, false, 0, 1, 0.0, 1.0, "foo",
-    __hhvm_intrinsics\dummy_cast_to_kindofarray(vec['foo']),
+    darray(vec['foo']),
     varray['foo'],
     vec['foo'],
     darray[0 => 'foo'],

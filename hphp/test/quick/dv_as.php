@@ -1,5 +1,9 @@
 <?hh
 class A {
-  public function a(arraylike $a1 = "abc") {}
+  public function a(AnyArray $a1 = "abc") {}
 }
 
+<<__EntryPoint>>
+function main(): void {
+  echo "Done.\n";
+}

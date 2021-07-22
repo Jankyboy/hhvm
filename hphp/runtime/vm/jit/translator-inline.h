@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_TRANSLATOR_INLINE_H_
-#define incl_HPHP_TRANSLATOR_INLINE_H_
+#pragma once
 
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/vm/func.h"
@@ -41,12 +40,9 @@ inline bool liveHasThis() { return liveClass() && liveFrame()->hasThis(); }
 inline SrcKey liveSK() {
   return { liveFunc(), vmpc(), liveResumeMode() };
 }
-inline jit::FPInvOffset liveSpOff() {
-  TypedValue* fp = reinterpret_cast<TypedValue*>(vmfp());
-  if (isResumed(liveFrame())) {
-    fp = (TypedValue*)Stack::resumableStackBase((ActRec*)fp);
-  }
-  return jit::FPInvOffset{safe_cast<int32_t>(fp - vmsp())};
+inline jit::SBInvOffset liveSpOff() {
+  auto const stackBase = Stack::anyFrameStackBase(liveFrame());
+  return jit::SBInvOffset{safe_cast<int32_t>(stackBase - vmsp())};
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -67,4 +63,3 @@ inline int localOffset(int locId) {
 
 }}
 
-#endif

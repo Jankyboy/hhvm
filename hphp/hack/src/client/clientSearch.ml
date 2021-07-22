@@ -8,7 +8,6 @@
  *)
 
 open Hh_prelude
-module SS = SymbolIndex
 module SUtils = SearchUtils
 
 let print_results (results : SearchUtils.result) : unit =
@@ -20,7 +19,7 @@ let print_results (results : SearchUtils.result) : unit =
 
 let print_results_json (results : SearchUtils.result) : unit =
   let results =
-    Hh_json.JSON_Array (List.map results ServerSearch.result_to_json)
+    Hh_json.JSON_Array (List.map results ~f:ServerSearch.result_to_json)
   in
   print_endline (Hh_json.json_to_string results)
 

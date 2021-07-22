@@ -144,7 +144,8 @@ void unblockParents(Vout& v, Vreg firstBl) {
   ifThen(v, CC_NZ, sf, [&] (Vout& v) {
     v << vcall{CallSpec::direct(AsioBlockableChain::UnblockJitHelper),
                v.makeVcallArgs({{rvmfp(), rvmsp(), firstBl}}),
-               v.makeTuple({})};
+               v.makeTuple({}),
+               Fixup::none()};
   });
 }
 
@@ -164,7 +165,7 @@ TCA emitAsyncSwitchCtrl(CodeBlock& cb, DataBlock& data, TCA* inner) {
       CallSpec::direct(getFastRunnableAFWH),
       v.makeVcallArgs({{}}),
       v.makeTuple({afwh}),
-      Fixup{},
+      Fixup::none(),
       DestType::SSA
     };
 
@@ -185,6 +186,7 @@ TCA emitAsyncSwitchCtrl(CodeBlock& cb, DataBlock& data, TCA* inner) {
     };
 
     if (RO::EvalEnableImplicitContext) {
+      markRDSAccess(v, ImplicitContext::activeCtx.handle());
       auto const implicitContext = v.makeReg();
       v << load {
         afwh[c_ResumableWaitHandle::implicitContextOff()],
@@ -291,6 +293,7 @@ void asyncFuncMaybeRetToAsyncFunc(Vout& v, PhysReg rdata, PhysReg rtype,
         CallSpec::direct(freeAFWH),
         v.makeVcallArgs({{wh}}),
         v.makeTuple({}),
+        Fixup::none()
       };
     },
     [&] (Vout& v) {  // Someone else still has a ref, do the work.
@@ -318,6 +321,7 @@ void asyncFuncMaybeRetToAsyncFunc(Vout& v, PhysReg rdata, PhysReg rtype,
   v << storebi{runningState, parentBl[afwhToBl(AFWH::stateOff())]};
 
   if (RO::EvalEnableImplicitContext) {
+    markRDSAccess(v, ImplicitContext::activeCtx.handle());
     auto const implicitContext = v.makeReg();
     v << load{parentBl[afwhToBl(AFWH::implicitContextOff())], implicitContext};
     v << store{implicitContext, rvmtl()[ImplicitContext::activeCtx.handle()]};

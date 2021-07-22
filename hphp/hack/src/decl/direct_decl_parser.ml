@@ -5,31 +5,20 @@
  * LICENSE file in the "hack" directory of this source tree.
  *)
 
-type decls = {
-  classes: Shallow_decl_defs.shallow_class SMap.t;
-      [@printer (fun fmt -> SMap.pp Shallow_decl_defs.pp_shallow_class fmt)]
-  funs: Typing_defs.fun_elt SMap.t;
-      [@printer (fun fmt -> SMap.pp Pp_type.pp_fun_elt fmt)]
-  typedefs: Typing_defs.typedef_type SMap.t;
-      [@printer (fun fmt -> SMap.pp Pp_type.pp_typedef_type fmt)]
-  consts: Typing_defs.decl_ty SMap.t;
-      [@printer (fun fmt -> SMap.pp Pp_type.pp_decl_ty fmt)]
-}
-[@@deriving show]
+type decls = (string * Shallow_decl_defs.decl) list [@@deriving show]
 
-external parse_decls_ffi : Relative_path.t -> string -> decls
-  = "parse_decls_ffi"
+external parse_decls_and_mode_ffi :
+  (* (disable_xhp_element_mangling, interpret_soft_types_as_like_types) *)
+  DeclParserOptions.t ->
+  Relative_path.t ->
+  string ->
+  bool ->
+  decls * FileInfo.mode option * Int64.t option = "hh_parse_decls_and_mode_ffi"
 
-let parse_decls ?contents relative_path =
-  let contents =
-    match contents with
-    | Some c -> Some c
-    | None -> File_provider.get_contents relative_path
-  in
-  match contents with
-  | Some contents -> parse_decls_ffi relative_path contents
-  | None ->
-    failwith
-      (Printf.sprintf
-         "Could not load file contents for %s"
-         (Relative_path.to_absolute relative_path))
+external decls_hash : decls -> Int64.t = "decls_hash"
+
+let parse_decls_ffi
+    (opts : DeclParserOptions.t) (path : Relative_path.t) (text : string) :
+    decls =
+  let (decls, _, _) = parse_decls_and_mode_ffi opts path text false in
+  decls

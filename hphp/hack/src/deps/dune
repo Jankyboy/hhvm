@@ -6,6 +6,17 @@
   (libraries
     opaque_digest
     pos
+    symbol_name
+    utils_core)
+  (preprocess (pps ppx_deriving.std)))
+
+(library
+  (name symbol_name)
+  (wrapped false)
+  (modules
+    symbol_name)
+  (libraries
+    collections
     utils_core)
   (preprocess (pps ppx_deriving.std)))
 
@@ -13,12 +24,16 @@
   (name typing_deps)
   (wrapped false)
   (modules
-    typing_deps)
+    typing_deps
+    typing_deps_mode)
   (libraries
     collections
+    decl_reference
     depgraph
     file_info
+    heap_shared_mem
     heap_shared_mem_hash
+    ocamlpool
     relative_path
     typing_deps_rust
     worker_cancel)

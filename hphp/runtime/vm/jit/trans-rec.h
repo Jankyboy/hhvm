@@ -13,9 +13,9 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_TRANS_REC_H_
-#define incl_HPHP_TRANS_REC_H_
+#pragma once
 
+#include "hphp/runtime/base/types.h"
 #include "hphp/util/sha1.h"
 #include "hphp/runtime/vm/jit/region-selection.h"
 #include "hphp/runtime/vm/jit/types.h"
@@ -27,7 +27,7 @@ namespace HPHP { namespace jit {
  */
 struct TransBCMapping {
   SHA1   sha1;
-  Offset bcStart;
+  SrcKey sk;
   TCA    aStart;
   TCA    acoldStart;
   TCA    afrozenStart;
@@ -38,8 +38,8 @@ struct TransBCMapping {
  */
 struct TransRec {
   struct Block {
-    SHA1 sha1;
-    Offset bcStart;
+    SHA1   sha1;
+    SrcKey sk;
     Offset bcPast;
   };
 
@@ -58,7 +58,6 @@ struct TransRec {
   uint32_t               aLen;
   uint32_t               acoldLen;
   uint32_t               afrozenLen;
-  Offset                 bcStart;
   TransID                id{kInvalidTransID};
   TransKind              kind;
   bool                   hasLoop;
@@ -100,4 +99,3 @@ private:
 
 } }
 
-#endif

@@ -45,9 +45,6 @@ class virtual iter =
       in
       super#on_class_var env cv
 
-    method! on_pu_enum env x =
-      super#on_pu_enum (Env.restore_pu_enum_env env x) x
-
     method! on_Binop env op e1 e2 =
       match op with
       | Ast_defs.Eq _ ->
@@ -63,6 +60,19 @@ class virtual iter =
     method! on_As env e h =
       let env = Env.set_allow_wildcards env in
       super#on_As env e h
+
+    method! on_expression_tree
+        env Aast.{ et_hint; et_splices; et_virtualized_expr; et_runtime_expr } =
+      self#on_hint env et_hint;
+      self#on_block env et_splices;
+      let env = Env.set_in_expr_tree env true in
+      self#on_expr env et_virtualized_expr;
+      let env = Env.set_in_expr_tree env false in
+      self#on_expr env et_runtime_expr
+
+    method! on_ET_Splice env e =
+      let env = Env.set_in_expr_tree env false in
+      super#on_ET_Splice env e
   end
 
 class virtual ['state] iter_with_state =
@@ -109,9 +119,6 @@ class virtual ['state] iter_with_state =
       in
       self#on_class_var_with_env (env, state) cv
 
-    method! on_pu_enum (env, state) x =
-      super#on_pu_enum (Env.restore_pu_enum_env env x, state) x
-
     method! on_Binop (env, state) op e1 e2 =
       match op with
       | Ast_defs.Eq _ ->
@@ -127,6 +134,20 @@ class virtual ['state] iter_with_state =
     method! on_As (env, state) e h =
       let env = Env.set_allow_wildcards env in
       super#on_As (env, state) e h
+
+    method! on_expression_tree
+        (env, state)
+        Aast.{ et_hint; et_splices; et_virtualized_expr; et_runtime_expr } =
+      self#on_hint (env, state) et_hint;
+      self#on_block (env, state) et_splices;
+      let env = Env.set_in_expr_tree env true in
+      self#on_expr (env, state) et_virtualized_expr;
+      let env = Env.set_in_expr_tree env false in
+      self#on_expr (env, state) et_runtime_expr
+
+    method! on_ET_Splice (env, state) e =
+      let env = Env.set_in_expr_tree env false in
+      super#on_ET_Splice (env, state) e
   end
 
 class virtual ['a] reduce =
@@ -165,9 +186,6 @@ class virtual ['a] reduce =
       in
       super#on_class_var env cv
 
-    method! on_pu_enum env x =
-      super#on_pu_enum (Env.restore_pu_enum_env env x) x
-
     method! on_Binop env op e1 e2 =
       match op with
       | Ast_defs.Eq _ ->
@@ -184,6 +202,22 @@ class virtual ['a] reduce =
     method! on_As env e h =
       let env = Env.set_allow_wildcards env in
       super#on_As env e h
+
+    method! on_expression_tree
+        env Aast.{ et_hint; et_splices; et_virtualized_expr; et_runtime_expr } =
+      let et_hint = self#on_hint env et_hint in
+      let et_splices = self#on_block env et_splices in
+      let env = Env.set_in_expr_tree env true in
+      let et_virtualized_expr = self#on_expr env et_virtualized_expr in
+      let env = Env.set_in_expr_tree env false in
+      let et_runtime_expr = self#on_expr env et_runtime_expr in
+      self#plus
+        et_hint
+        (self#plus et_splices (self#plus et_virtualized_expr et_runtime_expr))
+
+    method! on_ET_Splice env e =
+      let env = Env.set_in_expr_tree env false in
+      super#on_ET_Splice env e
   end
 
 class virtual map =
@@ -195,8 +229,6 @@ class virtual map =
     method on_'fb _ fb = fb
 
     method on_'en _ en = en
-
-    method on_'hi _ hi = hi
 
     (* Entry point *)
     method go ctx program : Tast.program =
@@ -230,9 +262,6 @@ class virtual map =
       in
       super#on_class_var env cv
 
-    method! on_pu_enum env x =
-      super#on_pu_enum (Env.restore_pu_enum_env env x) x
-
     method! on_Binop env op e1 e2 =
       match op with
       | Ast_defs.Eq _ ->
@@ -249,6 +278,21 @@ class virtual map =
     method! on_As env e h =
       let env = Env.set_allow_wildcards env in
       super#on_As env e h
+
+    method! on_expression_tree
+        env Aast.{ et_hint; et_splices; et_virtualized_expr; et_runtime_expr } =
+      let et_hint = self#on_hint env et_hint in
+      let et_splices = self#on_block env et_splices in
+      let et_virtualized_expr =
+        let env = Env.set_in_expr_tree env true in
+        self#on_expr env et_virtualized_expr
+      in
+      let et_runtime_expr = self#on_expr env et_runtime_expr in
+      Aast.{ et_hint; et_splices; et_virtualized_expr; et_runtime_expr }
+
+    method! on_ET_Splice env e =
+      let env = Env.set_in_expr_tree env false in
+      super#on_ET_Splice env e
   end
 
 class virtual endo =
@@ -260,8 +304,6 @@ class virtual endo =
     method on_'fb _ fb = fb
 
     method on_'en _ en = en
-
-    method on_'hi _ hi = hi
 
     (* Entry point *)
     method go ctx program = self#on_list (fun () -> self#go_def ctx) () program
@@ -294,9 +336,6 @@ class virtual endo =
       in
       super#on_class_var env cv
 
-    method! on_pu_enum env x =
-      super#on_pu_enum (Env.restore_pu_enum_env env x) x
-
     method! on_Binop env this op e1 e2 =
       match op with
       | Ast_defs.Eq _ ->
@@ -316,6 +355,21 @@ class virtual endo =
     method! on_As env e h =
       let env = Env.set_allow_wildcards env in
       super#on_As env e h
+
+    method! on_expression_tree
+        env Aast.{ et_hint; et_splices; et_virtualized_expr; et_runtime_expr } =
+      let et_hint = self#on_hint env et_hint in
+      let et_splices = self#on_block env et_splices in
+      let et_virtualized_expr =
+        let env = Env.set_in_expr_tree env true in
+        self#on_expr env et_virtualized_expr
+      in
+      let et_runtime_expr = self#on_expr env et_runtime_expr in
+      Aast.{ et_hint; et_splices; et_virtualized_expr; et_runtime_expr }
+
+    method! on_ET_Splice env e =
+      let env = Env.set_in_expr_tree env false in
+      super#on_ET_Splice env e
   end
 
 (** A {!handler} is an {!iter} visitor which is not in control of the iteration
@@ -356,7 +410,7 @@ class type handler =
 
     method at_user_attribute : Env.t -> Tast.user_attribute -> unit
 
-    method at_class_typeconst : Env.t -> Tast.class_typeconst -> unit
+    method at_class_typeconst_def : Env.t -> Tast.class_typeconst_def -> unit
 
     method at_xhp_child : Env.t -> Tast.xhp_child -> unit
   end
@@ -389,7 +443,7 @@ class virtual handler_base : handler =
 
     method at_user_attribute _ _ = ()
 
-    method at_class_typeconst _ _ = ()
+    method at_class_typeconst_def _ _ = ()
 
     method at_xhp_child _ _ = ()
   end
@@ -401,58 +455,58 @@ let iter_with (handlers : handler list) : iter =
     inherit iter as super
 
     method! on_class_ env x =
-      List.iter handlers (fun v -> v#at_class_ env x);
+      List.iter handlers ~f:(fun v -> v#at_class_ env x);
       super#on_class_ env x
 
     method! on_typedef env x =
-      List.iter handlers (fun v -> v#at_typedef env x);
+      List.iter handlers ~f:(fun v -> v#at_typedef env x);
       super#on_typedef env x
 
     method! on_gconst env x =
-      List.iter handlers (fun v -> v#at_gconst env x);
+      List.iter handlers ~f:(fun v -> v#at_gconst env x);
       super#on_gconst env x
 
     method! on_fun_def env x =
-      List.iter handlers (fun v -> v#at_fun_def env x);
+      List.iter handlers ~f:(fun v -> v#at_fun_def env x);
       super#on_fun_def env x
 
     method! on_method_ env x =
-      List.iter handlers (fun v -> v#at_method_ env x);
+      List.iter handlers ~f:(fun v -> v#at_method_ env x);
       super#on_method_ env x
 
     method! on_expr env x =
-      List.iter handlers (fun v -> v#at_expr env x);
+      List.iter handlers ~f:(fun v -> v#at_expr env x);
       super#on_expr env x
 
     method! on_stmt env x =
-      List.iter handlers (fun v -> v#at_stmt env x);
+      List.iter handlers ~f:(fun v -> v#at_stmt env x);
       super#on_stmt env x
 
     method! on_fun_ env x =
-      List.iter handlers (fun v -> v#at_fun_ env x);
+      List.iter handlers ~f:(fun v -> v#at_fun_ env x);
       super#on_fun_ env x
 
     method! on_Call env e tal el unpacked_element =
-      List.iter handlers (fun v -> v#at_Call env e tal el unpacked_element);
+      List.iter handlers ~f:(fun v -> v#at_Call env e tal el unpacked_element);
       super#on_Call env e tal el unpacked_element
 
     method! on_hint env h =
-      List.iter handlers (fun v -> v#at_hint env h);
+      List.iter handlers ~f:(fun v -> v#at_hint env h);
       super#on_hint env h
 
     method! on_tparam env h =
-      List.iter handlers (fun v -> v#at_tparam env h);
+      List.iter handlers ~f:(fun v -> v#at_tparam env h);
       super#on_tparam env h
 
     method! on_user_attribute env ua =
-      List.iter handlers (fun v -> v#at_user_attribute env ua);
+      List.iter handlers ~f:(fun v -> v#at_user_attribute env ua);
       super#on_user_attribute env ua
 
-    method! on_class_typeconst env tc =
-      List.iter handlers (fun v -> v#at_class_typeconst env tc);
-      super#on_class_typeconst env tc
+    method! on_class_typeconst_def env tc =
+      List.iter handlers ~f:(fun v -> v#at_class_typeconst_def env tc);
+      super#on_class_typeconst_def env tc
 
     method! on_xhp_child env c =
-      List.iter handlers (fun v -> v#at_xhp_child env c);
+      List.iter handlers ~f:(fun v -> v#at_xhp_child env c);
       super#on_xhp_child env c
   end

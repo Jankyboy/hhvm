@@ -60,14 +60,7 @@ IMPL_OPCODE_CALL(AllocObjReified)
 
 namespace {
 
-template <typename T> void
-objectPropsRawInitImpl(Vout& v, Vreg base, size_t props);
-
-template <> void
-objectPropsRawInitImpl<tv_layout::TvArray>(Vout& v, Vreg base, size_t props) {}
-
-template <> void
-objectPropsRawInitImpl<tv_layout::Tv7Up>(Vout& v, Vreg base, size_t props) {
+void objectPropsRawInit(Vout& v, Vreg base, size_t props) {
   if (props == 0) return;
 
   auto const last_type_word_offset =
@@ -77,10 +70,7 @@ objectPropsRawInitImpl<tv_layout::Tv7Up>(Vout& v, Vreg base, size_t props) {
   v << storeqi{0, base[last_type_word_offset]};
 }
 
-static auto constexpr objectPropsRawInit = &objectPropsRawInitImpl<ObjectProps>;
-
 }
-
 
 void cgNewInstanceRaw(IRLS& env, const IRInstruction* inst) {
   auto& v = vmain(env);
@@ -186,6 +176,12 @@ IMPL_OPCODE_CALL(FuncCred);
 
 namespace {
 
+static void initObjMemoSlots(MemoSlot* slots, size_t n) {
+  for (auto i = 0; i < n; i++) {
+    slots[i].init();
+  }
+}
+
 void implInitObjPropsFast(Vout& v, IRLS& env, const IRInstruction* inst,
                           Vreg dst, const Class* cls, size_t nprops) {
   // memcpy the values from the class property init vec.
@@ -208,17 +204,17 @@ void implInitObjMemoSlots(Vout& v, IRLS& env, const IRInstruction* inst,
     for (Slot i = 0; i < nslots; ++i) {
       static_assert(sizeof(MemoSlot) == 16, "");
       auto const offset = -(sizeof(MemoSlot) * (nslots - i));
-      emitImmStoreq(v, 0, obj[offset]);
-      emitImmStoreq(v, 0, obj[offset+8]);
+      auto const dt = static_cast<data_type_t>(KindOfUninit);
+      emitImmStoreq(v, 0, obj[offset + TVOFF(m_data)]);
+      v << storebi{dt, obj[offset + TVOFF(m_type)]};
     }
     return;
   }
 
   auto const args = argGroup(env, inst)
     .addr(obj, -safe_cast<int32_t>(sizeof(MemoSlot) * nslots))
-    .imm(0)
-    .imm(sizeof(MemoSlot) * nslots);
-  cgCallHelper(v, env, CallSpec::direct(memset),
+    .imm(nslots);
+  cgCallHelper(v, env, CallSpec::direct(initObjMemoSlots),
                kVoidDest, SyncOptions::None, args);
 }
 
@@ -251,6 +247,8 @@ void cgInitObjProps(IRLS& env, const IRInstruction* inst) {
       // already been initialized as a pre-condition on this op.
       auto const propHandle = cls->propHandle();
       assertx(rds::isNormalHandle(propHandle));
+
+      markRDSAccess(v, propHandle);
 
       auto const propInitVec = v.makeReg();
       auto const propData = v.makeReg();

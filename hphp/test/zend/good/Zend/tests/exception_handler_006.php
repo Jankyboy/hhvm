@@ -9,12 +9,12 @@ function foo1($e) {
 }
 
 <<__EntryPoint>> function main(): void {
-set_exception_handler(fun("foo"));
-set_exception_handler(fun("foo1"));
+set_exception_handler(foo<>);
+set_exception_handler(foo1<>);
 
 restore_exception_handler();
 
-throw new excEption();
+throw new Exception();
 
 echo "Done\n";
 }

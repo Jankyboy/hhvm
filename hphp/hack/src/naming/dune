@@ -6,7 +6,7 @@
     collections
     core_kernel
     utils_core)
-  (preprocess (pps ppx_deriving.std))) ; See T41851208
+  (preprocess (pps ppx_deriving.std)))
 
 (library
   (name nast)
@@ -25,12 +25,12 @@
   (libraries
     annotated_ast
     core_kernel)
-  (preprocess (pps ppx_deriving.std))) ; See T41851208
+  (preprocess (pps ppx_deriving.std)))
 
 (library
-  (name naming_attributes_deprecated)
+  (name naming_attributes_params)
   (modules
-    naming_attributes_deprecated)
+    naming_attributes_params)
   (libraries
     annotated_ast
     naming_attributes
@@ -40,7 +40,16 @@
     nast
     nast_eval
     pos)
-  (preprocess (pps ppx_deriving.std))) ; See T41851208
+  (preprocess (pps ppx_deriving.std)))
+
+(library
+  (name naming_ast_print)
+  (modules
+    naming_ast_print)
+  (libraries
+    nast
+    pos)
+  (preprocess (pps ppx_deriving.std)))
 
 (library
   (name nast_eval)
@@ -57,7 +66,7 @@
   (name naming_types)
   (modules
     naming_types)
-  (preprocess (pps ppx_deriving.std))) ; See T41851208
+  (preprocess (pps ppx_deriving.std)))
 
 (library
   (name naming_sqlite)
@@ -68,12 +77,13 @@
     fileutils
     heap_shared_mem
     heap_shared_mem_hash
+    logging
     naming_types
     relative_path
     sqlite3
     sqlite_utils
     typing_deps)
-  (preprocess (pps ppx_deriving.std))) ; See T41851208
+  (preprocess (pps ppx_deriving.std)))
 
 (library
   (name naming_heap)
@@ -87,7 +97,7 @@
     naming_types
     provider_context
     relative_path)
-  (preprocess (pps ppx_deriving.std))) ; See T41851208
+  (preprocess (pps ppx_deriving.std)))
 
 (library
   (name naming_table)
@@ -103,7 +113,7 @@
     naming_sqlite
     relative_path
     temp_file)
-  (preprocess (pps ppx_deriving.std))) ; See T41851208
+  (preprocess (pps ppx_deriving.std)))
 
 (library
   (name naming_global)

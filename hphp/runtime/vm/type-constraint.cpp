@@ -32,7 +32,6 @@
 #include "hphp/runtime/vm/hhbc.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/runtime/vm/repo-global-data.h"
-#include "hphp/runtime/vm/repo.h"
 #include "hphp/runtime/vm/runtime.h"
 #include "hphp/runtime/vm/unit.h"
 #include "hphp/runtime/vm/unit-util.h"
@@ -72,6 +71,13 @@ void TypeConstraint::init() {
   m_namedEntity = NamedEntity::get(m_typeName);
   TRACE(5, "TypeConstraint: this %p NamedEntity: %p\n",
         this, m_namedEntity.get());
+}
+
+bool TypeConstraint::operator==(const TypeConstraint& o) const {
+  // The named entity is defined based on the m_typeName and is redundant to
+  // include in the equality operation.
+  return m_flags == o.m_flags && m_type == o.m_type &&
+         m_typeName == o.m_typeName;
 }
 
 std::string TypeConstraint::displayName(const Class* context /*= nullptr*/,
@@ -147,13 +153,11 @@ std::string TypeConstraint::displayName(const Class* context /*= nullptr*/,
       case AnnotType::Keyset:   str = "keyset"; break;
       case AnnotType::Number:   str = "num"; break;
       case AnnotType::ArrayKey: str = "arraykey"; break;
-      case AnnotType::VArray:   str = "varray"; break;
-      case AnnotType::DArray:   str = "darray"; break;
-      case AnnotType::VArrOrDArr: str = "varray_or_darray"; break;
       case AnnotType::VecOrDict: str = "vec_or_dict"; break;
-      case AnnotType::ArrayLike: str = "arraylike"; break;
+      case AnnotType::ArrayLike: str = "AnyArray"; break;
       case AnnotType::Nonnull:  str = "nonnull"; break;
       case AnnotType::Record:    str = "record"; break;
+      case AnnotType::Classname: str = "classname"; break;
       case AnnotType::Self:
       case AnnotType::This:
       case AnnotType::Parent:
@@ -221,11 +225,11 @@ getNamedTypeWithAutoload(const NamedEntity* ne,
   if (auto def = ne->getCachedTypeAlias()) {
     return def;
   }
-  if (auto rec = Unit::lookupRecordDesc(ne)) {
+  if (auto rec = RecordDesc::lookup(ne)) {
     return rec;
   }
   Class *klass = nullptr;
-  klass = Unit::lookupClass(ne);
+  klass = Class::lookup(ne);
   // We don't have the class, record or the typedef, so autoload.
   if (!klass) {
     String nameStr(const_cast<StringData*>(name));
@@ -234,10 +238,10 @@ getNamedTypeWithAutoload(const NamedEntity* ne,
       if (auto def = ne->getCachedTypeAlias()) {
         return def;
       }
-      if (auto rec = Unit::lookupRecordDesc(ne)) {
+      if (auto rec = RecordDesc::lookup(ne)) {
         return rec;
       }
-      klass = Unit::lookupClass(ne);
+      klass = Class::lookup(ne);
     }
   }
   return klass;
@@ -250,7 +254,7 @@ MaybeDataType TypeConstraint::underlyingDataTypeResolved() const {
     !hasConstraint() || isTypeVar() || isTypeConstant(),
     isMixed()));
 
-  if (!isPrecise()) return folly::none;
+  if (!isPrecise()) return std::nullopt;
 
   auto t = underlyingDataType();
   assertx(t);
@@ -275,7 +279,7 @@ MaybeDataType TypeConstraint::underlyingDataTypeResolved() const {
       if (metatype == MetaType::Precise) {
         t = getAnnotDataType(td->type);
       } else {
-        t = folly::none;
+        t = std::nullopt;
       }
     } else {
       c = td->klass;
@@ -309,7 +313,7 @@ bool TypeConstraint::maybeMixed() const {
     return def->type == AnnotType::Mixed;
   }
   // If its a known class, its definitely not mixed. Otherwise it might be.
-  return !Unit::lookupClass(m_namedEntity);
+  return !Class::lookup(m_namedEntity);
 }
 
 bool
@@ -357,8 +361,8 @@ bool TypeConstraint::equivalentForProp(const TypeConstraint& other) const {
       case MetaType::ArrayKey:
       case MetaType::Nonnull:
       case MetaType::VecOrDict:
-      case MetaType::VArrOrDArr:
       case MetaType::ArrayLike:
+      case MetaType::Classname:
       case MetaType::Precise:
         if (!tc.isObject()) {
           return std::make_tuple(tc.type(), nullptr, tc.isNullable());
@@ -437,10 +441,10 @@ bool TypeConstraint::checkNamedTypeNonObj(tv_rval val) const {
     if (auto const def = m_namedEntity->getCachedTypeAlias()) {
       return def;
     }
-    if (auto const rec = Unit::lookupRecordDesc(m_namedEntity)) {
+    if (auto const rec = RecordDesc::lookup(m_namedEntity)) {
       return rec;
     }
-    return Unit::lookupClass(m_namedEntity);
+    return Class::lookup(m_namedEntity);
   }();
   auto ptd = boost::get<const TypeAlias*>(&p);
   auto td = ptd ? *ptd : nullptr;
@@ -468,13 +472,19 @@ bool TypeConstraint::checkNamedTypeNonObj(tv_rval val) const {
         break;
       case AnnotAction::WarnClass:
       case AnnotAction::ConvertClass:
+      case AnnotAction::WarnLazyClass:
+      case AnnotAction::ConvertLazyClass:
         return false; // verifyFail will deal with the conversion/warning
-      case AnnotAction::ClsMethCheck:
-        return false;
       case AnnotAction::RecordCheck:
         assertx(result == AnnotAction::RecordCheck);
         rec = td->rec;
         break;
+      case AnnotAction::WarnClassname:
+        assertx(isClassType(val.type()) || isLazyClassType(val.type()));
+        assertx(RuntimeOption::EvalClassPassesClassname);
+        assertx(RuntimeOption::EvalClassnameNotices);
+        if (!Assert) raise_notice(Strings::CLASS_TO_CLASSNAME);
+        return true;
     }
     assertx (result == AnnotAction::ObjectCheck ||
              result == AnnotAction::RecordCheck);
@@ -550,7 +560,7 @@ bool TypeConstraint::checkTypeAliasImpl(const T* type) const {
   }();
   if (!td) return Assert;
 
-  // We found the type alias, check if an object of type cls
+  // We found the type alias, check if an object or record of type 'type'
   // is compatible
   switch (getAnnotMetaType(td->type)) {
     case AnnotMetaType::Precise:
@@ -565,9 +575,9 @@ bool TypeConstraint::checkTypeAliasImpl(const T* type) const {
     case AnnotMetaType::Number:
     case AnnotMetaType::ArrayKey:
     case AnnotMetaType::This:
-    case AnnotMetaType::VArrOrDArr:
     case AnnotMetaType::VecOrDict:
     case AnnotMetaType::ArrayLike:
+    case AnnotMetaType::Classname:  // TODO: T83332251
       return false;
     case AnnotMetaType::Self:
     case AnnotMetaType::Parent:
@@ -612,7 +622,7 @@ bool TypeConstraint::checkImpl(tv_rval val,
       // We can't save the Class* since it might move around from request to
       // request.
       assertx(m_namedEntity);
-      c = Unit::lookupClass(m_namedEntity);
+      c = Class::lookup(m_namedEntity);
       // If we're being conservative we can only use the class if its persistent
       // (otherwise what we infer may not be valid in all requests).
       if (isPasses && c && !classHasPersistentRDS(c)) c = nullptr;
@@ -655,9 +665,9 @@ bool TypeConstraint::checkImpl(tv_rval val,
         case MetaType::Precise:
         case MetaType::Number:
         case MetaType::ArrayKey:
-        case MetaType::VArrOrDArr:
         case MetaType::VecOrDict:
         case MetaType::ArrayLike:
+        case MetaType::Classname:
           return false;
         case MetaType::Nonnull:
           return true;
@@ -689,12 +699,19 @@ bool TypeConstraint::checkImpl(tv_rval val,
       return !isPasses && checkNamedTypeNonObj<isAssert, isProp>(val);
     case AnnotAction::WarnClass:
     case AnnotAction::ConvertClass:
+    case AnnotAction::WarnLazyClass:
+    case AnnotAction::ConvertLazyClass:
       return false; // verifyFail will handle the conversion/warning
-    case AnnotAction::ClsMethCheck:
-      return false;
     case AnnotAction::RecordCheck:
       assertx(isRecord());
       return !isPasses && checkNamedTypeNonObj<isAssert, isProp>(val);
+    case AnnotAction::WarnClassname:
+      if (isPasses)  return false;
+      assertx(isClassType(val.type()) || isLazyClassType(val.type()));
+      assertx(RuntimeOption::EvalClassPassesClassname);
+      assertx(RuntimeOption::EvalClassnameNotices);
+      if (!isAssert) raise_notice(Strings::CLASS_TO_CLASSNAME);
+      return true;
   }
   not_reached();
 }
@@ -724,8 +741,8 @@ bool TypeConstraint::alwaysPasses(const StringData* clsName) const {
     if (m_typeName->isame(clsName)) return true;
 
     assertx(m_namedEntity);
-    auto const c1 = Unit::lookupClass(clsName);
-    auto const c2 = Unit::lookupClass(m_namedEntity);
+    auto const c1 = Class::lookup(clsName);
+    auto const c2 = Class::lookup(m_namedEntity);
     // If both names map to persistent classes we can just check for a subtype
     // relationship.
     if (c1 && c2 &&
@@ -743,8 +760,10 @@ bool TypeConstraint::alwaysPasses(const StringData* clsName) const {
         return false;
       case AnnotAction::WarnClass:
       case AnnotAction::ConvertClass:
-      case AnnotAction::ClsMethCheck:
+      case AnnotAction::WarnLazyClass:
+      case AnnotAction::ConvertLazyClass:
       case AnnotAction::RecordCheck:
+      case AnnotAction::WarnClassname:
         // Can't get these with objects
         break;
     }
@@ -761,9 +780,9 @@ bool TypeConstraint::alwaysPasses(const StringData* clsName) const {
     case MetaType::NoReturn:
     case MetaType::Number:
     case MetaType::ArrayKey:
-    case MetaType::VArrOrDArr:
     case MetaType::VecOrDict:
     case MetaType::ArrayLike:
+    case MetaType::Classname:
       return false;
     case MetaType::Nonnull:
       return true;
@@ -791,8 +810,10 @@ bool TypeConstraint::alwaysPasses(DataType dt) const {
     case AnnotAction::ObjectCheck:
     case AnnotAction::WarnClass:
     case AnnotAction::ConvertClass:
-    case AnnotAction::ClsMethCheck:
+    case AnnotAction::WarnLazyClass:
+    case AnnotAction::ConvertLazyClass:
     case AnnotAction::RecordCheck:
+    case AnnotAction::WarnClassname:
       return false;
   }
   not_reached();
@@ -893,10 +914,6 @@ std::string describe_actual_type(tv_rval val) {
     }
     case KindOfPersistentKeyset:
     case KindOfKeyset:        return "HH\\keyset";
-    case KindOfPersistentDArray:
-    case KindOfDArray:        return "darray";
-    case KindOfPersistentVArray:
-    case KindOfVArray:        return "varray";
     case KindOfResource:
       return val.val().pres->data()->o_getClassName().c_str();
     case KindOfRFunc:         return "reified function";
@@ -920,19 +937,26 @@ std::string describe_actual_type(tv_rval val) {
 }
 
 bool TypeConstraint::checkStringCompatible() const {
-  if (isString() || (isObject() && interface_supports_string(m_typeName))) {
+  if (isString() || isArrayKey() ||
+      (isObject() && interface_supports_string(m_typeName))) {
     return true;
   }
   if (!isObject()) return false;
-  if (auto alias = getTypeAliasWithAutoload(m_namedEntity, m_typeName)) {
-    return alias->type == AnnotType::String;
+  auto p = getNamedTypeWithAutoload(m_namedEntity, m_typeName);
+  if (auto ptd = boost::get<const TypeAlias*>(&p)) {
+    auto td = *ptd;
+    return td->type == AnnotType::String ||
+           td->type == AnnotType::ArrayKey;
   }
-  return false;
-}
+  if (auto pc = boost::get<Class*>(&p)) {
+    auto c = *pc;
+    if (isEnum(c)) {
+      auto dt = c->enumBaseTy();
+      return !dt || isStringType(dt);
+    }
+  }
 
-bool TypeConstraint::convertClsMethToArrLike() const {
-  auto const result = annotCompat(KindOfClsMeth, type(), typeName());
-  return result == AnnotAction::ClsMethCheck;
+  return false;
 }
 
 void TypeConstraint::verifyParamFail(const Func* func, tv_lval val,
@@ -955,7 +979,6 @@ void castClsMeth(tv_lval c, F make) {
     val(c).pclsmeth->getClsStr(),
     val(c).pclsmeth->getFuncStr()
   ).detach();
-  tvDecRefClsMeth(c);
   val(c).parr = a;
   type(c) = a->toDataType();
 }
@@ -965,25 +988,15 @@ void castClsMeth(tv_lval c, F make) {
 void TypeConstraint::verifyOutParamFail(const Func* func,
                                         TypedValue* c,
                                         int paramNum) const {
-  if (isClassType(c->m_type) && checkStringCompatible()) {
+  if ((isClassType(c->m_type) || isLazyClassType(c->m_type)) &&
+      checkStringCompatible()) {
     if (RuntimeOption::EvalClassStringHintNotices) {
       raise_notice(Strings::CLASS_TO_STRING_IMPLICIT);
     }
-    c->m_data.pstr = const_cast<StringData*>(c->m_data.pclass->name());
+    c->m_data.pstr = isClassType(c->m_type) ?
+      const_cast<StringData*>(c->m_data.pclass->name()) :
+      const_cast<StringData*>(c->m_data.plazyclass.name());
     c->m_type = KindOfPersistentString;
-    return;
-  }
-
-  if (isClsMethType(c->m_type) && convertClsMethToArrLike()) {
-    if (RuntimeOption::EvalVecHintNotices) {
-      raise_clsmeth_compat_type_hint_outparam_notice(
-        func, displayName(func->cls()), paramNum);
-    }
-    if (RO::EvalHackArrDVArrs) {
-      castClsMeth(c, make_vec_array<String,String>);
-    } else {
-      castClsMeth(c, make_varray<String,String>);
-    }
     return;
   }
 
@@ -1036,28 +1049,15 @@ void TypeConstraint::verifyPropFail(const Class* thisCls,
     }
   }
 
-  if (isClassType(val.type()) && checkStringCompatible()) {
+  if ((isClassType(val.type()) || isLazyClassType(val.type())) &&
+      checkStringCompatible()) {
     if (RuntimeOption::EvalClassStringHintNotices) {
       raise_notice(Strings::CLASS_TO_STRING_IMPLICIT);
     }
-    val.val().pstr = const_cast<StringData*>(val.val().pclass->name());
+    val.val().pstr = isClassType(val.type()) ?
+      const_cast<StringData*>(val.val().pclass->name()) :
+      const_cast<StringData*>(val.val().plazyclass.name());
     val.type() = KindOfPersistentString;
-    return;
-  }
-
-  if (isClsMethType(val.type()) && convertClsMethToArrLike()) {
-    if (RuntimeOption::EvalVecHintNotices) {
-      raise_clsmeth_compat_type_hint_property_notice(
-        declCls, propName, displayName(nullptr), isStatic);
-    }
-    // Only trigger coercion logic if property type hints are soft
-    if ((RO::EvalCheckPropTypeHints != 3) ||
-        (isUpperBound() && RO::EvalEnforceGenericsUB < 2)) return;
-    if (RO::EvalHackArrDVArrs) {
-      castClsMeth(val, make_vec_array<String,String>);
-    } else {
-      castClsMeth(val, make_varray<String,String>);
-    }
     return;
   }
 
@@ -1091,26 +1091,15 @@ void TypeConstraint::verifyFail(const Func* func, tv_lval c,
     }
   }
 
-  if (isClassType(c.type()) && checkStringCompatible()) {
+  if ((isClassType(c.type()) || isLazyClassType(c.type())) &&
+      checkStringCompatible()) {
     if (RuntimeOption::EvalClassStringHintNotices) {
       raise_notice(Strings::CLASS_TO_STRING_IMPLICIT);
     }
-    val(c).pstr =
-      const_cast<StringData*>(val(c).pclass->name()); // TODO (T61651936)
+    val(c).pstr = isClassType(c.type()) ?
+      const_cast<StringData*>(val(c).pclass->name()) : // TODO (T61651936)
+      const_cast<StringData*>(val(c).plazyclass.name());
     c.type() = KindOfPersistentString;
-    return;
-  }
-
-  if (isClsMethType(c.type()) && convertClsMethToArrLike()) {
-    if (RuntimeOption::EvalVecHintNotices) {
-      auto const i = id == ReturnId ? folly::none : folly::make_optional(id);
-      raise_clsmeth_compat_type_hint(func, name, i);
-    }
-    if (RO::EvalHackArrDVArrs) {
-      castClsMeth(c, make_vec_array<String,String>);
-    } else {
-      castClsMeth(c, make_varray<String,String>);
-    }
     return;
   }
 
@@ -1169,7 +1158,7 @@ void TypeConstraint::verifyFail(const Func* func, tv_lval c,
       ).str()
     );
   } else {
-    auto cls = Unit::lookupClass(m_typeName);
+    auto cls = Class::lookup(m_typeName);
     if (cls && isInterface(cls)) {
       auto const msg =
         folly::format(
@@ -1224,6 +1213,7 @@ MemoKeyConstraint memoKeyConstraintFromTC(const TypeConstraint& tc) {
           return tc.isNullable() ? MK::IntOrNull : MK::Int;
         case KindOfPersistentString:
         case KindOfString:
+        case KindOfLazyClass:
           return tc.isNullable() ? MK::StrOrNull : MK::Str;
         case KindOfObject:
           return tc.isNullable() ? MK::ObjectOrNull : MK::Object;
@@ -1235,10 +1225,6 @@ MemoKeyConstraint memoKeyConstraintFromTC(const TypeConstraint& tc) {
         case KindOfDict:
         case KindOfPersistentKeyset:
         case KindOfKeyset:
-        case KindOfPersistentDArray:
-        case KindOfDArray:
-        case KindOfPersistentVArray:
-        case KindOfVArray:
         case KindOfClsMeth:
         case KindOfResource:
         case KindOfRecord:
@@ -1248,13 +1234,14 @@ MemoKeyConstraint memoKeyConstraintFromTC(const TypeConstraint& tc) {
         case KindOfFunc:
         case KindOfRClsMeth:
         case KindOfClass:
-        case KindOfLazyClass:
           always_assert_flog(false, "Unexpected DataType");
       }
       not_reached();
     }
     case AnnotMetaType::ArrayKey:
       return tc.isNullable() ? MK::None : MK::IntOrStr;
+    case AnnotMetaType::Classname:
+      return tc.isNullable() ? MK::StrOrNull : MK::Str;
     case AnnotMetaType::Mixed:
     case AnnotMetaType::Nothing:
     case AnnotMetaType::NoReturn:
@@ -1264,7 +1251,6 @@ MemoKeyConstraint memoKeyConstraintFromTC(const TypeConstraint& tc) {
     case AnnotMetaType::Parent:
     case AnnotMetaType::Callable:
     case AnnotMetaType::Number:
-    case AnnotMetaType::VArrOrDArr:
     case AnnotMetaType::VecOrDict:
     case AnnotMetaType::ArrayLike:
       return MK::None;

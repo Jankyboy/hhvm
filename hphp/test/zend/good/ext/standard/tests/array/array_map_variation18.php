@@ -24,12 +24,7 @@ function callback($a)
 echo "*** Testing array_map() : unexpected values for 'arr1' ***\n";
 
 //get an unset array variable
-$unset_var1 = varray[1, 2];
-unset ($unset_var1);
 
-// get an unset variable
-$unset_var2 = 10;
-unset ($unset_var2);
 
 // heredoc string
 $heredoc = <<<EOT
@@ -77,21 +72,16 @@ $unexpected_inputs = varray[
        // object data
 /*21*/ new classA(),
 
-       // undefined data
-/*22*/ @$undefined_var,
 
-       // unset data
-/*23*/ @$unset_var1,
-       @$unset_var2,
 
        // resource variable
-/*25*/ $fp
+/*22*/ $fp
 ];
 
 // loop through each element of $unexpected_inputs to check the behavior of array_map
 for($count = 0; $count < count($unexpected_inputs); $count++) {
   echo "-- Iteration ".($count + 1)." --\n";
-  var_dump( array_map(fun('callback'), $unexpected_inputs[$count]));
+  var_dump( array_map(callback<>, $unexpected_inputs[$count]));
 };
 
 fclose($fp);

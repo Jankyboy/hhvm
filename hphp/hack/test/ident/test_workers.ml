@@ -1,6 +1,6 @@
 module Hh_bucket = Bucket (* Bucket is shadowed by Core_kernel *)
 
-open Core_kernel
+open Hh_prelude
 
 module IntKey = struct
   type t = int
@@ -21,7 +21,7 @@ module Ids =
     end)
 
 let entry =
-  WorkerController.register_entry_point ~restore:(fun () ~(worker_id : int) ->
+  WorkerControllerEntryPoint.register ~restore:(fun () ~(worker_id : int) ->
       Hh_logger.set_id (Printf.sprintf "test_workers %d" worker_id))
 
 let () =
@@ -42,14 +42,16 @@ let () =
         shm_min_avail = 0;
         log_level = 0;
         sample_rate = 0.0;
+        compression = 0;
       }
   in
   let workers =
     MultiWorker.make
       ?call_wrapper:None
+      ~longlived_workers:false
       ~saved_state:()
       ~entry
-      ~nbr_procs:num_workers
+      num_workers
       ~gc_control:(Gc.get ())
       ~heap_handle:handle
   in
@@ -87,6 +89,7 @@ let () =
   let all_ids_len = num_jobs * ids_per_job in
   let all_ids = Array.create ~len:all_ids_len 0 in
   for job_id = 0 to num_jobs - 1 do
+    (* Might raise {!SharedMem.Shared_mem_not_found} *)
     let ids = Ids.find_unsafe job_id in
     for i = 0 to ids_per_job - 1 do
       all_ids.((job_id * ids_per_job) + i) <- ids.(i)

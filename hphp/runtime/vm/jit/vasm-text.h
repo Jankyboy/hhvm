@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_VASM_TEXT_H_
-#define incl_HPHP_JIT_VASM_TEXT_H_
+#pragma once
 
 #include "hphp/runtime/vm/jit/types.h"
 #include "hphp/runtime/vm/jit/containers.h"
@@ -90,6 +89,9 @@ struct Vtext {
    */
   const jit::vector<Varea>& areas() const { return m_areas; }
 
+  // Get the underlying address backing the code at `a'.
+  CodeAddress toDestAddress(CodeAddress a);
+
 private:
   jit::vector<Varea> m_areas; // indexed by AreaIndex
   DataBlock& m_data;
@@ -101,4 +103,3 @@ private:
 
 #include "hphp/runtime/vm/jit/vasm-text-inl.h"
 
-#endif

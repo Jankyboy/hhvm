@@ -10,6 +10,10 @@
 open Hh_prelude
 open Aast
 
+type class_or_typedef_result =
+  | ClassResult of Decl_provider.class_decl
+  | TypedefResult of Typing_defs.typedef_type
+
 (** {!Tast_env.env} is just an alias to {!Typing_env.env}, and the functions we
     provide for it are largely just aliases to functions that take a
     {!Typing_env.env}.
@@ -40,7 +44,7 @@ let print_error_ty = Typing_print.error
 let print_ty_with_identity env phase_ty sym_occurrence sym_definition =
   match phase_ty with
   | Typing_defs.DeclTy ty ->
-    let (env, ty) = Typing_phase.localize_with_self env ty in
+    let (env, ty) = Typing_phase.localize_no_subst env ~ignore_errors:true ty in
     Typing_print.full_with_identity env ty sym_occurrence sym_definition
   | Typing_defs.LoclTy ty ->
     Typing_print.full_with_identity env ty sym_occurrence sym_definition
@@ -53,12 +57,24 @@ let get_self_id = Typing_env.get_self_id
 
 let get_self_ty = Typing_env.get_self_ty
 
+let get_parent_id = Typing_env.get_parent_id
+
 let get_self_ty_exn env =
   match get_self_ty env with
   | Some self_ty -> self_ty
   | None -> raise Not_in_class
 
 let get_class = Typing_env.get_class
+
+let get_class_or_typedef env x =
+  match Typing_env.get_class_or_typedef env x with
+  | Some (Typing_env.ClassResult cd) -> Some (ClassResult cd)
+  | Some (Typing_env.TypedefResult td) -> Some (TypedefResult td)
+  | None -> None
+
+let is_in_expr_tree = Typing_env.is_in_expr_tree
+
+let set_in_expr_tree = Typing_env.set_in_expr_tree
 
 let is_static = Typing_env.is_static
 
@@ -87,9 +103,38 @@ let get_val_kind = Typing_env.get_val_kind
 
 let get_file = Typing_env.get_file
 
+let get_deps_mode = Typing_env.get_deps_mode
+
 let fully_expand = Typing_expand.fully_expand
 
-let get_class_ids = Typing_utils.get_class_ids
+(*****************************************************************************)
+(* Given some class type or unresolved union of class types, return the
+ * identifiers of all classes the type may represent.
+ *
+ * Intended for uses like constructing call graphs and finding references, where
+ * we have the statically known class type of some runtime value or class ID and
+ * we would like the name of that class. *)
+(*****************************************************************************)
+let get_class_ids env ty =
+  let open Typing_defs in
+  let rec aux seen acc ty =
+    match get_node ty with
+    | Tclass ((_, cid), _, _) -> cid :: acc
+    | Toption ty
+    | Tdependent (_, ty)
+    | Tnewtype (_, _, ty) ->
+      aux seen acc ty
+    | Tunion tys
+    | Tintersection tys ->
+      List.fold tys ~init:acc ~f:(aux seen)
+    | Tgeneric (name, targs) when not (List.mem ~equal:String.equal seen name)
+      ->
+      let seen = name :: seen in
+      let upper_bounds = Typing_env.get_upper_bounds env name targs in
+      Typing_set.fold (fun ty acc -> aux seen acc ty) upper_bounds acc
+    | _ -> acc
+  in
+  List.rev (aux [] [] (Typing_expand.fully_expand env ty))
 
 let non_null = Typing_solver.non_null
 
@@ -105,7 +150,7 @@ let hint_to_ty env = Decl_hint.hint env.Typing_env_types.decl_env
 
 let localize env ety_env = Typing_phase.localize ~ety_env env
 
-let localize_with_self = Typing_phase.localize_with_self
+let localize_no_subst = Typing_phase.localize_no_subst
 
 let get_upper_bounds = Typing_env.get_upper_bounds
 
@@ -135,17 +180,8 @@ let is_sub_type_for_union env ty_sub ty_super =
 
 let referenced_typeconsts env root ids =
   let root = hint_to_ty env root in
-  let ety_env =
-    {
-      (Typing_phase.env_with_self env) with
-      Typing_defs.from_class = Some CIstatic;
-    }
-  in
-  Typing_taccess.referenced_typeconsts
-    env
-    ety_env
-    (root, ids)
-    ~on_error:Errors.unify_error
+  let ety_env = Typing_defs.empty_expand_env in
+  Typing_taccess.referenced_typeconsts env ety_env (root, ids)
 
 let empty ctx = Typing_env.empty ctx Relative_path.default ~droot:None
 
@@ -164,57 +200,61 @@ let restore_saved_env env saved_env =
       {
         env.Env.genv with
         Env.tcopt = saved_env.Tast.tcopt;
-        Env.fun_mutable = saved_env.Tast.fun_mutable;
         Env.condition_types = saved_env.Tast.condition_types;
       };
     Env.inference_env =
       Typing_inference_env.simple_merge
         env.Env.inference_env
         saved_env.Tast.inference_env;
-    Env.global_tpenv = saved_env.Tast.tpenv;
-    Env.lenv =
-      {
-        env.Env.lenv with
-        Env.local_reactive = saved_env.Tast.reactivity;
-        Env.local_mutability = saved_env.Tast.local_mutability;
-      };
+    Env.tpenv = saved_env.Tast.tpenv;
+    Env.fun_tast_info = saved_env.Tast.fun_tast_info;
   }
 
 module EnvFromDef = Typing_env_from_def
 open Tast
 
-let restore_method_env env m = restore_saved_env env m.m_annotation
+let check_fun_tast_info_present env = function
+  | Some _ -> ()
+  | None ->
+    Errors.internal_error
+      env.Typing_env_types.function_pos
+      "fun_tast_info of a function or method was not filled in before TAST checking"
 
-let restore_fun_env env f = restore_saved_env env f.f_annotation
+let restore_method_env env m =
+  let se = m.m_annotation in
+  restore_saved_env env se
 
-let restore_pu_enum_env env pu = restore_saved_env env pu.pu_annotation
+let restore_fun_env env f =
+  let se = f.f_annotation in
+  restore_saved_env env se
 
-let fun_env ctx f =
+let fun_env ctx fd =
+  let f = fd.fd_fun in
   let ctx =
     Provider_context.map_tcopt ctx ~f:(fun _tcopt -> f.f_annotation.tcopt)
   in
-  let env = EnvFromDef.fun_env ctx f in
+  let env = EnvFromDef.fun_env ~origin:Decl_counters.Tast ctx fd in
   restore_fun_env env f
 
 let class_env ctx c =
   let ctx =
     Provider_context.map_tcopt ctx ~f:(fun _tcopt -> c.c_annotation.tcopt)
   in
-  let env = EnvFromDef.class_env ctx c in
+  let env = EnvFromDef.class_env ~origin:Decl_counters.Tast ctx c in
   restore_saved_env env c.c_annotation
 
 let typedef_env ctx t =
   let ctx =
     Provider_context.map_tcopt ctx ~f:(fun _tcopt -> t.t_annotation.tcopt)
   in
-  let env = EnvFromDef.typedef_env ctx t in
+  let env = EnvFromDef.typedef_env ~origin:Decl_counters.Tast ctx t in
   restore_saved_env env t.t_annotation
 
 let gconst_env ctx cst =
   let ctx =
     Provider_context.map_tcopt ctx ~f:(fun _tcopt -> cst.cst_annotation.tcopt)
   in
-  let env = EnvFromDef.gconst_env ctx cst in
+  let env = EnvFromDef.gconst_env ~origin:Decl_counters.Tast ctx cst in
   restore_saved_env env cst.cst_annotation
 
 let def_env ctx d =
@@ -248,34 +288,37 @@ let is_typedef = Typing_env.is_typedef
 
 let get_typedef = Typing_env.get_typedef
 
+let is_typedef_visible = Typing_env.is_typedef_visible
+
 let is_enum = Typing_env.is_enum
 
-let env_reactivity = Typing_env_types.env_reactivity
-
-let function_is_mutable = Typing_env.function_is_mutable
-
-let local_is_mutable = Typing_env.local_is_mutable
-
-let get_env_mutability = Typing_env.get_env_mutability
-
 let get_fun = Typing_env.get_fun
-
-let set_env_reactive = Typing_env.set_env_reactive
 
 let set_allow_wildcards env =
   { env with Typing_env_types.allow_wildcards = true }
 
 let get_allow_wildcards env = env.Typing_env_types.allow_wildcards
 
-let condition_type_matches = Typing_reactivity.condition_type_matches
+let is_enum_class env c = Typing_env.is_enum_class env c
 
-(* ocaml being ocaml...
- * We need at least one explicit reference to the Typing_pocket_univereses
- * module otherwise the compiler will not include it in the resulting binary.
- * Because of cyclic module dependencies, this is never done directly (we
- * rely on references in Typing_utils), so I need this dummy occurence just
- * to make sure the code is present.
- *)
-let _ =
-  let _ = Typing_pocket_universes.expand_pocket_universes in
-  ()
+let extract_from_fun_tast_info env extractor default_value =
+  let fun_tast_info = env.Typing_env_types.fun_tast_info in
+  check_fun_tast_info_present env fun_tast_info;
+  match fun_tast_info with
+  | Some fun_tast_info -> extractor fun_tast_info
+  | None ->
+    (* In this case, check_fun_tast_info_present reported an error already *)
+    default_value
+
+let fun_has_implicit_return (env : t) =
+  extract_from_fun_tast_info env (fun info -> info.has_implicit_return) false
+
+let named_fun_body_is_unsafe (env : t) =
+  extract_from_fun_tast_info env (fun info -> info.named_body_is_unsafe) false
+
+let get_const env cls name = Typing_env.get_const env cls name
+
+let consts env cls = Typing_env.consts env cls
+
+let fill_in_pos_filename_if_in_current_decl =
+  Typing_env.fill_in_pos_filename_if_in_current_decl

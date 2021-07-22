@@ -62,9 +62,6 @@ bool(false)
 Warning: Invalid argument: type: INVALID_TYPE in %s/test/slow/invalid_argument/1381.php on line %d
 bool(false)
 
-Warning: Invalid argument: assert option -1 is not supported in %s/test/slow/invalid_argument/1381.php on line %d
-bool(false)
-
 Warning: Invalid argument: class not found: INVALID_CLASS in %s/test/slow/invalid_argument/1381.php on line %d
 NULL
 
@@ -81,7 +78,7 @@ int(69)
 Warning: Invalid argument: arrays: (inconsistent sizes) in %s/test/slow/invalid_argument/1381.php on line %d
 bool(false)
 string(37) "eat pizza, beer, and fiber every day."
-string(28) "good goArrayy miss moArrayy!"
+string(25) "Undefined variable: count"
 
 Warning: Invalid argument: locale: not string) in %s/test/slow/invalid_argument/1381.php on line %d
 string(5) "de_DE"
@@ -123,19 +120,19 @@ bool(false)
 Warning: Invalid argument: charlist: Invalid '..'-range, missing left of '..' in %s/test/slow/invalid_argument/1381.php on line %d
 
 Warning: Invalid argument: charlist: Invalid '..'-range, missing right of '..' in %s/test/slow/invalid_argument/1381.php on line %d
-darray(1) {
+dict(1) {
   [0]=>
   string(3) "abc"
 }
 
 Warning: Invalid argument: charlist: '..'-range needs to be incrementing in %s/test/slow/invalid_argument/1381.php on line %d
-darray(1) {
+dict(1) {
   [0]=>
   string(3) "abc"
 }
 
 Warning: Invalid argument: charlist: Invalid '..'-range in %s/test/slow/invalid_argument/1381.php on line %d
-darray(1) {
+dict(1) {
   [0]=>
   string(3) "abc"
 }

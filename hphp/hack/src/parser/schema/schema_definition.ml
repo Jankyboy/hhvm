@@ -23,8 +23,6 @@ type aggregate_type =
   | ObjectCreationWhat
   | TODO
   | Name
-  | PUMapping
-  | PUField
 
 type child_spec =
   | Token (* Special case, since it's so common, synonym of `Just "Token"` *)
@@ -164,11 +162,24 @@ let schema : schema_node list =
           ("colon", Token);
           ("base", Aggregate Specifier);
           ("type", ZeroOrOne (Just "TypeConstraint"));
-          ("includes_keyword", ZeroOrOne Token);
-          ("includes_list", ZeroOrMore (Aggregate Specifier));
           ("left_brace", Token);
+          ("use_clauses", ZeroOrMore (Just "EnumUse"));
           ("enumerators", ZeroOrMore (Just "Enumerator"));
           ("right_brace", Token);
+        ];
+    };
+    {
+      kind_name = "EnumUse";
+      type_name = "enum_use";
+      func_name = "enum_use";
+      description = "enum_use";
+      prefix = "enum_use";
+      aggregates = [];
+      fields =
+        [
+          ("keyword", Token);
+          ("names", ZeroOrMore (Aggregate Specifier));
+          ("semicolon", Token);
         ];
     };
     {
@@ -183,6 +194,44 @@ let schema : schema_node list =
           ("name", Token);
           ("equal", Token);
           ("value", Aggregate Expression);
+          ("semicolon", Token);
+        ];
+    };
+    {
+      kind_name = "EnumClassDeclaration";
+      type_name = "enum_class_declaration";
+      func_name = "enum_class_declaration";
+      description = "enum_class_declaration";
+      prefix = "enum_class";
+      aggregates = [TopLevelDeclaration];
+      fields =
+        [
+          ("attribute_spec", ZeroOrOne (Aggregate AttributeSpecification));
+          ("enum_keyword", Token);
+          ("class_keyword", Token);
+          ("name", Token);
+          ("colon", Token);
+          ("base", Aggregate Specifier);
+          ("extends", ZeroOrOne Token);
+          ("extends_list", ZeroOrMore (Aggregate Specifier));
+          ("left_brace", Token);
+          ("elements", ZeroOrMore (Just "EnumClassEnumerator"));
+          ("right_brace", Token);
+        ];
+    };
+    {
+      kind_name = "EnumClassEnumerator";
+      type_name = "enum_class_enumerator";
+      func_name = "enum_class_enumerator";
+      description = "enum_class_enumerator";
+      prefix = "enum_class_enumerator";
+      aggregates = [];
+      fields =
+        [
+          ("type", Aggregate Specifier);
+          ("name", Token);
+          ("equal", Token);
+          ("initial_value", Aggregate Expression);
           ("semicolon", Token);
         ];
     };
@@ -237,6 +286,25 @@ let schema : schema_node list =
           ("constraint", ZeroOrOne (Just "TypeConstraint"));
           ("equal", ZeroOrOne Token);
           ("type", Aggregate Specifier);
+          ("semicolon", Token);
+        ];
+    };
+    {
+      kind_name = "ContextAliasDeclaration";
+      type_name = "context_alias_declaration";
+      func_name = "context_alias_declaration";
+      description = "context_alias_declaration";
+      prefix = "ctx_alias";
+      aggregates = [TopLevelDeclaration];
+      fields =
+        [
+          ("attribute_spec", ZeroOrOne (Aggregate AttributeSpecification));
+          ("keyword", Token);
+          ("name", ZeroOrOne Token);
+          ("generic_parameter", ZeroOrOne (Just "TypeParameters"));
+          ("as_constraint", ZeroOrOne (Just "ContextConstraint"));
+          ("equal", ZeroOrOne Token);
+          ("context", Aggregate Specifier);
           ("semicolon", Token);
         ];
     };
@@ -389,27 +457,25 @@ let schema : schema_node list =
           ("left_paren", Token);
           ("parameter_list", ZeroOrMore (Aggregate Parameter));
           ("right_paren", Token);
-          ("capability_provisional", ZeroOrOne (Just "CapabilityProvisional"));
+          ("contexts", ZeroOrOne (Just "Contexts"));
           ("colon", ZeroOrOne Token);
+          ("readonly_return", ZeroOrOne Token);
           ("type", ZeroOrOne (Just "AttributizedSpecifier"));
           ("where_clause", ZeroOrOne (Just "WhereClause"));
         ];
     };
     {
-      kind_name = "CapabilityProvisional";
-      type_name = "capability_provisional";
-      func_name = "capability_provisional";
-      description = "capability_provisional";
-      prefix = "capability_provisional";
-      aggregates = [];
+      kind_name = "Contexts";
+      type_name = "contexts";
+      func_name = "contexts";
+      description = "contexts";
+      prefix = "contexts";
+      aggregates = [Specifier];
       fields =
         [
-          ("at", Token);
-          ("left_brace", Token);
-          ("type", Aggregate Specifier);
-          ("unsafe_plus", ZeroOrOne Token);
-          ("unsafe_type", ZeroOrOne (Aggregate Specifier));
-          ("right_brace", Token);
+          ("left_bracket", Token);
+          ("types", ZeroOrMore (Aggregate Specifier));
+          ("right_bracket", Token);
         ];
     };
     {
@@ -629,6 +695,26 @@ let schema : schema_node list =
         ];
     };
     {
+      kind_name = "ContextConstDeclaration";
+      type_name = "context_const_declaration";
+      func_name = "context_const_declaration";
+      description = "context_const_declaration";
+      prefix = "context_const";
+      aggregates = [ClassBodyDeclaration];
+      fields =
+        [
+          ("modifiers", ZeroOrOne Token);
+          ("const_keyword", Token);
+          ("ctx_keyword", Token);
+          ("name", Token);
+          ("type_parameters", ZeroOrOne (Just "TypeParameters"));
+          ("constraint", ZeroOrMore (Just "ContextConstraint"));
+          ("equal", ZeroOrOne Token);
+          ("ctx_list", ZeroOrOne (Just "Contexts"));
+          ("semicolon", Token);
+        ];
+    };
+    {
       kind_name = "DecoratedExpression";
       type_name = "decorated_expression";
       func_name = "decorated_expression";
@@ -649,6 +735,7 @@ let schema : schema_node list =
           ("attribute", ZeroOrOne (Aggregate AttributeSpecification));
           ("visibility", ZeroOrOne Token);
           ("call_convention", ZeroOrOne Token);
+          ("readonly", ZeroOrOne Token);
           ("type", ZeroOrOne (Aggregate Specifier));
           ("name", Aggregate Expression);
           ("default_value", ZeroOrOne (Just "SimpleInitializer"));
@@ -750,7 +837,8 @@ let schema : schema_node list =
       description = "markup_section";
       prefix = "markup";
       aggregates = [TopLevelDeclaration; Statement];
-      fields = [("text", Token); ("suffix", ZeroOrOne (Just "MarkupSuffix"))];
+      fields =
+        [("hashbang", Token); ("suffix", ZeroOrOne (Just "MarkupSuffix"))];
     };
     {
       kind_name = "MarkupSuffix";
@@ -1047,22 +1135,13 @@ let schema : schema_node list =
         ];
     };
     {
-      kind_name = "GotoLabel";
-      type_name = "goto_label";
-      func_name = "goto_label";
-      description = "goto_label";
-      prefix = "goto_label";
+      kind_name = "YieldBreakStatement";
+      type_name = "yield_break_statement";
+      func_name = "yield_break_statement";
+      description = "yield_break_statement";
+      prefix = "yield_break";
       aggregates = [TopLevelDeclaration; Statement];
-      fields = [("name", Token); ("colon", Token)];
-    };
-    {
-      kind_name = "GotoStatement";
-      type_name = "goto_statement";
-      func_name = "goto_statement";
-      description = "goto_statement";
-      prefix = "goto_statement";
-      aggregates = [TopLevelDeclaration; Statement];
-      fields = [("keyword", Token); ("label_name", Token); ("semicolon", Token)];
+      fields = [("keyword", Token); ("break", Token); ("semicolon", Token)];
     };
     {
       kind_name = "ThrowStatement";
@@ -1158,13 +1237,14 @@ let schema : schema_node list =
       fields =
         [
           ("attribute_spec", ZeroOrOne (Aggregate AttributeSpecification));
-          ("static_keyword", ZeroOrOne Token);
           ("async_keyword", ZeroOrOne Token);
           ("function_keyword", Token);
           ("left_paren", Token);
           ("parameters", ZeroOrMore (Aggregate Parameter));
           ("right_paren", Token);
+          ("ctx_list", ZeroOrOne (Just "Contexts"));
           ("colon", ZeroOrOne Token);
+          ("readonly_return", ZeroOrOne Token);
           ("type", ZeroOrOne (Aggregate Specifier));
           ("use", ZeroOrOne (Just "AnonymousFunctionUseClause"));
           ("body", Just "CompoundStatement");
@@ -1213,7 +1293,9 @@ let schema : schema_node list =
           ("left_paren", Token);
           ("parameters", ZeroOrMore (Aggregate Parameter));
           ("right_paren", Token);
+          ("contexts", ZeroOrOne (Just "Contexts"));
           ("colon", ZeroOrOne Token);
+          ("readonly_return", ZeroOrOne Token);
           ("type", ZeroOrOne (Aggregate Specifier));
         ];
     };
@@ -1396,21 +1478,6 @@ let schema : schema_node list =
         ];
     };
     {
-      kind_name = "DefineExpression";
-      type_name = "define_expression";
-      func_name = "define_expression";
-      description = "define_expression";
-      prefix = "define";
-      aggregates = [Expression; ConstructorExpression; LambdaBody];
-      fields =
-        [
-          ("keyword", Token);
-          ("left_paren", Token);
-          ("argument_list", ZeroOrMore (Aggregate Expression));
-          ("right_paren", Token);
-        ];
-    };
-    {
       kind_name = "IssetExpression";
       type_name = "isset_expression";
       func_name = "isset_expression";
@@ -1436,6 +1503,7 @@ let schema : schema_node list =
         [
           ("receiver", Aggregate Expression);
           ("type_args", ZeroOrOne (Just "TypeArguments"));
+          ("enum_class_label", ZeroOrOne (Aggregate Expression));
           ("left_paren", Token);
           ("argument_list", ZeroOrMore (Aggregate Expression));
           ("right_paren", Token);
@@ -1476,6 +1544,21 @@ let schema : schema_node list =
       aggregates = [Expression; ConstructorExpression; LambdaBody];
       fields =
         [
+          ("left_brace", Token);
+          ("expression", Aggregate Expression);
+          ("right_brace", Token);
+        ];
+    };
+    {
+      kind_name = "ETSpliceExpression";
+      type_name = "et_splice_expression";
+      func_name = "et_splice_expression";
+      description = "et_splice_expression";
+      prefix = "et_splice_expression";
+      aggregates = [Expression; ConstructorExpression; LambdaBody];
+      fields =
+        [
+          ("dollar", Token);
           ("left_brace", Token);
           ("expression", Aggregate Expression);
           ("right_brace", Token);
@@ -1896,20 +1979,6 @@ let schema : schema_node list =
         ];
     };
     {
-      kind_name = "PUAccess";
-      type_name = "pu_access";
-      func_name = "pu_access";
-      description = "pu_access";
-      prefix = "pu_access";
-      aggregates = [Statement];
-      fields =
-        [
-          ("left_type", Aggregate Specifier);
-          ("separator", Token);
-          ("right_type", Token);
-        ];
-    };
-    {
       kind_name = "VectorTypeSpecifier";
       type_name = "vector_type_specifier";
       func_name = "vector_type_specifier";
@@ -1973,19 +2042,13 @@ let schema : schema_node list =
         ];
     };
     {
-      kind_name = "VectorArrayTypeSpecifier";
-      type_name = "vector_array_type_specifier";
-      func_name = "vector_array_type_specifier";
-      description = "vector_array_type_specifier";
-      prefix = "vector_array";
+      kind_name = "FunctionCtxTypeSpecifier";
+      type_name = "function_ctx_type_specifier";
+      func_name = "function_ctx_type_specifier";
+      description = "function_ctx_type_specifier";
+      prefix = "function_ctx_type";
       aggregates = [Specifier];
-      fields =
-        [
-          ("keyword", Token);
-          ("left_angle", Token);
-          ("type", Aggregate Specifier);
-          ("right_angle", Token);
-        ];
+      fields = [("keyword", Token); ("variable", Just "VariableExpression")];
     };
     {
       kind_name = "TypeParameter";
@@ -2014,6 +2077,15 @@ let schema : schema_node list =
       fields = [("keyword", Token); ("type", Aggregate Specifier)];
     };
     {
+      kind_name = "ContextConstraint";
+      type_name = "context_constraint";
+      func_name = "context_constraint";
+      description = "context_constraint";
+      prefix = "ctx_constraint";
+      aggregates = [];
+      fields = [("keyword", Token); ("ctx_list", ZeroOrOne (Just "Contexts"))];
+    };
+    {
       kind_name = "DarrayTypeSpecifier";
       type_name = "darray_type_specifier";
       func_name = "darray_type_specifier";
@@ -2028,23 +2100,6 @@ let schema : schema_node list =
           ("comma", Token);
           ("value", Just "SimpleTypeSpecifier");
           ("trailing_comma", ZeroOrOne Token);
-          ("right_angle", Token);
-        ];
-    };
-    {
-      kind_name = "MapArrayTypeSpecifier";
-      type_name = "map_array_type_specifier";
-      func_name = "map_array_type_specifier";
-      description = "map_array_type_specifier";
-      prefix = "map_array";
-      aggregates = [Specifier];
-      fields =
-        [
-          ("keyword", Token);
-          ("left_angle", Token);
-          ("key", Aggregate Specifier);
-          ("comma", Token);
-          ("value", Aggregate Specifier);
           ("right_angle", Token);
         ];
     };
@@ -2073,11 +2128,14 @@ let schema : schema_node list =
       fields =
         [
           ("outer_left_paren", Token);
+          ("readonly_keyword", ZeroOrOne Token);
           ("function_keyword", Token);
           ("inner_left_paren", Token);
           ("parameter_list", ZeroOrMore (Just "ClosureParameterTypeSpecifier"));
           ("inner_right_paren", Token);
+          ("contexts", ZeroOrOne (Just "Contexts"));
           ("colon", Token);
+          ("readonly_return", ZeroOrOne Token);
           ("return_type", Aggregate Specifier);
           ("outer_right_paren", Token);
         ];
@@ -2090,7 +2148,11 @@ let schema : schema_node list =
       prefix = "closure_parameter";
       aggregates = [Specifier];
       fields =
-        [("call_convention", ZeroOrOne Token); ("type", Aggregate Specifier)];
+        [
+          ("call_convention", ZeroOrOne Token);
+          ("readonly", ZeroOrOne Token);
+          ("type", Aggregate Specifier);
+        ];
     };
     {
       kind_name = "ClassnameTypeSpecifier";
@@ -2334,135 +2396,17 @@ let schema : schema_node list =
       fields = [("item", Just "error"); ("separator", Token)];
     };
     {
-      kind_name = "PocketAtomExpression";
-      type_name = "pocket_atom_expression";
-      func_name = "pocket_atom_expression";
-      description = "pocket_atom";
-      prefix = "pocket_atom";
+      kind_name = "EnumClassLabelExpression";
+      type_name = "enum_class_label_expression";
+      func_name = "enum_class_label_expression";
+      description = "enum_class_label";
+      prefix = "enum_class_label";
       aggregates = [Expression];
-      fields = [("glyph", Token); ("expression", Token)];
-    }
-    (* Syntax for Class:@Field::name where
-     Class is the qualifier
-     pu_operator must be :@
-     Field is the field
-     operator must be ::
-     name is the name
-  *);
-    {
-      kind_name = "PocketIdentifierExpression";
-      type_name = "pocket_identifier_expression";
-      func_name = "pocket_identifier_expression";
-      description = "pocket_identifier";
-      prefix = "pocket_identifier";
-      aggregates = [Expression; ConstructorExpression; LambdaBody];
       fields =
         [
-          ("qualifier", Aggregate Expression);
-          ("pu_operator", Token);
-          ("field", Aggregate Expression);
-          ("operator", Token);
-          ("name", Aggregate Expression);
-        ];
-    }
-    (* PocketUniverse: because of the trailing ';' I didn't want to
-   add the aggragte PUField to PocketAtomExpression, so I made the ( ... )
-   part optional. It will be up to the parser to only parse the two
-   possible syntax:
-   :@A;
-   :@A ( ... );
-*);
-    {
-      kind_name = "PocketAtomMappingDeclaration";
-      type_name = "pocket_atom_mapping_declaration";
-      func_name = "pocket_atom_mapping_declaration";
-      description = "pocket_atom_mapping";
-      prefix = "pocket_atom_mapping";
-      aggregates = [PUField];
-      fields =
-        [
-          ("glyph", Token);
-          ("name", Aggregate Expression);
-          ("left_paren", ZeroOrOne Token);
-          ("mappings", ZeroOrMore (Aggregate PUMapping));
-          ("right_paren", ZeroOrOne Token);
-          ("semicolon", Token);
-        ];
-    };
-    {
-      kind_name = "PocketEnumDeclaration";
-      type_name = "pocket_enum_declaration";
-      func_name = "pocket_enum_declaration";
-      description = "pocket_enum_declaration";
-      prefix = "pocket_enum";
-      aggregates = [ClassBodyDeclaration];
-      fields =
-        [
-          ("attributes", ZeroOrOne (Aggregate AttributeSpecification));
-          ("modifiers", ZeroOrMore Token);
-          ("enum", Token);
-          ("name", Token);
-          ("left_brace", Token);
-          ("fields", ZeroOrMore (Aggregate PUField));
-          ("right_brace", Token);
-        ];
-    };
-    {
-      kind_name = "PocketFieldTypeExprDeclaration";
-      type_name = "pocket_field_type_expr_declaration";
-      func_name = "pocket_field_type_expr_declaration";
-      description = "pocket_field_type_expr_declaration";
-      prefix = "pocket_field_type_expr";
-      aggregates = [PUField];
-      fields =
-        [
-          ("case", Token);
-          ("type", Aggregate Specifier);
-          ("name", Aggregate Expression);
-          ("semicolon", Token);
-        ];
-    };
-    {
-      kind_name = "PocketFieldTypeDeclaration";
-      type_name = "pocket_field_type_declaration";
-      func_name = "pocket_field_type_declaration";
-      description = "pocket_field_type_declaration";
-      prefix = "pocket_field_type";
-      aggregates = [PUField];
-      fields =
-        [
-          ("case", Token);
-          ("type", Token);
-          ("type_parameter", Just "TypeParameter");
-          ("semicolon", Token);
-        ];
-    };
-    {
-      kind_name = "PocketMappingIdDeclaration";
-      type_name = "pocket_mapping_id_declaration";
-      func_name = "pocket_mapping_id_declaration";
-      description = "pocket_mapping_id_declaration";
-      prefix = "pocket_mapping_id";
-      aggregates = [PUMapping];
-      fields =
-        [
-          ("name", Aggregate Expression);
-          ("initializer", Just "SimpleInitializer");
-        ];
-    };
-    {
-      kind_name = "PocketMappingTypeDeclaration";
-      type_name = "pocket_mapping_type_declaration";
-      func_name = "pocket_mapping_type_declaration";
-      description = "pocket_mapping_type_declaration";
-      prefix = "pocket_mapping_type";
-      aggregates = [PUMapping];
-      fields =
-        [
-          ("keyword", Token);
-          ("name", Aggregate Expression);
-          ("equal", Token);
-          ("type", Aggregate Specifier);
+          ("qualifier", ZeroOrOne (Aggregate Expression));
+          ("hash", Token);
+          ("expression", Token);
         ];
     };
   ]
@@ -2486,8 +2430,6 @@ let generated_aggregate_types =
     ObjectCreationWhat;
     TODO;
     Name;
-    PUField;
-    PUMapping;
   ]
 
 let string_of_aggregate_type = function
@@ -2506,8 +2448,6 @@ let string_of_aggregate_type = function
   | ObjectCreationWhat -> "ObjectCreationWhat"
   | TODO -> "TODO"
   | Name -> "Name"
-  | PUField -> "PUField"
-  | PUMapping -> "PUMapping"
 
 module AggregateKey = struct
   type t = aggregate_type
@@ -2562,12 +2502,6 @@ let aggregation_of_todo_aggregate =
 let aggregation_of_name_aggregate =
   List.filter (fun x -> List.mem Name x.aggregates) schema
 
-let aggregation_of_pufield_aggregate =
-  List.filter (fun x -> List.mem PUField x.aggregates) schema
-
-let aggregation_of_pumapping_aggregate =
-  List.filter (fun x -> List.mem PUMapping x.aggregates) schema
-
 let aggregation_of = function
   | TopLevelDeclaration -> aggregation_of_top_level_declaration
   | Expression -> aggregation_of_expression
@@ -2584,8 +2518,6 @@ let aggregation_of = function
   | ObjectCreationWhat -> aggregation_of_object_creation_what
   | TODO -> aggregation_of_todo_aggregate
   | Name -> aggregation_of_name_aggregate
-  | PUField -> aggregation_of_pufield_aggregate
-  | PUMapping -> aggregation_of_pumapping_aggregate
 
 let aggregate_type_name = function
   | TopLevelDeclaration -> "top_level_declaration"
@@ -2603,8 +2535,6 @@ let aggregate_type_name = function
   | ObjectCreationWhat -> "object_creation_what"
   | TODO -> "todo_aggregate"
   | Name -> "name_aggregate"
-  | PUField -> "pufield_aggregate"
-  | PUMapping -> "pumapping_aggregate"
 
 let aggregate_type_pfx_trim = function
   | TopLevelDeclaration -> ("TLD", "\\(Declaration\\|Statement\\)$")
@@ -2622,8 +2552,6 @@ let aggregate_type_pfx_trim = function
   | ObjectCreationWhat -> ("New", "")
   | TODO -> ("TODO", "")
   | Name -> ("Name", "")
-  | PUField -> ("PocketField", "")
-  | PUMapping -> ("PocketMapping", "")
 
 (******************************************************************************(
  * Useful for debugging / schema alterations

@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_OPTION_H_
-#define incl_HPHP_OPTION_H_
+#pragma once
 
 #include <map>
 #include <set>
@@ -95,9 +94,6 @@ struct Option {
   static bool GenerateTextHHBC;
   static bool GenerateHhasHHBC;
   static bool GenerateBinaryHHBC;
-  static std::string RepoCentralPath;
-
-  static std::vector<std::string> APCProfile;
 
   /**
    * A somewhat unique prefix for system identifiers.
@@ -150,4 +146,3 @@ private:
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-#endif // incl_HPHP_OPTION_H_

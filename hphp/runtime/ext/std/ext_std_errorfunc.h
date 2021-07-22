@@ -15,8 +15,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EXT_ERROR_H_
-#define incl_HPHP_EXT_ERROR_H_
+#pragma once
 
 #include "hphp/runtime/ext/std/ext_std.h"
 
@@ -59,11 +58,10 @@ bool HHVM_FUNCTION(user_error, const String& error_msg,
                                int error_type = (int)ErrorMode::USER_NOTICE);
 
 ArrayData* debug_backtrace_jit(int64_t options);
-ResourceHdr* debug_backtrace_fast();
 String debug_string_backtrace(bool skip, bool ignore_args = false,
                               int64_t limit = 0);
+String stringify_backtrace(const Array& bt, bool ignore_args);
 
 ///////////////////////////////////////////////////////////////////////////////
 }
 
-#endif // incl_HPHP_EXT_ERROR_H_

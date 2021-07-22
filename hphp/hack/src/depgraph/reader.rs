@@ -6,16 +6,17 @@
 use crate::byteutils;
 pub use crate::dep::Dep;
 
-use std::collections::{BTreeSet, VecDeque};
 use std::convert::TryInto;
 use std::ops::Deref;
+
+use im_rc::OrdSet;
 
 /// Use a `DepGraphOpener` to initialize a dependency graph from a file.
 ///
 /// # Example
 ///
 /// ```
-/// let opener = DepGraphOpener::from_path("/tmp/").unwrap();
+/// let opener = DepGraphOpener::from_path("/tmp/graph.bin").unwrap();
 /// let depgraph = opener.open().unwrap();
 /// ```
 pub struct DepGraphOpener {
@@ -144,38 +145,43 @@ impl<'bytes> DepGraph<'bytes> {
         }
     }
 
-    /// Transitively query the `extend` dependants of a given dependency.
-    ///
-    /// It is expected that the dependency argument is a class-dependency.
-    ///
-    /// The argument will always be in the result.
-    pub fn query_extend_deps(&self, query_hash: Dep) -> Vec<Dep> {
-        let mut queue: VecDeque<Dep> = VecDeque::new();
-        let mut visited: BTreeSet<Dep> = BTreeSet::new();
-        queue.push_back(query_hash);
-        while let Some(query_hash) = queue.pop_front() {
-            visited.insert(query_hash);
+    /// Return whether the given dependent-to-dependency edge is in the graph.
+    pub fn dependent_dependency_edge_exists(&self, dependent: Dep, dependency: Dep) -> bool {
+        match self.hash_list_for(dependency) {
+            Some(hash_list) => self.hash_list_contains(hash_list, dependent),
+            None => false,
+        }
+    }
 
-            match query_hash.class_to_extends() {
-                Some(extends_hash) => {
-                    if let Some(dept_hash_list) = self.hash_list_for(extends_hash) {
-                        for dept in self.hash_list_hashes(dept_hash_list) {
-                            if !visited.contains(&dept) {
-                                queue.push_back(dept);
-                            }
-                        }
-                    }
-                }
-                _ => {}
+    /// Add the direct typing dependencies for one dependency.
+    pub fn add_typing_deps_for_dep(&self, acc: &mut OrdSet<Dep>, dep: Dep) {
+        if let Some(dept_hash_list) = self.hash_list_for(dep) {
+            for dept in self.hash_list_hashes(dept_hash_list) {
+                acc.insert(dept);
             }
         }
-        visited.into_iter().collect()
+    }
+
+    /// Query the direct typing dependencies for the given set of dependencies.
+    pub fn query_typing_deps_multi(&self, deps: &OrdSet<Dep>) -> OrdSet<Dep> {
+        let mut acc = deps.clone();
+        for dep in deps {
+            self.add_typing_deps_for_dep(&mut acc, *dep);
+        }
+        acc
+    }
+
+    /// A slice that contains all unique dependency hashes in the graph.
+    ///
+    /// This gives direct access to the `indexer` table.
+    pub fn all_hashes(&self) -> &'bytes [u64] {
+        self.indexer.hashes
     }
 }
 
 /// The header of the structure.
 ///
-/// Contains the offset to the the indexer and the lookup table.
+/// Contains the offset to the indexer and the lookup table.
 ///
 /// Memory layout:
 ///
@@ -389,6 +395,13 @@ impl<'bytes> HashList<'bytes> {
     #[inline]
     fn has_index(self, index: u32) -> bool {
         self.indices.binary_search(&index).is_ok()
+    }
+
+    /// Return all raw hash indices in this list.
+    ///
+    /// Provides raw access to the underlying list.
+    pub fn hash_indices(&self) -> &'bytes [u32] {
+        self.indices
     }
 }
 

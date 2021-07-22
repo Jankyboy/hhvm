@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VARIANT_H_
-#define incl_HPHP_VARIANT_H_
+#pragma once
 
 #include "hphp/runtime/base/array-data.h"
 #include "hphp/runtime/base/record-data.h"
@@ -34,6 +33,8 @@
 
 #include <algorithm>
 #include <type_traits>
+
+#include <folly/dynamic.h>
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -69,11 +70,9 @@ public:
   bool isDouble()    const { return isDoubleType(getType()); }
   bool isString()    const { return isStringType(getType()); }
   bool isArray()     const { return isArrayLikeType(getType()); }
-  bool isPHPArray()  const { return isArrayType(getType()); }
   bool isVec()       const { return isVecType(getType()); }
   bool isDict()      const { return isDictType(getType()); }
   bool isKeyset()    const { return isKeysetType(getType()); }
-  bool isHackArray() const { return isHackArrayType(getType()); }
   bool isObject()    const { return isObjectType(getType()); }
   bool isResource()  const { return isResourceType(getType()); }
   bool isFunc()      const { return isFuncType(getType()); }
@@ -86,9 +85,19 @@ public:
   auto toBoolean() const { return tvCastToBoolean(*m_val); }
   auto toInt64()   const { return tvCastToInt64(*m_val); }
   auto toDouble()  const { return tvCastToDouble(*m_val); }
-  auto toString()  const { return HPHP::toString(m_val); }
-  auto toArray()   const { return HPHP::toArray(m_val); }
-  auto toObject()  const { return HPHP::toObject(m_val); }
+  auto toString(ConvNoticeLevel level = ConvNoticeLevel::None,
+                const StringData* notice_reason = nullptr) const {
+    if (isStringType(type(m_val))) return String{val(m_val).pstr};
+    return String::attach(tvCastToStringData(*m_val, level, notice_reason));
+  }
+  auto toArray() const {
+    if (isArrayLikeType(type(m_val))) return Array{val(m_val).parr};
+    return Array::attach(tvCastToArrayLikeData<IntishCast::None>(*m_val));
+  }
+  auto toObject() const {
+    if (isObjectType(type(m_val))) return Object{val(m_val).pobj};
+    return Object::attach(tvCastToObjectData(*m_val));
+  }
 
   auto& asCStrRef() const { return HPHP::asCStrRef(m_val); }
   auto& asCArrRef() const { return HPHP::asCArrRef(m_val); }
@@ -121,8 +130,10 @@ public:
     return val(m_val).pclsmeth;
   }
 
-  int getRefCount() const noexcept {
-    return isRefcountedType(type(m_val)) ? tvGetCount(*m_val) : 1;
+  RefCount getRefCount() const noexcept {
+    return isRefcountedType(type(m_val)) || hasPersistentFlavor(type(m_val))
+      ? val(m_val).pcnt->count()
+      : OneReference;
   }
 
 protected:
@@ -264,7 +275,7 @@ inline variant_ref::operator const_variant_ref() const {
 struct Variant : private TypedValue {
   friend variant_ref;
 
-  // Used by VariantTraits to create a folly::Optional-like
+  // Used by VariantTraits to create a Optional-like
   // optional Variant which fits in 16 bytes.
   using Optional = OptionalVariant;
 
@@ -342,7 +353,6 @@ struct Variant : private TypedValue {
   /* implicit */ Variant(const ClsMethDataRef v) {
     m_type = KindOfClsMeth;
     m_data.pclsmeth = v;
-    incRefClsMeth(v);
   }
 
   /*
@@ -597,6 +607,11 @@ struct Variant : private TypedValue {
     tvSetNull(*asTypedValue());
   }
 
+  /**
+   * Create from a JSON-like dynamic object
+   */
+  static Variant fromDynamic(const folly::dynamic& dy);
+
   static Variant attach(TypedValue tv) noexcept {
     return Variant{tv, Attach{}};
   }
@@ -748,15 +763,6 @@ struct Variant : private TypedValue {
   bool isArray() const {
     return isArrayLikeType(getType());
   }
-  bool isPHPArray() const {
-    return isArrayType(getType());
-  }
-  bool isDArray() const {
-    return isArrayLikeType(getType()) && m_data.parr->isDArray();
-  }
-  bool isVArray() const {
-    return isArrayLikeType(getType()) && m_data.parr->isVArray();
-  }
   bool isVec() const {
     return isVecType(getType());
   }
@@ -765,9 +771,6 @@ struct Variant : private TypedValue {
   }
   bool isKeyset() const {
     return isKeysetType(getType());
-  }
-  bool isHackArray() const {
-    return isHackArrayType(getType());
   }
   bool isObject() const {
     return getType() == KindOfObject;
@@ -810,10 +813,6 @@ struct Variant : private TypedValue {
       case KindOfDict:
       case KindOfPersistentKeyset:
       case KindOfKeyset:
-      case KindOfPersistentDArray:
-      case KindOfDArray:
-      case KindOfPersistentVArray:
-      case KindOfVArray:
       case KindOfRFunc:
       case KindOfFunc:
       case KindOfClass:
@@ -952,16 +951,19 @@ struct Variant : private TypedValue {
     return tvCastToDouble(*asTypedValue());
   }
 
-  String toString() const& {
-    return HPHP::toString(asTypedValue());
+  String toString(ConvNoticeLevel level = ConvNoticeLevel::None,
+                  const StringData* notice_reason = nullptr) const& {
+    if (isStringType(m_type)) return String{m_data.pstr};
+    return String::attach(tvCastToStringData(*this, level, notice_reason));
   }
 
-  String toString() && {
+  String toString(ConvNoticeLevel level = ConvNoticeLevel::None,
+                  const StringData* notice_reason = nullptr) && {
     if (isStringType(m_type)) {
       m_type = KindOfNull;
       return String::attach(m_data.pstr);
     }
-    return toString();
+    return toString(level, notice_reason);
   }
 
   // Convert a non-array-like type to a PHP array, leaving PHP arrays and Hack
@@ -969,14 +971,15 @@ struct Variant : private TypedValue {
   // PHP array.
   template <IntishCast IC = IntishCast::None>
   Array toArray() const {
-    return HPHP::toArray<IC>(asTypedValue());
+    if (isArrayLikeType(m_type)) return Array{m_data.parr};
+    return Array::attach(tvCastToArrayLikeData<IC>(*this));
   }
   Array toPHPArray() const {
-    if (isArrayType(m_type)) return Array(m_data.parr);
     return toPHPArrayHelper();
   }
   Object toObject() const {
-    return HPHP::toObject(asTypedValue());
+    if (isObjectType(m_type)) return Object{m_data.pobj};
+    return Object::attach(tvCastToObjectData(*this));
   }
   Resource toResource() const {
     if (m_type == KindOfResource) return Resource{m_data.pres};
@@ -1007,31 +1010,8 @@ struct Variant : private TypedValue {
     return Array::attach(copy.detach().m_data.parr);
   }
 
-  Array toVArray() const {
-    if (RuntimeOption::EvalHackArrDVArrs) {
-      auto a = toVec();
-      a.setLegacyArray(RuntimeOption::EvalHackArrDVArrMark);
-      return a;
-    }
-    if (isArrayLikeType(m_type)) return asCArrRef().toVArray();
-    auto copy = *this;
-    tvCastToVArrayInPlace(copy.asTypedValue());
-    assertx(copy.isPHPArray() && copy.asCArrRef().isVArray());
-    return Array::attach(copy.detach().m_data.parr);
-  }
-
-  Array toDArray() const {
-    if (RuntimeOption::EvalHackArrDVArrs) {
-      auto a = toDict();
-      a.setLegacyArray(RuntimeOption::EvalHackArrDVArrMark);
-      return a;
-    }
-    if (isArrayLikeType(m_type)) return asCArrRef().toDArray();
-    auto copy = *this;
-    tvCastToDArrayInPlace(copy.asTypedValue());
-    assertx(copy.isPHPArray() && copy.asCArrRef().isDArray());
-    return Array::attach(copy.detach().m_data.parr);
-  }
+  Array toVArray() const { return toVec(); }
+  Array toDArray() const { return toDict(); }
 
   template <typename T>
   typename std::enable_if<std::is_base_of<ResourceData,T>::value, bool>::type
@@ -1462,12 +1442,7 @@ private:
       case KindOfVec:
       case KindOfDict:
       case KindOfKeyset:
-      case KindOfDArray:
-      case KindOfVArray:
         assertx(m_data.parr->checkCount());
-        return;
-      case KindOfClsMeth:
-        assertx(checkCountClsMeth(m_data.pclsmeth));
         return;
       case KindOfRClsMeth:
         assertx(m_data.prclsmeth->checkCount());
@@ -1525,9 +1500,6 @@ inline Variant Array::operator[](const Variant& key) const {
 inline void Array::append(const Variant& v) {
   append(*v.asTypedValue());
 }
-inline void Array::prepend(const Variant& v) {
-  prepend(*v.asTypedValue());
-}
 
 ALWAYS_INLINE Variant uninit_null() {
   return Variant();
@@ -1547,13 +1519,13 @@ inline void concat_assign(tv_lval lhs, const String& s2) {
 //////////////////////////////////////////////////////////////////////
 
 inline Array& forceToArray(Variant& var) {
-  if (!var.isArray()) var = Variant(Array::Create());
+  if (!var.isArray()) var = Variant(Array::CreateDict());
   return var.asArrRef();
 }
 
 inline Array& forceToArray(tv_lval lval) {
   if (!isArrayLikeType(lval.type())) {
-    tvMove(make_array_like_tv(ArrayData::Create()), lval);
+    tvMove(make_array_like_tv(ArrayData::CreateDict()), lval);
   }
   return asArrRef(lval);
 }
@@ -1566,20 +1538,6 @@ inline Array& forceToDict(Variant& var) {
 inline Array& forceToDict(tv_lval lval) {
   if (!isDictType(lval.type())) {
     tvSet(make_tv<KindOfDict>(ArrayData::CreateDict()), lval);
-  }
-  return asArrRef(lval);
-}
-
-inline Array& forceToDArray(Variant& var) {
-  if (!tvIsHAMSafeDArray(var.asTypedValue())) {
-    var = Variant(Array::CreateDArray());
-  }
-  return var.asArrRef();
-}
-
-inline Array& forceToDArray(tv_lval lval) {
-  if (!tvIsHAMSafeDArray(lval)) {
-    tvMove(make_array_like_tv(ArrayData::CreateDArray()), lval);
   }
   return asArrRef(lval);
 }
@@ -1614,7 +1572,7 @@ inline bool isa_non_null(const Variant& v) {
 // and type-array
 template <IntishCast IC>
 ALWAYS_INLINE TypedValue Array::convertKey(TypedValue k) const {
-  return tvToKey<IC>(k, m_arr ? m_arr.get() : ArrayData::Create());
+  return tvToKey<IC>(k, m_arr ? m_arr.get() : ArrayData::CreateDict());
 }
 template <IntishCast IC>
 ALWAYS_INLINE TypedValue Array::convertKey(const Variant& k) const {
@@ -1736,5 +1694,3 @@ private:
 //////////////////////////////////////////////////////////////////////
 
 }
-
-#endif // incl_HPHP_VARIANT_H_

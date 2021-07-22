@@ -33,7 +33,7 @@ class DerivedImplementing extends Implementing implements SimpleInterface {
 
 function with_requiring_trait(DerivedImplementing $arg): void {}
 
-class ImplementsBuiltin implements Stringish {
+class ImplementsBuiltin implements StringishObject {
   public function __toString(): string {
     return "";
   }
@@ -141,3 +141,13 @@ interface IEWGP extends IEP {}
 interface IEP extends IEMBUID {}
 
 interface IEMBUID {}
+
+<<__Sealed(OnSealedWhitelist::class)>>
+interface WithSealedWhitelist<T as arraykey> {
+}
+
+interface OnSealedWhitelist<T as arraykey> extends WithSealedWhitelist<T> {
+  public function __construct(T ...$values);
+}
+
+function with_arg_with_sealed_whitelist(WithSealedWhitelist<int> $f): void {}

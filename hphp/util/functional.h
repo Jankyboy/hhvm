@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_FUNCTIONAL_H_
-#define incl_HPHP_FUNCTIONAL_H_
+#pragma once
 
 #include <cstring>
 #include <string>
@@ -116,6 +115,11 @@ struct pairHashCompare {
   UHash uhash;
 
   using PairType = std::pair<T, U>;
+
+  size_t operator() (const PairType& pair) const {
+    return hash(pair);
+  }
+
   size_t hash(const PairType& pair) const {
     return hash_int64_pair(thash.hash(pair.first), uhash.hash(pair.second));
   }
@@ -203,4 +207,3 @@ struct string_lessi {
 
 }
 
-#endif

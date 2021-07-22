@@ -154,7 +154,7 @@ Array HHVM_FUNCTION(hphp_get_status) {
     false,
     512,
     HPHP::k_JSON_FB_DARRAYS_AND_VARRAYS);
-  return Variant::attach(result).toArray().toDArray();
+  return Variant::attach(result).toArray().toDict();
 }
 Array HHVM_FUNCTION(hphp_get_iostatus) {
   return ServerStats::GetThreadIOStatuses();
@@ -198,7 +198,7 @@ Variant HHVM_FUNCTION(hphp_get_timers, bool get_as_float /* = true */) {
   const int64_t &nsleep_time_s = transport->getnSleepTimeS();
   const int32_t &nsleep_time_n = transport->getnSleepTimeN();
 
-  DArrayInit ret(7);
+  DictInit ret(7);
   if (get_as_float) {
     ret.set(s_queue,        ts_float(tsQueue));
     ret.set(s_process_wall, ts_float(tsWall));
@@ -230,7 +230,7 @@ int64_t HHVM_FUNCTION(hphp_instruction_counter) {
 }
 
 Variant HHVM_FUNCTION(hphp_get_hardware_counters) {
-  Array ret = Array::CreateDArray();
+  Array ret = Array::CreateDict();
 
   HardwareCounter::GetPerfEvents(
     [] (const std::string& key, int64_t value, void* data) {

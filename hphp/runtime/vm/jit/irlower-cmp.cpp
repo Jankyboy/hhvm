@@ -242,6 +242,16 @@ void cgCmpDbl(IRLS& env, const IRInstruction* inst) {
   v << cmovq{CC_P, sf, tmp2, v.cns(-1), d};
 }
 
+void cgRaiseBadComparisonViolation(IRLS& env, const IRInstruction* inst) {
+  using target_type = void (*)(TypedValue, TypedValue);
+  auto const target = inst->extra<BadComparisonData>()->eq
+    ? static_cast<target_type>(handleConvNoticeForEq)
+    : static_cast<target_type>(handleConvNoticeForCmp);
+  auto& v = vmain(env);
+  cgCallHelper(v, env, CallSpec::direct(target), kVoidDest, SyncOptions::Sync,
+               argGroup(env, inst).typedValue(0).typedValue(1));
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 
 IMPL_OPCODE_CALL(GtStr);
@@ -339,11 +349,7 @@ void cgDbgAssertFunc(IRLS& env, const IRInstruction* inst) {
   auto const func = inst->marker().func();
   auto& v = vmain(env);
   auto const sf = v.makeReg();
-#ifdef USE_LOWPTR
-  emitCmpLowPtr<Func>(v, sf, v.cns(func), fp[AROFF(m_func)]);
-#else
-  v << cmplim{(int32_t)func->getFuncId(), fp[AROFF(m_funcId)], sf};
-#endif
+  v << cmplim{(int32_t)func->getFuncId().toInt(), fp[AROFF(m_funcId)], sf};
   ifThen(v, CC_NE, sf, [&](Vout& v) { v << trap{TRAP_REASON}; });
 }
 

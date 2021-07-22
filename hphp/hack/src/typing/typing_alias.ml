@@ -49,7 +49,7 @@ module Fake = Typing_fake_members
 module Dep = struct
   let add x1 x2 acc =
     let x2 = Local_id.to_string x2 in
-    let prev = (try SMap.find x1 acc with Caml.Not_found -> []) in
+    let prev = Option.value ~default:[] (SMap.find_opt x1 acc) in
     SMap.add x1 (x2 :: prev) acc
 
   let get key acc =
@@ -61,12 +61,12 @@ module Dep = struct
     object
       inherit [string list SMap.t] Nast.Visitor_DEPRECATED.visitor as parent
 
-      method! on_expr acc ((_, e_) as e) =
+      method! on_expr acc ((_, _, e_) as e) =
         match e_ with
         | Lvar (_, x) -> add local x acc
-        | Obj_get (((_, (This | Lvar _)) as x), (_, Id (_, y)), _) ->
+        | Obj_get (((_, _, (This | Lvar _)) as x), (_, _, Id (_, y)), _, _) ->
           add local (Fake.make_id x y) acc
-        | Class_get ((_, x), CGstring (_, y)) ->
+        | Class_get ((_, _, x), CGstring (_, y), _) ->
           add local (Fake.make_static_id x y) acc
         | Class_get _ ->
           failwith "Dynamic Class_get should never occur after naming"
@@ -89,9 +89,9 @@ end = struct
 
   let local_to_string = function
     | Lvar (_, x) -> Some (Local_id.to_string x)
-    | Obj_get (((_, (This | Lvar _)) as x), (_, Id (_, y)), _) ->
+    | Obj_get (((_, _, (This | Lvar _)) as x), (_, _, Id (_, y)), _, _) ->
       Some (Local_id.to_string (Fake.make_id x y))
-    | Class_get ((_, x), CGstring (_, y)) ->
+    | Class_get ((_, _, x), CGstring (_, y), _) ->
       Some (Local_id.to_string (Fake.make_static_id x y))
     | Class_get _ -> failwith "This case should never occur after naming"
     | _ -> None
@@ -100,21 +100,21 @@ end = struct
     object (this)
       inherit [string list SMap.t] Nast.Visitor_DEPRECATED.visitor as parent
 
-      method! on_expr acc ((_, e_) as e) =
+      method! on_expr acc ((_, _, e_) as e) =
         match e_ with
-        | Binop (Ast_defs.Eq _, (p, List el), x2) ->
+        | Binop (Ast_defs.Eq _, (_, p, List el), x2) ->
           List.fold_left
             ~f:
               begin
                 fun acc e ->
-                this#on_expr acc (p, Binop (Ast_defs.Eq None, e, x2))
+                this#on_expr acc ((), p, Binop (Ast_defs.Eq None, e, x2))
               end
             ~init:acc
             el
         | Binop (Ast_defs.Eq _, x1, x2) -> this#on_assign acc x1 x2
         | _ -> parent#on_expr acc e
 
-      method on_assign acc (_, e1) e2 =
+      method on_assign acc (_, _, e1) e2 =
         Option.value_map
           (local_to_string e1)
           ~f:
@@ -164,7 +164,7 @@ end = struct
     else
       let visited = SMap.add k 0 visited in
       let kl = AliasMap.get k aliases in
-      let (visited, depth_l) = List.map_env visited kl (key aliases) in
+      let (visited, depth_l) = List.map_env visited kl ~f:(key aliases) in
       let my_depth = 1 + List.fold_left ~f:max ~init:0 depth_l in
       (SMap.add k my_depth visited, my_depth)
 

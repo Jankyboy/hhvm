@@ -7,8 +7,9 @@
 use crate::lexable_trivia::{LexableTrivia, LexableTrivium};
 use crate::source_text::SourceText;
 use crate::trivia_kind::TriviaKind;
+use ocamlrep_derive::ToOcamlRep;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, ToOcamlRep)]
 pub struct PositionedTrivium {
     pub kind: TriviaKind,
     pub offset: usize,
@@ -34,12 +35,6 @@ impl PositionedTrivium {
 impl LexableTrivia for PositionedTrivia {
     type Trivium = PositionedTrivium;
 
-    fn new() -> Self {
-        Vec::new()
-    }
-    fn from_slice(trivia: &[Self::Trivium]) -> Self {
-        trivia.to_vec()
-    }
     fn is_empty(&self) -> bool {
         self.is_empty()
     }
@@ -65,7 +60,7 @@ impl LexableTrivium for PositionedTrivium {
         self.width
     }
 
-    fn make_whitespace(_source: &SourceText, offset: usize, width: usize) -> Self {
+    fn make_whitespace(offset: usize, width: usize) -> Self {
         Self {
             kind: TriviaKind::WhiteSpace,
             offset,
@@ -73,7 +68,7 @@ impl LexableTrivium for PositionedTrivium {
         }
     }
 
-    fn make_eol(_source: &SourceText, offset: usize, width: usize) -> Self {
+    fn make_eol(offset: usize, width: usize) -> Self {
         Self {
             kind: TriviaKind::EndOfLine,
             offset,
@@ -81,7 +76,7 @@ impl LexableTrivium for PositionedTrivium {
         }
     }
 
-    fn make_single_line_comment(_source: &SourceText, offset: usize, width: usize) -> Self {
+    fn make_single_line_comment(offset: usize, width: usize) -> Self {
         Self {
             kind: TriviaKind::SingleLineComment,
             offset,
@@ -89,7 +84,7 @@ impl LexableTrivium for PositionedTrivium {
         }
     }
 
-    fn make_fallthrough(_source: &SourceText, offset: usize, width: usize) -> Self {
+    fn make_fallthrough(offset: usize, width: usize) -> Self {
         Self {
             kind: TriviaKind::FallThrough,
             offset,
@@ -97,7 +92,7 @@ impl LexableTrivium for PositionedTrivium {
         }
     }
 
-    fn make_fix_me(_source: &SourceText, offset: usize, width: usize) -> Self {
+    fn make_fix_me(offset: usize, width: usize) -> Self {
         Self {
             kind: TriviaKind::FixMe,
             offset,
@@ -105,7 +100,7 @@ impl LexableTrivium for PositionedTrivium {
         }
     }
 
-    fn make_ignore_error(_source: &SourceText, offset: usize, width: usize) -> Self {
+    fn make_ignore_error(offset: usize, width: usize) -> Self {
         Self {
             kind: TriviaKind::IgnoreError,
             offset,
@@ -113,7 +108,7 @@ impl LexableTrivium for PositionedTrivium {
         }
     }
 
-    fn make_extra_token_error(_source: &SourceText, offset: usize, width: usize) -> Self {
+    fn make_extra_token_error(offset: usize, width: usize) -> Self {
         Self {
             kind: TriviaKind::ExtraTokenError,
             offset,
@@ -121,7 +116,7 @@ impl LexableTrivium for PositionedTrivium {
         }
     }
 
-    fn make_delimited_comment(_source: &SourceText, offset: usize, width: usize) -> Self {
+    fn make_delimited_comment(offset: usize, width: usize) -> Self {
         Self {
             kind: TriviaKind::DelimitedComment,
             offset,

@@ -8,15 +8,16 @@
  *)
 
 open Hh_prelude
+open Aast
 open Common
 open Typing_defs
 module Env = Typing_env
 module Phase = Typing_phase
 module Reason = Typing_reason
-module Subst = Decl_subst
 module TUtils = Typing_utils
 module MakeType = Typing_make_type
 module Cls = Decl_provider.Class
+module SN = Naming_special_names
 
 let raise_xhp_required env pos ureason ty =
   let ty_str = Typing_print.error env ty in
@@ -41,7 +42,6 @@ let rec walk_and_gather_xhp_ ~env ~pos cty =
       env
       pos
       cty
-      Errors.unify_error
   in
   match get_node cty with
   | Tany _
@@ -61,20 +61,26 @@ let rec walk_and_gather_xhp_ ~env ~pos cty =
       | _ -> non_xhp
     in
     (env, xhp, non_xhp)
-  | Tdependent (DTthis, _) ->
+  | Tgeneric ("this", []) ->
     (* This is unsound, but we want to do best-effort checking
      * of attribute spreads even on XHP classes not marked `final`. We should
      * implement <<__ConsistentAttributes>> as a way to make this hacky
      * inference sound and check it before doing this conversion. *)
-    walk_and_gather_xhp_ ~env ~pos (Env.get_self env)
+    begin
+      match Env.get_self_ty env with
+      | None -> (env, [], [])
+      | Some ty -> walk_and_gather_xhp_ ~env ~pos ty
+    end
   | Tgeneric _
   | Tdependent _
   | Tnewtype _ ->
-    let (env, tyl) = TUtils.get_concrete_supertypes env cty in
+    let (env, tyl) =
+      TUtils.get_concrete_supertypes ~abstract_enum:true env cty
+    in
     walk_list_and_gather_xhp env pos tyl
   | Tclass ((_, c), _, tyl) ->
+    (* Here's where we actually check the declaration *)
     begin
-      (* Here's where we actually check the declaration *)
       match Env.get_class env c with
       | Some class_ when Cls.is_xhp class_ -> (env, [(cty, tyl, class_)], [])
       | _ -> (env, [], [cty])
@@ -83,16 +89,17 @@ let rec walk_and_gather_xhp_ ~env ~pos cty =
   | Tvarray _
   | Tdarray _
   | Tvarray_or_darray _
+  | Tvec_or_dict _
   | Toption _
   | Tprim _
   | Tvar _
   | Tfun _
   | Ttuple _
   | Tobject
-  | Tshape _ ->
+  | Tshape _
+  | Tneg _ ->
     (env, [], [cty])
-  | Tpu _
-  | Tpu_type_access _
+  | Taccess _
   | Tunapplied_alias _ ->
     (env, [], [cty])
 
@@ -115,17 +122,14 @@ and get_spread_attributes env pos onto_xhp cty =
   let xhp_to_attrs env (xhp_ty, tparams, xhp_info) =
     let attrs = xhp_attributes_for_class xhp_info in
     (* Compute the intersection and then localize the types *)
-    let attrs = List.filter attrs (fun (k, _) -> SSet.mem k onto_attrs) in
+    let attrs = List.filter attrs ~f:(fun (k, _) -> SSet.mem k onto_attrs) in
     (* XHP does not allow generics in the class declaration, so
      * we don't need to perform any substitutions *)
     let ety_env =
       {
-        type_expansions = [];
+        empty_expand_env with
         this_ty = xhp_ty;
-        substs = Subst.make_locl (Cls.tparams xhp_info) tparams;
-        from_class = None;
-        quiet = false;
-        on_error = Errors.unify_error;
+        substs = TUtils.make_locl_subst_for_class_tparams xhp_info tparams;
       }
     in
     List.map_env
@@ -157,3 +161,27 @@ let is_xhp_child env pos ty =
     (MakeType.nullable_locl
        r
        (MakeType.union r [MakeType.dynamic r; ty_child; ty_traversable]))
+
+let rewrite_xml_into_new pos sid attributes children =
+  let cid = CI sid in
+  let mk_attribute ix = function
+    | Xhp_simple { xs_name = (attr_pos, attr_key); xs_expr = exp; _ } ->
+      let attr_aux = attr_pos in
+      let key = ((), attr_aux, String attr_key) in
+      (key, exp)
+    | Xhp_spread exp ->
+      let attr_key = Format.asprintf "...$%s" (string_of_int ix) in
+      let attr_key_ann = pos in
+      let key = ((), attr_key_ann, String attr_key) in
+      (key, exp)
+  in
+  let attributes =
+    let attributes = List.mapi ~f:mk_attribute attributes in
+    ((), pos, Darray (None, attributes))
+  in
+  let children = ((), pos, Varray (None, children)) in
+  let file = ((), pos, String "") in
+  let line = ((), pos, Int "1") in
+  let args = [attributes; children; file; line] in
+  let sid_ann = fst sid in
+  ((), sid_ann, New (((), sid_ann, cid), [], args, None, ()))

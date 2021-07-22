@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_STR_KEY_TABLE_H_
-#define incl_HPHP_STR_KEY_TABLE_H_
+#pragma once
 
 #include <bitset>
 
@@ -33,12 +32,10 @@ public:
   // Returns true if the given sd is not static
   bool mayContain(const StringData* sd) const;
   void add(const StringData* sd);
-
+  void reset();
 private:
   std::bitset<kStrKeyTableSize> m_table;
 
 };
 
 } // namespace HPHP
-
-#endif // incl_HPHP_STR_KEY_TABLE_H_

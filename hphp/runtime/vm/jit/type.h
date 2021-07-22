@@ -14,11 +14,9 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_TYPE_H_
-#define incl_HPHP_JIT_TYPE_H_
+#pragma once
 
 #include "hphp/runtime/base/array-data.h"
-#include "hphp/runtime/base/bespoke-layout.h"
 #include "hphp/runtime/base/datatype.h"
 #include "hphp/runtime/base/rds.h"
 #include "hphp/runtime/base/repo-auth-type.h"
@@ -27,8 +25,6 @@
 #include "hphp/runtime/vm/jit/type-specialization.h"
 #include "hphp/util/bitset.h"
 #include "hphp/util/low-ptr.h"
-
-#include <folly/Optional.h>
 
 #include <cstdint>
 #include <type_traits>
@@ -283,57 +279,32 @@ constexpr bool operator>(Mem a, Mem b) {
   c(Record,          bits_t::bit<22>())                                 \
   c(RecDesc,         bits_t::bit<23>())                                 \
   c(RFunc,           bits_t::bit<24>())                                 \
-  c(StaticVArr,      bits_t::bit<25>())                                 \
-  c(UncountedVArr,   bits_t::bit<26>())                                 \
-  c(CountedVArr,     bits_t::bit<27>())                                 \
-  c(StaticDArr,      bits_t::bit<28>())                                 \
-  c(UncountedDArr,   bits_t::bit<29>())                                 \
-  c(CountedDArr,     bits_t::bit<30>())                                 \
-  c(RClsMeth,        bits_t::bit<31>())                                 \
-  c(LazyCls,         bits_t::bit<32>())                                 \
+  c(RClsMeth,        bits_t::bit<25>())                                 \
+  c(LazyCls,         bits_t::bit<26>())                                 \
 /**/
+
+#define UNCCOUNTED_INIT_UNION \
+  kInitNull|kBool|kInt|kDbl|kPersistent|kFunc|kCls|kRecDesc|kLazyCls|kClsMeth
+
+#define INIT_CELL_UNION \
+  kUncountedInit|kStr|kArrLike|kObj|kRes|kRecord|kRFunc|kRClsMeth
 
 /*
  * This list should be in non-decreasing order of specificity.
  */
-#ifdef USE_LOWPTR
-#define UNCCOUNTED_INIT_UNION \
-        kInitNull|kBool|kInt|kDbl|kPersistent|kFunc|kCls|kRecDesc|kLazyCls| \
-        kClsMeth
-#else
-#define UNCCOUNTED_INIT_UNION \
-        kInitNull|kBool|kInt|kDbl|kPersistent|kFunc|kCls|kRecDesc|kLazyCls
-#endif
-
-#ifdef USE_LOWPTR
-#define INIT_CELL_UNION kUncountedInit|kStr|kArrLike|kObj|kRes|kRecord| \
-                        kRFunc|kRClsMeth
-#else
-#define INIT_CELL_UNION kUncountedInit|kStr|kArrLike|kObj|kRes|kRecord| \
-                        kClsMeth|kRFunc|kRClsMeth
-#endif
-
 #define IRT_PHP_UNIONS(c)                                               \
   c(Null,                kUninit|kInitNull)                             \
   c(PersistentStr,       kStaticStr|kUncountedStr)                      \
   c(Str,                 kPersistentStr|kCountedStr)                    \
-  c(PersistentVArr,      kStaticVArr|kUncountedVArr)                    \
-  c(VArr,                kPersistentVArr|kCountedVArr)                  \
-  c(PersistentDArr,      kStaticDArr|kUncountedDArr)                    \
-  c(DArr,                kPersistentDArr|kCountedDArr)                  \
-  c(StaticArr,           kStaticVArr|kStaticDArr)                       \
-  c(UncountedArr,        kUncountedVArr|kUncountedDArr)                 \
-  c(CountedArr,          kCountedVArr|kCountedDArr)                     \
-  c(PersistentArr,       kStaticArr|kUncountedArr)                      \
-  c(Arr,                 kPersistentArr|kCountedArr)                    \
   c(PersistentVec,       kStaticVec|kUncountedVec)                      \
   c(Vec,                 kPersistentVec|kCountedVec)                    \
   c(PersistentDict,      kStaticDict|kUncountedDict)                    \
   c(Dict,                kPersistentDict|kCountedDict)                  \
   c(PersistentKeyset,    kStaticKeyset|kUncountedKeyset)                \
   c(Keyset,              kPersistentKeyset|kCountedKeyset)              \
-  c(PersistentArrLike,   kPersistentArr|kPersistentVec|kPersistentDict|kPersistentKeyset) \
-  c(ArrLike,             kArr|kVec|kDict|kKeyset)                       \
+  c(StaticArrLike,       kStaticVec|kStaticDict|kStaticKeyset)          \
+  c(PersistentArrLike,   kPersistentVec|kPersistentDict|kPersistentKeyset) \
+  c(ArrLike,             kVec|kDict|kKeyset)                            \
   c(NullableObj,         kObj|kInitNull|kUninit)                        \
   c(Persistent,          kPersistentStr|kPersistentArrLike)             \
   c(UncountedInit,       UNCCOUNTED_INIT_UNION)                         \
@@ -341,7 +312,8 @@ constexpr bool operator>(Mem a, Mem b) {
   c(InitCell,            INIT_CELL_UNION)                               \
   c(Cell,                kUninit|kInitCell)                             \
   c(FuncLike,            kFunc|kRFunc)                                  \
-  c(ClsMethLike,         kClsMeth|kRClsMeth)
+  c(ClsMethLike,         kClsMeth|kRClsMeth)                            \
+  c(NonNull,             kInitCell & ~kNull)
 
 /*
  * Adding a new runtime type needs updating numRuntime variable.
@@ -361,15 +333,9 @@ constexpr bool operator>(Mem a, Mem b) {
 /*
  * Cell, Counted, Init, PtrToCell, etc...
  */
-#ifdef USE_LOWPTR
 #define COUNTED_INIT_UNION \
-  kCountedStr|kCountedArr|kCountedVec|kCountedDict|kCountedKeyset|kObj|kRes| \
+  kCountedStr|kCountedVec|kCountedDict|kCountedKeyset|kObj|kRes| \
   kRecord|kRFunc|kRClsMeth
-#else
-#define COUNTED_INIT_UNION \
-  kCountedStr|kCountedArr|kCountedVec|kCountedDict|kCountedKeyset|kObj|kRes| \
-  kRecord|kClsMeth|kRFunc|kRClsMeth
-#endif
 
 #define IRT_SPECIAL                                           \
   /* Bottom and Top use IRTX to specify a custom Ptr kind */  \
@@ -408,14 +374,14 @@ constexpr bool operator>(Mem a, Mem b) {
  * existing Types in various ways.  Unions, intersections, and subtractions are
  * all supported, though for implementation-specific reasons certain
  * combinations of specialized types cannot be represented.  A type is
- * considered specialized if it refers to a specific Class or a
- * ArrayData::ArrayKind.  As an example, if A and B are unrelated Classes,
+ * considered specialized if it refers to a specific Class or a specific
+ * non-Top ArrayLayout. As an example, if A and B are unrelated Classes,
  * Obj<A> | Obj<B> is impossible to represent.  However, if B is a subclass of
  * A, Obj<A> | Obj<B> == Obj<B>, which can be represented as a Type.
  */
 struct Type {
 private:
-  static constexpr size_t kRuntime = 33;
+  static constexpr size_t kRuntime = 27;
   static constexpr size_t numRuntime = 9;
   using bits_t = BitSet<kRuntime + numRuntime>;
 
@@ -455,8 +421,10 @@ public:
 
   /*
    * Hash the Type as a bitfield.
+   * stableHash() will return a consistent value across HHVM restarts.
    */
   size_t hash() const;
+  size_t stableHash() const;
 
   /*
    * Stringify the Type.
@@ -572,7 +540,7 @@ public:
    * Is this a union type?
    *
    * Note that this is the plain old set definition of union, so TStr,
-   * TArr, and TNull will all return true.
+   * TVec, and TNull will all return true.
    */
   bool isUnion() const;
 
@@ -612,9 +580,12 @@ public:
   static Type cns(std::nullptr_t);
 
   /*
-   * Return a const type for `tv'.
+   * Return a const type for `tv'. `cns' will assert if given a type
+   * which isn't allowed to have constants, while `tryCns' will return
+   * std::nullopt.
    */
-  static Type cns(const TypedValue& tv);
+  static Type cns(TypedValue tv);
+  static Optional<Type> tryCns(TypedValue tv);
 
   /*
    * If this represents a constant value, return the most specific strict
@@ -624,8 +595,8 @@ public:
    *    Int<4> -> Int
    *    Dbl<2.5> -> Dbl
    *
-   * Arrays are special since they can be both constant and specialized, so
-   * keep the array's kind in the resulting type.
+   * Arrays are special since they can be both constant and specialized,
+   * so dropping an array's constant value preserves layout information.
    */
   Type dropConstVal() const;
 
@@ -714,34 +685,22 @@ public:
   // Specialized type creation.                                  [const/static]
 
   /*
-   * Return a specialized TArr/TVec/TDict/TKeyset.
-   * These types are always subtypes of TVanillaArrLike.
+   * Return a specialized TVec/TDict/TKeyset.
    */
-  static Type Array(const RepoAuthType::Array*);
-  static Type VArr(const RepoAuthType::Array*);
-  static Type DArr(const RepoAuthType::Array*);
   static Type Vec(const RepoAuthType::Array*);
   static Type Dict(const RepoAuthType::Array*);
   static Type Keyset(const RepoAuthType::Array*);
 
   /*
-   * Return a specialized TStaticArr/TStaticVec/TStaticDict/TStaticKeyset.
-   * These types are always subtypes of TVanillaArrLike.
+   * Return a specialized TStaticVec/TStaticDict/TStaticKeyset.
    */
-  static Type StaticArray(const RepoAuthType::Array*);
-  static Type StaticVArr(const RepoAuthType::Array*);
-  static Type StaticDArr(const RepoAuthType::Array*);
   static Type StaticVec(const RepoAuthType::Array*);
   static Type StaticDict(const RepoAuthType::Array*);
   static Type StaticKeyset(const RepoAuthType::Array*);
 
   /*
-   * Return a specialized TCountedArr/TCountedVec/TCountedDict.
-   * These types are always subtypes of TVanillaArrLike.
+   * Return a specialized TCountedVec/TCountedDict/TCountedKeyset.
    */
-  static Type CountedArray(const RepoAuthType::Array*);
-  static Type CountedVArr(const RepoAuthType::Array*);
-  static Type CountedDArr(const RepoAuthType::Array*);
   static Type CountedVec(const RepoAuthType::Array*);
   static Type CountedDict(const RepoAuthType::Array*);
   static Type CountedKeyset(const RepoAuthType::Array*);
@@ -763,20 +722,18 @@ public:
 
   /*
    * Return a copy of this type with a vanilla ArraySpec. Examples:
-   *   TArr.narrowToVanilla()        == TVanillaArr
+   *   TArrLike.narrowToVanilla()    == TVanillaArrLike
    *   (TVec|TInt).narrowToVanilla() == TVanillaVec|TInt
    *   (TVec|TObj).narrowToVanilla() == TVec|TObj
-   *   TPackedArr.narrowToVanilla()  == TPackedArr
    */
   Type narrowToVanilla() const;
 
   /*
-   * Return a copy of this type with an ArraySpec for the given bespoke index
-   *   TVanillaArr.narrowToBespokeLayout(<some layout>) == TBottom
-   *   TVec.narrowToBespokeLayout(<some layout>) == TVec=Bespoke(<some layout>)
-   *   (TVec|TInt).narrowToBespokeLayout(<some layout>) == TVec=Bespoke(<some layout>)|TInt
+   * Return a copy of this type with an ArraySpec for the given layout
+   *   TVec.narrowToLayout(<some layout>) == TVec=<some layout>
+   *   (TVec|TInt).narrowToLayout(<some layout>) == TVec=<some layout>|TInt
    */
-  Type narrowToBespokeLayout(BespokeLayout) const;
+  Type narrowToLayout(ArrayLayout) const;
 
   /*
    * Return a copy of this Type with the specialization dropped.
@@ -931,7 +888,7 @@ private:
   };
 };
 
-using OptType = folly::Optional<Type>;
+using OptType = Optional<Type>;
 
 /////////////////////////////////////////////////////////////////////////////
 
@@ -991,5 +948,3 @@ namespace std {
 #define incl_HPHP_JIT_TYPE_INL_H_
 #include "hphp/runtime/vm/jit/type-inl.h"
 #undef incl_HPHP_JIT_TYPE_INL_H_
-
-#endif

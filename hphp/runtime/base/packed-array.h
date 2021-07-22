@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_PACKED_ARRAY_H_
-#define incl_HPHP_PACKED_ARRAY_H_
+#pragma once
 
 #include <cstddef>
 #include <cstdint>
@@ -24,8 +23,8 @@
 #include "hphp/runtime/base/array-data.h"
 #include "hphp/runtime/base/data-walker.h"
 #include "hphp/runtime/base/header-kind.h"
-#include "hphp/runtime/base/tv-val.h"
 #include "hphp/runtime/base/sort-flags.h"
+#include "hphp/runtime/base/tv-val.h"
 #include "hphp/runtime/base/typed-value.h"
 
 #include "hphp/util/type-scan.h"
@@ -44,19 +43,20 @@ struct APCHandle;
 //////////////////////////////////////////////////////////////////////
 
 /*
- * Packed arrays are a specialized array layout for vector-like data.  That is,
- * php arrays with zero-based contiguous integer keys, and values of mixed
- * types.  The TypedValues are placed right after the array header.
+ * PackedArrays are a specialized array layout for vector-like data, used to
+ * implement vecs and varrays. A PackedArray's values may have mixed types.
+ * There are multiple layouts within PackedArray. See `stores_typed_values`.
  */
 struct PackedArray final : type_scan::MarkCollectable<PackedArray> {
-  static constexpr uint32_t SmallSize = 3;
-  // the smallest and largest MM size classes we use for allocating PackedArrays
-  static constexpr size_t SmallSizeIndex = 3;
-  static constexpr size_t MaxSizeIndex = 121;
+  // Use the "8 type bytes / 8 value words" chunked layout.
+  static constexpr bool stores_typed_values = false;
 
-  // Used in static_asserts near code that will have to change if/when we
-  // disaggregate the TypedValues in PackedArray.
-  static constexpr bool stores_typed_values = true;
+  // The default capacity of PackedLayout, used if capacity = 0.
+  static constexpr uint32_t SmallSize = 5;
+
+  // The smallest and largest MM size classes we use for PackedLayouts.
+  static constexpr size_t SmallSizeIndex = 3;
+  static constexpr size_t MaxSizeIndex = 119;
 
   static_assert(MaxSizeIndex <= std::numeric_limits<uint8_t>::max(),
                 "Size index must fit into 8-bits");
@@ -65,14 +65,10 @@ struct PackedArray final : type_scan::MarkCollectable<PackedArray> {
   static void ReleaseUncounted(ArrayData*);
   static TypedValue NvGetInt(const ArrayData*, int64_t ki);
   static TypedValue NvGetStr(const ArrayData*, const StringData*);
-  static ssize_t NvGetIntPos(const ArrayData*, int64_t k);
-  static ssize_t NvGetStrPos(const ArrayData*, const StringData* k);
   static TypedValue GetPosKey(const ArrayData*, ssize_t pos);
   static TypedValue GetPosVal(const ArrayData*, ssize_t pos);
-  static ArrayData* SetInt(ArrayData*, int64_t k, TypedValue v);
   static ArrayData* SetIntMove(ArrayData*, int64_t k, TypedValue v);
-  static ArrayData* SetStr(ArrayData*, StringData* k, TypedValue v);
-  static constexpr auto SetStrMove = &SetStr;
+  static ArrayData* SetStrMove(ArrayData*, StringData* k, TypedValue v);
   static bool IsVectorData(const ArrayData*) { return true; }
   static bool ExistsInt(const ArrayData* ad, int64_t k);
   static bool ExistsStr(const ArrayData*, const StringData*);
@@ -94,19 +90,10 @@ struct PackedArray final : type_scan::MarkCollectable<PackedArray> {
   static bool Uksort(ArrayData*, const Variant&);
   static bool Usort(ArrayData*, const Variant&);
   static bool Uasort(ArrayData*, const Variant&);
-  static ArrayData* Append(ArrayData*, TypedValue v);
   static ArrayData* AppendMove(ArrayData*, TypedValue v);
-  static ArrayData* Merge(ArrayData*, const ArrayData* elems);
   static ArrayData* Pop(ArrayData*, Variant& value);
-  static ArrayData* Dequeue(ArrayData*, Variant& value);
   static ArrayData* Prepend(ArrayData*, TypedValue v);
-  static ArrayData* ToVArray(ArrayData*, bool);
-  static ArrayData* ToDArray(ArrayData*, bool);
-  static ArrayData* ToDict(ArrayData*, bool);
-  static ArrayData* ToVec(ArrayData*, bool);
-  static ArrayData* Renumber(ArrayData* ad) { return ad; }
   static void OnSetEvalScalar(ArrayData*);
-  static constexpr auto ToKeyset = &ArrayCommon::ToKeyset;
 
   //////////////////////////////////////////////////////////////////////
 
@@ -131,7 +118,18 @@ struct PackedArray final : type_scan::MarkCollectable<PackedArray> {
 
   static bool checkInvariants(const ArrayData*);
 
+  // This method can only be called if `stores_typed_values` is true.
+  static TypedValue* entries(ArrayData*);
+
+  // This method can be called for any layout, to get a layout start offset.
   static ptrdiff_t entriesOffset();
+
+  // This method can be called for any layout, to get diffs for a known index.
+  struct EntryOffset {
+    ptrdiff_t type_offset;
+    ptrdiff_t data_offset;
+  };
+  static EntryOffset entryOffset(size_t i);
 
   static uint32_t capacity(const ArrayData*);
   static size_t heapSize(const ArrayData*);
@@ -139,7 +137,6 @@ struct PackedArray final : type_scan::MarkCollectable<PackedArray> {
 
   static void scan(const ArrayData*, type_scan::Scanner&);
 
-  static ArrayData* MakeReserveVArray(uint32_t capacity);
   static ArrayData* MakeReserveVec(uint32_t capacity);
 
   /*
@@ -149,33 +146,19 @@ struct PackedArray final : type_scan::MarkCollectable<PackedArray> {
    *
    * This function takes ownership of the Cells in `values'.
    */
-  static ArrayData* MakeVArray(uint32_t size, const TypedValue* values);
   static ArrayData* MakeVec(uint32_t size, const TypedValue* values);
 
   /*
    * Like MakePacked, but with `values' array in natural (not reversed) order.
    */
-  static ArrayData* MakeVArrayNatural(uint32_t size, const TypedValue* values);
   static ArrayData* MakeVecNatural(uint32_t size, const TypedValue* values);
 
-  static ArrayData* MakeUninitializedVArray(uint32_t size);
   static ArrayData* MakeUninitializedVec(uint32_t size);
 
   static ArrayData* MakeUncounted(
-      ArrayData* array, bool withApcTypedValue = false,
-      DataWalker::PointerMap* seen = nullptr
-  );
-  static ArrayData* MakeUncounted(
-      ArrayData* array, int, DataWalker::PointerMap* seen = nullptr
-  ) = delete;
-  static ArrayData* MakeUncounted(
-      ArrayData* array, size_t extra, DataWalker::PointerMap* seen = nullptr
-  ) = delete;
-  static ArrayData* MakeUncountedHelper(ArrayData* array, size_t extra);
+      ArrayData* array, const MakeUncountedEnv& env, bool hasApcTv);
 
   static ArrayData* MakeVecFromAPC(const APCArray* apc, bool isLegacy = false);
-  static ArrayData* MakeVArrayFromAPC(const APCArray* apc,
-                                      bool isMarked = false);
 
   static bool VecEqual(const ArrayData* ad1, const ArrayData* ad2);
   static bool VecNotEqual(const ArrayData* ad1, const ArrayData* ad2);
@@ -183,12 +166,10 @@ struct PackedArray final : type_scan::MarkCollectable<PackedArray> {
   static bool VecNotSame(const ArrayData* ad1, const ArrayData* ad2);
 
   // Fast iteration
-  template <class F, bool inc = true>
-  static void IterateV(const ArrayData* arr, F fn);
-  template <class F, bool inc = true>
-  static void IterateKV(const ArrayData* arr, F fn);
   template <class F>
-  static void IterateVNoInc(const ArrayData* arr, F fn);
+  static void IterateV(const ArrayData* arr, F fn);
+  template <class F>
+  static void IterateKV(const ArrayData* arr, F fn);
 
   // Return a MixedArray with the same elements as this PackedArray.
   // The target type is based on the source: varray -> darray, vec -> dict.
@@ -196,6 +177,11 @@ struct PackedArray final : type_scan::MarkCollectable<PackedArray> {
   static MixedArray* ToMixedCopy(const ArrayData*);
   static MixedArray* ToMixedCopyReserve(const ArrayData*, size_t);
 
+  // Converts a pointer into the given array to an index at that array.
+  // May fail, in which case the result will be negative. May be slow.
+  static int64_t pointerToIndex(const ArrayData*, const void* ptr);
+
+  static size_t capacityToSizeBytes(size_t);
   static size_t capacityToSizeIndex(size_t);
 
   static constexpr auto SizeIndexOffset = HeaderAuxOffset + 1;
@@ -226,18 +212,11 @@ private:
   struct VecInitializer;
   static VecInitializer s_vec_initializer;
 
-  struct VArrayInitializer;
-  static VArrayInitializer s_varr_initializer;
-
   struct MarkedVecInitializer;
   static MarkedVecInitializer s_marked_vec_initializer;
-
-  struct MarkedVArrayInitializer;
-  static MarkedVArrayInitializer s_marked_varr_initializer;
 };
 
 //////////////////////////////////////////////////////////////////////
 
 }
 
-#endif

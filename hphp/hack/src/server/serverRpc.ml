@@ -38,6 +38,7 @@ let single_ctx_path env path =
     (Relative_path.create_detect_prefix path)
     (ServerCommandTypes.FileName path)
 
+(* Might raise {!Naming_table.File_info_not_found} *)
 let handle : type a. genv -> env -> is_stale:bool -> a t -> env * a =
  fun genv env ~is_stale -> function
   | STATUS { max_errors; _ } ->
@@ -69,6 +70,28 @@ let handle : type a. genv -> env -> is_stale:bool -> a t -> env * a =
   | STATUS_SINGLE (fn, max_errors) ->
     let ctx = Provider_utils.ctx_from_server_env env in
     (env, take_max_errors (ServerStatusSingle.go fn ctx) max_errors)
+  | STATUS_SINGLE_REMOTE_EXECUTION fn ->
+    let ctx = Provider_utils.ctx_from_server_env env in
+    let (errors, dep_edges) = ServerStatusSingleRemoteExecution.go fn ctx in
+    (env, (errors, dep_edges))
+  | STATUS_REMOTE_EXECUTION (_, max_errors) ->
+    (* let ctx = Provider_utils.ctx_from_server_env env in *)
+    let errors = ServerStatusRemoteExecution.go env in
+    let (error_list, dropped_count) = take_max_errors errors max_errors in
+    (env, (error_list, dropped_count))
+  | STATUS_MULTI_REMOTE_EXECUTION _fns ->
+    let ctx = Provider_utils.ctx_from_server_env env in
+    let errors = env.errorl in
+    let (errors, dep_edges) = ServerStatusMultiRemoteExecution.go errors ctx in
+    (* Set pause mode to prevent watchman from triggering a full recheck *)
+    let env =
+      {
+        env with
+        full_recheck_on_file_changes =
+          Paused { paused_recheck_id = env.init_env.recheck_id };
+      }
+    in
+    (env, (errors, dep_edges))
   | COVERAGE_LEVELS (path, file_input) ->
     let path = Relative_path.create_detect_prefix path in
     let (ctx, entry) = single_ctx env path file_input in
@@ -94,6 +117,30 @@ let handle : type a. genv -> env -> is_stale:bool -> a t -> env * a =
     let tcopt = { tcopt with GlobalOptions.tco_dynamic_view = dynamic_view } in
     let env = { env with tcopt } in
     (env, ServerInferTypeBatch.go genv.workers positions env)
+  | TAST_HOLES (file_input, hole_filter) ->
+    let path =
+      match file_input with
+      | FileName fn -> Relative_path.create_detect_prefix fn
+      | FileContent _ -> Relative_path.create_detect_prefix ""
+    in
+    let (ctx, entry) = single_ctx env path file_input in
+    let result =
+      Provider_utils.respect_but_quarantine_unsaved_changes ~ctx ~f:(fun () ->
+          ServerCollectTastHoles.go_ctx ~ctx ~entry ~hole_filter)
+    in
+    (env, result)
+  | INFER_TYPE_ERROR (file_input, line, column) ->
+    let path =
+      match file_input with
+      | FileName fn -> Relative_path.create_detect_prefix fn
+      | FileContent _ -> Relative_path.create_detect_prefix ""
+    in
+    let (ctx, entry) = single_ctx env path file_input in
+    let result =
+      Provider_utils.respect_but_quarantine_unsaved_changes ~ctx ~f:(fun () ->
+          ServerInferTypeError.go_ctx ~ctx ~entry ~line ~column)
+    in
+    (env, result)
   | IDE_HOVER (path, line, column) ->
     let (ctx, entry) = single_ctx_path env path in
     let result = ServerHover.go_quarantined ~ctx ~entry ~line ~column in
@@ -111,7 +158,7 @@ let handle : type a. genv -> env -> is_stale:bool -> a t -> env * a =
     (env, ServerSignatureHelp.go_quarantined ~ctx ~entry ~line ~column)
   | COMMANDLINE_AUTOCOMPLETE contents ->
     (* For command line autocomplete, we assume the AUTO332 text has
-    already been inserted, and we fake the rest of this information. *)
+       already been inserted, and we fake the rest of this information. *)
     let autocomplete_context =
       {
         AutocompleteTypes.is_manually_invoked = false;
@@ -122,6 +169,7 @@ let handle : type a. genv -> env -> is_stale:bool -> a t -> env * a =
         is_after_open_square_bracket = false;
         is_after_quote = false;
         is_before_apostrophe = false;
+        is_open_curly_without_equals = false;
         char_at_pos = ' ';
       }
     in
@@ -154,6 +202,7 @@ let handle : type a. genv -> env -> is_stale:bool -> a t -> env * a =
         ~disable_legacy_attribute_syntax:false
         ~enable_xhp_class_modifier:false
         ~disable_xhp_element_mangling:false
+        ~disallow_hash_comments:true
         ~filename:Relative_path.default
         ~text:contents
     in
@@ -161,7 +210,10 @@ let handle : type a. genv -> env -> is_stale:bool -> a t -> env * a =
       match facts_opt with
       | None -> sienv
       | Some facts ->
-        SymbolIndex.update_from_facts ~sienv ~path:Relative_path.default ~facts
+        SymbolIndexCore.update_from_facts
+          ~sienv
+          ~path:Relative_path.default
+          ~facts
     in
     let result =
       ServerAutoComplete.go_at_auto332_ctx
@@ -191,6 +243,7 @@ let handle : type a. genv -> env -> is_stale:bool -> a t -> env * a =
           [
             get_def_opt (SymbolOccurrence.Method (c_name, member)) "";
             get_def_opt (SymbolOccurrence.Property (c_name, member)) "";
+            get_def_opt (SymbolOccurrence.XhpLiteralAttr (c_name, member)) "";
             get_def_opt (SymbolOccurrence.ClassConst (c_name, member)) "";
             get_def_opt (SymbolOccurrence.Typeconst (c_name, member)) "";
           ]
@@ -198,7 +251,7 @@ let handle : type a. genv -> env -> is_stale:bool -> a t -> env * a =
         let name = Utils.add_ns name in
         List.concat
           [
-            get_def_opt SymbolOccurrence.Class name;
+            get_def_opt (SymbolOccurrence.Class SymbolOccurrence.ClassId) name;
             (* SymbolOccurrence.Record and Class find the same things *)
             get_def_opt SymbolOccurrence.Function name;
             get_def_opt SymbolOccurrence.GConst name;
@@ -242,7 +295,7 @@ let handle : type a. genv -> env -> is_stale:bool -> a t -> env * a =
           |> map_env ~f:to_absolute))
   | GO_TO_IMPL go_to_impl_action ->
     Done_or_retry.(
-      ServerGoToImpl.go go_to_impl_action genv env
+      ServerGoToImpl.go ~action:go_to_impl_action ~genv ~env
       |> map_env ~f:ServerFindRefs.to_absolute)
   | IDE_FIND_REFS (labelled_file, line, column, include_defs) ->
     Done_or_retry.(
@@ -318,14 +371,18 @@ let handle : type a. genv -> env -> is_stale:bool -> a t -> env * a =
         genv.local_config.ServerLocalConfig.store_decls_in_saved_state
       in
       ( env,
-        SaveStateService.go ~save_decls env filename ~replace_state_after_saving
-      )
+        SaveStateService.go
+          ~save_decls
+          genv
+          env
+          filename
+          ~replace_state_after_saving )
     else
       (env, Error "There are typecheck errors; cannot generate saved state.")
   | SEARCH (query, type_) ->
     let ctx = Provider_utils.ctx_from_server_env env in
     let lst = env.ServerEnv.local_symbol_table in
-    (env, ServerSearch.go ctx query type_ lst)
+    (env, ServerSearch.go ctx query ~kind_filter:type_ lst)
   | COVERAGE_COUNTS path -> (env, ServerCoverageMetric.go path genv env)
   | LINT fnl ->
     let ctx = Provider_utils.ctx_from_server_env env in
@@ -345,7 +402,7 @@ let handle : type a. genv -> env -> is_stale:bool -> a t -> env * a =
     let legacy_format_options =
       { Lsp.DocumentFormatting.tabSize = 2; insertSpaces = true }
     in
-    (env, ServerFormat.go content from to_ legacy_format_options)
+    (env, ServerFormat.go ~content from to_ legacy_format_options)
   | AI_QUERY _ -> (env, "Ai_query is deprecated")
   | DUMP_FULL_FIDELITY_PARSE file -> (env, FullFidelityParseService.go file)
   | OPEN_FILE (path, contents) ->
@@ -408,18 +465,25 @@ let handle : type a. genv -> env -> is_stale:bool -> a t -> env * a =
         is_complete = true;
       } )
   | DISCONNECT -> (ServerFileSync.clear_sync_data env, ())
-  | SUBSCRIBE_DIAGNOSTIC id ->
-    let init =
-      if is_full_check_done env.full_check then
-        env.errorl
-      else
-        Errors.empty
-    in
-    let new_env =
-      { env with diag_subscribe = Some (Diagnostic_subscription.of_id id init) }
-    in
-    let () = Hh_logger.log "Diag_subscribe: SUBSCRIBE %d" id in
-    (new_env, ())
+  | SUBSCRIBE_DIAGNOSTIC { id; error_limit } ->
+    if TypecheckerOptions.stream_errors env.tcopt then
+      (env, ())
+    else
+      let initial_errors =
+        if is_full_check_done env.full_check_status then
+          env.errorl
+        else
+          Errors.empty
+      in
+      let new_env =
+        {
+          env with
+          diag_subscribe =
+            Some (Diagnostic_subscription.of_id id ~initial_errors ?error_limit);
+        }
+      in
+      let () = Hh_logger.log "Diag_subscribe: SUBSCRIBE %d" id in
+      (new_env, ())
   | UNSUBSCRIBE_DIAGNOSTIC id ->
     let diag_subscribe =
       match env.diag_subscribe with
@@ -469,9 +533,6 @@ let handle : type a. genv -> env -> is_stale:bool -> a t -> env * a =
     let tcopt = { tcopt with GlobalOptions.tco_dynamic_view = dynamic_view } in
     let env = { env with tcopt } in
     (env, ServerFunDepsBatch.go genv.workers positions env)
-  | FUN_IS_LOCALLABLE_BATCH positions ->
-    let env = { env with tcopt = env.ServerEnv.tcopt } in
-    (env, ServerFunIsLocallableBatch.go genv.workers positions env)
   | LIST_FILES_WITH_ERRORS -> (env, ServerEnv.list_files env)
   | FILE_DEPENDENTS filenames ->
     let files = ServerFileDependents.go genv env filenames in

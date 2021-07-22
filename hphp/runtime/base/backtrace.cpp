@@ -17,6 +17,7 @@
 
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/array-iterator.h"
+#include "hphp/runtime/base/bespoke-runtime.h"
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/base/rds-header.h"
 #include "hphp/runtime/base/runtime-option.h"
@@ -54,30 +55,37 @@ const StaticString
   s_arrow("->"),
   s_double_colon("::");
 
+namespace {
+const size_t
+  s_file_idx(0),
+  s_line_idx(1),
+  s_function_idx(2),
+  s_args_idx(3),
+  s_class_idx(4),
+  s_object_idx(5),
+  s_type_idx(6),
+  s_metadata_idx(7);
+
+static const StaticString s_stableIdentifier("HPHP::createBacktrace");
+}
 ///////////////////////////////////////////////////////////////////////////////
 
 namespace backtrace_detail {
 
 BTContext::BTContext() {
   // don't attempt to read locals
-  auto const flags = 1U << ActRec::LocalsDecRefd;
-  auto const handler = (intptr_t)jit::tc::ustubs().retInlHelper;
+  auto const flags = (1U << ActRec::LocalsDecRefd) | (1U << ActRec::IsInlined);
+  auto const handler = (intptr_t)jit::tc::ustubs().retHelper;
   fakeAR[0].m_sfp = &fakeAR[1];
   fakeAR[1].m_sfp = &fakeAR[0];
   fakeAR[0].m_savedRip = fakeAR[1].m_savedRip = handler;
-  fakeAR[0].m_numArgs = fakeAR[1].m_numArgs = 0;
   fakeAR[0].m_callOffAndFlags = fakeAR[1].m_callOffAndFlags =
     ActRec::encodeCallOffsetAndFlags(0, flags);
 }
 
 const ActRec* BTContext::clone(const BTContext& src, const ActRec* fp) {
-#ifdef USE_LOWPTR
-  fakeAR[0].m_func = src.fakeAR[0].m_func;
-  fakeAR[1].m_func = src.fakeAR[1].m_func;
-#else
   fakeAR[0].m_funcId = src.fakeAR[0].m_funcId;
   fakeAR[1].m_funcId = src.fakeAR[1].m_funcId;
-#endif
 
   fakeAR[0].m_callOffAndFlags = src.fakeAR[0].m_callOffAndFlags;
   fakeAR[1].m_callOffAndFlags = src.fakeAR[1].m_callOffAndFlags;
@@ -139,7 +147,7 @@ BTFrame getARFromWHImpl(
   }
   auto const fp = AsioSession::Get()->getContext(contextIdx)->getSavedFP();
   assertx(fp != nullptr && fp->func() != nullptr);
-  return BTFrame { fp, fp->func()->base() };
+  return BTFrame { fp, 0 };
 }
 
 }
@@ -180,41 +188,12 @@ BTFrame initBTContextAt(BTContext& ctx, jit::CTCA ip, BTFrame frm) {
 
     ctx.stashedFrm = frm;
 
-    return BTFrame { prevFP, safe_cast<int>(stk->callOff) + ifr.func->base() };
+    return BTFrame { prevFP, safe_cast<int>(stk->callOff) };
   }
 
   // If we don't have an inlined frame, it's always safe to use pcOff() if
   // initBTContextAt() is being called for a leaf frame.
   if (frm.pc == kInvalidOffset) frm.pc = pcOff();
-
-  // The bytecode supports a limited form of inlining via FCallBuiltin. If the
-  // call itself was interpreted there won't be any fixup information, but
-  // we should still be able to extract the target from the bytecode on the
-  // stack and use that directly.
-  auto const getBuiltin = [&] () -> const Func* {
-    if (!frm) return nullptr;
-
-    auto const func = frm.fp->func();
-    auto const pc = func->unit()->entry() + frm.pc;
-    if (peek_op(pc) != OpFCallBuiltin) return nullptr;
-
-    auto const ne = func->unit()->lookupNamedEntityId(getImm(pc, 3).u_SA);
-    return Func::lookup(ne);
-  };
-
-  if (auto const f = getBuiltin()) {
-    auto const prevFP = &ctx.fakeAR[0];
-    prevFP->setFunc(f);
-    prevFP->m_callOffAndFlags = ActRec::encodeCallOffsetAndFlags(
-      frm.pc - frm.fp->func()->base(),
-      1 << ActRec::LocalsDecRefd  // don't attempt to read locals
-    );
-
-    ctx.stashedFrm = frm;
-
-    return BTFrame { prevFP, f->base() };
-  }
-
   return frm;
 }
 
@@ -265,7 +244,7 @@ BTFrame getPrevActRec(
       ifr.callOff,
       1 << ActRec::LocalsDecRefd  // don't attempt to read locals
     );
-    prev.pc = fp->callOffset() + ifr.func->base();
+    prev.pc = fp->callOffset();
 
     ctx.prevIFID = ctx.inlineStack.frame;
     ctx.inlineStack.frame = ifr.parent;
@@ -278,7 +257,7 @@ BTFrame getPrevActRec(
     if (prev.pc == kInvalidOffset) {
       assertx(ctx.prevIFID != kInvalidIFrameID);
       auto const ifr = jit::getInlineFrame(ctx.prevIFID);
-      prev.pc = prev.fp->func()->base() + ifr.callOff;
+      prev.pc = ifr.callOff;
     }
     ctx.stashedFrm = BTFrame{};
     ctx.prevIFID = kInvalidIFrameID;
@@ -353,33 +332,43 @@ using namespace backtrace_detail;
 ///////////////////////////////////////////////////////////////////////////////
 
 Array createBacktrace(const BacktraceArgs& btArgs) {
-  ARRPROV_USE_RUNTIME_LOCATION();
+  static const RuntimeStruct::FieldIndexVector s_structFields = {
+    {s_file_idx, s_file},
+    {s_line_idx, s_line},
+    {s_function_idx, s_function},
+    {s_args_idx, s_args},
+    {s_class_idx, s_class},
+    {s_object_idx, s_object},
+    {s_type_idx, s_type},
+    {s_metadata_idx, s_metadata},
+  };
+  static auto const s_runtimeStruct =
+    RuntimeStruct::registerRuntimeStruct(s_stableIdentifier, s_structFields);
+
   if (btArgs.isCompact()) {
     return createCompactBacktrace(btArgs.m_skipTop)->extract();
   }
 
-  auto bt = Array::CreateVArray();
+  auto bt = Array::CreateVec();
   folly::small_vector<c_WaitableWaitHandle*, 64> visitedWHs;
 
   BTContext ctx;
 
   if (g_context->m_parserFrame) {
-    bt.append(
-      make_darray(
-        s_file, VarNR(g_context->m_parserFrame->filename.get()),
-        s_line, g_context->m_parserFrame->lineNumber
-      )
-    );
+    StructDictInit frame(s_runtimeStruct, 2);
+    frame.set(s_file_idx, s_file,
+              Variant(VarNR(g_context->m_parserFrame->filename.get())));
+    frame.set(s_line_idx, s_line, g_context->m_parserFrame->lineNumber);
+    bt.append(frame.toArray());
   }
 
   // If there is a parser frame, put it at the beginning of the backtrace.
   if (btArgs.m_parserFrame) {
-    bt.append(
-      make_darray(
-        s_file, VarNR(btArgs.m_parserFrame->filename.get()),
-        s_line, btArgs.m_parserFrame->lineNumber
-      )
-    );
+    StructDictInit frame(s_runtimeStruct, 2);
+    frame.set(s_file_idx, s_file,
+              Variant(VarNR(btArgs.m_parserFrame->filename.get())));
+    frame.set(s_line_idx, s_line, btArgs.m_parserFrame->lineNumber);
+    bt.append(frame.toArray());
   }
 
   int depth = 0;
@@ -431,13 +420,14 @@ Array createBacktrace(const BacktraceArgs& btArgs) {
       auto const func = curFrm.fp->func();
       assertx(func);
 
-      DArrayInit frame(btArgs.m_parserFrame ? 4 : 2);
-      frame.set(s_file, Variant{const_cast<StringData*>(func->filename())});
-      frame.set(s_line, func->unit()->getLineNumber(curFrm.pc));
+      StructDictInit frame(s_runtimeStruct, btArgs.m_parserFrame ? 4 : 2);
+      frame.set(s_file_idx, s_file,
+                Variant{const_cast<StringData*>(func->filename())});
+      frame.set(s_line_idx, s_line, func->getLineNumber(curFrm.pc));
       if (btArgs.m_parserFrame) {
-        frame.set(s_function, s_include);
-        frame.set(s_args,
-                  make_varray(VarNR(btArgs.m_parserFrame->filename.get())));
+        frame.set(s_function_idx, s_function, s_include);
+        frame.set(s_args_idx, s_args,
+                  make_vec_array(VarNR(btArgs.m_parserFrame->filename.get())));
       }
       bt.append(frame.toVariant());
       depth++;
@@ -453,7 +443,7 @@ Array createBacktrace(const BacktraceArgs& btArgs) {
     // Do not capture frame for HPHP only functions.
     if (fp->func()->isNoInjection()) continue;
 
-    DArrayInit frame(8);
+    StructDictInit frame(s_runtimeStruct, 8);
 
     auto const curUnit = fp->func()->unit();
 
@@ -465,17 +455,11 @@ Array createBacktrace(const BacktraceArgs& btArgs) {
         : prevFunc->unit()->filepath();
 
       assertx(prevFile != nullptr);
-      frame.set(s_file, Variant{const_cast<StringData*>(prevFile)});
-      frame.set(s_line, prevFunc->unit()->getLineNumber(prev.pc));
+      frame.set(s_file_idx, s_file, Variant{const_cast<StringData*>(prevFile)});
+      frame.set(s_line_idx, s_line, prevFunc->getLineNumber(prev.pc));
     }
 
-    // Check for include.
-    String funcname{const_cast<StringData*>(fp->func()->name())};
-    if (fp->func()->isClosureBody()) {
-      // Strip the file hash from the closure name.
-      String fullName{const_cast<StringData*>(fp->func()->baseCls()->name())};
-      funcname = fullName.substr(0, fullName.find(';'));
-    }
+    auto funcname = fp->func()->nameWithClosureName();
 
     if (RuntimeOption::EnableArgsInBacktraces &&
         !fp->localsDecRefd() &&
@@ -483,13 +467,13 @@ Array createBacktrace(const BacktraceArgs& btArgs) {
       // First local is always $0ReifiedGenerics which comes right after params
       auto const generics = frame_local(fp, fp->func()->numParams());
       if (type(generics) != KindOfUninit) {
-        assertx(tvIsHAMSafeVArray(generics));
+        assertx(tvIsVec(generics));
         auto const reified_generics = val(generics).parr;
         funcname += mangleReifiedGenericsName(reified_generics);
       }
     }
 
-    frame.set(s_function, funcname);
+    frame.set(s_function_idx, s_function, funcname);
 
     if (!funcname.same(s_include)) {
       // Closures have an m_this but they aren't in object context.
@@ -504,14 +488,14 @@ Array createBacktrace(const BacktraceArgs& btArgs) {
           auto const reified_generics = getClsReifiedGenericsProp(ctx, fp);
           clsname += mangleReifiedGenericsName(reified_generics);
         }
-        frame.set(s_class, clsname);
+        frame.set(s_class_idx, s_class, clsname);
         if (!fp->localsDecRefd() &&
             !fp->isInlined() &&
             fp->hasThis() &&
             btArgs.m_withThis) {
-          frame.set(s_object, Object(fp->getThis()));
+          frame.set(s_object_idx, s_object, Object(fp->getThis()));
         }
-        frame.set(s_type, fp->func()->isStatic() ? s_double_colon : s_arrow);
+        frame.set(s_type_idx, s_type, fp->func()->isStatic() ? s_double_colon : s_arrow);
       }
     }
 
@@ -522,11 +506,11 @@ Array createBacktrace(const BacktraceArgs& btArgs) {
       // do nothing
     } else if (funcname.same(s_include)) {
       auto filepath = const_cast<StringData*>(curUnit->filepath());
-      frame.set(s_args, make_varray(filepath));
+      frame.set(s_args_idx, s_args, make_vec_array(filepath));
     } else if (fp->localsDecRefd()) {
-      frame.set(s_args, empty_varray());
+      frame.set(s_args_idx, s_args, empty_vec_array());
     } else {
-      auto args = Array::CreateVArray();
+      auto args = Array::CreateVec();
       auto const nparams = fp->func()->numNonVariadicParams();
 
       for (int i = 0; i < nparams; i++) {
@@ -541,7 +525,7 @@ Array createBacktrace(const BacktraceArgs& btArgs) {
         }
       }
 
-      frame.set(s_args, args);
+      frame.set(s_args_idx, s_args, args);
     }
 
     if (btArgs.m_withMetadata && !fp->localsDecRefd()) {
@@ -550,7 +534,7 @@ Array createBacktrace(const BacktraceArgs& btArgs) {
         auto const val = frame_local(fp, local);
         if (type(val) != KindOfUninit) {
           always_assert(tvIsPlausible(*val));
-          frame.set(s_metadata, Variant{variant_ref{val}});
+          frame.set(s_metadata_idx, s_metadata, Variant{variant_ref{val}});
         }
       }
     }
@@ -560,6 +544,18 @@ Array createBacktrace(const BacktraceArgs& btArgs) {
   }
 
   return bt;
+}
+
+Array createCrashBacktrace(BTFrame frame, jit::CTCA addr) {
+  folly::small_vector<c_WaitableWaitHandle*, 64> visitedWHs;
+
+  CompactTraceData trace;
+  walkStackFrom([&] (ActRec* fp, Offset prevPc) {
+    if (fp->func()->isNoInjection()) return;
+    trace.insert(fp, prevPc);
+  }, frame, addr, false, visitedWHs);
+
+  return trace.extract();
 }
 
 void addBacktraceToStructLog(const Array& bt, StructuredLogEntry& cols) {
@@ -674,63 +670,9 @@ std::pair<const Func*, Offset> getCurrentFuncAndOffset() {
   return std::make_pair(frm.fp ? frm.fp->func() : nullptr, frm.pc);
 }
 
-namespace {
-
-struct CTKHasher final {
-  uint64_t hash(const CompactTraceData::Ptr& k) const {
-    if (!k) return 0;
-    return k->hash();
-  }
-  bool equal(const CompactTraceData::Ptr& k1,
-             const CompactTraceData::Ptr& k2) const;
-};
-
-struct CacheDeleter final {
-  void operator()(ArrayData* ad) const {
-    if (!ad->isUncounted()) return;
-    Treadmill::enqueue([ad] {
-      PackedArray::ReleaseUncounted(ad);
-    });
-  }
-};
-
-using CachedArray = std::shared_ptr<ArrayData>;
-using Cache = ConcurrentScalableCache<CompactTraceData::Ptr,
-                                      CachedArray,CTKHasher>;
-Cache s_cache(1024);
-
-bool CTKHasher::equal(const CompactTraceData::Ptr& k1,
-                      const CompactTraceData::Ptr& k2) const {
-  assertx(k1 && k2);
-  if (k1->size() != k2->size() || k1->hash() != k2->hash()) {
-    return false;
-  }
-  for (int i = 0; i < k1->frames().size(); ++i) {
-    const auto& a = k1->frames()[i];
-    const auto& b = k2->frames()[i];
-    if (a.func != b.func || a.prevPcAndHasThis != b.prevPcAndHasThis) {
-      return false;
-    }
-  }
-  return true;
-}
-
-}
-
 IMPLEMENT_RESOURCE_ALLOCATION(CompactTrace)
 
-uint64_t CompactTraceData::hash() const {
-  if (m_hash != 0) return m_hash;
-  m_hash = 0xffffffff;
-  for (auto frame : m_frames) {
-    m_hash = hash_int64_pair(m_hash, frame.hash());
-  }
-  return m_hash;
-}
-
 void CompactTraceData::insert(const ActRec* fp, int32_t prevPc) {
-  m_hash = 0;                           // invalidate
-
   m_frames.emplace_back(
     fp->func(),
     prevPc,
@@ -739,31 +681,26 @@ void CompactTraceData::insert(const ActRec* fp, int32_t prevPc) {
 }
 
 Array CompactTraceData::extract() const {
-  VArrayInit aInit(m_frames.size());
+  VecInit aInit(m_frames.size());
   for (int idx = 0; idx < m_frames.size(); ++idx) {
     auto const prev = idx < m_frames.size() - 1 ? &m_frames[idx + 1] : nullptr;
-    DArrayInit frame(6);
+    DictInit frame(6);
     if (prev && !prev->func->isBuiltin()) {
-      auto const prevUnit = prev->func->unit();
+      auto const prevFunc = prev->func;
+      auto const prevUnit = prevFunc->unit();
       auto prevFile = prevUnit->filepath();
-      if (prev->func->originalFilename()) {
-        prevFile = prev->func->originalFilename();
+      if (prevFunc->originalFilename()) {
+        prevFile = prevFunc->originalFilename();
       }
 
       auto const prevPc = prev->prevPc;
       frame.set(s_file, StrNR(prevFile).asString());
-      frame.set(s_line, prevUnit->getLineNumber(prevPc));
+      frame.set(s_line, prevFunc->getLineNumber(prevPc));
     }
 
     auto const f = m_frames[idx].func;
 
-    // Check for include.
-    String funcname{const_cast<StringData*>(f->name())};
-    if (f->isClosureBody()) {
-      // Strip the file hash from the closure name.
-      String fullName{const_cast<StringData*>(f->baseCls()->name())};
-      funcname = fullName.substr(0, fullName.find(';'));
-    }
+    auto funcname = f->nameWithClosureName();
 
     // Check for pseudomain.
     if (funcname.empty()) {
@@ -786,7 +723,7 @@ Array CompactTraceData::extract() const {
       }
     } else {
       auto filepath = const_cast<StringData*>(f->unit()->filepath());
-      frame.set(s_args, make_varray(filepath));
+      frame.set(s_args, make_vec_array(filepath));
     }
 
     aInit.append(frame.toVariant());
@@ -796,24 +733,8 @@ Array CompactTraceData::extract() const {
 }
 
 Array CompactTrace::extract() const {
-  if (size() <= 1) return Array::CreateVArray();
-
-  Cache::ConstAccessor acc;
-  if (s_cache.find(acc, m_backtrace)) {
-    return Array(acc.get()->get());
-  }
-
-  auto arr = m_backtrace->extract();
-  auto ins = CachedArray(
-    arr.get()->empty()
-      ? ArrayData::CreateVArray()
-      : PackedArray::MakeUncounted(arr.get()),
-    CacheDeleter()
-  );
-  if (!s_cache.insert(m_backtrace, ins)) {
-    return arr;
-  }
-  return Array(ins.get());
+  if (size() <= 1) return Array::CreateVec();
+  return m_backtrace->extract();
 }
 
 ///////////////////////////////////////////////////////////////////////////////

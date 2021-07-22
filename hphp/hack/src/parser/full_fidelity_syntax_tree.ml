@@ -71,9 +71,9 @@ module WithSyntax (Syntax : Syntax_sig.Syntax_S) = struct
 
     let process_errors errors =
       (* We've got the lexical errors and the parser errors together, both
-  with lexically later errors earlier in the list. We want to reverse the
-  list so that later errors come later, and then do a stable sort to put the
-  lexical and parser errors together. *)
+         with lexically later errors earlier in the list. We want to reverse the
+         list so that later errors come later, and then do a stable sort to put the
+         lexical and parser errors together. *)
       let errors = List.rev errors in
       let errors = List.stable_sort ~compare:SyntaxError.compare errors in
       remove_duplicates errors SyntaxError.exactly_equal
@@ -111,9 +111,9 @@ module WithSyntax (Syntax : Syntax_sig.Syntax_S) = struct
       | Some mode -> FileInfo.is_strict mode
       | None -> false
 
-    let is_decl tree =
+    let is_hhi tree =
       match tree.mode with
-      | Some FileInfo.Mdecl -> true
+      | Some FileInfo.Mhhi -> true
       | _ -> false
 
     let errors_no_bodies tree =
@@ -123,20 +123,23 @@ module WithSyntax (Syntax : Syntax_sig.Syntax_S) = struct
       List.filter ~f:not_in_body tree.errors
 
     (* By default we strip out (1) all cascading errors, and (2) in decl mode,
-all errors that happen in a body. *)
+       all errors that happen in a body. *)
 
     let errors tree =
       let e =
-        if is_decl tree then
+        if is_hhi tree then
           errors_no_bodies tree
         else
           all_errors tree
       in
       remove_cascading e
 
-    let to_json ?with_value tree =
+    let parse_tree_to_json ?with_value ?ignore_missing tree =
+      Syntax.to_json ?with_value ?ignore_missing tree.root
+
+    let to_json ?with_value ?ignore_missing tree =
       let version = Full_fidelity_schema.full_fidelity_schema_version_number in
-      let root = Syntax.to_json ?with_value tree.root in
+      let root = parse_tree_to_json ?with_value ?ignore_missing tree in
       let text = Hh_json.JSON_String (SourceText.text tree.text) in
       Hh_json.JSON_Object
         [

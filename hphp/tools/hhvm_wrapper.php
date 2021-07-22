@@ -8,7 +8,7 @@ function my_option_map(): OptionInfoMap {
 'help'            => Pair { 'h', 'Print help message' },
 'bin:'            => Pair { 'b', 'Use a specific HHVM binary' },
 'gdb'             => Pair { 'g', 'Run the whole command in agdb' },
-'server'          => Pair { 's', 'Run a server, port 80, pwd as the root' },
+'server'          => Pair { '',  'Run a server, port 80, pwd as the root' },
 'interp'          => Pair { 'i', 'Disable the JIT compiler' },
 'opt-ir'          => Pair { 'o', 'Disable debug assertions in IR output' },
 'dump-tc'         => Pair { 'j', 'Dump the contents of the translation cache' },
@@ -16,6 +16,7 @@ function my_option_map(): OptionInfoMap {
 'dump-hhas'       => Pair { '',  'Print the HHAS after compiling, then exit' },
 'trace-printir::4'=> Pair { 'p', 'Extend TRACE with printir=n' },
 'trace-hhir::3'   => Pair { 't', 'Extend TRACE with hhir=n' },
+'trace-file'      => Pair { 'f', 'Dump trace in file $HPHP_TRACE_FILE' },
 'hphpd'           => Pair { 'd', 'Run as the hphpd client' },
 'compile'         => Pair { 'c', 'Compile with hphpc; run RepoAuthoritative' },
 'create-repo'     => Pair { 'C', 'Compile unoptimized repo named hhvm.hhbc' },
@@ -23,12 +24,14 @@ function my_option_map(): OptionInfoMap {
 'retranslate-all:'=> Pair { 'r', 'Emit optimized code after n profiling runs' },
 'php7'            => Pair { '7', 'Enable PHP7 mode' },
 'jit-gdb'         => Pair { '',  'Enable JIT symbols in GDB' },
-'jit-deserialize:'=> Pair { '', 'Enable jit deserialization' },
+'jit-serialize'   => Pair { 's', 'Jumpstart after doing retranslate-all' },
 'print-command'   => Pair { '',  'Just print the command, don\'t run it' },
 'region-mode:'    => Pair { '',
                             'Which region selector to use (e.g \'method\')' },
 'no-pgo'          => Pair { '',  'Disable PGO' },
-'bespoke'         => Pair { '',  'Emit bespoke logging arrays' },
+'bespoke:'        => Pair { '',  'Bespoke array mode' },
+'lazyclass'       => Pair { '',  'Enable lazy classes' },
+'hadva'           => Pair { '',  'Enable HAM and automarking' },
 'pgo-threshold:'  => Pair { '',  'PGO threshold to use' },
 'no-obj-destruct' => Pair { '',
                             'Disable global object destructors in CLI mode' },
@@ -91,10 +94,8 @@ function determine_flags(OptionMap $opts): string {
   }
   // If no config files were given at the command line, use a default
   if (!$has_file) {
-    #
-    # The cli.hdf file is where Facebook puts its in-house
-    # default configuration information.
-    #
+    // The cli.hdf file is where Facebook puts its in-house
+    // default configuration information.
     $facebook_cli_config_file_name = '/usr/local/hphpi/cli.hdf';
     if (file_exists($facebook_cli_config_file_name)) {
       $flags .= "-c $facebook_cli_config_file_name ";
@@ -127,19 +128,16 @@ function determine_flags(OptionMap $opts): string {
       '';
   }
 
-  if ($opts->containsKey('jit-deserialize')) {
-    if (!$opts->containsKey('repo')) {
-      error('jit-deserialize requires that you specify a repo.');
+  if ($opts->containsKey('jit-serialize')) {
+    if (!$opts->containsKey('compile') && !$opts->containsKey('repo')) {
+      error('jit-serialize requires that you specify a repo.');
     }
     if ($opts->containsKey('region-mode') && $opts['region-mode'] === 'method') {
-      error('jit-deserialize option is not compatible with region-mode==method');
+      error('jit-serialize option is not compatible with region-mode==method');
     }
     if (!$opts->containsKey('retranslate-all')) {
       $opts['retranslate-all'] = 1;
     }
-    $jit_serdes_file = (string)$opts['jit-deserialize'];
-    $flags .= '-v Eval.JitSerdesFile='.$jit_serdes_file.' ';
-    $flags .= '-v Eval.JitSerdesMode=DeserializeOrFail ';
   }
 
   if ($opts->containsKey('retranslate-all')) {
@@ -148,6 +146,22 @@ function determine_flags(OptionMap $opts): string {
         '--count='.(2 * $times).' '.
         '-v Eval.JitRetranslateAllRequest='.$times.' '.
         '-v Eval.JitRetranslateAllSeconds=300 '.
+        '';
+  }
+
+  if ($opts->containsKey('bespoke')) {
+    $mode = (int)$opts['bespoke'];
+    $flags .=
+        '-v Eval.BespokeArrayLikeMode='.$mode.' '.
+        '-v Eval.ExportLoggingArrayDataPath="/tmp/logging-array-export" '.
+        '-v Eval.EmitLoggingArraySampleRate=17 '.
+        '';
+  }
+
+  if ($opts->containsKey('lazyclass')) {
+    $flags .=
+        '-v Eval.EmitClassPointers=2 '.
+        '-v Eval.ClassPassesClassname=true '.
         '';
   }
 
@@ -180,8 +194,6 @@ function determine_flags(OptionMap $opts): string {
     'opt-ir'          => '-v Eval.HHIRGenerateAsserts=0 ',
     'jit-gdb'         => '-v Eval.JitNoGdb=false ',
     'no-pgo'          => '-v Eval.JitPGO=false ',
-    'bespoke'         => '-v Eval.BespokeArrayLikeMode=2 '.
-                         '-v Eval.EmitLoggingArraySampleRate=1000 ',
     'hphpd'           => '-m debug ',
     'server'          => '-m server ',
   };
@@ -234,14 +246,17 @@ function determine_trace_env(OptionMap $opts): string {
   $env = getenv("TRACE");
   if ($traces->isEmpty() && !$env) return '';
 
-  $formatting = 'HPHP_TRACE_FILE=/dev/stdout HPHP_TRACE_TTY=1 ';
+  $formatting = '';
+  if (!$opts->containsKey('trace-file')) {
+    $formatting = 'HPHP_TRACE_FILE=/dev/stdout HPHP_TRACE_TTY=1 ';
+  }
   if (!$traces->isEmpty() && $env) $env .= ',';
   return $formatting.'TRACE='.$env.implode(',', vec($traces)).' ';
 }
 
 function argv_for_shell(): string {
   $ret = '';
-  foreach ($GLOBALS['argv'] as $arg) {
+  foreach (\HH\global_get('argv') as $arg) {
     $ret .= '"'.$arg.'" ';
   }
   return $ret;
@@ -249,7 +264,6 @@ function argv_for_shell(): string {
 
 function compile_a_repo(bool $unoptimized, OptionMap $opts): string {
   $echo_command = $opts->containsKey('print-command');
-  echo "Compiling with hphp...";
   $runtime_flags = determine_flags($opts);
   $hphpc_flags = $runtime_flags
     |> preg_replace("/-v\s*/", "-vRuntime.", $$)
@@ -268,7 +282,6 @@ function compile_a_repo(bool $unoptimized, OptionMap $opts): string {
   }
   $return_var = -1;
   system($cmd, inout $return_var);
-  echo "done.\n";
 
   $compile_dir = rtrim(shell_exec(
     'grep "all files saved in" '.$hphp_out.
@@ -291,9 +304,7 @@ function compile_a_repo(bool $unoptimized, OptionMap $opts): string {
 function repo_auth_flags(string $flags, string $repo): string {
   return $flags .
     '-v Repo.Authoritative=true '.
-    '-v Repo.Local.Mode=r- '.
-    "-v Repo.Local.Path=$repo ".
-    '--file ';
+    "-v Repo.Path=$repo ";
 }
 
 function compile_with_hphp(string $flags, OptionMap $opts): string {
@@ -304,6 +315,30 @@ function create_repo(OptionMap $opts): void {
   $repo = compile_a_repo(true, $opts);
   $return_var = -1;
   system("cp $repo ./hhvm.hhbc", inout $return_var);
+}
+
+function do_jumpstart(string $flags, OptionMap $opts): string {
+  $hhvm = get_hhvm_path($opts);
+  $prof = '/tmp/jit.prof.'.posix_getpid();
+  $requests = $opts->get('jit-serialize');
+  $filename = argv_for_shell();
+  if (strlen($filename) === 0) {
+    throw new Error('Jumpstart expects a file!');
+  }
+  $cmd = "$hhvm $flags --file $filename"
+    ." -v Eval.JitSerdesFile=$prof"
+    .' -v Eval.JitSerdesMode=SerializeAndExit'
+    .' >/dev/null 2>&1';
+
+  if ($opts->containsKey('print-command')) {
+    echo "\n", $cmd, "\n";
+  }
+  $code = -1;
+  system($cmd, inout $code);
+  if ($code != 0) throw new Error('Jumpstart failed!');
+  return $flags
+    ." -v Eval.JitSerdesFile=$prof"
+    .' -v Eval.JitSerdesMode=DeserializeOrFail';
 }
 
 function run_hhvm(OptionMap $opts): void {
@@ -318,13 +353,22 @@ function run_hhvm(OptionMap $opts): void {
     $flags = compile_with_hphp($flags, $opts);
   }
 
+  if ($opts->containsKey('jit-serialize')) {
+    $flags = do_jumpstart($flags, $opts);
+  }
+
   $pfx = determine_trace_env($opts);
-  $pfx .= $opts->containsKey('gdb') ? 'agdb --args ' : '';
+  $pfx .= $opts->containsKey('gdb') ? 'gdb --args ' : '';
   if ($opts->containsKey('perf')) {
     $pfx .= 'perf record -g -o ' . $opts['perf'] . ' ';
   }
   $hhvm = get_hhvm_path($opts);
-  $cmd = "$pfx $hhvm $flags ".argv_for_shell();
+  $filename = argv_for_shell();
+  if (strlen($filename) === 0) {
+    $cmd = "$pfx $hhvm $flags";
+  } else {
+    $cmd = "$pfx $hhvm $flags --file $filename";
+  }
   if ($opts->containsKey('print-command')) {
     echo "\n$cmd\n\n";
   } else {
@@ -361,7 +405,13 @@ function help(): void {
 "   debugging/development tasks.  (Basically shorthands for various\n".
 "   common combinations of RuntimeOption things.)\n".
 "\n".
-"   You might consider adding a bash alias or symlinking it to ~/bin.\n",
+"   You might consider adding a bash alias:\n".
+"\n".
+"      #!/bin/bash\n".
+"      hphp/tools/hhvm_wrapper.php \"$@\"\n".
+"\n".
+"   Note: this alias will only work from repo root. That's intended,\n".
+"   as that's where the script will look for a compiled HHVM binary.\n",
     my_option_map(),
   );
 

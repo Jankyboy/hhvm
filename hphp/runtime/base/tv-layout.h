@@ -14,8 +14,7 @@
   +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_TV_LAYOUT_H
-#define incl_HPHP_TV_LAYOUT_H
+#pragma once
 
 #include "hphp/runtime/base/tv-val.h"
 #include "hphp/util/type-traits.h"
@@ -122,11 +121,27 @@ struct LayoutBase {
    */
   template <typename Iter>
   std::enable_if_t<is_invocable<Iter, tv_lval>::value>
-  foreach(index_t len, Iter&& iter) {
-    auto it = impl().iteratorAt(0);
-    auto end = impl().iteratorAt(len);
+  foreach(index_t start, index_t len, Iter&& iter) {
+    auto it = impl().iteratorAt(start);
+    auto end = impl().iteratorAt(start + len);
     while (it != end) {
       iter(tv_lval{it});
+      ++it;
+    }
+  }
+  template <typename Iter>
+  std::enable_if_t<is_invocable<Iter, tv_lval>::value>
+  foreach(index_t len, Iter&& iter) {
+    foreach(0, len, iter);
+  }
+
+  template <typename Iter>
+  std::enable_if_t<is_invocable<Iter, tv_rval>::value>
+  foreach(index_t start, index_t len, Iter&& iter) const {
+    auto it = impl().iteratorAt(start);
+    auto end = impl().iteratorAt(start + len);
+    while (it != end) {
+      iter(tv_rval{it});
       ++it;
     }
   }
@@ -134,12 +149,7 @@ struct LayoutBase {
   template <typename Iter>
   std::enable_if_t<is_invocable<Iter, tv_rval>::value>
   foreach(index_t len, Iter&& iter) const {
-    auto it = impl().iteratorAt(0);
-    auto end = impl().iteratorAt(len);
-    while (it != end) {
-      iter(tv_rval{it});
-      ++it;
-    }
+    foreach(0, len, iter);
   }
 
   template <typename T>
@@ -150,70 +160,6 @@ struct LayoutBase {
   template <typename T>
   tv_rval at(T idx) const {
     return impl().offsetOf(idx).apply(reinterpret_cast<const char*>(this));
-  }
-};
-
-/* TvArray provides a layout that is identical to an array of TypedValues */
-struct TvArray : public LayoutBase<TvArray,
-                                   TypedValue*,
-                                   const TypedValue*,
-                                   uint16_t,
-                                   uint16_t> {
-  static size_t constexpr max_index = std::numeric_limits<index_t>::max();
-
-  static size_t sizeFor(index_t len) {
-    return len * sizeof(TypedValue);
-  }
-
-  static tv_val_offset offsetOf(index_t idx) {
-    auto const base = safe_cast<ptrdiff_t>(sizeof(TypedValue) * idx);
-    static_assert(offsetof(TypedValue, m_data) == 0, "");
-    return {
-      base + static_cast<ptrdiff_t>(offsetof(TypedValue, m_type)),
-      base
-    };
-  }
-
-private:
-  TypedValue* rep() {
-    return reinterpret_cast<TypedValue*>(this);
-  }
-
-  const TypedValue* rep() const {
-    return const_cast<TvArray*>(this)->rep();
-  }
-
-public:
-  void init(index_t size) {}
-
-  iterator iteratorAt(index_t offset) {
-    return &rep()[offset];
-  }
-
-  const_iterator iteratorAt(index_t offset) const {
-    return &rep()[offset];
-  }
-
-  static quick_index quickIndex(index_t idx) {
-    return idx;
-  }
-
-  static index_t offset2Idx(size_t offset) {
-    return offset / sizeof(TypedValue);
-  }
-
-  void scan(index_t count, type_scan::Scanner& scanner) const {
-    scanner.scan(*rep(), count * sizeof(TypedValue));
-  }
-
-  void release(index_t count) {
-    for (auto lval : range(0, count)) {
-      tvDecRefGen(lval);
-    }
-  }
-
-  bool checkInvariants(index_t /*len*/) const {
-    return true;
   }
 };
 
@@ -277,7 +223,7 @@ struct iterator_impl {
     , m_value(value) {}
 
   TypedValue operator*() const {
-    return TypedValue{*m_value, *m_type};
+    return make_tv_of_type(*m_value, *m_type);
   }
 
   operator tv_val_t() const {
@@ -496,7 +442,7 @@ struct Tv7Up : public LayoutBase<Tv7Up,
       Value* val = reinterpret_cast<Value*>(types) + 1;
 
       auto const decRef = [](uint64_t ts, Value* val) {
-        tvDecRefCountable(TypedValue{*val, static_cast<DataType>(ts)});
+        tvDecRefCountable(make_tv_of_type(*val, static_cast<DataType>(ts)));
       };
 
       if (ts & kRefCountedBit) decRef(ts, val);
@@ -519,4 +465,3 @@ struct Tv7Up : public LayoutBase<Tv7Up,
 } // namespace tv_layout
 } // namespace HPHP
 
-#endif // incl_HPHP_TV_LAYOUT_H

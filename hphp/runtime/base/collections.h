@@ -14,10 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_COLLECTIONS_H_
-#define incl_HPHP_COLLECTIONS_H_
-
-#include <folly/Optional.h>
+#pragma once
 
 #include "hphp/runtime/base/header-kind.h"
 #include "hphp/runtime/base/tv-val.h"
@@ -112,6 +109,12 @@ inline const ArrayData* asArray(const ObjectData* obj) {
   return asArray(const_cast<ObjectData*>(obj));
 }
 
+/*
+ * Replace the inner-array for array-backed collections. May not be called on
+ * non-array-backed collections. This method is dangerous - take care!
+ */
+void replaceArray(ObjectData* obj, ArrayData* ad);
+
 /////////////////////////////////////////////////////////////////////////////
 // Read/Write
 
@@ -175,17 +178,17 @@ COLLECTIONS_ALL_TYPES(X)
 }
 
 /*
- * Returns a CollectionType given a name, folly::none if name is not a
+ * Returns a CollectionType given a name, std::nullopt if name is not a
  * collection type.
  */
-inline folly::Optional<CollectionType> stringToType(const StringData* name) {
+inline Optional<CollectionType> stringToType(const StringData* name) {
 #define X(type) if (name->isame(s_##type.get())) return CollectionType::type;
 COLLECTIONS_ALL_TYPES(X)
 #undef X
-  return folly::none;
+  return std::nullopt;
 }
 
-inline folly::Optional<CollectionType> stringToType(const std::string& s) {
+inline Optional<CollectionType> stringToType(const std::string& s) {
   return stringToType(
     req::ptr<StringData>::attach(StringData::Make(s)).get()
   );
@@ -197,4 +200,3 @@ inline bool isTypeName(const StringData* str) {
 
 /////////////////////////////////////////////////////////////////////////////
 }}
-#endif

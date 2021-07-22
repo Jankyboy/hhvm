@@ -6,7 +6,7 @@
  * LICENSE file in the "hack" directory of this source tree.
  *
  *)
-open Core_kernel
+open Hh_prelude
 open Hh_json
 
 let opt_field ~v_opt ~label ~f =
@@ -26,11 +26,48 @@ let should_not_happen = JSON_Object [("this_should", JSON_String "not_happen")]
 
 let infer_type_response_to_json (type_string, type_json) =
   Hh_json.JSON_Object
-    ( [("type", opt_string_to_json type_string); ("pos", deprecated_pos_field)]
+    ([("type", opt_string_to_json type_string); ("pos", deprecated_pos_field)]
     @
     match type_json with
     | Some json -> [("full_type", json_of_string json)]
-    | _ -> [] )
+    | _ -> [])
+
+let infer_type_error_response_to_json
+    ( actual_type_string,
+      actual_type_json,
+      expected_type_string,
+      expected_type_json ) =
+  Hh_json.JSON_Object
+    (List.filter_map
+       ~f:Fn.id
+       [
+         Some ("actual_type", opt_string_to_json actual_type_string);
+         Option.map
+           ~f:(fun ty -> ("full_actual_type", json_of_string ty))
+           actual_type_json;
+         Some ("expected_type", opt_string_to_json expected_type_string);
+         Option.map
+           ~f:(fun ty -> ("full_expected_type", json_of_string ty))
+           expected_type_json;
+       ])
+
+let tast_holes_response_to_json holes =
+  let f
+      ( actual_type_str,
+        actual_type_json,
+        expected_type_str,
+        expected_type_json,
+        pos ) =
+    Hh_json.JSON_Object
+      [
+        ("actual_type", Hh_json.string_ actual_type_str);
+        ("full_actual_type", json_of_string actual_type_json);
+        ("expected_type", Hh_json.string_ expected_type_str);
+        ("full_expected_type", json_of_string expected_type_json);
+        ("pos", Pos.multiline_json_no_filename pos);
+      ]
+  in
+  Hh_json.JSON_Array (List.map ~f holes)
 
 let identify_symbol_response_to_json results =
   let get_definition_data = function
@@ -45,16 +82,18 @@ let identify_symbol_response_to_json results =
   let result_type x =
     SymbolOccurrence.(
       match x.type_ with
-      | Class -> "class"
+      | Class _ -> "class"
       | Method _ -> "method"
       | Record -> "record"
       | Function -> "function"
       | LocalVar -> "local"
       | Property _ -> "property"
+      | XhpLiteralAttr _ -> "xhp_literal_attribute"
       | ClassConst _ -> "class_const"
       | Typeconst _ -> "typeconst"
       | GConst -> "global_const"
-      | Attribute _ -> "attribute")
+      | Attribute _ -> "attribute"
+      | EnumClassLabel _ -> "enum_class_label")
   in
   let symbol_to_json (occurrence, definition) =
     let (definition_pos, definition_span, definition_id) =
@@ -79,21 +118,31 @@ let rec definition_to_json def =
       JSON_Array
         (List.map def.modifiers ~f:(fun x -> JSON_String (string_of_modifier x)))
     in
-    let children = opt_field def.children "children" outline_response_to_json in
-    let params = opt_field def.params "params" outline_response_to_json in
-    let docblock = opt_field def.docblock "docblock" (fun x -> JSON_String x) in
+    let children =
+      opt_field
+        ~v_opt:def.children
+        ~label:"children"
+        ~f:outline_response_to_json
+    in
+    let params =
+      opt_field ~v_opt:def.params ~label:"params" ~f:outline_response_to_json
+    in
+    let docblock =
+      opt_field ~v_opt:def.docblock ~label:"docblock" ~f:(fun x ->
+          JSON_String x)
+    in
     JSON_Object
-      ( [
-          ("kind", JSON_String (string_of_kind def.kind));
-          ("name", JSON_String def.name);
-          ("id", opt_string_to_json def.id);
-          ("position", Pos.json def.pos);
-          ("span", Pos.multiline_json def.span);
-          ("modifiers", modifiers);
-        ]
+      ([
+         ("kind", JSON_String (string_of_kind def.kind));
+         ("name", JSON_String def.name);
+         ("id", opt_string_to_json def.id);
+         ("position", Pos.json def.pos);
+         ("span", Pos.multiline_json def.span);
+         ("modifiers", modifiers);
+       ]
       @ children
       @ params
-      @ docblock ))
+      @ docblock))
 
 and outline_response_to_json x =
   Hh_json.JSON_Array (List.map x ~f:definition_to_json)
@@ -119,7 +168,7 @@ let find_references_response_to_json = function
   | None -> JSON_Array []
   | Some (symbol_name, references) ->
     let entries =
-      List.map references (fun x ->
+      List.map references ~f:(fun x ->
           Ide_api_types.(
             Hh_json.JSON_Object
               [

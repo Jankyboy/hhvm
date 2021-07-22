@@ -287,7 +287,7 @@ RegionVec regionizeFunc(const Func* func, std::string& transCFGAnnot) {
 
   if (Trace::moduleEnabled(HPHP::Trace::pgo, 5)) {
     auto dotFileName = folly::to<std::string>(
-      "/tmp/func-cfg-", funcId, ".dot");
+      "/tmp/func-cfg-", funcId.toInt(), ".dot");
     std::ofstream outFile(dotFileName);
     if (outFile.is_open()) {
       cfg.print(outFile, funcId, profData);
@@ -312,9 +312,9 @@ RegionVec regionizeFunc(const Func* func, std::string& transCFGAnnot) {
     [&](TransID tid1, TransID tid2) -> bool {
       if (regionMode == PGORegionMode::WholeCFG ||
           regionMode == PGORegionMode::HotCFG) {
-        auto bcOff1 = profData->transRec(tid1)->startBcOff();
-        auto bcOff2 = profData->transRec(tid2)->startBcOff();
-        if (bcOff1 != bcOff2) return bcOff1 < bcOff2;
+        auto sk1 = profData->transRec(tid1)->srcKey();
+        auto sk2 = profData->transRec(tid2)->srcKey();
+        if (sk1 != sk2) return sk1.offset() < sk2.offset();
       }
       if (cfg.weight(tid1) != cfg.weight(tid2)) {
         return cfg.weight(tid1) > cfg.weight(tid2);
@@ -358,7 +358,7 @@ RegionVec regionizeFunc(const Func* func, std::string& transCFGAnnot) {
       HotTransContext ctx;
       ctx.cfg = &cfg;
       ctx.profData = profData;
-      ctx.tid = newHead;
+      ctx.entries = {newHead};
       ctx.maxBCInstrs = RuntimeOption::EvalJitMaxRegionInstrs;
       switch (regionMode) {
         case PGORegionMode::Hottrace:

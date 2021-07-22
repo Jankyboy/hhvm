@@ -28,8 +28,8 @@ namespace HPHP { namespace jit {
   << folly::format("Expected {}, got {}", (exp).toString(), (act).toString()) \
 
 TEST(MInstrEffects, Basic) {
-  MInstrEffects elem(SetElem, TLvalToArr);
-  EXPECT_TEQ(TLvalToArr, elem.baseType);
+  MInstrEffects elem(SetElem, TLvalToDict);
+  EXPECT_TEQ(TLvalToDict, elem.baseType);
   EXPECT_FALSE(elem.baseTypeChanged);
   EXPECT_TRUE(elem.baseValChanged);
 
@@ -39,11 +39,11 @@ TEST(MInstrEffects, Basic) {
   EXPECT_FALSE(prop.baseValChanged);
 }
 
-TEST(MInstrEffects, BadArrayKey) {
-  MInstrEffects effects(SetElem, TLvalToArr);
-  EXPECT_TEQ(TLvalToArr, effects.baseType);
-  EXPECT_FALSE(effects.baseTypeChanged);
-  EXPECT_TRUE(effects.baseValChanged);
+TEST(MInstrEffects, AddCounted) {
+  MInstrEffects elem(SetElem, TLvalToStaticDict);
+  EXPECT_TEQ((TCountedDict|TStaticDict).lval(Ptr::Ptr), elem.baseType);
+  EXPECT_TRUE(elem.baseTypeChanged);
+  EXPECT_TRUE(elem.baseValChanged);
 }
 
 TEST(MInstrEffects, NonObjProp) {
@@ -62,14 +62,14 @@ TEST(MInstrEffects, NonArrElem) {
 
 TEST(MInstrEffects, PromoteNull) {
   MInstrEffects elem(SetElem, TLvalToNull);
-  EXPECT_TEQ(TLvalToArr, elem.baseType);
+  EXPECT_TEQ(TBottom, elem.baseType);
   EXPECT_TRUE(elem.baseTypeChanged);
-  EXPECT_TRUE(elem.baseValChanged);
+  EXPECT_FALSE(elem.baseValChanged);
 
   MInstrEffects prop(SetProp, TLvalToUninit);
-  EXPECT_TEQ(TLvalToObj, prop.baseType);
+  EXPECT_TEQ(TBottom, prop.baseType);
   EXPECT_TRUE(prop.baseTypeChanged);
-  EXPECT_TRUE(prop.baseValChanged);
+  EXPECT_FALSE(prop.baseValChanged);
 }
 
 TEST(MInstrEffects, UnknownBase) {

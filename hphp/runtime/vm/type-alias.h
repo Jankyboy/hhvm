@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_TYPE_ALIAS_H_
-#define incl_HPHP_TYPE_ALIAS_H_
+#pragma once
 
 #include "hphp/runtime/base/annot-type.h"
 #include "hphp/runtime/base/array-data.h"
@@ -58,10 +57,14 @@ struct PreTypeAlias {
   int line1;
   bool nullable;  // null is allowed; for ?Foo aliases
   UserAttributeMap userAttrs;
-  Array typeStructure{ArrayData::CreateDArray(ARRPROV_HERE())};
+  Array typeStructure{ArrayData::CreateDict()};
 
   std::pair<int,int> getLocation() const {
     return std::make_pair(line0, line1);
+  }
+
+  bool isPersistent() const {
+    return attrs & AttrPersistent;
   }
 };
 
@@ -78,10 +81,9 @@ struct TypeAlias {
   /////////////////////////////////////////////////////////////////////////////
   // Static constructors.
 
-  static TypeAlias Invalid(const PreTypeAlias& alias);
-  static TypeAlias From(const PreTypeAlias& alias);
-  static TypeAlias From(TypeAlias req,
-                           const PreTypeAlias& alias);
+  static TypeAlias Invalid(const PreTypeAlias* alias);
+  static TypeAlias From(const PreTypeAlias* alias);
+  static TypeAlias From(TypeAlias req, const PreTypeAlias* alias);
 
 
   /////////////////////////////////////////////////////////////////////////////
@@ -104,11 +106,48 @@ struct TypeAlias {
   LowPtr<Class> klass{nullptr};
   // Aliased RecordDesc; nullptr if type != Record.
   LowPtr<RecordDesc> rec{nullptr};
-  // Needed for error messages; nullptr if not defined.
-  LowStringPtr name{nullptr};
-  Array typeStructure{ArrayData::CreateDArray(ARRPROV_HERE())};
-  UserAttributeMap userAttrs;
-  Unit* unit{nullptr};
+
+  explicit TypeAlias(const PreTypeAlias* preTypeAlias)
+    : m_preTypeAlias(preTypeAlias)
+  {}
+
+  const PreTypeAlias* preTypeAlias() const { return m_preTypeAlias; }
+  const StringData* name() const { return m_preTypeAlias->name; }
+  const Unit* unit() const { return m_preTypeAlias->unit; }
+  UserAttributeMap userAttrs() const { return m_preTypeAlias->userAttrs; }
+  Array typeStructure() const { return m_preTypeAlias->typeStructure; }
+
+  /*
+   * Define the type alias given by `id', binding it to the appropriate
+   * NamedEntity for this request.
+   *
+   * Raises a fatal error if type alias already defined or cannot be defined
+   * unless failIsFatal is unset
+   */
+  static const TypeAlias* def(const PreTypeAlias* thisType, bool failIsFatal = true);
+
+  /*
+   * Look up without autoloading a type alias named `name'. Returns nullptr
+   * if one cannot be found.
+   *
+   * If the type alias is found and `persistent' is provided, it will be set to
+   * whether or not the TypeAlias's RDS handle is persistent.
+   */
+  static const TypeAlias* lookup(const StringData* name,
+                                 bool* persistent = nullptr);
+
+  /*
+   * Look up or attempt to autoload a type alias named `name'. Returns nullptr
+   * if one cannot be found or autoloaded.
+   *
+   * If the type alias is found and `persistent' is provided, it will be set to
+   * whether or not the TypeAlias's RDS handle is persistent.
+   */
+  static const TypeAlias* load(const StringData* name,
+                               bool* persistent = nullptr);
+
+private:
+  const PreTypeAlias* m_preTypeAlias{nullptr};
 };
 
 bool operator==(const TypeAlias& l, const TypeAlias& r);
@@ -120,5 +159,3 @@ bool operator!=(const TypeAlias& l, const TypeAlias& r);
 #define incl_HPHP_TYPE_ALIAS_INL_H_
 #include "hphp/runtime/vm/type-alias-inl.h"
 #undef incl_HPHP_TYPE_ALIAS_INL_H_
-
-#endif

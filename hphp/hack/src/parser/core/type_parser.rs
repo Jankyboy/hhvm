@@ -11,26 +11,26 @@ use crate::parser_env::ParserEnv;
 use crate::parser_trait::Context;
 use crate::parser_trait::ParserTrait;
 use crate::parser_trait::SeparatedListKind;
-use crate::smart_constructors::{NodeType, SmartConstructors};
+use crate::smart_constructors::{NodeType, SmartConstructors, Token};
 use parser_core_types::lexable_token::LexableToken;
 use parser_core_types::syntax_error::{self as Errors, SyntaxError};
 use parser_core_types::token_kind::TokenKind;
 
-pub struct TypeParser<'a, S, T>
+pub struct TypeParser<'a, S>
 where
-    S: SmartConstructors<'a, T>,
+    S: SmartConstructors,
     S::R: NodeType,
 {
-    lexer: Lexer<'a, S::Token>,
+    lexer: Lexer<'a, S::TF>,
     env: ParserEnv,
-    context: Context<'a, S::Token>,
+    context: Context<'a, Token<S>>,
     errors: Vec<SyntaxError>,
     sc: S,
 }
 
-impl<'a, S, T: Clone> std::clone::Clone for TypeParser<'a, S, T>
+impl<'a, S> std::clone::Clone for TypeParser<'a, S>
 where
-    S: SmartConstructors<'a, T>,
+    S: SmartConstructors,
     S::R: NodeType,
 {
     fn clone(&self) -> Self {
@@ -44,15 +44,15 @@ where
     }
 }
 
-impl<'a, S, T: Clone> ParserTrait<'a, S, T> for TypeParser<'a, S, T>
+impl<'a, S> ParserTrait<'a, S> for TypeParser<'a, S>
 where
-    S: SmartConstructors<'a, T>,
+    S: SmartConstructors,
     S::R: NodeType,
 {
     fn make(
-        mut lexer: Lexer<'a, S::Token>,
+        mut lexer: Lexer<'a, S::TF>,
         env: ParserEnv,
-        context: Context<'a, S::Token>,
+        context: Context<'a, Token<S>>,
         errors: Vec<SyntaxError>,
         sc: S,
     ) -> Self {
@@ -66,30 +66,20 @@ where
         }
     }
 
-    fn into_parts(
-        mut self,
-    ) -> (
-        Lexer<'a, S::Token>,
-        Context<'a, S::Token>,
-        Vec<SyntaxError>,
-        S,
-    ) {
+    fn into_parts(mut self) -> (Lexer<'a, S::TF>, Context<'a, Token<S>>, Vec<SyntaxError>, S) {
         self.lexer.set_in_type(false);
         (self.lexer, self.context, self.errors, self.sc)
     }
 
-    fn lexer(&self) -> &Lexer<'a, S::Token> {
+    fn lexer(&self) -> &Lexer<'a, S::TF> {
         &self.lexer
     }
 
-    fn lexer_mut(&mut self) -> &mut Lexer<'a, S::Token> {
+    fn lexer_mut(&mut self) -> &mut Lexer<'a, S::TF> {
         &mut self.lexer
     }
 
-    fn continue_from<P: ParserTrait<'a, S, T>>(&mut self, other: P)
-    where
-        T: Clone,
-    {
+    fn continue_from<P: ParserTrait<'a, S>>(&mut self, other: P) {
         let (mut lexer, context, errors, sc) = other.into_parts();
         lexer.set_in_type(true);
         self.lexer = lexer;
@@ -110,35 +100,35 @@ where
         &mut self.sc
     }
 
-    fn drain_skipped_tokens(&mut self) -> std::vec::Drain<S::Token> {
+    fn drain_skipped_tokens(&mut self) -> std::vec::Drain<Token<S>> {
         self.context.skipped_tokens.drain(..)
     }
 
-    fn skipped_tokens(&self) -> &[S::Token] {
+    fn skipped_tokens(&self) -> &[Token<S>] {
         &self.context.skipped_tokens
     }
 
-    fn context_mut(&mut self) -> &mut Context<'a, S::Token> {
+    fn context_mut(&mut self) -> &mut Context<'a, Token<S>> {
         &mut self.context
     }
 
-    fn context(&self) -> &Context<'a, S::Token> {
+    fn context(&self) -> &Context<'a, Token<S>> {
         &self.context
     }
 }
 
-impl<'a, S, T: Clone> TypeParser<'a, S, T>
+impl<'a, S> TypeParser<'a, S>
 where
-    S: SmartConstructors<'a, T>,
+    S: SmartConstructors,
     S::R: NodeType,
 {
     fn with_expression_parser<F, U>(&mut self, f: F) -> U
     where
-        F: Fn(&mut ExpressionParser<'a, S, T>) -> U,
+        F: Fn(&mut ExpressionParser<'a, S>) -> U,
     {
         let mut lexer = self.lexer.clone();
         lexer.set_in_type(false);
-        let mut expression_parser: ExpressionParser<S, T> = ExpressionParser::make(
+        let mut expression_parser: ExpressionParser<S> = ExpressionParser::make(
             lexer,
             self.env.clone(),
             self.context.clone(),
@@ -151,17 +141,17 @@ where
     }
 
     fn parse_expression(&mut self) -> S::R {
-        self.with_expression_parser(|p: &mut ExpressionParser<'a, S, T>| p.parse_expression())
+        self.with_expression_parser(|p: &mut ExpressionParser<'a, S>| p.parse_expression())
     }
 
     fn with_decl_parser<F, U>(&mut self, f: F) -> U
     where
-        F: Fn(&mut DeclarationParser<'a, S, T>) -> U,
+        F: Fn(&mut DeclarationParser<'a, S>) -> U,
     {
         let mut lexer = self.lexer.clone();
         lexer.set_in_type(false);
 
-        let mut declaration_parser: DeclarationParser<S, T> = DeclarationParser::make(
+        let mut declaration_parser: DeclarationParser<S> = DeclarationParser::make(
             lexer,
             self.env.clone(),
             self.context.clone(),
@@ -223,7 +213,6 @@ where
             | TokenKind::Category
             | TokenKind::XHP
             | TokenKind::XHPClassName => self.parse_simple_type_or_type_constant_or_generic(),
-            | TokenKind::Array => self.parse_array_type_specifier(),
             | TokenKind::Darray => self.parse_darray_type_specifier(),
             | TokenKind::Varray => self.parse_varray_type_specifier(),
             | TokenKind::Vec => self.parse_vec_type_specifier(),
@@ -276,35 +265,6 @@ where
         }
     }
 
-    //  SPEC
-    // pocket-universe-access:
-    //   name  :@  name
-    //   self  :@  name
-    //   this  :@  name
-    //   parent  :@  name
-    //   pocket-universe-access :@  name
-    fn parse_remaining_pocket_universe_access(&mut self, left: S::R) -> S::R {
-        let separator = self.fetch_token();
-        let right = self.next_token_as_name();
-        if right.kind() == TokenKind::Name {
-            let right = S!(make_token, self, right);
-            let syntax = S!(make_pu_access, self, left, separator, right);
-            let token = self.peek_token();
-            if token.kind() == TokenKind::ColonAt {
-                self.parse_remaining_pocket_universe_access(syntax)
-            } else {
-                syntax
-            }
-        } else {
-            // ERROR RECOVERY: Assume that the thing following the :@
-            // that is not a name belongs to the next thing to be
-            // parsed; treat the name as missing.
-            self.with_error(Errors::error1004);
-            let missing = S!(make_missing, self, self.pos());
-            S!(make_pu_access, self, left, separator, missing)
-        }
-    }
-
     fn parse_remaining_generic(&mut self, name: S::R) -> S::R {
         let (arguments, _) = self.parse_generic_type_argument_list();
         S!(make_generic_type_specifier, self, name, arguments)
@@ -324,7 +284,6 @@ where
         let token = self.peek_token();
         match token.kind() {
             TokenKind::ColonColon => self.parse_remaining_type_constant(name),
-            TokenKind::ColonAt => self.parse_remaining_pocket_universe_access(name),
             _ => S!(make_simple_type_specifier, self, name),
         }
     }
@@ -402,7 +361,7 @@ where
     // https://github.com/hhvm/hack-langspec/issues/83
     // TODO: Update the spec with reified
     pub fn parse_type_parameter(&mut self) -> S::R {
-        let attributes = self.with_decl_parser(|x: &mut DeclarationParser<'a, S, T>| {
+        let attributes = self.with_decl_parser(|x: &mut DeclarationParser<'a, S>| {
             x.parse_attribute_specification_opt()
         });
         let reified = self.optional_token(TokenKind::Reify);
@@ -487,6 +446,24 @@ where
     // SPEC
     //
     // TODO: Add this to the specification.
+    // (This work is tracked by task T85043839.)
+    //
+    // readonly:
+    //   readonly
+
+    fn parse_readonly_opt(&mut self) -> S::R {
+        match self.peek_token_kind() {
+            TokenKind::Readonly => {
+                let token = self.next_token();
+                S!(make_token, self, token)
+            }
+            _ => S!(make_missing, self, self.pos()),
+        }
+    }
+
+    // SPEC
+    //
+    // TODO: Add this to the specification.
     // (This work is tracked by task T22582676.)
     //
     // closure-param-type-specifier-list:
@@ -528,6 +505,7 @@ where
             }
             _ => {
                 let callconv = self.parse_call_convention_opt();
+                let readonly = self.parse_readonly_opt();
                 let ts = self.parse_type_specifier(false, true);
                 match self.peek_token_kind() {
                     TokenKind::DotDotDot => {
@@ -535,7 +513,13 @@ where
                         let token = S!(make_token, self, token);
                         S!(make_variadic_parameter, self, callconv, ts, token)
                     }
-                    _ => S!(make_closure_parameter_type_specifier, self, callconv, ts),
+                    _ => S!(
+                        make_closure_parameter_type_specifier,
+                        self,
+                        callconv,
+                        readonly,
+                        ts
+                    ),
                 }
             }
         }
@@ -591,68 +575,6 @@ where
                 let missing = S!(make_missing, self, self.pos());
                 let result = S!(make_type_arguments, self, open_angle, args, missing);
                 (result, no_arg_is_missing)
-            }
-        }
-    }
-
-    fn parse_array_type_specifier(&mut self) -> S::R {
-        // We allow
-        // array
-        // array<type>
-        // array<type, type>
-        // TODO: Put a proper reference to the specification in here.
-        // TODO: in HHVM trailing comma is permitted only in the case with one
-        // type argument: array<type, >
-        // so now it is not really comma-separated list
-        let array_token = self.assert_token(TokenKind::Array);
-        if self.peek_token_kind_with_possible_attributized_type_list() != TokenKind::LessThan {
-            S!(make_simple_type_specifier, self, array_token)
-        } else {
-            let left_angle = self.assert_left_angle_in_type_list_with_possible_attribute();
-            // ERROR RECOVERY: We could improve error recovery by detecting
-            // array<,  and marking the key type as missing.
-            let key_type = self.parse_type_specifier(false, true);
-            let kind = self.peek_token_kind();
-            if kind == TokenKind::GreaterThan {
-                let right_angle = self.fetch_token();
-                S!(
-                    make_vector_array_type_specifier,
-                    self,
-                    array_token,
-                    left_angle,
-                    key_type,
-                    right_angle
-                )
-            } else if kind == TokenKind::Comma {
-                let comma = self.fetch_token();
-                let next_token_kind = self.peek_token_kind();
-                let value_type = if next_token_kind == TokenKind::GreaterThan {
-                    S!(make_missing, self, self.pos())
-                } else {
-                    self.parse_type_specifier(false, true)
-                };
-                let right_angle = self.require_right_angle();
-                S!(
-                    make_map_array_type_specifier,
-                    self,
-                    array_token,
-                    left_angle,
-                    key_type,
-                    comma,
-                    value_type,
-                    right_angle,
-                )
-            } else {
-                // ERROR RECOVERY: TokenKind::Assume that the > is missing and keep going.
-                let right_angle = S!(make_missing, self, self.pos());
-                S!(
-                    make_vector_array_type_specifier,
-                    self,
-                    array_token,
-                    left_angle,
-                    key_type,
-                    right_angle
-                )
             }
         }
     }
@@ -841,8 +763,36 @@ where
         let _ = parser1.assert_token(TokenKind::LeftParen);
         let token = parser1.peek_token();
         match token.kind() {
-            TokenKind::Function => self.parse_closure_type_specifier(),
+            TokenKind::Readonly | TokenKind::Function => self.parse_closure_type_specifier(),
             _ => self.parse_tuple_or_union_or_intersection_type_specifier(),
+        }
+    }
+
+    pub fn parse_contexts(&mut self) -> S::R {
+        if self.peek_token_kind() == TokenKind::LeftBracket {
+            let (left_bracket, types, right_bracket) = self
+                .parse_bracketted_comma_list_opt_allow_trailing(|x: &mut Self| {
+                    match x.peek_token_kind() {
+                        TokenKind::Ctx => {
+                            let ctx = x.assert_token(TokenKind::Ctx);
+                            let var = x.with_expression_parser(|p: &mut ExpressionParser<'a, S>| {
+                                p.parse_simple_variable()
+                            });
+                            S!(make_function_ctx_type_specifier, x, ctx, var)
+                        }
+                        TokenKind::Variable => {
+                            /* Keeping this isolated from the type constant parsing code for now */
+                            let var = x.assert_token(TokenKind::Variable);
+                            let colcol = x.require_coloncolon();
+                            let name = x.require_name();
+                            S!(make_type_constant, x, var, colcol, name)
+                        }
+                        _ => x.parse_type_specifier(false, false),
+                    }
+                });
+            S!(make_contexts, self, left_bracket, types, right_bracket)
+        } else {
+            S!(make_missing, self, self.pos())
         }
     }
 
@@ -855,13 +805,17 @@ where
         // TODO: Update grammar for inout parameters.
         // (This work is tracked by task T22582715.)
         //
+        // TODO: Update grammar for readonly keyword
+        // (This work is tracked by task T87253111.)
         // closure-type-specifier:
-        //   ( function ( \
+        //   (  readonly-opt
+        //   function ( \
         //   closure-param-type-specifier-list-opt \
         //   ) : type-specifier )
         //
         // TODO: Error recovery is pretty weak here. We could be smarter.
         let olp = self.fetch_token();
+        let ro = self.parse_readonly_opt();
         let fnc = self.fetch_token();
         let ilp = self.require_left_paren();
         let (pts, irp) = if self.peek_token_kind() == TokenKind::RightParen {
@@ -875,18 +829,23 @@ where
             let irp = self.require_right_paren();
             (pts, irp)
         };
+        let ctxs = self.parse_contexts();
         let col = self.require_colon();
+        let readonly = self.parse_readonly_opt();
         let ret = self.parse_type_specifier(false, true);
         let orp = self.require_right_paren();
         S!(
             make_closure_type_specifier,
             self,
             olp,
+            ro,
             fnc,
             ilp,
             pts,
             irp,
+            ctxs,
             col,
+            readonly,
             ret,
             orp
         )
@@ -994,7 +953,7 @@ where
         // SPEC
         // attributized-specifier:
         // attribute-specification-opt type-specifier
-        let attribute_spec_opt = self.with_decl_parser(|x: &mut DeclarationParser<'a, S, T>| {
+        let attribute_spec_opt = self.with_decl_parser(|x: &mut DeclarationParser<'a, S>| {
             x.parse_attribute_specification_opt()
         });
         let attributized_type = self.parse_type_specifier(false, true);
@@ -1139,6 +1098,27 @@ where
             S!(make_type_constraint, self, constraint_as, constraint_type)
         } else {
             S!(make_missing, self, self.pos())
+        }
+    }
+
+    pub fn parse_context_constraint_opt(&mut self) -> Option<S::R> {
+        // SPEC
+        // context-constraint:
+        //   as  context-list
+        //   super  context-list
+        match self.peek_token_kind() {
+            TokenKind::As | TokenKind::Super => {
+                let constraint_token = self.next_token();
+                let constraint_token = S!(make_token, self, constraint_token);
+                let constraint_ctx = self.parse_contexts();
+                Some(S!(
+                    make_context_constraint,
+                    self,
+                    constraint_token,
+                    constraint_ctx
+                ))
+            }
+            _ => None,
         }
     }
 

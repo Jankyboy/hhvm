@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_OPTIMIZE_H_
-#define incl_HPHP_OPTIMIZE_H_
+#pragma once
 
 #include "hphp/hhbbc/context.h"
 
@@ -27,7 +26,7 @@ struct FuncAnalysis;
 struct Bytecode;
 struct BlockUpdateInfo;
 
-using BlockUpdates = CompactVector<std::pair<BlockId, BlockUpdateInfo>>;
+using BlockUpdates = CompactVector<std::pair<BlockId, CompressedBlockUpdate>>;
 
 /*
  * Use information from an analyze call to perform various
@@ -58,4 +57,3 @@ Bytecode gen_constant(const TypedValue& cell);
 
 }}
 
-#endif

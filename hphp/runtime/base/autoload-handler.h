@@ -13,11 +13,9 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_AUTOLOAD_HANDLER_H_
-#define incl_HPHP_AUTOLOAD_HANDLER_H_
+#pragma once
 
 #include <memory>
-#include <optional>
 #include <utility>
 
 #include <folly/experimental/io/FsUtil.h>
@@ -37,13 +35,16 @@ namespace HPHP {
 
 bool is_valid_class_name(folly::StringPiece className);
 
-struct AutoloadMapFactory;
+struct RepoAutoloadMap;
 
 struct AutoloadHandler final : RequestEventHandler {
 
-  AutoloadHandler() { }
-
-  ~AutoloadHandler() { }
+  AutoloadHandler() = default;
+  AutoloadHandler(const AutoloadHandler&) = delete;
+  AutoloadHandler(AutoloadHandler&&) = delete;
+  AutoloadHandler& operator=(const AutoloadHandler&) = delete;
+  AutoloadHandler& operator=(AutoloadHandler&&) noexcept = delete;
+  ~AutoloadHandler() = default;
 
   void requestInit() override;
   void requestShutdown() override;
@@ -104,10 +105,12 @@ struct AutoloadHandler final : RequestEventHandler {
     return m_facts;
   }
 
-  std::optional<String> getFile(const String& name,
+  Optional<String> getFile(const String& name,
                                   AutoloadMap::KindOf kind);
 
   Array getSymbols(const String& path, AutoloadMap::KindOf kind);
+
+  static void setRepoAutoloadMap(std::unique_ptr<RepoAutoloadMap>);
 
 private:
   /**
@@ -160,6 +163,8 @@ private:
   FactsStore* m_facts = nullptr;
   req::unique_ptr<UserAutoloadMap> m_req_map;
   AutoloadMap* m_map = nullptr;
+
+  static std::unique_ptr<RepoAutoloadMap> s_repoAutoloadMap;
 };
 
 //////////////////////////////////////////////////////////////////////
@@ -173,15 +178,18 @@ struct FactsFactory {
   static FactsFactory* getInstance();
   static void setInstance(FactsFactory* instance);
 
+  FactsFactory() = default;
+  FactsFactory(const FactsFactory&) = default;
+  FactsFactory(FactsFactory&&) noexcept = default;
+  FactsFactory& operator=(const FactsFactory&) = default;
+  FactsFactory& operator=(FactsFactory&&) noexcept = default;
   virtual ~FactsFactory() = default;
 
   /**
-   * Return a Facts corresponding to the given root. If one doesn't exist yet,
-   * create it.
+   * Return a Facts corresponding to the given options. If one doesn't exist
+   * yet, create it.
    */
-  virtual FactsStore* getForRoot(const folly::fs::path& root) = 0;
+  virtual FactsStore* getForOptions(const RepoOptions& options) = 0;
 };
 
 }
-
-#endif

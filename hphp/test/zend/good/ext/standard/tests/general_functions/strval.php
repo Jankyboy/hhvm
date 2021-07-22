@@ -49,7 +49,7 @@ $scalars = varray[
   0x7fffffff,  // max postive integer as hexadecimal
   0x7FFFFFFF,  // max postive integer as hexadecimal
   0123,        // integer as octal
-  01912,       // should be quivalent to octal 1
+  01,       // should be quivalent to octal 1
   -020000000000, // max negative integer as octal
   017777777777,  // max positive integer as octal
   -2147483649, // float value
@@ -111,9 +111,6 @@ echo "\n*** Testing strval() with non_scalar values ***\n";
 $fp = fopen(__FILE__, "r");
 $dfp = opendir( dirname(__FILE__) );
 
-// unset variable
-$unset_var = 10;
-unset ($unset_var);
 
 $not_scalars = varray [
   new foo, //object
@@ -121,8 +118,6 @@ $not_scalars = varray [
   $dfp,
   NULL,  // nulls
   null,
-  @$unset_var,  // unset variable
-  @$undefined_var
 ];
 /* loop through the $not_scalars to see working of
    strval() on objects, arrays, boolean and others */

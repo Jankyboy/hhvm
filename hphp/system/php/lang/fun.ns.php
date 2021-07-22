@@ -5,12 +5,11 @@ namespace __SystemLib {
   final class MethCallerHelper {
     private ?string $class;
     private ?string $method;
-    public function __construct(string $class, string $method) {
+    public function __construct(string $class, string $method)[] {
       $this->class = $class;
       $this->method = $method;
     }
-    <<__ProvenanceSkipFrame>>
-    public function __invoke($x, ...$args) {
+    public function __invoke($x, ...$args)[/* caller */] {
       invariant(
         \is_a($x, $this->class),
         'object must be an instance of ('.$this->class.'), instead it is ('.
@@ -18,20 +17,20 @@ namespace __SystemLib {
       );
       return $x->{$this->method}(...$args);
     }
-    public function getClassNameImpl(): string {
+    public function getClassNameImpl()[]: string {
       return $this->class;
     }
-    public function getMethodNameImpl(): string {
+    public function getMethodNameImpl()[]: string {
       return $this->method;
     }
-    public function getClassName(): string {
+    public function getClassName()[]: string {
       if (\ini_get("hhvm.notice_on_meth_caller_helper_use")) {
         \trigger_error("getClassName() called on __SystemLib\MethCallerHelper",
           \E_USER_WARNING);
       }
       return $this->getClassNameImpl();
     }
-    public function getMethodName(): string {
+    public function getMethodName()[]: string {
       if (\ini_get("hhvm.notice_on_meth_caller_helper_use")) {
         \trigger_error(
           "getMethodName() called on __SystemLib\MethCallerHelper",
@@ -39,6 +38,54 @@ namespace __SystemLib {
       }
       return $this->getMethodNameImpl();
     }
+  }
+
+  final class DynMethCallerHelper {
+    public function __construct(
+      private string $class,
+      private string $method,
+      private mixed $lambda,
+    )[] {
+    }
+    public function __invoke($x, ...$args)[/* caller */] {
+      invariant(
+        \is_a($x, $this->class),
+        'object must be an instance of ('.$this->class.'), instead it is ('.
+        (\is_object($x) ? \get_class($x) : \gettype($x)).')'
+      );
+      return ($this->lambda)($x, $this->method, ...$args);
+    }
+    public function getClassNameImpl()[]: string {
+      return $this->class;
+    }
+    public function getMethodNameImpl()[]: string {
+      return $this->method;
+    }
+    public function getClassName()[]: string {
+      return $this->getClassNameImpl();
+    }
+    public function getMethodName()[]: string {
+      return $this->getMethodNameImpl();
+    }
+  }
+
+  function dynamic_meth_caller(string $class, string $method, mixed $lambda,
+                               bool $force)[] {
+    if (!$force &&
+        !\__SystemLib\is_dynamically_callable_inst_method($class, $method)) {
+      $level = (int)\ini_get('hhvm.dynamic_meth_caller_level');
+      if ($level === 1) {
+        \trigger_error(
+          "dynamic_meth_caller(): $class::$method is not a dynamically ".
+          "callable instance method",
+          \E_USER_WARNING);
+      } else if ($level >= 2) {
+        throw new \InvalidArgumentException(
+          "dynamic_meth_caller(): $class::$method is not a dynamically ".
+          "callable instance method");
+      }
+    }
+    return new \__SystemLib\DynMethCallerHelper($class, $method, $lambda);
   }
 }
 
@@ -78,7 +125,7 @@ namespace HH {
  *
  * @guide /hack/callables/special-functions
  */
-function meth_caller(string $class, string $method) {
+function meth_caller(string $class, string $method)[] {
   return new \__SystemLib\MethCallerHelper($class, $method);
 }
 

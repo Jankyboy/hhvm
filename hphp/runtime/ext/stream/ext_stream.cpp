@@ -243,13 +243,13 @@ bool HHVM_FUNCTION(stream_context_set_option,
     return false;
   }
   if (wrapper_or_options.isArray() &&
-      !option.isInitialized() &&
-      !value.isInitialized()) {
+      option.isNull() &&
+      value.isNull()) {
     return stream_context_set_option0(context, wrapper_or_options.toArray());
   } else if (wrapper_or_options.isString() &&
-             option.isInitialized() &&
+             !option.isNull() &&
              option.isString() &&
-             value.isInitialized()) {
+             !value.isNull()) {
     return stream_context_set_option1(context, wrapper_or_options.toString(),
                                       option.toString(), value);
   } else {
@@ -263,7 +263,7 @@ Variant HHVM_FUNCTION(stream_context_get_default,
   const Array& arrOptions = options.isNull() ? null_array : options.toArray();
   auto context = g_context->getStreamContext();
   if (!context) {
-    context = req::make<StreamContext>(empty_darray(), empty_darray());
+    context = req::make<StreamContext>(empty_dict_array(), empty_dict_array());
     g_context->setStreamContext(context);
   }
   if (!arrOptions.isNull() &&
@@ -306,11 +306,10 @@ Variant HHVM_FUNCTION(stream_copy_to_stream,
                       int64_t maxlength /* = -1 */,
                       int64_t offset /* = 0 */) {
   if (maxlength == 0) return 0;
-  if (maxlength == PHP_STREAM_COPY_ALL) maxlength = 0;
 
   auto srcFile = cast<File>(source);
   auto destFile = cast<File>(dest);
-  if (maxlength < 0) {
+  if (maxlength < 0 && maxlength != PHP_STREAM_COPY_ALL) {
     raise_invalid_argument_warning("maxlength: %ld", maxlength);
     return false;
   }
@@ -319,17 +318,32 @@ Variant HHVM_FUNCTION(stream_copy_to_stream,
     return false;
   }
   int64_t cbytes = 0;
-  if (maxlength == 0) maxlength = INT_MAX;
-  while (cbytes < maxlength) {
-    int64_t remaining = maxlength - cbytes;
-    //srcFile->getChunkSize currently returns an int64_t
-    auto chunkSize = srcFile->getChunkSize();
-    String buf = srcFile->read(std::min(remaining, chunkSize));
-    if (buf.size() == 0) break;
-    if (destFile->write(buf) != buf.size()) {
-      return false;
+
+  if (maxlength == PHP_STREAM_COPY_ALL) {
+    while (!srcFile->eof()) {
+      // We read 0x10000 (64 KB at a time) because the size of a StringBuffer
+      // is limited.
+      String buf = srcFile->read(0x10000);
+
+      if (buf.size() == 0) break;
+      if (destFile->write(buf) != buf.size()) {
+        return false;
+      }
+
+      cbytes += buf.size();
     }
-    cbytes += buf.size();
+  } else {
+    while (cbytes < maxlength) {
+      int64_t remaining = maxlength - cbytes;
+      //srcFile->getChunkSize currently returns an int64_t
+      auto chunkSize = srcFile->getChunkSize();
+      String buf = srcFile->read(std::min(remaining, chunkSize));
+      if (buf.size() == 0) break;
+      if (destFile->write(buf) != buf.size()) {
+        return false;
+      }
+      cbytes += buf.size();
+    }
   }
 
   return cbytes;
@@ -488,7 +502,7 @@ bool HHVM_FUNCTION(stream_set_timeout,
   if (isa<Socket>(stream)) {
     return HHVM_FN(socket_set_option)
       (stream, SOL_SOCKET, SO_RCVTIMEO,
-       make_darray(s_sec, seconds, s_usec, microseconds));
+       make_dict_array(s_sec, seconds, s_usec, microseconds));
   } else if (isa<File>(stream)) {
     return cast<File>(stream)->setTimeout(
       (uint64_t)seconds * 1000000 + microseconds);
@@ -845,7 +859,7 @@ req::ptr<StreamContext> get_stream_context(const Variant& stream_or_context) {
   if (file != nullptr) {
     auto context = file->getStreamContext();
     if (!context) {
-      context = req::make<StreamContext>(empty_darray(), empty_darray());
+      context = req::make<StreamContext>(empty_dict_array(), empty_dict_array());
       file->setStreamContext(context);
     }
     return context;
@@ -874,12 +888,12 @@ bool StreamContext::validateOptions(const Variant& options) {
 
 void StreamContext::mergeOptions(const Array& options) {
   if (m_options.isNull()) {
-    m_options = Array::CreateDArray();
+    m_options = Array::CreateDict();
   }
   for (ArrayIter it(options); it; ++it) {
     Variant wrapper = it.first();
     if (!m_options.exists(wrapper)) {
-      m_options.set(wrapper, Array::CreateDArray());
+      m_options.set(wrapper, Array::CreateDict());
     }
     assertx(m_options[wrapper].isArray());
     Array& opts = asArrRef(m_options.lval(wrapper));
@@ -894,10 +908,10 @@ void StreamContext::setOption(const String& wrapper,
                                const String& option,
                                const Variant& value) {
   if (m_options.isNull()) {
-    m_options = Array::CreateDArray();
+    m_options = Array::CreateDict();
   }
   if (!m_options.exists(wrapper)) {
-    m_options.set(wrapper, Array::CreateDArray());
+    m_options.set(wrapper, Array::CreateDict());
   }
   assertx(m_options[wrapper].isArray());
   Array& opts = asArrRef(m_options.lval(wrapper));
@@ -906,7 +920,7 @@ void StreamContext::setOption(const String& wrapper,
 
 Array StreamContext::getOptions() const {
   if (m_options.isNull()) {
-    return empty_darray();
+    return empty_dict_array();
   }
   return m_options;
 }
@@ -931,7 +945,7 @@ bool StreamContext::validateParams(const Variant& params) {
 
 void StreamContext::mergeParams(const Array& params) {
   if (m_params.isNull()) {
-    m_params = Array::CreateDArray();
+    m_params = Array::CreateDict();
   }
   if (params.exists(s_notification)) {
     m_params.set(s_notification, params[s_notification]);
@@ -945,7 +959,7 @@ void StreamContext::mergeParams(const Array& params) {
 Array StreamContext::getParams() const {
   Array params = m_params;
   if (params.isNull()) {
-    params = Array::CreateDArray();
+    params = Array::CreateDict();
   }
   params.set(s_options, getOptions());
   return params;

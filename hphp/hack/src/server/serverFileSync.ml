@@ -8,7 +8,6 @@
  *)
 
 open Hh_prelude
-open File_content
 open Option.Monad_infix
 open ServerEnv
 
@@ -19,6 +18,7 @@ let get_file_content_from_disk path =
   let f () = Sys_utils.cat (Relative_path.to_absolute path) in
   Option.try_with f
 
+(** Get file content from File_provider or from disk. *)
 let get_file_content = function
   | ServerCommandTypes.FileContent s -> s
   | ServerCommandTypes.FileName path ->
@@ -31,21 +31,19 @@ let get_file_content = function
     (* In case of errors, proceed with empty file contents *)
     |> Option.value ~default:""
 
-(* Warning: this takes O(global error list) time. Should be OK while
- * it's only used in editor, where opening a file is a rare (compared to other
- * kind of queries) operation, but if this ever ends up being called by
- * other automation there is room for improvement (i.e finally changing global
- * error list to be a error map)
- *)
+(** Update diagnostic subscription priority files and errors.
+
+    Warning: this takes O(global error list) time. Should be OK while
+    it's only used in editor, where opening a file is a rare (compared to other
+    kind of queries) operation, but if this ever ends up being called by
+    other automation there is room for improvement (i.e finally changing global
+    error list to be a error map) *)
 let update_diagnostics diag_subscribe editor_open_files errorl =
-  Option.map diag_subscribe ~f:(fun diag_subscribe ->
-      Diagnostic_subscription.update
-        diag_subscribe
+  diag_subscribe
+  >>| Diagnostic_subscription.update
         ~priority_files:editor_open_files
-        ~reparsed:Relative_path.Set.empty
-        ~rechecked:Relative_path.Set.empty
         ~global_errors:errorl
-        ~full_check_done:true)
+        ~full_check_done:true
 
 let open_file ~predeclare env path content =
   let prev_content = get_file_content (ServerCommandTypes.FileName path) in
@@ -55,15 +53,17 @@ let open_file ~predeclare env path content =
     (* Before making any changes, pre-load (into Decl_heap) currently existing
      * declarations so there is always a previous version to compare against,
      * which makes incremental mode perform better. *)
-    ( if predeclare && not (Relative_path.Set.mem env.editor_open_files path)
+    (if predeclare && not (Relative_path.Set.mem env.editor_open_files path)
     then
       let ctx = Provider_utils.ctx_from_server_env env in
-      Decl.make_env ~sh:SharedMem.Uses ctx path );
+      Decl.make_env ~sh:SharedMem.Uses ctx path);
     let editor_open_files = Relative_path.Set.add env.editor_open_files path in
     File_provider.remove_batch (Relative_path.Set.singleton path);
     File_provider.provide_file path (File_provider.Ide content);
     let (ide_needs_parsing, diag_subscribe) =
-      if String.equal content prev_content && is_full_check_done env.full_check
+      if
+        String.equal content prev_content
+        && is_full_check_done env.full_check_status
       then
         (* Try to avoid telling the user that a check is needed when the file
          * was unchanged. But even in this case, we might need to push
@@ -88,6 +88,7 @@ let open_file ~predeclare env path content =
         let () = Hh_logger.log "open_file; diag_subscribe remains as it was" in
         (Relative_path.Set.add env.ide_needs_parsing path, env.diag_subscribe)
     in
+    Ide_info_store.open_file path;
     (* Need to re-parse this file during next full check to update
      * global error list positions that refer to it *)
     let disk_needs_parsing =
@@ -120,6 +121,7 @@ let close_relative_path env path =
     | Some c when String.equal c contents -> env.ide_needs_parsing
     | _ -> Relative_path.Set.add env.ide_needs_parsing path
   in
+  Ide_info_store.close_file path;
   let disk_needs_parsing = Relative_path.Set.add env.disk_needs_parsing path in
   let last_command_time = Unix.gettimeofday () in
   {
@@ -138,21 +140,23 @@ let edit_file ~predeclare env path (edits : File_content.text_edit list) =
   let new_env =
     try_relativize_path path >>= fun path ->
     (* See similar predeclare in open_file function *)
-    ( if predeclare && not (Relative_path.Set.mem env.editor_open_files path)
+    (if predeclare && not (Relative_path.Set.mem env.editor_open_files path)
     then
       let ctx = Provider_utils.ctx_from_server_env env in
-      Decl.make_env ~sh:SharedMem.Uses ctx path );
+      Decl.make_env ~sh:SharedMem.Uses ctx path);
     ServerBusyStatus.send env ServerCommandTypes.Needs_local_typecheck;
-    let fc =
+    let file_content =
       match File_provider.get path with
-      | Some (File_provider.Ide f) -> f
-      | Some (File_provider.Disk content) -> content
+      | Some (File_provider.Ide content)
+      | Some (File_provider.Disk content) ->
+        content
       | None ->
-        (try Sys_utils.cat (Relative_path.to_absolute path) with _ -> "")
+        (try Sys_utils.cat (Relative_path.to_absolute path) with
+        | _ -> "")
     in
-    let edited_fc =
-      match edit_file fc edits with
-      | Ok r -> r
+    let edited_file_content =
+      match File_content.edit_file file_content edits with
+      | Ok new_content -> new_content
       | Error (reason, _stack) ->
         Hh_logger.log "%s" reason;
 
@@ -161,7 +165,7 @@ let edit_file ~predeclare env path (edits : File_content.text_edit list) =
     in
     let editor_open_files = Relative_path.Set.add env.editor_open_files path in
     File_provider.remove_batch (Relative_path.Set.singleton path);
-    File_provider.provide_file path (File_provider.Ide edited_fc);
+    File_provider.provide_file path (File_provider.Ide edited_file_content);
     let ide_needs_parsing = Relative_path.Set.add env.ide_needs_parsing path in
     let disk_needs_parsing =
       Relative_path.Set.add env.disk_needs_parsing path
@@ -183,8 +187,12 @@ let clear_sync_data env =
     Relative_path.Set.fold env.editor_open_files ~init:env ~f:(fun x env ->
         close_relative_path env x)
   in
+  Ide_info_store.ide_disconnect ();
   { env with persistent_client = None; diag_subscribe = None }
 
+(** Determine which files are different in the IDE and on disk.
+    This is achieved using File_provider for the IDE content and reading file from disk.
+    Returns a map from filename to a tuple of ide contents and disk contents. *)
 let get_unsaved_changes env =
   Relative_path.Set.fold
     env.editor_open_files
@@ -196,13 +204,16 @@ let get_unsaved_changes env =
           match get_file_content_from_disk path with
           | Some disk_contents
             when not (String.equal ide_contents disk_contents) ->
-            Relative_path.Map.add acc path (ide_contents, disk_contents)
+            Relative_path.Map.add
+              acc
+              ~key:path
+              ~data:(ide_contents, disk_contents)
           | Some _ -> acc
           | None ->
             (* If one creates a new file, then there will not be corresponding
-          * disk contents, and we should consider there to be unsaved changes in
-          * the editor. *)
-            Relative_path.Map.add acc path (ide_contents, "")
+               * disk contents, and we should consider there to be unsaved changes in
+               * the editor. *)
+            Relative_path.Map.add acc ~key:path ~data:(ide_contents, "")
         end
       | _ -> acc)
 

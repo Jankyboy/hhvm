@@ -14,13 +14,13 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EVAL_CODE_COVERAGE_H_
-#define incl_HPHP_EVAL_CODE_COVERAGE_H_
+#pragma once
 
 #include "hphp/runtime/base/req-hash-map.h"
 #include "hphp/runtime/base/req-vector.h"
 
-#include <folly/Optional.h>
+#include "hphp/util/optional.h"
+
 #include <string>
 #include <vector>
 
@@ -68,11 +68,9 @@ struct CodeCoverage {
 
 private:
   using CodeCoverageMap = req::vector_map<const char*, req::vector<int>>;
-  folly::Optional<CodeCoverageMap> m_hits;
+  Optional<CodeCoverageMap> m_hits;
   bool shouldDump{false};
 };
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif // incl_HPHP_EVAL_CODE_COVERAGE_H_

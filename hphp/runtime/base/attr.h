@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_ATTR_H_
-#define incl_HPHP_ATTR_H_
+#pragma once
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -98,9 +97,9 @@ enum Attr {
   // (and therefore requires no runtime check).
   AttrNoBadRedeclare       = (1u << 10), //       |    X     |         //
   // Indicates that a function can be used with fb_rename_function---even if
-  // JitEnableRenameFunction is false --- and can be used with fb_intercept.
+  // JitEnableRenameFunction is false --- and can be used with fb_intercept2.
   // (Note: we could split this into two bits, since you can technically
-  // pessimize less for fb_intercept than you need to for fb_rename_function,
+  // pessimize less for fb_intercept2 than you need to for fb_rename_function,
   //  but we haven't done so at this point.)      |          |         //
   AttrInterceptable        = (1u << 11), //       |          |    X    //
                                          //       |          |         //
@@ -115,13 +114,6 @@ enum Attr {
   // Only valid in WholeProgram mode.  Indicates on a class that the class is
   // not extended, or on a method that no extending class defines the method.
   AttrNoOverride           = (1u << 13), //    X  |          |    X    //
-                                         //       |          |         //
-  // The RxLevel attrs are used to encode the maximum level of reactivity
-  // of a function. RxNonConditional indicates level conditionality.
-  AttrRxLevel0             = (1u << 14), //       |          |    X    //
-  AttrRxLevel1             = (1u << 15), //       |          |    X    //
-  AttrRxLevel2             = (1u << 16), //       |          |    X    //
-  AttrRxNonConditional     = (1u << 17), //       |          |    X    //
                                          //       |          |         //
   // Indicates that the function, class or static property can be loaded
   // once and then persisted across all requests. |          |         //
@@ -144,11 +136,18 @@ enum Attr {
   // Set on base classes that do not have any reified classes that extend it.
   AttrNoReifiedInit        = (1u << 23), //    X  |          |         //
                                          //                            //
-  // Set on functions that carry the __NoContext attribute             //
-  AttrNoContext            = (1u << 23), //       |          |    X    //
-                                         //                            //
                                          //       |          |         //
   AttrIsMethCaller         = (1u << 24), //       |          |    X    //
+                                         //       |          |         //
+  // Set on closure classes                                            //
+  AttrIsClosureClass       = (1u << 24), //    X  |          |         //
+  // Set on closure classes that use a property to store required coeffects
+  AttrHasClosureCoeffectsProp                                          //
+                           = (1u << 25), //    X  |          |         //
+  // Set on functions with coeffect rules
+  AttrHasCoeffectRules     = (1u << 25), //       |          |    X    //
+  // Indicates that this property was declared as readonly             //
+  AttrIsReadOnly           = (1u << 26), //       |    X     |         //
                                          //       |          |         //
   // Indicates that this function can be constant-folded if it is called with
   // all constant arguments.             //       |          |         //
@@ -197,5 +196,3 @@ inline const char* attrToVisibilityStr(Attr attr) {
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif // incl_HPHP_ATTR_H_

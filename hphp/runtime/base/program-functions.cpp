@@ -16,6 +16,7 @@
 
 #include "hphp/runtime/base/program-functions.h"
 
+#include "hphp/runtime/base/apc-typed-value.h"
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/backtrace.h"
 #include "hphp/runtime/base/bespoke-array.h"
@@ -79,7 +80,8 @@
 #include "hphp/runtime/vm/jit/prof-data.h"
 #include "hphp/runtime/vm/jit/tc.h"
 #include "hphp/runtime/vm/jit/translator.h"
-#include "hphp/runtime/vm/repo.h"
+#include "hphp/runtime/vm/repo-file.h"
+#include "hphp/runtime/vm/repo-global-data.h"
 #include "hphp/runtime/vm/runtime-compiler.h"
 #include "hphp/runtime/vm/treadmill.h"
 
@@ -169,8 +171,6 @@ namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 // Forward declarations.
 
-void initialize_repo();
-
 /*
  * XXX: VM process initialization is handled through a function
  * pointer so libhphp_runtime.a can be linked into programs that don't
@@ -252,7 +252,7 @@ static RDS_LOCAL(bool, s_sessionInitialized);
 
 static void process_cmd_arguments(int argc, char **argv) {
   php_global_set(s_argc, Variant(argc));
-  VArrayInit argvArray(argc);
+  VecInit argvArray(argc);
   for (int i = 0; i < argc; i++) {
     argvArray.append(String(argv[i]));
   }
@@ -357,7 +357,7 @@ void register_variable(Array& variables, char *name, const Variant& value,
       }
 
       if (!index) {
-        symtable->append(make_persistent_array_like_tv(ArrayData::Create()));
+        symtable->append(make_persistent_array_like_tv(ArrayData::CreateDict()));
         auto const key = symtable->get()->getKey(symtable->get()->iter_last());
         symtable = &asArrRef(symtable->lval(key));
       } else {
@@ -366,7 +366,7 @@ void register_variable(Array& variables, char *name, const Variant& value,
           symtable->convertKey<IntishCast::Cast>(key_str.asTypedValue());
         auto const v = symtable->lookup(key);
         if (isNullType(v.type()) || !isArrayLikeType(v.type())) {
-          symtable->set(key, make_persistent_array_like_tv(ArrayData::Create()));
+          symtable->set(key, make_persistent_array_like_tv(ArrayData::CreateDict()));
         }
         symtable = &asArrRef(symtable->lval(key));
       }
@@ -504,9 +504,7 @@ static void handle_exception_helper(bool& ret,
         !context->getExitCallback().isNull() &&
         is_callable(context->getExitCallback())) {
       Array stack = e.getBacktrace();
-      Array argv = make_vec_array_tagged(ARRPROV_HERE(),
-                                         *rl_exit_code,
-                                         stack);
+      Array argv = make_vec_array(*rl_exit_code, stack);
       vm_call_user_func(context->getExitCallback(), argv);
     }
   } catch (const PhpFileDoesNotExistException& e) {
@@ -613,6 +611,7 @@ static void handle_resource_exceeded_exception() {
     RID().triggerTimeout(TimeoutCPUTime);
   } catch (RequestMemoryExceededException&) {
     setSurpriseFlag(MemExceededFlag);
+    RID().setRequestOOMFlag();
   } catch (...) {}
 }
 
@@ -685,12 +684,11 @@ init_command_line_globals(
   const std::map<std::string, std::string>& serverVariables,
   const std::map<std::string, std::string>& envVariables
 ) {
-  ARRPROV_USE_RUNTIME_LOCATION();
   auto& variablesOrder = RID().getVariablesOrder();
 
   if (variablesOrder.find('e') != std::string::npos ||
       variablesOrder.find('E') != std::string::npos) {
-    auto envArr = Array::CreateDArray();
+    auto envArr = Array::CreateDict();
     process_env_variables(envArr, envp, envVariables);
     envArr.set(s_HPHP, 1);
     envArr.set(s_HHVM, 1);
@@ -704,9 +702,6 @@ init_command_line_globals(
     case Arch::ARM:
       envArr.set(s_HHVM_ARCH, "arm");
       break;
-    case Arch::PPC64:
-      envArr.set(s_HHVM_ARCH, "ppc64");
-      break;
     }
     php_global_set(s__ENV, std::move(envArr));
   }
@@ -715,7 +710,7 @@ init_command_line_globals(
 
   if (variablesOrder.find('s') != std::string::npos ||
       variablesOrder.find('S') != std::string::npos) {
-    auto serverArr = Array::CreateDArray();
+    auto serverArr = Array::CreateDict();
     process_env_variables(serverArr, envp, envVariables);
     time_t now;
     struct timeval tp = {0};
@@ -1000,7 +995,7 @@ static bool set_execution_mode(folly::StringPiece mode) {
     return true;
   } else if (mode == "run" || mode == "debug" || mode == "translate" ||
              mode == "dumphhas" || mode == "verify" || mode == "vsdebug" ||
-             mode == "getoption" || mode == "eval") {
+             mode == "getoption" || mode == "eval" || mode == "dumpcoverage") {
     // We don't run PHP in "translate" mode, so just treat it like cli mode.
     RuntimeOption::ServerMode = false;
     Logger::Escape = false;
@@ -1008,6 +1003,12 @@ static bool set_execution_mode(folly::StringPiece mode) {
   }
   // Invalid mode.
   return false;
+}
+
+static void init_repo_file() {
+  if (!RO::RepoAuthoritative) return;
+  assertx(!RO::RepoPath.empty());
+  RepoFile::init(RO::RepoPath);
 }
 
 /* Reads a file into the OS page cache, with rate limiting. */
@@ -1083,6 +1084,9 @@ static int start_server(const std::string &username, int xhprof) {
   // Include hugetlb pages in core dumps.
   Process::SetCoreDumpHugePages();
 
+  init_repo_file();
+  BootStats::mark("init_repo_file");
+
   hphp_process_init();
   SCOPE_EXIT {
     hphp_process_exit();
@@ -1102,9 +1106,9 @@ static int start_server(const std::string &username, int xhprof) {
      username);
   SCOPE_EXIT {
     Logger::FlushAll();
-    HttpRequestHandler::GetAccessLog().flushAllWriters();
-    AdminRequestHandler::GetAccessLog().flushAllWriters();
-    RPCRequestHandler::GetAccessLog().flushAllWriters();
+    HttpRequestHandler::GetAccessLog().fini();
+    AdminRequestHandler::GetAccessLog().fini();
+    RPCRequestHandler::GetAccessLog().fini();
   };
 
   if (RuntimeOption::ServerInternalWarmupThreads > 0) {
@@ -1124,13 +1128,14 @@ static int start_server(const std::string &username, int xhprof) {
 
   std::unique_ptr<std::thread> readaheadThread;
 
-  if (RuntimeOption::RepoLocalReadaheadRate > 0 &&
-      !RuntimeOption::RepoLocalPath.empty()) {
+  if (RO::RepoAuthoritative &&
+      RO::RepoLocalReadaheadRate > 0 &&
+      !RO::RepoPath.empty()) {
     HttpServer::CheckMemAndWait();
     readaheadThread = std::make_unique<std::thread>([&] {
         assertx(RuntimeOption::ServerExecutionMode());
         BootStats::Block timer("Readahead Repo", true);
-        auto path = RuntimeOption::RepoLocalPath.c_str();
+        auto path = RuntimeOption::RepoPath.c_str();
         Logger::Info("readahead %s", path);
 #ifdef __linux__
         // glibc doesn't have a wrapper for ioprio_set(), so we need to use
@@ -1284,7 +1289,6 @@ int execute_program(int argc, char **argv) {
   int ret_code = -1;
   try {
     try {
-      initialize_repo();
       ret_code = execute_program_impl(argc, argv);
     } catch (const Exception& e) {
       Logger::Error("Uncaught exception: %s", e.what());
@@ -1436,6 +1440,22 @@ static void set_stack_size() {
   }
 }
 
+std::vector<int> get_executable_lines(const Unit* compiled) {
+  std::vector<int> lines;
+
+  compiled->forEachFunc([&](const Func* func) {
+    auto const lineTable = func->getOrLoadLineTableCopy();
+    lines.reserve(lines.size() + lineTable.size());
+    for (auto& ent : lineTable) lines.push_back(ent.val());
+    return false;
+  });
+
+  std::sort(lines.begin(), lines.end());
+  auto const last = std::unique(lines.begin(), lines.end());
+  lines.erase(last, lines.end());
+  return lines;
+}
+
 static int execute_program_impl(int argc, char** argv) {
   std::string usage = "Usage:\n\n   ";
   usage += argv[0];
@@ -1496,6 +1516,7 @@ static int execute_program_impl(int argc, char** argv) {
      "lint specified file")
     ("show,w", value<std::string>(&po.show),
      "output specified file and do nothing else")
+    ("check-repo", "attempt to load repo and then exit")
     ("temp-file",
      "file specified is temporary and removed after execution")
     ("count", value<int>(&po.count)->default_value(1),
@@ -1631,7 +1652,8 @@ static int execute_program_impl(int argc, char** argv) {
   if (vm.count("version")) {
     cout << "HipHop VM";
     cout << " " << HHVM_VERSION;
-    cout << " (" << (debug ? "dbg" : "rel") << ")\n";
+    cout << " (" << (debug ? "dbg" : "rel") << ")";
+    cout << " (" << (use_lowptr ? "lowptr" : "non-lowptr") << ")\n";
     cout << "Compiler: " << compilerId() << "\n";
     cout << "Repo schema: " << repoSchemaId() << "\n";
     return 0;
@@ -1768,7 +1790,8 @@ static int execute_program_impl(int argc, char** argv) {
   // Do this as early as possible to avoid creating temp files and spawing
   // light processes. Correct compilation still requires loading all of the
   // ini/hdf/cli options.
-  if (po.mode == "dumphhas" || po.mode == "verify") {
+  if (po.mode == "dumphhas" || po.mode == "verify" ||
+      po.mode == "dumpcoverage") {
     if (po.file.empty() && po.args.empty()) {
       std::cerr << "Nothing to do. Pass a hack file to compile.\n";
       return 1;
@@ -1780,8 +1803,6 @@ static int execute_program_impl(int argc, char** argv) {
       }
       return file;
     }(po.file.empty() ? po.args[0] : po.file);
-
-    RuntimeOption::RepoCommit = false; // avoid initializing a repo
 
     std::fstream fs(file, std::ios::in);
     if (!fs) {
@@ -1796,6 +1817,11 @@ static int execute_program_impl(int argc, char** argv) {
       mangleUnitSha1(string_sha1(str), file, RepoOptions::defaults())
     };
 
+    if (!registrationComplete) {
+      folly::SingletonVault::singleton()->registrationComplete();
+      registrationComplete = true;
+    }
+
     compilers_start();
     hphp_thread_init();
     g_context.getCheck();
@@ -1805,7 +1831,7 @@ static int execute_program_impl(int argc, char** argv) {
     hphp_compiler_init();
 
     if (po.mode == "dumphhas")  RuntimeOption::EvalDumpHhas = true;
-    else RuntimeOption::EvalVerifyOnly = true;
+    else if (po.mode != "dumpcoverage") RuntimeOption::EvalVerifyOnly = true;
     SystemLib::s_inited = true;
 
     // Ensure write to SystemLib::s_inited is visible by other threads.
@@ -1823,6 +1849,12 @@ static int execute_program_impl(int argc, char** argv) {
     if (!compiled) {
       std::cerr << "Unable to compile \"" << file << "\"\n";
       return 1;
+    }
+
+    if (po.mode == "dumpcoverage") {
+      std::cout << "[" << folly::join(", ", get_executable_lines(compiled))
+                << "]" << std::endl;
+      return 0;
     }
 
     return 0;
@@ -1956,6 +1988,16 @@ static int execute_program_impl(int argc, char** argv) {
     exit(HPHP_EXIT_FAILURE);
   }
 
+  if (vm.count("check-repo")) {
+    always_assert(RO::RepoAuthoritative);
+    init_repo_file();
+    LitstrTable::init();
+    LitarrayTable::init();
+    RepoFile::loadGlobalTables(RO::RepoLitstrLazyLoad);
+    RepoFile::globalData().load();
+    return 0;
+  }
+
   // Initialize compiler state
   hphp_compiler_init();
 
@@ -1976,23 +2018,59 @@ static int execute_program_impl(int argc, char** argv) {
       tempFile = po.lint;
     }
 
-    hphp_process_init();
-    SCOPE_EXIT { hphp_process_exit(); };
+    if (!registrationComplete) {
+      folly::SingletonVault::singleton()->registrationComplete();
+      registrationComplete = true;
+    }
+
+    compilers_start();
+    hphp_thread_init();
+    g_context.getCheck();
+    SCOPE_EXIT { hphp_thread_exit(); };
+
+    // Initialize compiler state
+    hphp_compiler_init();
+
+    SystemLib::s_inited = true;
+
+    // Ensure write to SystemLib::s_inited is visible by other threads.
+    std::atomic_thread_fence(std::memory_order_release);
 
     try {
-      auto const filename = makeStaticString(po.lint.c_str());
-      auto const unit = lookupUnit(filename, "", nullptr,
-                                   Native::s_noNativeFuncs, false);
-      if (unit == nullptr) {
-        throw FileOpenException(po.lint);
+      auto const file = [&] {
+        if (!FileUtil::isAbsolutePath(po.lint)) {
+          return SourceRootInfo::GetCurrentSourceRoot() + po.lint;
+        }
+        return po.lint;
+      }();
+
+      std::fstream fs{file, std::ios::in};
+      if (!fs) throw FileOpenException(po.lint);
+      std::stringstream contents;
+      contents << fs.rdbuf();
+
+      auto const repoOptions = RepoOptions::forFile(file.c_str());
+
+      auto const str = contents.str();
+      auto const sha1 =
+        SHA1{mangleUnitSha1(string_sha1(str), file, repoOptions)};
+
+      // Disable any cache hooks because they're generally not useful
+      // if we're just going to lint (and they might be expensive).
+      g_unit_emitter_cache_hook = nullptr;
+
+      auto const unit = compile_file(
+        str.c_str(), str.size(), sha1, file.c_str(),
+        Native::s_noNativeFuncs, repoOptions, nullptr
+      );
+      if (!unit) {
+        std::cerr << "Unable to compile \"" << file << "\"\n";
+        return 1;
       }
       if (auto const info = unit->getFatalInfo()) {
         raise_parse_error(unit->filepath(), info->m_fatalMsg.c_str(),
                           info->m_fatalLoc);
       }
-    } catch (FileOpenException& e) {
-      Logger::Error(e.getMessage());
-      return 1;
     } catch (const FatalErrorException& e) {
       RuntimeOption::CallUserHandlerOnFatals = false;
       RuntimeOption::AlwaysLogUnhandledExceptions = false;
@@ -2022,24 +2100,17 @@ static int execute_program_impl(int argc, char** argv) {
     prepare_args(new_argc, new_argv, po.args, po.file.c_str());
 
     std::string const cliFile = !po.file.empty() ? po.file :
-                                new_argv[0] ? new_argv[0] : "";
+                                 new_argv[0] ? new_argv[0] : "";
     if (po.mode != "debug" && po.mode != "eval" && cliFile.empty()) {
       std::cerr << "Nothing to do. Either pass a hack file to run, or "
         "use -m server\n";
       return 1;
     }
-    Repo::setCliFile(cliFile);
 
     if (po.mode == "eval" && po.args.empty()) {
       std::cerr << "Nothing to do. Pass a command to run with mode eval\n";
       return 1;
     }
-
-    int ret = 0;
-    hphp_process_init();
-    SCOPE_EXIT { hphp_process_exit(); };
-
-    block_sync_signals_and_start_handler_thread();
 
     if (RuntimeOption::EvalUseRemoteUnixServer != "no" &&
         !RuntimeOption::EvalUnixServerPath.empty() &&
@@ -2057,6 +2128,13 @@ static int execute_program_impl(int argc, char** argv) {
         exit(255);
       }
     }
+
+    int ret = 0;
+    init_repo_file();
+    hphp_process_init();
+    SCOPE_EXIT { hphp_process_exit(); };
+
+    block_sync_signals_and_start_handler_thread();
 
     std::string file;
     if (new_argc > 0) {
@@ -2280,6 +2358,7 @@ static void update_constants_and_options() {
 }
 
 void hphp_thread_init() {
+  init_current_pthread_stack_limits();
 #if USE_JEMALLOC_EXTENT_HOOKS
   arenas_thread_init();
 #endif
@@ -2313,7 +2392,32 @@ void hphp_thread_exit() {
 #endif
 }
 
-void hphp_process_init() {
+void cli_client_init() {
+  if (*s_sessionInitialized) return;
+  Process::InitProcessStatics();
+  HHProf::Init();
+  rds::processInit();
+  rds::threadInit();
+  ExtensionRegistry::cliClientInit();
+  ServerStats::GetLogger();
+  zend_rand_init();
+  get_server_note();
+  assertx(RequestInfo::s_requestInfo.isNull());
+  RequestInfo::s_requestInfo.getCheck()->init();
+  HardwareCounter::s_counter.getCheck();
+  InitFiniNode::ThreadInit();
+  hphp_memory_cleanup();
+  g_context.getCheck();
+  AsioSession::Init();
+  Socket::clearLastError();
+  RI().onSessionInit();
+  tl_heap->resetExternalStats();
+  g_thread_safe_locale_handler->reset();
+  Treadmill::startRequest(Treadmill::SessionKind::CLIServer);
+  *s_sessionInitialized = true;
+}
+
+void init_current_pthread_stack_limits() {
   pthread_attr_t attr;
 // Linux+GNU extension
 #if defined(_GNU_SOURCE) && defined(__linux__)
@@ -2332,6 +2436,10 @@ void hphp_process_init() {
     Logger::Error("pthread_attr_destroy failed after checking stack limits");
     _exit(1);
   }
+}
+
+void hphp_process_init() {
+  init_current_pthread_stack_limits();
   BootStats::mark("pthread_init");
 
   Process::InitProcessStatics();
@@ -2423,48 +2531,70 @@ void hphp_process_init() {
   InitFiniNode::ProcessInit();
   BootStats::mark("extra_process_init");
 
-  std::unique_ptr<std::thread> apcLoadingThread;
-  if (!apcExtension::PrimeLibrary.empty()) {
-    apcLoadingThread = std::make_unique<std::thread>([&] {
-        hphp_thread_init();
-        hphp_session_init(Treadmill::SessionKind::APCPrime);
-        SCOPE_EXIT {
-          hphp_context_exit();
-          hphp_session_exit();
-          hphp_thread_exit();
-        };
-        UnlimitSerializationScope unlimit;
-        // TODO(9755792): Add real execution mode for snapshot generation.
-        if (apcExtension::PrimeLibraryUpgradeDest != "") {
-          Timer timer(Timer::WallTime, "optimizeApcPrime");
-          apc_load(apcExtension::LoadThread);
-        } else {
-          apc_load(apcExtension::LoadThread);
-        }
-      }
-    );
-  }
-
   if (RuntimeOption::RepoAuthoritative &&
       !RuntimeOption::EvalJitSerdesFile.empty() &&
       jit::mcgen::retranslateAllEnabled()) {
     auto const mode = RuntimeOption::EvalJitSerdesMode;
+    auto const numWorkers = RuntimeOption::EvalJitWorkerThreadsForSerdes ?
+        RuntimeOption::EvalJitWorkerThreadsForSerdes : Process::GetCPUCount();
+
+    auto const deserialize = [&] (auto const& f) {
+#if USE_JEMALLOC_EXTENT_HOOKS
+      auto const numArenas =
+        std::min(RO::EvalJitWorkerArenas,
+                 std::max(RO::EvalJitWorkerThreads, numWorkers));
+      setup_extra_arenas(numArenas);
+#endif
+      return f(
+        RO::EvalJitSerdesFile,
+        RO::EvalJitParallelDeserialize ? numWorkers : 1,
+        false
+      );
+    };
+
+    auto const rta = [&] (const std::string& mark, bool skipSerialize) {
+      BootStats::mark(mark);
+      BootStats::set("prof_data_source_host",
+                     jit::ProfData::buildHost()->toCppString());
+      BootStats::set("prof_data_timestamp", jit::ProfData::buildTime());
+      RO::EvalJitProfileRequests = 0;
+      RO::EvalJitWorkerThreads = numWorkers;
+      // Run retranslateAll asynchronously, without waiting for it to finish
+      // here.
+      jit::mcgen::checkRetranslateAll(true, skipSerialize);
+    };
+
+    auto const tryPartialDeserialize = [&] {
+      if (!isJitSerializing()) return;
+      if (!jit::serializeOptProfEnabled()) return;
+      if (!RO::EvalJitSerializeOptProfRestart) return;
+
+      if (RO::ServerExecutionMode()) {
+        Logger::FInfo("Attempting to deserialize partial profile-data file: {}",
+                      RO::EvalJitSerdesFile);
+      }
+
+      auto const success = deserialize(jit::tryDeserializePartialProfData);
+      if (success) {
+        if (RO::ServerExecutionMode()) {
+          Logger::FInfo("Successfully deserialized partial profile-data file. "
+                        "Loaded {} units with {} workers",
+                        numLoadedUnits(), numWorkers);
+        }
+        rta("jit::tryDeserializePartialProfData", true);
+      } else if (RO::ServerExecutionMode()) {
+        Logger::FInfo("Failed deserializing partial profile-data file. "
+                      "Proceeding normally");
+      }
+    };
+
     if (isJitDeserializing()) {
       if (RuntimeOption::ServerExecutionMode()) {
         Logger::FInfo("JitDeserializeFrom: {}",
                       RuntimeOption::EvalJitSerdesFile);
       }
-      auto const numWorkers = RuntimeOption::EvalJitWorkerThreadsForSerdes ?
-        RuntimeOption::EvalJitWorkerThreadsForSerdes : Process::GetCPUCount();
-#if USE_JEMALLOC_EXTENT_HOOKS
-      auto const numArenas =
-        std::min(RuntimeOption::EvalJitWorkerArenas,
-                 std::max(RuntimeOption::EvalJitWorkerThreads, numWorkers));
-      setup_extra_arenas(numArenas);
-#endif
-      auto const errMsg = jit::deserializeProfData(
-        RuntimeOption::EvalJitSerdesFile,
-        RuntimeOption::EvalJitParallelDeserialize ? numWorkers : 1);
+
+      auto const errMsg = deserialize(jit::deserializeProfData);
 
       if (mode == JitSerdesMode::DeserializeAndDelete) {
         // Delete the serialized profile data when we finish reading
@@ -2480,16 +2610,8 @@ void hphp_process_init() {
           Logger::FInfo("JitDeserialize: Loaded {} Units with {} workers",
                         numLoadedUnits(), numWorkers);
         }
-        BootStats::mark("jit::deserializeProfData");
-        BootStats::set("prof_data_source_host",
-                       jit::ProfData::buildHost()->toCppString());
-        BootStats::set("prof_data_timestamp", jit::ProfData::buildTime());
-        RuntimeOption::EvalJitProfileRequests = 0;
-        RuntimeOption::EvalJitWorkerThreads = numWorkers;
+        rta("jit::deserializeProfData", false);
 
-        // Run retranslateAll asynchronously, without waiting for it to finish
-        // here.
-        jit::mcgen::checkRetranslateAll(true);
         if (mode == JitSerdesMode::DeserializeAndExit) {
           if (RuntimeOption::ServerExecutionMode()) {
             Logger::Info("JitDeserialize finished; exiting");
@@ -2512,10 +2634,15 @@ void hphp_process_init() {
           Logger::Info(errMsg +
                        ", scheduling one time serialization and restart");
           RuntimeOption::EvalJitSerdesMode = JitSerdesMode::SerializeAndExit;
+          tryPartialDeserialize();
         } else {
           Logger::Info(errMsg + ", will profile then retranslateAll");
         }
       }
+    } else {
+      // We're not deserializing. Check if we're serializing and if we
+      // have a partial file. If so, deserialize it and do a RTA.
+      tryPartialDeserialize();
     }
   }
 
@@ -2527,16 +2654,6 @@ void hphp_process_init() {
   context->~ExecutionContext();
   new (context) ExecutionContext();
   BootStats::mark("ExecutionContext");
-
-  if (apcLoadingThread) {
-    apcLoadingThread->join();
-  }
-  // TODO(9755792): Add real execution mode for snapshot generation.
-  if (apcExtension::PrimeLibraryUpgradeDest != "") {
-    Logger::Info("APC PrimeLibrary upgrade mode completed; exiting.");
-    hphp_process_exit();
-    exit(0);
-  }
 }
 
 static void handle_exception(bool& ret, ExecutionContext* context,
@@ -2813,6 +2930,8 @@ void hphp_memory_cleanup() {
   weakref_cleanup();
   mm.resetAllocator();
   mm.resetCouldOOM();
+
+  APCTypedValue::FreeHazardPointers();
 }
 
 void hphp_session_exit(Transport* transport) {
@@ -2826,6 +2945,17 @@ void hphp_session_exit(Transport* transport) {
   jit::mcgen::checkRetranslateAll();
   jit::mcgen::checkSerializeOptProf();
   jit::tc::requestExit();
+
+  if (RO::EvalIdleUnitTimeoutSecs > 0 && !RO::RepoAuthoritative) {
+    // Update the timestamp of any Unit we touched in this request. We
+    // defer this until the end of the request to prevent Units from
+    // being considered "expired" while a request is still using it.
+    auto const now = Unit::TouchClock::now();
+    for (auto const u : g_context->m_touchedUnits) u->setLastTouchTime(now);
+  } else {
+    assertx(g_context->m_touchedUnits.empty());
+  }
+
   // Similarly, apc strings could be in the ServerNote array, and
   // it's possible they are scheduled to be destroyed after this request
   // finishes.
@@ -2884,6 +3014,8 @@ void hphp_process_exit() noexcept {
   LOG_AND_IGNORE(Eval::Debugger::Stop())
   LOG_AND_IGNORE(g_context.destroy())
   LOG_AND_IGNORE(shutdownUnitPrefetcher());
+  LOG_AND_IGNORE(shutdownUnitReaper());
+  LOG_AND_IGNORE(Strobelight::shutdown())
   LOG_AND_IGNORE(ExtensionRegistry::moduleShutdown())
   LOG_AND_IGNORE(compilers_shutdown())
 #ifndef _MSC_VER

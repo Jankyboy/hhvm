@@ -115,26 +115,47 @@ struct GenCountGuard {
 
 //////////////////////////////////////////////////////////////////////
 
-pthread_t getOldestRequestThreadId() {
+/*
+ * Get the ID of the thread to abort in case the treadmill gets stuck for too
+ * long.  In general, this is the oldest thread, but special treatment is used
+ * for retranslate-all.  When the main retranslate-all thread gets stuck, it's
+ * often because it's waiting for one of the JIT worker threads, which do the
+ * bulk of the JITing.  In such cases, we want to abort the oldest JIT worker,
+ * to capture its backtrace, instead of the main retranslate-all thread.
+ */
+pthread_t getThreadIdToAbort() {
   int64_t oldestStart = s_oldestRequestInFlight.load(std::memory_order_relaxed);
+  TreadmillRequestInfo* oldest = nullptr;
+  TreadmillRequestInfo* oldestWorker = nullptr;
   for (auto& req : s_inflightRequests) {
-    if (req.startTime == oldestStart) return req.pthreadId;
+    if (req.startTime == oldestStart) oldest = &req;
+    if (req.sessionKind == SessionKind::TranslateWorker &&
+        (oldestWorker == nullptr || req.startTime < oldestWorker->startTime)) {
+      oldestWorker = &req;
+    }
   }
-  not_reached();
+  always_assert(oldest != nullptr);
+  if (oldest->sessionKind != SessionKind::RetranslateAll) {
+    return oldest->pthreadId;
+  }
+  if (oldestWorker != nullptr) {
+    return oldestWorker->pthreadId;
+  }
+  return oldest->pthreadId;
 }
 
 void checkOldest() {
   int64_t limit =
     RuntimeOption::MaxRequestAgeFactor * RuntimeOption::RequestTimeoutSeconds;
-  if (!limit) return;
+  if (debug || !limit) return;
 
   int64_t ageOldest = getAgeOldestRequest();
   if (ageOldest > limit) {
     auto msg = folly::format("Oldest request has been running for {} "
                              "seconds. Aborting the server.", ageOldest).str();
     Logger::Error(msg);
-    pthread_t oldestTid = getOldestRequestThreadId();
-    pthread_kill(oldestTid, SIGABRT);
+    pthread_t abortTid = getThreadIdToAbort();
+    pthread_kill(abortTid, SIGABRT);
   }
 }
 
@@ -269,6 +290,10 @@ void finishRequest() {
   }
 }
 
+int64_t getOldestRequestGenCount() {
+  return s_oldestRequestInFlight.load(std::memory_order_relaxed);
+}
+
 /*
  * Return the start time of the oldest request in seconds, rounded such that
  * time(nullptr) >= getOldestStartTime() is guaranteed to be true.
@@ -303,7 +328,6 @@ char const* getSessionKindName(SessionKind value) {
   switch(value) {
     case SessionKind::None: return "None";
     case SessionKind::DebuggerClient: return "DebuggerClient";
-    case SessionKind::APCPrime: return "APCPrime";
     case SessionKind::PreloadRepo: return "PreloadRepo";
     case SessionKind::Watchman: return "Watchman";
     case SessionKind::Vsdebug: return "VSDebug";
@@ -314,6 +338,7 @@ char const* getSessionKindName(SessionKind value) {
     case SessionKind::RpcRequest: return "RpcRequest";
     case SessionKind::TranslateWorker: return "TranslateWorker";
     case SessionKind::Retranslate: return "Retranslate";
+    case SessionKind::RetranslateAll: return "RetranslateAll";
     case SessionKind::ProfData: return "ProfData";
     case SessionKind::UnitTests: return "UnitTests";
     case SessionKind::CompileRepo: return "CompileRepo";
@@ -321,6 +346,7 @@ char const* getSessionKindName(SessionKind value) {
     case SessionKind::CompilerEmit: return "CompilerEmit";
     case SessionKind::CompilerAnalysis: return "CompilerAnalysis";
     case SessionKind::CLISession: return "CLISession";
+    case SessionKind::UnitReaper: return "UnitReaper";
   }
   return "";
 }

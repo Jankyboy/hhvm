@@ -9,15 +9,12 @@ let visitor =
     [
       Const_prohibited_check.handler;
       Prop_modifier_prohibited_check.handler;
-      Mutability_check.handler;
       Inout_check.handler;
       Naming_coroutine_check.handler;
       Interface_check.handler;
-      Nast_reactivity_check.handler;
       Illegal_name_check.handler;
       Class_tparams_check.handler;
       Control_context_check.handler;
-      Pocket_universes_check.handler;
       Read_from_append_check.handler;
       Dynamically_callable_attr_check.handler;
       Nast_switch_check.handler;
@@ -30,7 +27,10 @@ let visitor =
       Record_field_check.handler;
       Php_lambda_check.handler;
       Duplicate_xhp_attribute_check.handler;
-      Attribute_arity_check.handler;
+      Attribute_nast_checks.handler;
+      Trait_reuse_check.handler;
+      Enum_supertyping_check.handler;
+      List_rvalue_check.handler;
     ]
 
 let stateful_visitor ctx =

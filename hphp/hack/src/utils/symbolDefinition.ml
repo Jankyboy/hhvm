@@ -7,7 +7,7 @@
  *
  *)
 
-open Hh_core
+open Hh_prelude
 
 type kind =
   | Function
@@ -34,14 +34,6 @@ and modifier =
   | Async
   | Inout
 
-and reactivity_attributes =
-  | Rx
-  | Shallow
-  | Local
-  | Nonreactive
-  | OnlyRxIfImpl
-  | AtMostRxAsArgs
-
 and 'a t = {
   kind: kind;
   name: string;
@@ -55,17 +47,16 @@ and 'a t = {
   children: 'a t list option;
   params: 'a t list option;
   docblock: string option;
-  reactivity_attributes: reactivity_attributes list;
 }
-[@@deriving ord]
+[@@deriving ord, show]
 
 let rec to_absolute x =
   {
     x with
     pos = Pos.to_absolute x.pos;
     span = Pos.to_absolute x.span;
-    children = Option.map x.children (fun x -> List.map x to_absolute);
-    params = Option.map x.params (fun x -> List.map x to_absolute);
+    children = Option.map x.children ~f:(fun x -> List.map x ~f:to_absolute);
+    params = Option.map x.params ~f:(fun x -> List.map x ~f:to_absolute);
     docblock = x.docblock;
   }
 
@@ -74,8 +65,8 @@ let rec to_relative x =
     x with
     pos = Pos.to_relative x.pos;
     span = Pos.to_relative x.span;
-    children = Option.map x.children (fun x -> List.map x to_relative);
-    params = Option.map x.params (fun x -> List.map x to_relative);
+    children = Option.map x.children ~f:(fun x -> List.map x ~f:to_relative);
+    params = Option.map x.params ~f:(fun x -> List.map x ~f:to_relative);
   }
 
 let string_of_kind = function
@@ -102,14 +93,6 @@ let string_of_modifier = function
   | Protected -> "protected"
   | Async -> "async"
   | Inout -> "inout"
-
-let string_of_reactivity_attribute = function
-  | Rx -> "reactive"
-  | Shallow -> "shallow"
-  | Local -> "local"
-  | Nonreactive -> "non_reactive"
-  | OnlyRxIfImpl -> "only_rx_if_impl"
-  | AtMostRxAsArgs -> "at_most_rx_as_args"
 
 let function_kind_name = "function"
 

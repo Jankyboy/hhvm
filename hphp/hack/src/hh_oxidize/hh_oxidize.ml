@@ -37,13 +37,17 @@ let parse filename =
 let oxidize filename =
   let phrases = parse filename in
   let in_basename = Filename.basename filename in
-  let module_name = String.chop_suffix_exn in_basename ".ml" in
+  let module_name = String.chop_suffix_exn in_basename ~suffix:".ml" in
   let module_name = convert_module_name module_name in
   log "Converting %s" module_name;
   let oxidized_module =
     Utils.with_log_indent (fun () ->
         Output.with_output_context ~module_name (fun () ->
-            List.iter phrases Convert_toplevel_phrase.toplevel_phrase))
+            let _env =
+              Convert_toplevel_phrase.(
+                List.fold phrases ~f:toplevel_phrase ~init:Env.empty)
+            in
+            ()))
   in
   (module_name, oxidized_module)
 
@@ -65,12 +69,13 @@ let write_format_and_sign env filename contents =
     failwith ("Could not format Rust output in " ^ filename);
   let contents = read filename in
   let contents =
-    (try Signed_source.sign_file contents with Caml.Not_found -> contents)
+    try Signed_source.sign_file contents with
+    | Signed_source.Token_not_found -> contents
   in
   write filename contents
 
 let convert_files env out_dir files regen_command =
-  ignore (Sys.command (sprintf "rm %S/*.rs" out_dir));
+  ignore (Sys.command (sprintf "rm -f %S/*.rs" out_dir));
   let header =
     match regen_command with
     | None -> header
@@ -108,7 +113,8 @@ let parse_types_file filename =
        lines := Caml.input_line ic :: !lines
      done;
      Caml.close_in ic
-   with End_of_file -> Caml.close_in ic);
+   with
+  | End_of_file -> Caml.close_in ic);
   List.filter_map !lines ~f:(fun name ->
       (* Ignore comments beginning with '#' *)
       let name =
@@ -121,7 +127,7 @@ let parse_types_file filename =
       if String.is_substring name ~substring:"::" then
         Some name
       else (
-        if name <> "" then
+        if String.(name <> "") then
           failwith
             (Printf.sprintf
                "Failed to parse line in types file %S: %S"
@@ -133,26 +139,19 @@ let parse_types_file filename =
 let parse_extern_types_file filename =
   parse_types_file filename
   |> List.fold ~init:SMap.empty ~f:(fun map name ->
-         (* Ignore comments beginning with '#' *)
-         let name =
-           match String.index name '#' with
-           | Some idx -> String.sub name ~pos:0 ~len:idx
-           | None -> name
-         in
-         (* Strip whitespace *)
-         let name = String.strip name in
          try
            (* Map the name with the crate prefix stripped (since we do not expect to see
-           the crate name in our OCaml source) to the fully-qualified name. *)
+              the crate name in our OCaml source) to the fully-qualified name. *)
            let coloncolon_idx = String.substr_index_exn name ~pattern:"::" in
            let after_coloncolon_idx = coloncolon_idx + 2 in
-           assert (name.[after_coloncolon_idx] <> ':');
+           assert (Char.(name.[after_coloncolon_idx] <> ':'));
            let name_without_crate =
              String.subo name ~pos:after_coloncolon_idx
            in
-           SMap.add map name_without_crate name
-         with _ ->
-           if name <> "" then
+           SMap.add map ~key:name_without_crate ~data:name
+         with
+         | _ ->
+           if String.(name <> "") then
              failwith
                (Printf.sprintf
                   "Failed to parse line in extern types file %S: %S"
@@ -161,6 +160,8 @@ let parse_extern_types_file filename =
            map)
 
 let parse_owned_types_file filename = SSet.of_list (parse_types_file filename)
+
+let parse_copy_types_file filename = SSet.of_list (parse_types_file filename)
 
 let usage =
   "Usage: buck run hphp/hack/src/hh_oxidize -- [out_directory] [target_files]
@@ -187,6 +188,7 @@ let parse_args () =
   let mode = ref Configuration.ByBox in
   let extern_types_file = ref None in
   let owned_types_file = ref None in
+  let copy_types_file = ref None in
   let options =
     [
       ( "--out-dir",
@@ -209,6 +211,10 @@ let parse_args () =
         Arg.String (fun s -> owned_types_file := Some s),
         " Do not add a lifetime parameter to the types listend in this file"
         ^ " (when --by-ref is enabled)" );
+      ( "--copy-types-file",
+        Arg.String (fun s -> copy_types_file := Some s),
+        " Do not use references for the types listed in this file"
+        ^ " (when --by-ref is enabled)" );
     ]
   in
   Arg.parse options (fun file -> files := file :: !files) usage;
@@ -222,7 +228,9 @@ let parse_args () =
     | None -> Configuration.(default.owned_types)
     | Some filename -> parse_owned_types_file filename
   in
-  Configuration.set { Configuration.mode = !mode; extern_types; owned_types };
+  let copy_types = Option.map !copy_types_file ~f:parse_copy_types_file in
+  Configuration.set
+    { Configuration.mode = !mode; extern_types; owned_types; copy_types };
   let rustfmt_path = Option.value !rustfmt_path ~default:"rustfmt" in
   match !files with
   | [] ->

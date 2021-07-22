@@ -3,12 +3,14 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the "hack" directory of this source tree.
 //
-// @generated SignedSource<<c97ac7c73c6d806c96cc2de556a289b2>>
+// @generated SignedSource<<f70b38f817329e890ff6a38352861ca4>>
 //
 // To regenerate this file, run:
-//   hphp/hack/src/oxidized/regen.sh
+//   hphp/hack/src/oxidized_regen.sh
 
 use arena_trait::TrivialDrop;
+use eq_modulo_pos::EqModuloPos;
+use no_pos_hash::NoPosHash;
 use ocamlrep_derive::FromOcamlRep;
 use ocamlrep_derive::FromOcamlRepIn;
 use ocamlrep_derive::ToOcamlRep;
@@ -26,9 +28,11 @@ pub use prim_defs::*;
     Debug,
     Deserialize,
     Eq,
+    EqModuloPos,
     FromOcamlRep,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -37,13 +41,14 @@ pub use prim_defs::*;
 )]
 pub enum Mode {
     /// just declare signatures, don't check anything
-    Mdecl,
+    Mhhi,
     /// check everything!
     Mstrict,
     /// Don't fail if you see a function/class you don't know
     Mpartial,
 }
 impl TrivialDrop for Mode {}
+arena_deserializer::impl_deserialize_in_arena!(Mode);
 
 #[derive(
     Clone,
@@ -54,6 +59,7 @@ impl TrivialDrop for Mode {}
     FromOcamlRep,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -68,6 +74,7 @@ pub enum NameType {
     Const = 4,
 }
 impl TrivialDrop for NameType {}
+arena_deserializer::impl_deserialize_in_arena!(NameType);
 
 /// We define two types of positions establishing the location of a given name:
 /// a Full position contains the exact position of a name in a file, and a
@@ -80,6 +87,7 @@ impl TrivialDrop for NameType {}
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -91,25 +99,9 @@ pub enum Pos {
     File(NameType, ocamlrep::rc::RcOc<relative_path::RelativePath>),
 }
 
-#[derive(
-    Clone,
-    Debug,
-    Deserialize,
-    Eq,
-    FromOcamlRep,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToOcamlRep
-)]
-pub struct Id(pub Pos, pub String);
+pub type Id = (Pos, String);
 
-/// The hash value of a decl AST.
-/// We use this to see if two versions of a file are "similar", i.e. their
-/// declarations only differ by position information.
-pub type HashType = Option<opaque_digest::OpaqueDigest>;
+pub type HashType = Option<isize>;
 
 /// The record produced by the parsing phase.
 #[derive(
@@ -119,6 +111,7 @@ pub type HashType = Option<opaque_digest::OpaqueDigest>;
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -145,6 +138,7 @@ pub struct FileInfo {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -152,6 +146,29 @@ pub struct FileInfo {
     ToOcamlRep
 )]
 pub struct Names {
+    pub funs: s_set::SSet,
+    pub classes: s_set::SSet,
+    pub record_defs: s_set::SSet,
+    pub types: s_set::SSet,
+    pub consts: s_set::SSet,
+}
+
+/// The simplified record stored in saved-state.
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRep,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub struct SavedNames {
     pub funs: s_set::SSet,
     pub classes: s_set::SSet,
     pub record_defs: s_set::SSet,
@@ -167,6 +184,7 @@ pub struct Names {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -174,7 +192,32 @@ pub struct Names {
     ToOcamlRep
 )]
 pub struct Saved {
-    pub names: Names,
-    pub hash: Option<opaque_digest::OpaqueDigest>,
+    pub names: SavedNames,
+    pub hash: Option<isize>,
     pub mode: Option<Mode>,
+}
+
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRep,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub struct Diff {
+    pub removed_funs: s_set::SSet,
+    pub added_funs: s_set::SSet,
+    pub removed_classes: s_set::SSet,
+    pub added_classes: s_set::SSet,
+    pub removed_types: s_set::SSet,
+    pub added_types: s_set::SSet,
+    pub removed_consts: s_set::SSet,
+    pub added_consts: s_set::SSet,
 }

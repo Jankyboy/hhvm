@@ -49,49 +49,41 @@ let compute_tast_and_errors_unquarantined_internal
     { Compute_tast_and_errors.tast; errors; telemetry = Telemetry.create () }
   | (mode, _, _) ->
     (* prepare logging *)
-    Deferred_decl.reset ~enable:false ~threshold_opt:None;
+    Deferred_decl.reset
+      ~enable:false
+      ~declaration_threshold_opt:None
+      ~memory_mb_threshold_opt:None;
     Provider_context.reset_telemetry ctx;
     let prev_ctx_telemetry = Provider_context.get_telemetry ctx in
     let prev_gc_telemetry = Telemetry.quick_gc_stat () in
-    let prev_tally_state = Counters.reset ~enable:true in
+    Decl_counters.set_mode Typing_service_types.DeclingTopCounts;
+    let prev_tally_state = Counters.reset () in
     let t = Unix.gettimeofday () in
 
     (* do the work *)
-    let ({ Parser_return.ast; _ }, ast_errors) =
+    let ({ Parser_return.ast; content; _ }, ast_errors) =
       Ast_provider.compute_parser_return_and_ast_errors
         ~popt:(Provider_context.get_popt ctx)
         ~entry
     in
+    (* Note: this only picks up errors during Naming.program.
+       It doesn't pick up "this name is already bound" errors.
+       How do other parts of the code pick them up? - during ServerTypeCheck.declare_names,
+       during the course of updating the reverse naming table.
+       There isn't a clean way to do the same here, and indeed
+       most consumers of Tast_provider such as serverHover don't
+       even care for such errors. *)
     let (naming_errors, nast) =
-      (* [Naming_global.ndecl_file] actually updates the reverse naming
-      table, so wrap in a call to `Naming_provider.with_quarantined_writes.
-
-      The correctness conditions here are subtle. Duplicate name errors are
-      detected by looking at each name's position in the file, and then
-      comparing to the position of the same name in the reverse naming table.
-      If they don't match, then an error is emitted.
-
-      XXX: Currently, names in entries are returned before names in the
-      reverse naming table by `Naming_provider`. This means that this
-      correctly detects duplicate symbols within the same entry, but will not
-      detect duplicate names if one definition is in an entry and the other
-      definition is in a file not in an entry. This should be fixed.
-      *)
-      Naming_provider.with_quarantined_writes ~f:(fun () ->
-          let path = entry.Provider_context.path in
-          let file_info =
-            Ast_provider.compute_file_info
-              ~popt:(Provider_context.get_popt ctx)
-              ~entry
-          in
-          let (reverse_naming_table_errors, _failed_naming) =
-            Naming_global.ndecl_file ctx path file_info
-          in
-          let (nast_errors, nast) =
-            Errors.do_with_context path Errors.Naming (fun () ->
-                Naming.program ctx ast)
-          in
-          (Errors.merge nast_errors reverse_naming_table_errors, nast))
+      Errors.do_with_context
+        entry.Provider_context.path
+        Errors.Naming
+        (fun () -> Naming.program ctx ast)
+    in
+    let () =
+      Decl_provider.prepare_for_typecheck
+        ctx
+        entry.Provider_context.path
+        content
     in
     let (typing_errors, tast) =
       let do_tast_checks =
@@ -136,8 +128,8 @@ let compute_tast_and_errors_unquarantined_internal
            ~key:"filesize"
            ~value:
              (String.length
-                ( Provider_context.get_file_contents_if_present entry
-                |> Option.value ~default:"" ))
+                (Provider_context.get_file_contents_if_present entry
+                |> Option.value ~default:""))
     in
 
     Hh_logger.debug

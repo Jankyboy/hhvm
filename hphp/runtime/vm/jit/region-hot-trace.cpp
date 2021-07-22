@@ -32,7 +32,7 @@ TRACE_SET_MOD(pgo);
  * that have been popped given the current SP offset from FP.
  */
 static void discardPoppedTypes(TypedLocations& pConds,
-                               FPInvOffset curSpOffset) {
+                               SBInvOffset curSpOffset) {
   for (auto it = pConds.begin(); it != pConds.end(); ) {
     if (it->location.tag() == LTag::Stack &&
         it->location.stackIdx() > curSpOffset) {
@@ -61,7 +61,8 @@ static void mergePostConds(TypedLocations& dst,
 
 RegionDescPtr selectHotTrace(HotTransContext& ctx) {
   auto region = std::make_shared<RegionDesc>();
-  TransID tid    = ctx.tid;
+  assertx(ctx.entries.size() == 1);
+  TransID tid    = *ctx.entries.begin();
   TransID prevId = kInvalidTransID;
   TransIDSet selectedSet;
   TypedLocations accumPostConds;
@@ -98,12 +99,11 @@ RegionDescPtr selectHotTrace(HotTransContext& ctx) {
     // large regions containing the function body (starting at various
     // DV funclets).
     if (prevId != kInvalidTransID) {
-      auto const func = rec->func();
-      auto const bcOffset = rec->startBcOff();
-      if (func->base() == bcOffset) {
+      auto const sk = rec->srcKey();
+      if (sk.offset() == 0) {
         FTRACE(2, "selectHotTrace: breaking region because reached the main "
-               "function body entry at Translation {} (BC offset {})\n",
-               tid, bcOffset);
+               "function body entry at Translation {} (BC offset 0)\n",
+               tid);
         break;
       }
     }

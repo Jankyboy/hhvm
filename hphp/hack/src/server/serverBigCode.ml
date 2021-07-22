@@ -7,17 +7,14 @@
  *
  *)
 
-open Core_kernel
+open Hh_prelude
 open File_content
 open Hh_json
 open Provider_context
 open Tast
 open Typing_defs
 module Nast = Aast
-module Tast = Aast
-module Phase = Typing_phase
 module Cls = Decl_provider.Class
-module SourceText = Full_fidelity_source_text
 module Syntax = Full_fidelity_positioned_syntax
 module TokenKind = Full_fidelity_token_kind
 open Syntax
@@ -127,7 +124,7 @@ let extract ~(cst : Provider_context.PositionedSyntaxTree.t) : string option =
  *)
 let auto_complete_suffix_finder =
   object
-    inherit [_] Tast.reduce
+    inherit [_] Aast.reduce
 
     method zero = false
 
@@ -155,7 +152,7 @@ class local_types =
 
     method add id ty =
       (* If we already have a type for this identifier, don't overwrite it with
-       results from after the cursor position. *)
+         results from after the cursor position. *)
       if not (Local_id.Map.mem id results && after_cursor) then
         results <- Local_id.Map.add id ty results
 
@@ -163,29 +160,29 @@ class local_types =
 
     method! on_method_ env m =
       if method_contains_cursor m then (
-        if not m.Tast.m_static then
+        if not m.Aast.m_static then
           self#add Typing_defs.this (Tast_env.get_self_ty_exn env);
         super#on_method_ env m
       )
 
     method! on_expr env e =
-      let ((_, ty), e_) = e in
+      let (ty, _, e_) = e in
       match e_ with
-      | Tast.Lvar (_, id) ->
+      | Aast.Lvar (_, id) ->
         if matches_auto_complete_suffix (Local_id.get_name id) then
           after_cursor <- true
         else
           self#add id ty
-      | Tast.Binop (Ast_defs.Eq _, e1, e2) ->
+      | Aast.Binop (Ast_defs.Eq _, e1, e2) ->
         (* Process the rvalue before the lvalue, since the lvalue is annotated
-         with its type after the assignment. *)
+           with its type after the assignment. *)
         self#on_expr env e2;
         self#on_expr env e1
       | _ -> super#on_expr env e
 
     method! on_fun_param _ fp =
-      let id = Local_id.make_unscoped fp.Tast.param_name in
-      let (_, ty) = fp.Tast.param_annotation in
+      let id = Local_id.make_unscoped fp.Aast.param_name in
+      let ty = fp.Aast.param_annotation in
       self#add id ty
   end
 
@@ -290,10 +287,10 @@ class visitor ~ctx ~entry ~filename ~source_text =
       |> List.iter ~f:(fun cname ->
              Decl_provider.get_class (Tast_env.get_ctx env) cname
              |> Option.iter ~f:(fun class_ ->
-                    let cid = Option.map cid to_nast_class_id_ in
+                    let cid = Option.map cid ~f:to_nast_class_id_ in
                     self#autocomplete_member ~is_static env class_ cid))
 
-    method autocomplete_static_member env ((_, ty), cid) =
+    method autocomplete_static_member env (ty, _, cid) =
       self#autocomplete_typed_member ~is_static:true env ty (Some cid)
 
     method compute_complete_local (p : Pos.t) (target : string) =
@@ -336,7 +333,8 @@ class visitor ~ctx ~entry ~filename ~source_text =
       let (line, column) = Pos.line_column p in
       let column = column + 1 in
       let pos_str = Printf.sprintf "%d-%d" line column in
-      ( if not (SSet.exists (fun key -> key = pos_str) !positions) then
+      (if not (SSet.exists (fun key -> String.equal key pos_str) !positions)
+      then
         match context with
         | Some tokens ->
           let entry =
@@ -349,7 +347,7 @@ class visitor ~ctx ~entry ~filename ~source_text =
             }
           in
           entries <- entry :: entries
-        | None -> () );
+        | None -> ());
       positions := SSet.add pos_str !positions
 
     (* Add the completion token and wrap up the context and candidate list *)
@@ -363,7 +361,8 @@ class visitor ~ctx ~entry ~filename ~source_text =
       let (line, column) = Pos.line_column p in
       let column = column + 1 in
       let pos_str = Printf.sprintf "%d-%d" line column in
-      ( if not (SSet.exists (fun key -> key = pos_str) !positions) then
+      (if not (SSet.exists (fun key -> String.equal key pos_str) !positions)
+      then
         match context with
         | Some tokens ->
           let entry =
@@ -376,7 +375,7 @@ class visitor ~ctx ~entry ~filename ~source_text =
             }
           in
           entries <- entry :: entries
-        | None -> () );
+        | None -> ());
       positions := SSet.add pos_str !positions
 
     method! on_Lvar env lid =
@@ -388,10 +387,10 @@ class visitor ~ctx ~entry ~filename ~source_text =
     method! on_Class_get env cid mid =
       let res = super#on_Class_get env cid mid in
       (match mid with
-      | Tast.CGstring p ->
+      | Aast.CGstring p ->
         self#autocomplete_static_member env cid;
         self#add_entry SearchUtils.Acclass_get (fst p) (snd p)
-      | Tast.CGexpr _ -> ());
+      | Aast.CGexpr _ -> ());
       res
 
     method! on_Class_const env cid mid =
@@ -402,7 +401,7 @@ class visitor ~ctx ~entry ~filename ~source_text =
     method! on_Obj_get env obj mid ognf =
       let res = super#on_Obj_get env obj mid ognf in
       (match mid with
-      | (_, Tast.Id mid) ->
+      | (_, _, Aast.Id mid) ->
         self#autocomplete_typed_member ~is_static:false env (get_type obj) None;
         self#add_entry SearchUtils.Acclass_get (fst mid) (snd mid)
       | _ -> ());

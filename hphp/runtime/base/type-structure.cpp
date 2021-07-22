@@ -122,7 +122,6 @@ const std::string
   s_mixed("mixed"),
   s_dynamic("dynamic"),
   s_nonnull("nonnull"),
-  s_array("array"),
   s_darray("HH\\darray"),
   s_varray("HH\\varray"),
   s_varray_or_darray("HH\\varray_or_darray"),
@@ -131,7 +130,7 @@ const std::string
   s_hh_dict("HH\\dict"),
   s_hh_keyset("HH\\keyset"),
   s_hh_vec_or_dict("HH\\vec_or_dict"),
-  s_hh_arraylike("HH\\arraylike"),
+  s_hh_any_array("HH\\AnyArray"),
   s_hh("HH\\")
 ;
 
@@ -155,8 +154,9 @@ void functionTypeName(const Array& arr, std::string& name,
     sep = ", ";
   }
 
-  if (arr.exists(s_variadic_type)) {
-    auto const variadicType = arr[s_variadic_type].asCArrRef();
+  auto variadic_tv = arr.lookup(s_variadic_type);
+  if (variadic_tv.is_init()) {
+    auto const variadicType = tvAsVariant(variadic_tv).asCArrRef();
     folly::toAppend(sep, fullName(variadicType, type), "...", &name);
   }
 
@@ -212,9 +212,10 @@ void tupleTypeName(const Array& arr, std::string& name,
 
 void genericTypeName(const Array& arr, std::string& name,
                      TypeStructure::TSDisplayType type) {
+  auto args_tv = arr.lookup(s_generic_types);
+  if (!args_tv.is_init()) return;
   name += "<";
-  assertx(arr.exists(s_generic_types));
-  auto const args = arr[s_generic_types].asCArrRef();
+  auto const args = tvAsVariant(args_tv).asCArrRef();
   auto const sz = args.size();
   auto sep = "";
   for (auto i = 0; i < sz; i++) {
@@ -295,9 +296,9 @@ std::string fullName(const Array& arr, TypeStructure::TSDisplayType type) {
       assertx(arr[s_opaque].toBoolean());
       name += "opaque:";
     }
-
-    if (arr.exists(s_alias)) {
-      auto const alias = arr[s_alias].asCStrRef();
+    auto tv = arr.lookup(s_alias);
+    if (tv.is_init()) {
+      auto const alias = tvAsVariant(tv).asCStrRef();
       name += alias.toCppString() + ':';
     }
   }
@@ -355,29 +356,17 @@ std::string fullName(const Array& arr, TypeStructure::TSDisplayType type) {
     case TypeStructure::Kind::T_fun:
       functionTypeName(arr, name, type);
       break;
-    case TypeStructure::Kind::T_array:
-      name += s_array;
-      if (arr.exists(s_generic_types)) {
-        genericTypeName(arr, name, type);
-      }
-      break;
     case TypeStructure::Kind::T_darray:
       name += s_darray;
-      if (arr.exists(s_generic_types)) {
-        genericTypeName(arr, name, type);
-      }
+      genericTypeName(arr, name, type);
       break;
     case TypeStructure::Kind::T_varray:
       name += s_varray;
-      if (arr.exists(s_generic_types)) {
-        genericTypeName(arr, name, type);
-      }
+      genericTypeName(arr, name, type);
       break;
     case TypeStructure::Kind::T_varray_or_darray:
       name += s_varray_or_darray;
-      if (arr.exists(s_generic_types)) {
-        genericTypeName(arr, name, type);
-      }
+      genericTypeName(arr, name, type);
       break;
     case TypeStructure::Kind::T_shape:
       name += forDisplay(type) ? s_shape : s_hh + s_shape;
@@ -385,33 +374,23 @@ std::string fullName(const Array& arr, TypeStructure::TSDisplayType type) {
       break;
     case TypeStructure::Kind::T_dict:
       name += s_hh_dict;
-      if (arr.exists(s_generic_types)) {
-        genericTypeName(arr, name, type);
-      }
+      genericTypeName(arr, name, type);
       break;
     case TypeStructure::Kind::T_vec:
       name += s_hh_vec;
-      if (arr.exists(s_generic_types)) {
-        genericTypeName(arr, name, type);
-      }
+      genericTypeName(arr, name, type);
       break;
     case TypeStructure::Kind::T_keyset:
       name += s_hh_keyset;
-      if (arr.exists(s_generic_types)) {
-        genericTypeName(arr, name, type);
-      }
+      genericTypeName(arr, name, type);
       break;
     case TypeStructure::Kind::T_vec_or_dict:
       name += s_hh_vec_or_dict;
-      if (arr.exists(s_generic_types)) {
-        genericTypeName(arr, name, type);
-      }
+      genericTypeName(arr, name, type);
       break;
-    case TypeStructure::Kind::T_arraylike:
-      name += s_hh_arraylike;
-      if (arr.exists(s_generic_types)) {
-        genericTypeName(arr, name, type);
-      }
+    case TypeStructure::Kind::T_any_array:
+      name += s_hh_any_array;
+      genericTypeName(arr, name, type);
       break;
     case TypeStructure::Kind::T_typevar:
       assertx(arr.exists(s_name));
@@ -435,7 +414,7 @@ std::string fullName(const Array& arr, TypeStructure::TSDisplayType type) {
     case TypeStructure::Kind::T_unresolved:
       assertx(arr.exists(s_classname));
       name += arr[s_classname].asCStrRef().toCppString();
-      if (arr.exists(s_generic_types)) genericTypeName(arr, name, type);
+      genericTypeName(arr, name, type);
       break;
   }
 
@@ -447,7 +426,7 @@ Array resolveTS(TSEnv& env, const TSCtx& ctx, const Array& arr);
 Array resolveList(TSEnv& env, const TSCtx& ctx, const Array& arr) {
   auto const sz = arr.size();
 
-  VArrayInit newarr(sz);
+  VecInit newarr(sz);
   for (auto i = 0; i < sz; i++) {
     newarr.append(Variant(resolveTS(env, ctx, arr[i].toArray())));
   }
@@ -471,23 +450,23 @@ std::string resolveContextMsg(const TSCtx& ctx) {
 /* returns the unresolved TypeStructure; if aliasName is not an alias,
  * return an empty Array. */
 Array getAlias(TSEnv& env, const String& aliasName) {
-  if (aliasName.same(s_this) || Unit::lookupClass(aliasName.get())) {
-    return Array::CreateDArray();
+  if (aliasName.same(s_this) || Class::lookup(aliasName.get())) {
+    return Array::CreateDict();
   }
 
   auto persistentTA = true;
   auto typeAlias = env.allow_partial
-    ? Unit::lookupTypeAlias(aliasName.get(), &persistentTA)
-    : Unit::loadTypeAlias(aliasName.get(), &persistentTA);
+    ? TypeAlias::lookup(aliasName.get(), &persistentTA)
+    : TypeAlias::load(aliasName.get(), &persistentTA);
   if (!typeAlias) {
     env.partial = true;
-    return Array::CreateDArray();
+    return Array::CreateDict();
   }
 
   // this returned type structure is unresolved.
-  assertx(typeAlias->typeStructure.isHAMSafeDArray());
+  assertx(typeAlias->typeStructure().isDict());
   env.persistent &= persistentTA;
-  return typeAlias->typeStructure;
+  return typeAlias->typeStructure();
 }
 
 const Class* getClass(TSEnv& env, const TSCtx& ctx, const String& clsName) {
@@ -536,8 +515,8 @@ const Class* getClass(TSEnv& env, const TSCtx& ctx, const String& clsName) {
     ts = getAlias(env, name);
   }
 
-  auto const cls = env.allow_partial ? Unit::lookupClass(name.get())
-                                     : Unit::loadClass(name.get());
+  auto const cls = env.allow_partial ? Class::lookup(name.get())
+                                     : Class::load(name.get());
   if (!cls) {
     env.partial = true;
     if (env.allow_partial) return nullptr;
@@ -559,7 +538,7 @@ Array resolveShape(TSEnv& env, const TSCtx& ctx, const Array& arr) {
          == TypeStructure::Kind::T_shape);
   assertx(arr.exists(s_fields));
 
-  auto newfields = Array::CreateDArray();
+  auto newfields = Array::CreateDict();
   auto const fields = arr[s_fields].asCArrRef();
   auto const sz = fields.size();
   for (auto i = 0; i < sz; i++) {
@@ -575,7 +554,7 @@ Array resolveShape(TSEnv& env, const TSCtx& ctx, const Array& arr) {
       // look up clsName::cnsName
       auto cls = getClass(env, ctx, String(clsName));
       if (!cls) throw Exception("failed to resolve shape classname");
-      auto cnsValue = cls->clsCnsGet(String(cnsName).get());
+      auto cnsValue = tvClassToString(cls->clsCnsGet(String(cnsName).get()));
 
       if (isStringType(cnsValue.m_type) || isIntType(cnsValue.m_type)) {
         key = tvAsVariant(&cnsValue);
@@ -589,8 +568,9 @@ Array resolveShape(TSEnv& env, const TSCtx& ctx, const Array& arr) {
 
     // If the TS was resolved before then value field no longer exists, the
     // value is instead flattened.
-    auto valueArr =
-      wrapper.exists(s_value) ? wrapper[s_value].toArray() : wrapper;
+
+    auto tv = wrapper.lookup(s_value);
+    auto valueArr = tv.is_init() ? tvAsVariant(tv).toArray() : wrapper;
     auto value = resolveTS(env, ctx, valueArr);
 
     if (wrapper.exists(s_optional_shape_field)) {
@@ -609,7 +589,7 @@ bool resolveClass(TSEnv& env, const TSCtx& ctx, Array& ret,
   if (!cls) return false;
 
   TypeStructure::Kind resolvedKind;
-  if (isNormalClass(cls)) {
+  if (isNormalClass(cls) || isEnumClass(cls)) {
     resolvedKind = TypeStructure::Kind::T_class;
   } else if (isInterface(cls)) {
     resolvedKind = TypeStructure::Kind::T_interface;
@@ -643,12 +623,11 @@ void copyTypeModifiers(const Array& from, Array& to) {
 }
 
 Array resolveTS(TSEnv& env, const TSCtx& ctx, const Array& arr) {
-  ARRPROV_USE_RUNTIME_LOCATION();
   assertx(arr.exists(s_kind));
   auto const kind = static_cast<TypeStructure::Kind>(
     arr[s_kind].toInt64Val());
 
-  auto newarr = Array::CreateDArray();
+  auto newarr = Array::CreateDict();
   copyTypeModifiers(arr, newarr);
   newarr.set(s_kind, Variant(static_cast<uint8_t>(kind)));
 
@@ -673,14 +652,13 @@ Array resolveTS(TSEnv& env, const TSCtx& ctx, const Array& arr) {
       auto const paramsArr = arr[s_param_types].asCArrRef();
       newarr.set(s_param_types, Variant(resolveList(env, ctx, paramsArr)));
 
-      if (arr.exists(s_variadic_type)) {
-        auto const variadicArr = arr[s_variadic_type].asCArrRef();
-        newarr.set(s_variadic_type, Variant(resolveTS(env, ctx, variadicArr)));
+      auto tv = arr.lookup(s_variadic_type);
+      if (tv.is_init()) {
+        newarr.set(s_variadic_type, Variant(resolveTS(env, ctx, tvAsVariant(tv).asCArrRef())));
       }
 
       break;
     }
-    case TypeStructure::Kind::T_array:
     case TypeStructure::Kind::T_darray:
     case TypeStructure::Kind::T_varray:
     case TypeStructure::Kind::T_varray_or_darray:
@@ -688,9 +666,8 @@ Array resolveTS(TSEnv& env, const TSCtx& ctx, const Array& arr) {
     case TypeStructure::Kind::T_vec:
     case TypeStructure::Kind::T_keyset:
     case TypeStructure::Kind::T_vec_or_dict:
-    case TypeStructure::Kind::T_arraylike: {
-      if (kind == TypeStructure::Kind::T_array ||
-        kind == TypeStructure::Kind::T_darray ||
+    case TypeStructure::Kind::T_any_array: {
+      if (kind == TypeStructure::Kind::T_darray ||
         kind == TypeStructure::Kind::T_varray ||
         kind == TypeStructure::Kind::T_varray_or_darray
       ) {
@@ -729,9 +706,9 @@ Array resolveTS(TSEnv& env, const TSCtx& ctx, const Array& arr) {
 
           auto const sz = std::min(static_cast<ssize_t>(typevars.size()),
                                    generic_types.size());
-          DArrayInit newarr(sz);
+          DictInit newarr(sz);
           for (auto i = 0; i < sz; i++) {
-            newarr.add(String(typevars[i]), generic_types[i]);
+            newarr.set(String(typevars[i]), generic_types[i]);
           }
           auto generics = newarr.toArray();
           ts = resolve(generics.get());
@@ -789,11 +766,9 @@ Array resolveTS(TSEnv& env, const TSCtx& ctx, const Array& arr) {
             clsName.data(),
             cnsName.data());
         }
-        auto tv = cls->clsCnsGet(
-          cnsName.get(),
-          env.allow_partial ?
-          ClsCnsLookup::IncludeTypesPartial : ClsCnsLookup::IncludeTypes);
-        if (tv.m_type == KindOfUninit) {
+        auto tv = cls->clsCnsGet(cnsName.get(), ConstModifiers::Kind::Type,
+                                 !env.allow_partial);
+        if (!tv.is_init()) {
           assertx(env.allow_partial);
           throw Exception(
             "Failed to resolve a type constant: %s::%s",
@@ -802,7 +777,7 @@ Array resolveTS(TSEnv& env, const TSCtx& ctx, const Array& arr) {
         }
         assertx(isArrayLikeType(tv.m_type));
         typeCnsVal = Array(tv.m_data.parr);
-        assertx(typeCnsVal.isHAMSafeDArray());
+        assertx(typeCnsVal.isDict());
         if (i == sz - 1) break;
 
         // if there are more accesses, keep resolving
@@ -827,25 +802,26 @@ Array resolveTS(TSEnv& env, const TSCtx& ctx, const Array& arr) {
     }
     case TypeStructure::Kind::T_typevar: {
       env.invalidType = true;
-      if (!ctx.generics) return arr.toDArray();
+      if (!ctx.generics) return arr.toDict();
       assertx(arr.exists(s_name));
       auto const generic = ctx.generics->get(arr[s_name].asCStrRef().get());
-      if (!generic.is_init()) return arr.toDArray();
-      return Variant::wrap(generic).toDArray();
+      if (!generic.is_init()) return arr.toDict();
+      return Variant::wrap(generic).toDict();
     }
     case TypeStructure::Kind::T_reifiedtype: {
       assertx(env.tsList != nullptr);
       assertx(arr.exists(s_id));
-      auto id = arr[s_id].toInt64Val();
+      auto id = arr.lookup(s_id).val().num;
       assertx(id < env.tsList->size());
-      // We want the data in the reified generic array to write over the data
-      // in newarr hence using merge
-      newarr = newarr.merge(env.tsList->at(id)).toDArray();
+      // Overwrite data in newarr with fields in the reified generics type.
+      IterateKV(env.tsList->at(id).get(), [&](auto key, auto val) {
+        newarr.set(key, val);
+      });
       break;
     }
     case TypeStructure::Kind::T_xhp:
     default:
-      return arr.toDArray();
+      return arr.toDict();
   }
 
   if (arr.exists(s_typevars)) newarr.set(s_typevars, arr[s_typevars]);
@@ -854,6 +830,12 @@ Array resolveTS(TSEnv& env, const TSCtx& ctx, const Array& arr) {
 }
 
 } // anonymous namespace
+
+std::string xhpNameFromTS(const Array& arr) {
+  std::string name;
+  xhpTypeName(arr, name);
+  return name;
+}
 
 String TypeStructure::toString(const Array& arr, TSDisplayType type) {
   if (arr.empty()) return String();
@@ -941,17 +923,15 @@ namespace {
 // Coerces vector-like darrays / dicts to varrays / vecs. Returns true if the
 // lval is now a varray (either coerced, or if it started off that way).
 bool coerceToVecOrVArray(tv_lval lval) {
-  if (tvIsHAMSafeVArray(lval)) return true;
+  if (tvIsVec(lval)) return true;
 
   // Must be a dict or darray with vector-like data.
-  if (!tvIsHAMSafeDArray(lval)) return false;
+  if (!tvIsDict(lval)) return false;
   auto const ad = val(lval).parr;
   if (!ad->isVectorData()) return false;
 
   // Do the coercion and replace the value.
-  auto const varray = RO::EvalHackArrDVArrs
-    ? ad->toVec(/*copy=*/true)
-    : ad->toVArray(/*copy=*/true);
+  auto const varray = ad->toVec(/*copy=*/true);
   tvCopy(make_array_like_tv(varray), lval);
   assertx(ad != varray);
   decRefArr(ad);
@@ -964,44 +944,54 @@ bool coerceToTypeStructureList(Array& arr, bool shape=false);
 // Returns true and performs coercion if the given field of `arr` can be
 // coerced to a valid, resolved TypeStructure.
 bool coerceTSField(Array& arr, const String& name) {
-  assertx(one_bit_refcount || !arr->cowCheck());
-  auto field = arr.lvalForce(name);
-  if (!tvIsHAMSafeDArray(field)) return false;
+  assertx(!arr->cowCheck());
+  auto field = arr.lookup(name);
+  if (!tvIsDict(field)) return false;
   return coerceToTypeStructure(ArrNR(val(field).parr).asArray());
 }
 
 // Returns true and performs coercion if the given field of `arr` can be
 // coerced to a list of valid, resolved TypeStructures.
 bool coerceTSListField(Array& arr, const String& name, bool shape=false) {
-  assertx(one_bit_refcount || !arr->cowCheck());
-  auto field = arr.lvalForce(name);
+  assertx(!arr->cowCheck());
+  if (!arr.exists(name)) return false;
+  auto field = arr.lval(name);
   if (!coerceToVecOrVArray(field)) return false;
-  assertx(tvIsHAMSafeVArray(field));
+  assertx(tvIsVec(field));
   return coerceToTypeStructureList(ArrNR(val(field).parr).asArray(), shape);
 }
 
 // Same as above, except that they allow the field to be missing.
 bool coerceOptTSField(Array& arr, const String& name) {
-  return arr.exists(name) ? coerceTSField(arr, name) : true;
+  assertx(!arr->cowCheck());
+  auto field = arr.lookup(name);
+  if (!field.is_init()) return true;
+  if (!tvIsDict(field)) return false;
+  return coerceToTypeStructure(ArrNR(val(field).parr).asArray());
 }
 bool coerceOptTSListField(Array& arr, const String& name, bool shape=false) {
-  return arr.exists(name) ? coerceTSListField(arr, name, shape) : true;
+  assertx(!arr->cowCheck());
+  if (!arr.exists(name)) return true;
+  auto field = arr.lval(name);
+  if (!coerceToVecOrVArray(field)) return false;
+  assertx(tvIsVec(field));
+  return coerceToTypeStructureList(ArrNR(val(field).parr).asArray(), shape);
 }
 
 bool coerceToTypeStructureList(Array& arr, bool shape) {
-  assertx(one_bit_refcount || arr->empty() || !arr->cowCheck());
-  if (!arr->isHAMSafeVArray()) return false;
+  assertx(arr->empty() || !arr->cowCheck());
+  if (!arr->isVecType()) return false;
 
   auto valid = true;
   IterateV(arr.get(), [&](TypedValue tv) {
-    if (!tvIsHAMSafeDArray(tv)) {
+    if (!tvIsDict(tv)) {
       valid = false;
       return true;
     }
     auto const ad = [&] {
       if (shape) {
         auto const value = arr.lookup(s_value);
-        if (tvIsHAMSafeDArray(value)) return val(value).parr;
+        if (tvIsDict(value)) return val(value).parr;
         if (value.is_init()) valid = false;
       }
       return val(tv).parr;
@@ -1013,8 +1003,8 @@ bool coerceToTypeStructureList(Array& arr, bool shape) {
 }
 
 bool coerceToTypeStructure(Array& arr) {
-  assertx(one_bit_refcount || arr->empty() || !arr->cowCheck());
-  if (!arr->isHAMSafeDArray()) return false;
+  assertx(arr->empty() || !arr->cowCheck());
+  if (!arr->isDictType()) return false;
 
   auto const kindfield = arr.lookup(s_kind);
   if (!isIntType(kindfield.type()) ||
@@ -1023,7 +1013,6 @@ bool coerceToTypeStructure(Array& arr) {
   }
   auto const kind = static_cast<TypeStructure::Kind>(kindfield.val().num);
   switch (kind) {
-    case TypeStructure::Kind::T_array:
     case TypeStructure::Kind::T_darray:
     case TypeStructure::Kind::T_varray:
     case TypeStructure::Kind::T_varray_or_darray:
@@ -1031,7 +1020,7 @@ bool coerceToTypeStructure(Array& arr) {
     case TypeStructure::Kind::T_vec:
     case TypeStructure::Kind::T_keyset:
     case TypeStructure::Kind::T_vec_or_dict:
-    case TypeStructure::Kind::T_arraylike:
+    case TypeStructure::Kind::T_any_array:
     case TypeStructure::Kind::T_null:
     case TypeStructure::Kind::T_void:
     case TypeStructure::Kind::T_int:

@@ -29,7 +29,6 @@
 #include "hphp/runtime/base/array-provenance.h"
 #include "hphp/runtime/base/program-functions.h"
 #include "hphp/runtime/vm/extern-compiler.h"
-#include "hphp/runtime/vm/repo.h"
 #include "hphp/runtime/version.h"
 #include "hphp/system/systemlib.h"
 
@@ -347,8 +346,6 @@ int prepareOptions(CompilerOptions &po, int argc, char **argv) {
     ("repo-schema", "display the repo schema id used by this app")
     ;
 
-  ARRPROV_USE_RUNTIME_LOCATION_FORCE();
-
   positional_options_description p;
   p.add("inputs", -1);
   variables_map vm;
@@ -462,26 +459,19 @@ int prepareOptions(CompilerOptions &po, int argc, char **argv) {
   // trying to load it from repo (which is the case when RepoAuthoritative is
   // true).
   RuntimeOption::RepoAuthoritative = true;
+  // Set RepoPath to satisfy assertions (we need a path set in
+  // RepoAuthoritative). It will never actually be used.
+  RuntimeOption::RepoPath = "/tmp/dummy.hhbc";
   // We don't want debug info in repo builds, since we don't support attaching
   // a debugger in repo authoritative mode, but we want the default for debug
   // info to be true so that it's present in sandboxes. Override that default
   // here, since we only get here when building for repo authoritative mode.
   RuntimeOption::RepoDebugInfo = false;
-  // Default RepoLocalMode to off so we build systemlib from source.
-  // This can be overridden when running lots of repo builds (eg
-  // test/run) for better performance.
-  RuntimeOption::RepoLocalMode = "--";
-  RuntimeOption::RepoJournal = "memory";
   RuntimeOption::Load(ini, runtime);
   Option::Load(ini, config);
   RuntimeOption::RepoAuthoritative = false;
+  RuntimeOption::RepoPath = "";
   RuntimeOption::EvalJit = false;
-  // If RepoLocalMode gets set to rw, we'll read a cache of previously
-  // parsed units, and attempt to update it with any newly parsed
-  // units. If that repo is invalid, we want to delete it up front.
-  Repo::s_deleteLocalOnFailure = RuntimeOption::RepoLocalMode=="rw";
-
-  initialize_repo();
 
   std::vector<std::string> badnodes;
   config.lint(badnodes);
@@ -597,8 +587,9 @@ int process(const CompilerOptions &po) {
 
   LitstrTable::init();
   LitstrTable::get().setWriting();
+  LitarrayTable::init();
+  LitarrayTable::get().setWriting();
 
-  std::thread unit_cache_thread;
   {
     Timer timer2(Timer::WallTime, "parsing inputs");
     ar->setPackage(&package);
@@ -633,9 +624,13 @@ int process(const CompilerOptions &po) {
       }
     }
     if (po.target != "filecache") {
-      if (!package.parse(!po.force, unit_cache_thread)) {
-        return 1;
-      }
+      if (!package.parse(!po.force)) return 1;
+
+      Logger::Info(
+        "%ld total parses, %ld cache hits",
+        package.getTotalParses(),
+        package.getParseCacheHits()
+      );
 
       // nuke the compiler pool so we don't waste memory on ten gajillion
       // instances of hackc
@@ -669,10 +664,6 @@ int process(const CompilerOptions &po) {
     });
 
   SCOPE_EXIT {
-    if (unit_cache_thread.joinable()) {
-      unit_cache_thread.join();
-    }
-
     if (!po.filecache.empty()) {
       fileCacheThread.waitForEnd();
     }
@@ -700,17 +691,11 @@ void hhbcTargetInit(const CompilerOptions &po, AnalysisResultPtr ar) {
     ar->setOutputPath(po.syncDir);
   }
   // Propagate relevant compiler-specific options to the runtime.
-  RuntimeOption::RepoCentralPath = ar->getOutputPath() + '/' + po.program;
+  RuntimeOption::RepoPath = ar->getOutputPath() + '/' + po.program;
   if (po.format.find("exe") != std::string::npos) {
-    RuntimeOption::RepoCentralPath += ".hhbc";
+    RuntimeOption::RepoPath += ".hhbc";
   }
-  unlink(RuntimeOption::RepoCentralPath.c_str());
-
-  if (RuntimeOption::RepoLocalMode != "rw") {
-    // No point writing to the central repo, because we're going to
-    // remove it before writing the final repo.
-    RuntimeOption::RepoCommit = false;
-  }
+  unlink(RuntimeOption::RepoPath.c_str());
 }
 
 int hhbcTarget(const CompilerOptions &po, AnalysisResultPtr&& ar,
@@ -744,14 +729,10 @@ int hhbcTarget(const CompilerOptions &po, AnalysisResultPtr&& ar,
     return 1;
   }
 
-  Repo::shutdown();
-  RuntimeOption::RepoLocalMode = "--";
-  unlink(RuntimeOption::RepoCentralPath.c_str());
+  unlink(RuntimeOption::RepoPath.c_str());
   /* without this, emitClass allows classes with interfaces to be
      hoistable */
   SystemLib::s_inited = true;
-  RuntimeOption::RepoCommit = true;
-  Repo::get();
 
   // the function is only invoked in hhvm --hphp, which is supposed to be in
   // repo mode only. we are not setting it earlier in `compiler_main` since we
@@ -761,7 +742,6 @@ int hhbcTarget(const CompilerOptions &po, AnalysisResultPtr&& ar,
   RuntimeOption::RepoAuthoritative = true;
 
   Timer timer(Timer::WallTime, type);
-  // NOTE: Repo errors are ignored!
   Compiler::emitAllHHBC(std::move(ar));
 
   if (!po.syncDir.empty()) {
@@ -815,7 +795,7 @@ int runTarget(const CompilerOptions &po) {
     cmd += " -vRepo.Authoritative=true";
     if (getenv("HPHP_DUMP_BYTECODE")) cmd += " -vEval.DumpBytecode=1";
     if (getenv("HPHP_INTERP"))        cmd += " -vEval.Jit=0";
-    cmd += " -vRepo.Local.Mode=r- -vRepo.Local.Path=";
+    cmd += " -vRepo.Path=";
   }
   cmd += po.outputDir + '/' + po.program;
   cmd += std::string(" --file ") +

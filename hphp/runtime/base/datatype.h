@@ -14,40 +14,64 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_DATATYPE_H_
-#define incl_HPHP_DATATYPE_H_
+#pragma once
 
 #include <cstdint>
 #include <cstdio>
 #include <string>
 
 #include <folly/Format.h>
-#include <folly/Optional.h>
 
 #include "hphp/util/assertions.h"
 #include "hphp/util/low-ptr.h"
+#include "hphp/util/optional.h"
 #include "hphp/util/portability.h"
 
 namespace HPHP {
 
 ///////////////////////////////////////////////////////////////////////////////
 
+constexpr size_t kDataTypePopCount = 3;
+
+// udt meaning "unordered DataType": compute an encoding of DataTypes into a
+// 3-of-7 balanced (and thus, unordered) error-correcting code.
+//
+// This function returns the `index`th codeword, setting the lowest bit based
+// on the bool `counted`. To construct a persistent/counted DataType pair,
+// call it twice with the same index but different values for counted.
+constexpr int8_t udt(size_t index, bool counted) {
+  for (auto i = 0; i <= std::numeric_limits<uint8_t>::max(); i += 2) {
+    if (folly::popcount(i) != kDataTypePopCount) continue;
+    if (index == 0) return static_cast<int8_t>(i | (counted ? 1 : 0));
+    index--;
+  }
+  // We've run out of codewords. clang allows us to use an always_assert here.
+  // GCC does not - if we use an assert, the function is no longer constexpr.
+#ifdef __clang__
+  always_assert(false);
+#else
+  return 0;
+#endif
+}
+
 /*
  * DataType is the type tag for a TypedValue (see typed-value.h).
  *
- * If you want to add a new type, beware of the following restrictions:
- * - KindOfUninit must be 0. Many places rely on zero-initialized memory
- *   being a valid, KindOfUninit TypedValue.
- * - KindOfNull must be 2, and 1 must not be a valid type. This allows for
- *   a fast implementation of isNullType().
- * - The Array and String types are positioned to allow for fast array/string
- *   checks, ignoring persistence (see isArrayType and isStringType).
- * - Refcounted types are odd, and uncounted types are even, to allow fast
- *   countness checks.
- * - Types with persistent and non-persistent versions must be negative, for
- *   equivDataTypes(). Other types may be negative, as long as dropping the low
- *   bit does not give another valid type.
- * - -128 and -127 are used as invalid types and can't be real DataTypes.
+ * If you want to add a new type, make sure you understand how the current
+ * encoding works. A DataType is a uint8_t. Its low bit indicates countedness;
+ * if this bit is unset, the value is definitely not refcounted. (If the bit
+ * is set, the value may or may not be counted.)
+ *
+ * We encode different types with a 3-of-7 unordered code on the upper 7 bits
+ * of a DataType. This encoding allows us to efficiently test ANY type by
+ * checking that the other 4 bits are unset. We can include or exclude the
+ * counted value by including the low bit in this test, too.
+ *
+ * In addition, we support a few efficient tests by doing unsigned LT or GT
+ * comparisons on the type byte:
+ *  - To check for "vec or dict", check that dt is <= KindOfVec.
+ *  - To check for "has persistent flavor", check that dt is <= KindOfString.
+ *  - To check for "null or uninit", check that the dt is >= KindOfUninit.
  *
  * If you think you need to change any of these restrictions, be prepared to
  * deal with subtle bugs and/or performance regressions while you sort out the
@@ -56,33 +80,28 @@ namespace HPHP {
  * - Audit jit::emitTypeTest().
  */
 #define DATATYPES \
-  DT(PersistentDArray, -14) \
-  DT(DArray,           -13) \
-  DT(PersistentVArray, -12) \
-  DT(VArray,           -11) \
-  DT(PersistentKeyset, -10) \
-  DT(Keyset,            -9) \
-  DT(PersistentDict,    -8) \
-  DT(Dict,              -7) \
-  DT(PersistentVec,     -6) \
-  DT(Vec,               -5) \
-  DT(Record,            -3) \
-  DT(PersistentString,  -2) \
-  DT(String,            -1) \
-  DT(Uninit,             0) \
-  /* isNullType relies on a hole here */ \
-  DT(Null,               2) \
-  DT(Object,             3) \
-  DT(Boolean,            4) \
-  DT(Resource,           5) \
-  DT(Int64,              6) \
-  DT(Double,             8) \
-  DT(RFunc,              9) \
-  DT(Func,              10) \
-  DT(RClsMeth,          11) \
-  DT(Class,             12) \
-  DT(ClsMeth,           use_lowptr ? 14 : 7) \
-  DT(LazyClass,         16)
+  DT(PersistentDict,   udt(0,  false)) \
+  DT(Dict,             udt(0,  true))  \
+  DT(PersistentVec,    udt(1,  false)) \
+  DT(Vec,              udt(1,  true))  \
+  DT(PersistentKeyset, udt(2,  false)) \
+  DT(Keyset,           udt(2,  true))  \
+  DT(Record,           udt(3,  true))  \
+  DT(PersistentString, udt(4,  false)) \
+  DT(String,           udt(4,  true))  \
+  DT(Object,           udt(5,  true))  \
+  DT(Resource,         udt(6,  true))  \
+  DT(RFunc,            udt(7,  true))  \
+  DT(RClsMeth,         udt(8,  true))  \
+  DT(ClsMeth,          udt(9,  false)) \
+  DT(Boolean,          udt(10, false)) \
+  DT(Int64,            udt(11, false)) \
+  DT(Double,           udt(12, false)) \
+  DT(Func,             udt(13, false)) \
+  DT(Class,            udt(14, false)) \
+  DT(LazyClass,        udt(15, false)) \
+  DT(Uninit,           udt(16, false)) \
+  DT(Null,             udt(17, false))
 
 enum class DataType : int8_t {
 #define DT(name, value) name = value,
@@ -95,6 +114,7 @@ using data_type_t = typename std::underlying_type<DataType>::type;
 // Macro so we can limit its scope to this file. Anyone else doing this cast
 // should have to write out the whole thing and think about their life choices.
 #define dt_t(t) static_cast<data_type_t>(t)
+#define ut_t(t) static_cast<std::make_unsigned<data_type_t>::type>(t)
 
 /*
  * Also define KindOf<Foo> for each type, to avoid having to change thousands
@@ -114,15 +134,16 @@ DATATYPES
  * These should only be used where MaybeDataType cannot be (e.g., in
  * TypedValues, such as for MixedArray tombstones).
  */
-constexpr DataType kInvalidDataType      = static_cast<DataType>(-128);
+constexpr DataType kInvalidDataType = static_cast<DataType>(-128);
+constexpr DataType kExtraInvalidDataType = static_cast<DataType>(0);
 
 /*
  * DataType limits.
  */
-auto constexpr kMinDataType = dt_t(KindOfPersistentDArray);
-auto constexpr kMaxDataType = dt_t(KindOfLazyClass);
-auto constexpr kMinRefCountedDataType = dt_t(KindOfDArray);
-auto constexpr kMaxRefCountedDataType = dt_t(KindOfRClsMeth);
+auto constexpr kMinDataType = ut_t(KindOfPersistentDict);
+auto constexpr kMaxDataType = ut_t(KindOfNull);
+auto constexpr kMinRefCountedDataType = ut_t(KindOfDict);
+auto constexpr kMaxRefCountedDataType = ut_t(KindOfRClsMeth);
 
 /*
  * A DataType is a refcounted type if and only if it has this bit set.
@@ -130,12 +151,28 @@ auto constexpr kMaxRefCountedDataType = dt_t(KindOfRClsMeth);
 constexpr int kRefCountedBit = 0x1;
 
 /*
+ * Whether a type is refcounted.
+ */
+constexpr bool isRefcountedType(DataType t) {
+  return ut_t(t) & kRefCountedBit;
+}
+
+/*
+ * Whether a type is or has a persistent version.
+ */
+constexpr bool hasPersistentFlavor(DataType t) {
+  return ut_t(t) <= ut_t(KindOfString);
+}
+
+/*
  * Return `dt` with or without the refcount bit set.
  */
 constexpr DataType dt_with_rc(DataType dt) {
+  assertx(hasPersistentFlavor(dt) || isRefcountedType(dt));
   return static_cast<DataType>(dt_t(dt) | kRefCountedBit);
 }
 constexpr DataType dt_with_persistence(DataType dt) {
+  assertx(hasPersistentFlavor(dt) || !isRefcountedType(dt));
   return static_cast<DataType>(dt_t(dt) & ~kRefCountedBit);
 }
 
@@ -144,8 +181,7 @@ constexpr DataType dt_with_persistence(DataType dt) {
  * KindOfPersistent$x flavor
  */
 constexpr DataType dt_modulo_persistence(DataType dt) {
-  auto const rep = dt_t(dt);
-  return static_cast<DataType>(rep < 0 ? rep | kRefCountedBit : rep);
+  return hasPersistentFlavor(dt) ? dt_with_rc(dt) : dt;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -156,7 +192,7 @@ constexpr DataType dt_modulo_persistence(DataType dt) {
  * context.  Users who wish to use (DataType|KindOfNoneType|KindOfAnyType)
  * should consider dying in a fire.
  */
-using MaybeDataType = folly::Optional<DataType>;
+using MaybeDataType = Optional<DataType>;
 
 /*
  * Extracts the DataType from the given type
@@ -171,14 +207,10 @@ MaybeDataType get_datatype(
 ///////////////////////////////////////////////////////////////////////////////
 // DataTypeCategory
 
-// These must be kept in order from least to most specific.
-//
-// Note that Countness can be relaxed to Generic in optimizeProfiledGuards(), so
-// it should only be used to constrain values used by instructions that work
-// even in the absence of type information.
+// These categories must be kept in order from least to most specific.
 #define DT_CATEGORIES(func)                     \
   func(Generic)                                 \
-  func(Countness)                               \
+  func(IterBase)                                \
   func(CountnessInit)                           \
   func(Specific)                                \
   func(Specialized)
@@ -236,22 +268,15 @@ constexpr unsigned typeToDestrIdx(DataType t) {
  * Whether a type is valid.
  */
 constexpr bool isRealType(DataType t) {
-  return t >= static_cast<DataType>(kMinDataType) &&
-    t <= static_cast<DataType>(kMaxDataType);
-}
-
-/*
- * Whether a type is refcounted.
- */
-constexpr bool isRefcountedType(DataType t) {
-  return dt_t(t) & kRefCountedBit;
+  return ut_t(t) >= kMinDataType && ut_t(t) <= kMaxDataType &&
+         folly::popcount(ut_t(t) & ~kRefCountedBit) == kDataTypePopCount;
 }
 
 /*
  * Whether a builtin return or param type is not a simple type.
  *
  * This is different from isRefcountedType because builtins can accept and
- * return Variants, and we use folly::none to denote these cases.
+ * return Variants, and we use std::nullopt to denote these cases.
  */
 inline bool isBuiltinByRef(MaybeDataType t) {
   return t != KindOfNull &&
@@ -271,92 +296,42 @@ constexpr bool hasNumData(DataType t) {
  * Whether a type is KindOfUninit or KindOfNull.
  */
 constexpr bool isNullType(DataType t) {
-  static_assert(KindOfUninit == static_cast<DataType>(0) &&
-                KindOfNull == static_cast<DataType>(2),
-                "isNullType requires Uninit and Null to be 0 and 2");
-  return static_cast<uint8_t>(t) <= static_cast<uint8_t>(KindOfNull);
+  return ut_t(t) >= ut_t(KindOfUninit);
 }
 
 /*
  * Whether a type is any kind of string or array.
  */
 constexpr bool isStringType(DataType t) {
-  return
-    static_cast<uint8_t>(t) >= static_cast<uint8_t>(KindOfPersistentString);
+  return !(ut_t(t) & ~ut_t(KindOfString));
 }
 inline bool isStringType(MaybeDataType t) {
   return t && isStringType(*t);
 }
 
 constexpr bool isArrayLikeType(DataType t) {
-  return t <= KindOfVec;
+  return ut_t(t) <= ut_t(KindOfKeyset);
 }
 inline bool isArrayLikeType(MaybeDataType t) {
   return t && isArrayLikeType(*t);
 }
 
-/*
- * When any dvarray will do.
- */
-constexpr bool isPHPArrayType(DataType t) {
-  return t <= KindOfVArray;
-}
-inline bool isPHPArrayType(MaybeDataType t) {
-  return t && isPHPArrayType(*t);
-}
-
-constexpr bool isVecOrVArrayType(DataType t) {
-  auto const dt = static_cast<DataType>(dt_t(t) & ~kRefCountedBit);
-  return dt == KindOfPersistentVArray || dt == KindOfPersistentVec;
-}
-inline bool isVecOrVArrayType(MaybeDataType t) {
-  return t && isVecOrVArrayType(*t);
-}
-
-constexpr bool isDictOrDArrayType(DataType t) {
-  auto const dt = static_cast<DataType>(dt_t(t) & ~kRefCountedBit);
-  return dt == KindOfPersistentDArray || dt == KindOfPersistentDict;
-}
-inline bool isDictOrDArrayType(MaybeDataType t) {
-  return t && isDictOrDArrayType(*t);
-}
-
-/*
- * Currently matches any PHP dvarray. This method will go away.
- */
-constexpr bool isArrayType(DataType t) {
-  return t <= KindOfVArray;
-}
-inline bool isArrayType(MaybeDataType t) {
-  return t && isArrayType(*t);
-}
-
-constexpr bool isHackArrayType(DataType t) {
-  return t >= KindOfPersistentKeyset && t <= KindOfVec;
-}
-inline bool isHackArrayType(MaybeDataType t) {
-  return t && isHackArrayType(*t);
-}
-
 constexpr bool isVecType(DataType t) {
-  return
-    static_cast<DataType>(dt_t(t) & ~kRefCountedBit) == KindOfPersistentVec;
+  return !(ut_t(t) & ~ut_t(KindOfVec));
 }
 inline bool isVecType(MaybeDataType t) {
   return t && isVecType(*t);
 }
 
 constexpr bool isDictType(DataType t) {
-  return
-    static_cast<DataType>(dt_t(t) & ~kRefCountedBit) == KindOfPersistentDict;
+  return !(ut_t(t) & ~ut_t(KindOfDict));
 }
 inline bool isDictType(MaybeDataType t) {
   return t && isDictType(*t);
 }
 
 constexpr bool isKeysetType(DataType t) {
-  return
-    static_cast<DataType>(dt_t(t) & ~kRefCountedBit) == KindOfPersistentKeyset;
+  return !(ut_t(t) & ~ut_t(KindOfKeyset));
 }
 inline bool isKeysetType(MaybeDataType t) {
   return t && isKeysetType(*t);
@@ -378,18 +353,13 @@ constexpr bool isClsMethType(DataType t) { return t == KindOfClsMeth; }
 constexpr bool isRClsMethType(DataType t) { return t == KindOfRClsMeth; }
 constexpr bool isLazyClassType(DataType t) { return t == KindOfLazyClass; }
 
-constexpr int kHasPersistentMask = -128;
-
 /*
  * Return whether two DataTypes for primitive types are "equivalent" as far as
- * user-visible PHP types are concerned (i.e. ignoring different types of
- * strings, PHP arrays, and Hack arrays). Note that KindOfUninit and KindOfNull are
- * not considered equivalent.
+ * user-visible PHP types are concerned (i.e. the same modulo countedness).
+ * Note that KindOfUninit and KindOfNull are not considered equivalent.
  */
 constexpr bool equivDataTypes(DataType t1, DataType t2) {
-  return t1 == t2 ||
-    ((dt_t(t1) & dt_t(t2) & kHasPersistentMask) &&
-     (dt_t(t1) & ~kRefCountedBit) == (dt_t(t2) & ~kRefCountedBit));
+  return !((ut_t(t1) ^ ut_t(t2)) & ~kRefCountedBit);
 }
 
 /*
@@ -402,6 +372,7 @@ bool operator>(DataType, DataType) = delete;
 bool operator<=(DataType, DataType) = delete;
 bool operator>=(DataType, DataType) = delete;
 
+#undef ut_t
 #undef dt_t
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -417,11 +388,10 @@ bool operator>=(DataType, DataType) = delete;
   case KindOfInt64:         \
   case KindOfDouble:        \
   case KindOfPersistentString:  \
-  case KindOfPersistentVArray:  \
-  case KindOfPersistentDArray:  \
   case KindOfPersistentVec: \
   case KindOfPersistentDict: \
   case KindOfPersistentKeyset: \
+  case KindOfClsMeth:       \
   case KindOfFunc:          \
   case KindOfClass:         \
   case KindOfLazyClass
@@ -458,5 +428,3 @@ template<> class FormatValue<HPHP::DataType> {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-
-#endif

@@ -23,21 +23,13 @@
 #include "hphp/runtime/vm/jit/irgen-minstr.h"
 #include "hphp/runtime/vm/reified-generics.h"
 #include "hphp/runtime/vm/unit-util.h"
+#include "hphp/runtime/base/file-util.h"
 #include "hphp/runtime/base/mixed-array.h"
 #include "hphp/runtime/base/packed-array.h"
 #include "hphp/runtime/base/set-array.h"
 #include "hphp/runtime/base/type-structure-helpers-defs.h"
 
 namespace HPHP { namespace jit { namespace irgen {
-
-namespace {
-
-const StaticString s_reified_type_must_be_ts(
-  "Reified type must be a type structure");
-const StaticString s_new_instance_of_not_string(
-  "You cannot create a new instance of this type as it is not a string");
-
-} // namespace
 
 void emitClassGetC(IRGS& env) {
   auto const name = topC(env);
@@ -70,10 +62,9 @@ void emitClassGetC(IRGS& env) {
 }
 
 void emitClassGetTS(IRGS& env) {
-  auto const required_ts_type = RO::EvalHackArrDVArrs ? TDict : TDArr;
   auto const ts = topC(env);
-  if (!ts->isA(required_ts_type)) {
-    if (ts->type().maybe(required_ts_type)) {
+  if (!ts->isA(TDict)) {
+    if (ts->type().maybe(TDict)) {
       PUNT(ClassGetTS-UnguardedTS);
     } else {
       gen(env, RaiseError, cns(env, s_reified_type_must_be_ts.get()));
@@ -122,12 +113,7 @@ void emitClassGetTS(IRGS& env) {
 }
 
 void emitCGetL(IRGS& env, NamedLocal loc) {
-  auto const value = ldLocWarn(
-    env,
-    loc,
-    nullptr,
-    DataTypeCountnessInit
-  );
+  auto const value = ldLocWarn(env, loc, DataTypeCountnessInit);
   pushIncRef(env, value);
 }
 
@@ -135,12 +121,7 @@ void emitCGetQuietL(IRGS& env, int32_t id) {
   pushIncRef(
     env,
     [&] {
-      auto const loc = ldLoc(
-        env,
-        id,
-        nullptr,
-        DataTypeCountness
-      );
+      auto const loc = ldLoc(env, id, DataTypeCountnessInit);
 
       if (loc->type() <= TUninit) {
         return cns(env, TInitNull);
@@ -167,30 +148,25 @@ void emitCGetQuietL(IRGS& env, int32_t id) {
 }
 
 void emitCUGetL(IRGS& env, int32_t id) {
-  pushIncRef(env, ldLoc(env, id, nullptr, DataTypeGeneric));
+  pushIncRef(env, ldLoc(env, id, DataTypeGeneric));
 }
 
 void emitPushL(IRGS& env, int32_t id) {
   assertTypeLocal(env, id, TInitCell);  // bytecode invariant
-  auto* locVal = ldLoc(env, id, makeExit(env), DataTypeGeneric);
+  auto* locVal = ldLoc(env, id, DataTypeGeneric);
   push(env, locVal);
   stLocRaw(env, id, fp(env), cns(env, TUninit));
 }
 
 void emitCGetL2(IRGS& env, NamedLocal loc) {
   auto const oldTop = pop(env, DataTypeGeneric);
-  auto const val = ldLocWarn(
-    env,
-    loc,
-    nullptr,
-    DataTypeCountnessInit
-  );
+  auto const val = ldLocWarn(env, loc, DataTypeCountnessInit);
   pushIncRef(env, val);
   push(env, oldTop);
 }
 
 void emitUnsetL(IRGS& env, int32_t id) {
-  auto const prev = ldLoc(env, id, makeExit(env), DataTypeCountness);
+  auto const prev = ldLoc(env, id, DataTypeGeneric);
   stLocRaw(env, id, fp(env), cns(env, TUninit));
   decRef(env, prev);
 }
@@ -200,20 +176,7 @@ void emitSetL(IRGS& env, int32_t id) {
   // about the type of the value. stLoc needs to IncRef the value so it may
   // constrain it further.
   auto const src = popC(env, DataTypeGeneric);
-  pushStLoc(env, id, nullptr, src);
-}
-
-void emitInitThisLoc(IRGS& env, int32_t id) {
-  if (!hasThis(env)) {
-    // Do nothing if this is null
-    return;
-  }
-  auto const ldExit = makeExit(env);
-  auto const oldLoc = ldLoc(env, id, ldExit, DataTypeCountness);
-  auto const this_  = ldThis(env);
-  gen(env, IncRef, this_);
-  stLocRaw(env, id, fp(env), this_);
-  decRef(env, oldLoc);
+  pushStLoc(env, id, src);
 }
 
 void emitPrint(IRGS& env) {
@@ -307,81 +270,13 @@ void emitClassName(IRGS& env) {
   push(env, gen(env, LdClsName, cls));
 }
 
+void emitLazyClassFromClass(IRGS& env) {
+  auto const cls = popC(env);
+  if (!cls->isA(TCls)) PUNT(LazyClassFromClass-NotClass);
+  push(env, gen(env, LdLazyCls, cls));
+}
+
 //////////////////////////////////////////////////////////////////////
-
-void emitCastVArray(IRGS& env) {
-  assertx(!RuntimeOption::EvalHackArrDVArrs);
-
-  auto const src = popC(env);
-
-  auto const raise = [&](const char* type) {
-    gen(
-      env,
-      ThrowInvalidOperation,
-      cns(
-        env,
-        makeStaticString(folly::sformat("{} to varray conversion", type))
-      )
-    );
-    return cns(env, TBottom);
-  };
-
-  push(
-    env,
-    [&] {
-      if (src->isA(TVArr))   return src;
-      if (src->isA(TArrLike)) return gen(env, ConvArrLikeToVArr, src);
-      if (src->isA(TClsMeth)) return gen(env, ConvClsMethToVArr, src);
-      if (src->isA(TObj))    return gen(env, ConvObjToVArr, src);
-      if (src->isA(TRecord)) PUNT(CastVArrayRecord); // TODO: T53309767
-      if (src->isA(TNull))   return raise("Null");
-      if (src->isA(TBool))   return raise("Bool");
-      if (src->isA(TInt))    return raise("Int");
-      if (src->isA(TDbl))    return raise("Double");
-      if (src->isA(TStr))    return raise("String");
-      if (src->isA(TFunc))   return raise("Func");
-      if (src->isA(TRes))    return raise("Resource");
-      PUNT(CastVArrayUnknown);
-    }()
-  );
-}
-
-void emitCastDArray(IRGS& env) {
-  assertx(!RuntimeOption::EvalHackArrDVArrs);
-
-  auto const src = popC(env);
-
-  auto const raise = [&](const char* type) {
-    gen(
-      env,
-      ThrowInvalidOperation,
-      cns(
-        env,
-        makeStaticString(folly::sformat("{} to darray conversion", type))
-      )
-    );
-    return cns(env, TBottom);
-  };
-
-  push(
-    env,
-    [&] {
-      if (src->isA(TDArr))   return src;
-      if (src->isA(TArrLike)) return gen(env, ConvArrLikeToDArr, src);
-      if (src->isA(TClsMeth)) return gen(env, ConvClsMethToDArr, src);
-      if (src->isA(TObj))    return gen(env, ConvObjToDArr, src);
-      if (src->isA(TRecord)) PUNT(CastDArrayRecord); // TODO: T53309767
-      if (src->isA(TNull))   return raise("Null");
-      if (src->isA(TBool))   return raise("Bool");
-      if (src->isA(TInt))    return raise("Int");
-      if (src->isA(TDbl))    return raise("Double");
-      if (src->isA(TStr))    return raise("String");
-      if (src->isA(TFunc))   return raise("Func");
-      if (src->isA(TRes))    return raise("Resource");
-      PUNT(CastDArrayUnknown);
-    }()
-  );
-}
 
 void emitCastVec(IRGS& env) {
   auto const src = popC(env);
@@ -403,7 +298,7 @@ void emitCastVec(IRGS& env) {
     [&] {
       if (src->isA(TVec))     return src;
       if (src->isA(TArrLike)) return gen(env, ConvArrLikeToVec, src);
-      if (src->isA(TClsMeth)) return gen(env, ConvClsMethToVec, src);
+      if (src->isA(TClsMeth)) return raise("ClsMeth");
       if (src->isA(TObj))     return gen(env, ConvObjToVec, src);
       if (src->isA(TRecord))  PUNT(CastVecRecord); // TODO: T53309767
       if (src->isA(TNull))    return raise("Null");
@@ -438,7 +333,7 @@ void emitCastDict(IRGS& env) {
     [&] {
       if (src->isA(TDict))    return src;
       if (src->isA(TArrLike)) return gen(env, ConvArrLikeToDict, src);
-      if (src->isA(TClsMeth)) return gen(env, ConvClsMethToDict, src);
+      if (src->isA(TClsMeth)) return raise("ClsMeth");
       if (src->isA(TObj))     return gen(env, ConvObjToDict, src);
       if (src->isA(TRecord))  PUNT(CastDictRecord); // TODO: T53309767
       if (src->isA(TNull))    return raise("Null");
@@ -473,7 +368,7 @@ void emitCastKeyset(IRGS& env) {
     [&] {
       if (src->isA(TKeyset))  return src;
       if (src->isA(TArrLike)) return gen(env, ConvArrLikeToKeyset, src);
-      if (src->isA(TClsMeth)) return gen(env, ConvClsMethToKeyset, src);
+      if (src->isA(TClsMeth)) return raise("ClsMeth");
       if (src->isA(TObj))     return gen(env, ConvObjToKeyset, src);
       if (src->isA(TRecord))  PUNT(CastKeysetRecord); // TODO: T53309767
       if (src->isA(TNull))    return raise("Null");
@@ -502,13 +397,13 @@ void emitCastDouble(IRGS& env) {
 
 void emitCastInt(IRGS& env) {
   auto const src = popC(env);
-  push(env, gen(env, ConvTVToInt, src));
+  push(env, gen(env, ConvTVToInt, ConvNoticeData{}, src));
   decRef(env, src);
 }
 
 void emitCastString(IRGS& env) {
   auto const src = popC(env);
-  push(env, gen(env, ConvTVToStr, src));
+  push(env, gen(env, ConvTVToStr, ConvNoticeData{}, src));
   decRef(env, src);
 }
 
@@ -542,18 +437,36 @@ void emitPopU2(IRGS& env) {
 
 void emitPopL(IRGS& env, int32_t id) {
   auto const src = popC(env, DataTypeGeneric);
-  stLocMove(env, id, nullptr, src);
+  stLocMove(env, id, src);
 }
 
-void emitPopFrame(IRGS& env, uint32_t nout) {
-  jit::vector<SSATmp*> v{nout, nullptr};
-  for (auto i = nout; i > 0; --i) v[i - 1] = pop(env, DataTypeGeneric);
-  for (uint32_t i = 0; i < 3; ++i) popU(env);
-  for (auto tmp : v) push(env, tmp);
+void emitDir(IRGS& env) {
+  auto const unit = curUnit(env);
+  auto const handle = unit->perRequestFilepathHandle();
+  if (handle != rds::kUninitHandle) {
+    assertx(!RuntimeOption::RepoAuthoritative);
+    assertx(RuntimeOption::EvalReuseUnitsByHash);
+    auto const filepath =
+      gen(env, LdUnitPerRequestFilepath, RDSHandleData { handle });
+    push(env, gen(env, DirFromFilepath, filepath));
+    return;
+  }
+  auto const filepath = unit->origFilepath();
+  push(env, cns(env, makeStaticString(FileUtil::dirname(StrNR{filepath}))));
 }
 
-void emitDir(IRGS& env)    { push(env, cns(env, curUnit(env)->dirpath())); }
-void emitFile(IRGS& env)   { push(env, cns(env, curUnit(env)->filepath())); }
+void emitFile(IRGS& env) {
+  auto const unit = curUnit(env);
+  auto const handle = unit->perRequestFilepathHandle();
+  if (handle != rds::kUninitHandle) {
+    assertx(!RuntimeOption::RepoAuthoritative);
+    assertx(RuntimeOption::EvalReuseUnitsByHash);
+    push(env, gen(env, LdUnitPerRequestFilepath, RDSHandleData { handle }));
+    return;
+  }
+  push(env, cns(env, unit->origFilepath()));
+}
+
 void emitMethod(IRGS& env) { push(env, cns(env, curFunc(env)->fullName())); }
 void emitDup(IRGS& env)    { pushIncRef(env, topC(env)); }
 
@@ -561,12 +474,6 @@ void emitFuncCred(IRGS& env) {
   push(env, gen(env, FuncCred, cns(env, curFunc(env))));
 }
 //////////////////////////////////////////////////////////////////////
-
-void emitArray(IRGS& env, const ArrayData* x) {
-  assertx(x->isPHPArrayType());
-  assertx(!RuntimeOption::EvalHackArrDVArrs || x->isNotDVArray());
-  push(env, cns(env, x));
-}
 
 void emitVec(IRGS& env, const ArrayData* x) {
   assertx(x->isVecType());

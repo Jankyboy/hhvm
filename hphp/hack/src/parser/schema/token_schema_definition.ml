@@ -69,7 +69,7 @@ let variable_text_tokens =
     make_token_node "XHPStringLiteral" "XHP_string_literal" ();
     make_token_node "XHPBody" "XHP_body" ();
     make_token_node "XHPComment" "XHP_comment" ();
-    make_token_node "Markup" "markup" ();
+    make_token_node "Hashbang" "hashbang" ();
   ]
 
 let no_text_tokens = [make_token_node "EndOfFile" "end_of_file" ()]
@@ -77,7 +77,6 @@ let no_text_tokens = [make_token_node "EndOfFile" "end_of_file" ()]
 let given_text_tokens =
   [
     make_token_node "Abstract" "abstract" ();
-    make_token_node "Array" "array" ();
     make_token_node "Arraykey" "arraykey" ~allowed_as_identifier:true ();
     make_token_node "As" "as" ();
     make_token_node "Async" "async" ();
@@ -98,6 +97,7 @@ let given_text_tokens =
     make_token_node "Const" "const" ();
     make_token_node "Construct" "__construct" ();
     make_token_node "Continue" "continue" ();
+    make_token_node "Ctx" "ctx" ();
     make_token_node "Darray" "darray" ~allowed_as_identifier:true ();
     make_token_node "Default" "default" ();
     make_token_node "Define" "define" ~allowed_as_identifier:true ();
@@ -127,11 +127,9 @@ let given_text_tokens =
     make_token_node "Function" "function" ();
     make_token_node "Global" "global" ();
     make_token_node "Concurrent" "concurrent" ();
-    make_token_node "Goto" "goto" ();
     make_token_node "If" "if" ();
     make_token_node "Implements" "implements" ();
     make_token_node "Include" "include" ();
-    make_token_node "Includes" "includes" ();
     make_token_node "Include_once" "include_once" ();
     make_token_node "Inout" "inout" ();
     make_token_node "Instanceof" "instanceof" ();
@@ -170,7 +168,6 @@ let given_text_tokens =
     make_token_node "Static" "static" ();
     make_token_node "String" "string" ~allowed_as_identifier:true ();
     make_token_node "Super" "super" ~allowed_as_identifier:true ();
-    make_token_node "Suspend" "suspend" ~allowed_as_identifier:true ();
     make_token_node "Switch" "switch" ();
     make_token_node "This" "this" ~allowed_as_identifier:true ();
     make_token_node "Throw" "throw" ();
@@ -256,9 +253,10 @@ let given_text_tokens =
     make_token_node "SlashGreaterThan" "/>" ();
     make_token_node "LessThanSlash" "</" ();
     make_token_node "LessThanQuestion" "<?" ();
-    make_token_node "ColonAt" ":@" ();
     make_token_node "Backtick" "`" ();
     make_token_node "XHP" "xhp" ~allowed_as_identifier:true ();
+    make_token_node "Hash" "#" ();
+    make_token_node "Readonly" "readonly" ();
   ]
 
 let tokens = variable_text_tokens @ no_text_tokens @ given_text_tokens

@@ -15,10 +15,8 @@ module type S = sig
 
   include module type of Cli_args
 
-  type saved_state_target =
-    | Informant_induced_saved_state_target of
-        ServerMonitorUtils.target_saved_state
-    | Saved_state_target_info of saved_state_target_info
+  type saved_state_target = Saved_state_target_info of saved_state_target_info
+  [@@deriving show]
 
   (****************************************************************************)
   (* The main entry point *)
@@ -38,6 +36,8 @@ module type S = sig
 
   val check_mode : options -> bool
 
+  val concatenate_prefix : options -> string option
+
   val config : options -> (string * string) list
 
   val custom_telemetry_data : options -> (string * string) list
@@ -45,6 +45,8 @@ module type S = sig
   val dump_fanout : options -> bool
 
   val dynamic_view : options -> bool
+
+  val enable_ifc : options -> string list
 
   val from : options -> string
 
@@ -55,8 +57,6 @@ module type S = sig
   val saved_state_ignore_hhconfig : options -> bool
 
   val json_mode : options -> bool
-
-  val load_state_canary : options -> bool
 
   val log_inference_constraints : options -> bool
 
@@ -78,6 +78,8 @@ module type S = sig
 
   val save_with_spec : options -> save_state_spec_info option
 
+  val save_64bit : options -> string option
+
   val save_naming_filename : options -> string option
 
   val should_detach : options -> bool
@@ -88,7 +90,7 @@ module type S = sig
 
   val with_saved_state : options -> saved_state_target option
 
-  val with_dep_graph_v2 : options -> string option
+  val is_using_precomputed_saved_state : options -> bool
 
   val allow_non_opt_build : options -> bool
 
@@ -98,12 +100,13 @@ module type S = sig
   (* Setters *)
   (****************************************************************************)
 
+  val set_ai_mode : options -> Ai_options.t option -> options
+
   val set_check_mode : options -> bool -> options
 
   val set_gen_saved_ignore_type_errors : options -> bool -> options
 
-  val set_saved_state_target :
-    options -> ServerMonitorUtils.target_saved_state option -> options
+  val set_max_procs : options -> int -> options
 
   val set_no_load : options -> bool -> options
 

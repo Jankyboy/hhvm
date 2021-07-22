@@ -7,7 +7,13 @@
  *
  *)
 
-val indexing : ServerEnv.genv -> Relative_path.t list Bucket.next * float
+val hh_log_heap : unit -> unit
+
+val indexing :
+  ?hhi_filter:(string -> bool) ->
+  profile_label:string ->
+  ServerEnv.genv ->
+  Relative_path.t list Bucket.next * float
 
 val parsing :
   lazy_parse:bool ->
@@ -17,11 +23,26 @@ val parsing :
   ?count:int ->
   float ->
   trace:bool ->
+  profile_label:string ->
+  profiling:CgroupProfiler.Profiling.t ->
   ServerEnv.env * float
 
-val update_files : ServerEnv.genv -> Naming_table.t -> float -> float
+val update_files :
+  ?warn_on_naming_costly_iter:bool ->
+  ServerEnv.genv ->
+  Naming_table.t ->
+  Provider_context.t ->
+  float ->
+  profile_label:string ->
+  profiling:CgroupProfiler.Profiling.t ->
+  float
 
-val naming : ServerEnv.env -> float -> ServerEnv.env * float
+val naming :
+  ServerEnv.env ->
+  float ->
+  profile_label:string ->
+  profiling:CgroupProfiler.Profiling.t ->
+  ServerEnv.env * float
 
 val type_check :
   ServerEnv.genv ->
@@ -29,4 +50,6 @@ val type_check :
   Relative_path.t list ->
   Telemetry.t ->
   float ->
+  profile_label:string ->
+  profiling:CgroupProfiler.Profiling.t ->
   ServerEnv.env * float

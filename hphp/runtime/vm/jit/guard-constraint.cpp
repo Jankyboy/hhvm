@@ -30,8 +30,8 @@ std::string GuardConstraint::toString() const {
   std::string ret = "<" + typeCategoryName(category);
 
   if (category == DataTypeSpecialized) {
-    if (wantVanillaArray()) {
-      ret += ",VanillaArray";
+    if (isArrayLayoutSensitive()) {
+      ret += ",ArrayLayout";
     } else if (wantClass()) {
       folly::toAppend("Cls:", desiredClass()->name()->data(), &ret);
     }
@@ -52,13 +52,12 @@ bool typeFitsConstraint(Type t, GuardConstraint gc) {
     case DataTypeGeneric:
       return true;
 
-    case DataTypeCountness:
-      // When we use this constraint, we expect the type to either be relaxed
-      // to Uncounted or left alone, so if counted, it must have a DataType.
-      return t.isKnownDataType() || !t.maybe(TCounted);
+    case DataTypeIterBase:
+      return (t.isKnownDataType() || !t.maybe(TCounted) || t <= TArrLike) &&
+             (t <= TUninit || !t.maybe(TUninit));
 
     case DataTypeCountnessInit:
-      return typeFitsConstraint(t, DataTypeCountness) &&
+      return (t.isKnownDataType() || !t.maybe(TCounted)) &&
              (t <= TUninit || !t.maybe(TUninit));
 
     case DataTypeSpecific:
@@ -67,7 +66,7 @@ bool typeFitsConstraint(Type t, GuardConstraint gc) {
     case DataTypeSpecialized:
       // Type::isSpecialized() returns true for types like {Arr<Packed>|Int},
       // so we need to check both for specialization and isKnownDataType.
-      assertx(gc.wantClass() + gc.wantVanillaArray() + gc.wantRecord() == 1);
+      assertx(gc.wantClass() + gc.isArrayLayoutSensitive() + gc.wantRecord() == 1);
       if (!t.isKnownDataType()) return false;
       if (gc.wantClass()) {
         auto const clsSpec = t.clsSpec();
@@ -75,8 +74,9 @@ bool typeFitsConstraint(Type t, GuardConstraint gc) {
       } else if (gc.wantRecord()) {
         auto const recSpec = t.recSpec();
         return recSpec && recSpec.rec()->recordDescOf(gc.desiredRecord());
-      } else {
-        if (gc.wantVanillaArray()) return t.arrSpec().vanilla();
+      } else if (gc.isArrayLayoutSensitive()) {
+        auto const arrSpec = t.arrSpec();
+        return arrSpec.vanilla() || arrSpec.bespoke();
       }
       return false;
   }
@@ -106,7 +106,7 @@ GuardConstraint relaxConstraint(GuardConstraint origGc,
 
   while (true) {
     if (newGc.isSpecialized()) {
-      if (origGc.wantVanillaArray()) newGc.setWantVanillaArray();
+      if (origGc.isArrayLayoutSensitive()) newGc.setArrayLayoutSensitive();
       if (origGc.wantClass()) newGc.setDesiredClass(origGc.desiredClass());
       if (origGc.wantRecord()) newGc.setDesiredRecord(origGc.desiredRecord());
     }
@@ -116,15 +116,6 @@ GuardConstraint relaxConstraint(GuardConstraint origGc,
     ITRACE(5, "newDstType = {}, newGc = {}; incrementing constraint\n",
            newDstType, newGc);
     incCategory(newGc.category);
-  }
-  // DataTypeCountness can be relaxed to DataTypeGeneric in
-  // optimizeProfiledGuards, so we can't rely on this category to give type
-  // information through guards.  Since relaxConstraint is used to relax the
-  // DataTypeCategory for guards, we cannot return DataTypeCountness unless we
-  // already had it to start with.  Instead, we return DataTypeCountnessInit,
-  // which won't be further relaxed by optimizeProfiledGuards.
-  if (newGc.category == DataTypeCountness && origGc != DataTypeCountness) {
-    newGc.category = DataTypeCountnessInit;
   }
   ITRACE(4, "Returning {}\n", newGc);
   // newGc shouldn't be any more specific than origGc.
@@ -136,7 +127,7 @@ GuardConstraint applyConstraint(GuardConstraint gc,
                                 GuardConstraint newGc) {
   gc.category = std::max(newGc.category, gc.category);
 
-  if (newGc.wantVanillaArray()) gc.setWantVanillaArray();
+  if (newGc.isArrayLayoutSensitive()) gc.setArrayLayoutSensitive();
 
   if (newGc.wantClass()) {
     if (gc.wantClass()) {

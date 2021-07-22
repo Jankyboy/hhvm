@@ -4,7 +4,7 @@ class foobar {}
 function foobar() {}
 class StrObj {
   public function __construct(private string $s) {}
-  public function __tostring(): string { return $this->s; }
+  public function __toString(): string { return $this->s; }
 }
 class Wrapper { public function __construct(private mixed $w) {} }
 
@@ -15,7 +15,7 @@ function CLS($c) { return __hhvm_intrinsics\create_class_pointer($c); }
 
 function WRAPA($x) { return LV(varray[$x]); }
 function WRAPO($x) { return LV(new Wrapper($x)); }
-function WRAPD($x) { $r = new stdclass; $r->x = $x; return LV($r); }
+function WRAPD($x) { $r = new stdClass; $r->x = $x; return LV($r); }
 
 <<__NEVER_INLINE>> function print_header($title) {
   echo "$title\n";
@@ -41,7 +41,7 @@ function WRAPD($x) { $r = new stdclass; $r->x = $x; return LV($r); }
 }
 
 <<__NEVER_INLINE>> function static_compare() {
-  $cm = fun('foobar');
+  $cm = foobar<>;
   $va = 'foobar';
   $oa = new StrObj('foobar');
   $fa = CLS('foobar');
@@ -51,8 +51,8 @@ function WRAPD($x) { $r = new stdclass; $r->x = $x; return LV($r); }
   $xy = new Wrapper($cm); $vy = new Wrapper($va); $oy = new Wrapper($oa);
   $fy = new Wrapper($fa);
 
-  $xz = new stdclass; $xz->v = $cm; $vz = new stdclass; $vz->v = $va;
-  $oz = new stdclass; $oz->v = $oa; $fz = new stdclass; $fz->v = $fa;
+  $xz = new stdClass; $xz->v = $cm; $vz = new stdClass; $vz->v = $va;
+  $oz = new stdClass; $oz->v = $oa; $fz = new stdClass; $fz->v = $fa;
 
   print_header('[static] $cm ? VAR');
   begin_row('va');
@@ -116,7 +116,7 @@ function WRAPD($x) { $r = new stdclass; $r->x = $x; return LV($r); }
 }
 
 <<__NEVER_INLINE>> function dynamic_compare() {
-  $cm = LV(fun('foobar'));
+  $cm = LV(foobar<>);
   $va = LV('foobar');
   $oa = LV(new StrObj('foobar'));
   $fa = LV(CLS('foobar'));

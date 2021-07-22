@@ -259,7 +259,7 @@ let rec search_node ~(env : env) ~(pattern : pattern) ~(node : Syntax.t) :
             | Some patterns -> search_and ~env ~patterns
             | None ->
               (* We tried to match a pattern for the child at at index N, but the syntax
-        list didn't have an Nth element. *)
+                 list didn't have an Nth element. *)
               (env, None)
           end)
     end
@@ -402,9 +402,9 @@ let compile_pattern (ctx : Provider_context.t) (json : Hh_json.json) :
             (child_keytrace : Hh_json.Access.keytrace) (child_name : string) :
             (child_type, string) Result.t =
           (* We're given a field name like `binary_right_operand`, but the field
-      names in the schema are things like `right_operand`, and you have to
-      affix the prefix yourself. For consistency with other tooling, we want
-      to use `binary_right_operand` instead of just `right_operand`. *)
+             names in the schema are things like `right_operand`, and you have to
+             affix the prefix yourself. For consistency with other tooling, we want
+             to use `binary_right_operand` instead of just `right_operand`. *)
           let get_prefixed_field_name field_name =
             kind_info.prefix ^ "_" ^ field_name
           in
@@ -421,8 +421,8 @@ let compile_pattern (ctx : Provider_context.t) (json : Hh_json.json) :
             error_at_keytrace
               ~keytrace:child_keytrace
               (Printf.sprintf
-                 ( "Unknown child type '%s'; "
-                 ^^ "valid child types for a node of kind '%s' are: %s" )
+                 ("Unknown child type '%s'; "
+                 ^^ "valid child types for a node of kind '%s' are: %s")
                  child_name
                  kind
                  (String.concat ~sep:", " valid_types))
@@ -503,7 +503,7 @@ let compile_pattern (ctx : Provider_context.t) (json : Hh_json.json) :
     get_array "patterns" (json, keytrace)
     >>= fun (pattern_list, pattern_list_keytrace) ->
     let compiled_patterns =
-      List.mapi pattern_list (fun i json ->
+      List.mapi pattern_list ~f:(fun i json ->
           let keytrace = string_of_int i :: pattern_list_keytrace in
           compile_pattern ~json ~keytrace)
     in
@@ -584,7 +584,7 @@ let go
         !num_files_searched - !last_printed_num_files_searched >= 10000
         || is_bucket_empty
       then (
-        ServerProgress.send_progress_to_monitor
+        ServerProgress.send_progress
           "CST search: searched %d files..."
           !num_files_searched;
         last_printed_num_files_searched := !num_files_searched
@@ -599,7 +599,7 @@ let go
         Some (path, pattern)
       else
         (* We may not have the file information for a file such as one that we
-          ignore in `.hhconfig`. *)
+           ignore in `.hhconfig`. *)
         None
     in
     match files_to_search with
@@ -627,7 +627,8 @@ let go
           match search ctx entry pattern with
           | Some result -> (path, result) :: acc
           | None -> acc
-        with e ->
+        with
+        | e ->
           let stack = Printexc.get_backtrace () in
           let prefix =
             Printf.sprintf

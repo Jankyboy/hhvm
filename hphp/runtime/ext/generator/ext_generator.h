@@ -15,8 +15,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EXT_GENERATOR_H_
-#define incl_HPHP_EXT_GENERATOR_H_
+#pragma once
 
 
 #include "hphp/runtime/base/builtin-functions.h"
@@ -35,9 +34,8 @@ struct BaseGenerator {
   enum class State : uint8_t {
     Created = 0,  // generator was created but never iterated
     Started = 1,  // generator was iterated but not currently running
-    Priming = 2,  // generator is advancing to the first yield
-    Running = 3,  // generator is currently being iterated
-    Done    = 4   // generator has finished its execution
+    Running = 2,  // generator is currently being iterated
+    Done    = 3   // generator has finished its execution
   };
 
   static constexpr ptrdiff_t resumableOff() {
@@ -59,14 +57,13 @@ struct BaseGenerator {
    */
   static Offset userBase(const Func* func) {
     assertx(func->isGenerator());
-    auto base = func->base();
 
     // Skip past VerifyParamType and EntryNoop bytecodes
-    auto pc = func->at(base);
-    auto past = func->at(func->past());
+    auto pc = func->entry();
+    auto end = func->at(func->bclen());
     while (peek_op(pc) != OpCreateCont) {
       pc += instrLen(pc);
-      always_assert(pc < past);
+      always_assert(pc < end);
     }
 
     auto DEBUG_ONLY op1 = decode_op(pc);
@@ -117,7 +114,7 @@ struct BaseGenerator {
   }
 
   bool isRunning() const {
-    return getState() == State::Priming || getState() == State::Running;
+    return getState() == State::Running;
   }
 
   void startedCheck() {
@@ -134,13 +131,9 @@ struct BaseGenerator {
     }
     switch (getState()) {
       case State::Created:
-        setState(State::Priming);
-        break;
       case State::Started:
         setState(State::Running);
         break;
-      // For our purposes priming is basically running.
-      case State::Priming:
       case State::Running:
         throw_exception(
           SystemLib::AllocExceptionObject("Generator is already running")
@@ -206,4 +199,3 @@ public:
 ///////////////////////////////////////////////////////////////////////////////
 }
 
-#endif // incl_HPHP_EXT_GENERATOR_H_

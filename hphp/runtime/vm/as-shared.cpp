@@ -14,7 +14,6 @@
    +----------------------------------------------------------------------+
 */
 #include "hphp/runtime/vm/as-shared.h"
-#include "hphp/runtime/vm/rx.h"
 
 #include <folly/gen/Base.h>
 #include <folly/gen/String.h>
@@ -58,6 +57,7 @@ constexpr bool supported(ContextMask mask, AttrContext a) {
   X(AttrBuiltin,                  C|F,     "builtin");              \
   X(AttrPersistent,               C|F|A|K, "persistent");           \
   X(AttrIsConst,                  C|P,     "is_const");             \
+  X(AttrIsReadOnly,               P,       "readonly");             \
   X(AttrForbidDynamicProps,       C,       "no_dynamic_props");     \
   X(AttrDynamicallyConstructible, C,       "dyn_constructible");    \
   X(AttrProvenanceSkipFrame,      F,       "prov_skip_frame");      \
@@ -73,7 +73,7 @@ constexpr bool supported(ContextMask mask, AttrContext a) {
   X(AttrLateInit,                 P,       "late_init");            \
   X(AttrNoReifiedInit,            C,       "noreifiedinit");        \
   X(AttrIsMethCaller,             F,       "is_meth_caller");       \
-  X(AttrNoContext,                F,       "no_context");
+  X(AttrEnumClass,                C,       "enum_class");
   /* */
 
 #define HHAS_TYPE_FLAGS                                     \
@@ -97,9 +97,6 @@ std::vector<std::string> attrs_to_vec(AttrContext ctx, Attr attrs) {
   HHAS_ATTRS
 #undef X
 
-  auto const rxAttrString = rxAttrsToAttrString(attrs);
-  if (rxAttrString) vec.push_back(rxAttrString);
-
   return vec;
 }
 
@@ -108,14 +105,14 @@ std::string attrs_to_string(AttrContext ctx, Attr attrs) {
   return from(attrs_to_vec(ctx, attrs)) | unsplit<std::string>(" ");
 }
 
-folly::Optional<Attr> string_to_attr(AttrContext ctx,
+Optional<Attr> string_to_attr(AttrContext ctx,
                                      const std::string& name) {
 #define X(attr, mask, str) \
   if (supported(mask, ctx) && name == str) return attr;
   HHAS_ATTRS
 #undef X
 
-return folly::none;
+return std::nullopt;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -132,14 +129,14 @@ std::string type_flags_to_string(TypeConstraint::Flags flags) {
   return from(vec) | unsplit<std::string>(" ");
 }
 
-folly::Optional<TypeConstraint::Flags> string_to_type_flag(
+Optional<TypeConstraint::Flags> string_to_type_flag(
   const std::string& name) {
 #define X(flag, str) \
   if (name == str) return TypeConstraint::flag;
   HHAS_TYPE_FLAGS
 #undef X
 
-return folly::none;
+return std::nullopt;
 }
 
 //////////////////////////////////////////////////////////////////////

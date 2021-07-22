@@ -2,7 +2,7 @@
   (name rust_parser_ffi)
   (modules)
   (wrapped false)
-  (preprocess (pps visitors.ppx ppx_deriving.std)) ; See T41851208
+  (preprocess (pps visitors.ppx ppx_deriving.std))
   (libraries ocamlpool)
   (c_library_flags -lpthread)
   (self_build_stubs_archive (rust_parser_ffi))
@@ -24,7 +24,7 @@
   (name rust_parser_errors_ffi)
   (modules)
   (wrapped false)
-  (preprocess (pps visitors.ppx ppx_deriving.std)) ; See T41851208
+  (preprocess (pps visitors.ppx ppx_deriving.std))
   (libraries ocamlpool)
   (c_library_flags -lpthread)
   (self_build_stubs_archive (rust_parser_errors_ffi))
@@ -55,9 +55,6 @@
    full_fidelity_editable_syntax
    full_fidelity_editable_token
    full_fidelity_editable_trivia
-   full_fidelity_minimal_syntax
-   full_fidelity_minimal_token
-   full_fidelity_minimal_trivia
    full_fidelity_operator_generated
    full_fidelity_operator
    full_fidelity_parser
@@ -80,7 +77,6 @@
    lexable_trivia_sig
    lexable_token_sig
    lexable_positioned_token_sig
-   minimal_parser
    positioned_parser
    positioned_syntax_sig
    syntax_sig
@@ -93,7 +89,6 @@
    smartConstructors
    smartConstructorsWrappers
    verifySmartConstructors
-   declModeSmartConstructors
    syntaxSmartConstructors)
   (libraries
     common
@@ -132,7 +127,7 @@
     parser_return
     pretty_printing_library
     pretty_printing_library_sig)
-  (preprocess (pps visitors.ppx ppx_deriving.std)) ; See T41851208
+  (preprocess (pps visitors.ppx ppx_deriving.std))
   (libraries
     ast
     fixme_provider
@@ -152,7 +147,7 @@
   (name hh_autoimport)
   (wrapped false)
   (modules hh_autoimport)
-  (preprocess (pps visitors.ppx ppx_deriving.std)) ; See T41851208
+  (preprocess (pps visitors.ppx ppx_deriving.std))
   (libraries
     collections
     core_kernel
@@ -163,7 +158,11 @@
   (wrapped false)
   (modules
     parsing_service)
-  (preprocess (pps visitors.ppx ppx_deriving.std)) ; See T41851208
+  (preprocess (pps visitors.ppx ppx_deriving.std))
   (libraries
     ast_provider
-    procs_procs))
+    decl
+    direct_decl_parser
+    heap_shared_mem
+    procs_procs
+    shallow_decl_defs))

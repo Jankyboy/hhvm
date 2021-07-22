@@ -7,7 +7,7 @@
  *)
 
 open Hh_prelude
-open Hh_core
+open Common
 open Ifc_types
 module Env = Ifc_env
 module Logic = Ifc_logic
@@ -16,6 +16,7 @@ module Lattice = Ifc_security_lattice
 module L = Logic.Infix
 module A = Aast
 module T = Typing_defs
+module SN = Naming_special_names
 
 (* Everything done in this file should eventually be merged in Hack's
    regular decl phase. Right now it is more convenient to keep things
@@ -25,76 +26,122 @@ exception FlowDecl of string
 
 let fail s = raise (FlowDecl s)
 
-let policied_id = "\\Policied"
+let policied_id = SN.UserAttributes.uaPolicied
 
-let infer_flows_id = "\\InferFlows"
+let infer_flows_id = SN.UserAttributes.uaInferFlows
 
 let exception_id = "\\Exception"
 
+let out_of_bounds_exception_id = "\\OutOfBoundsException"
+
 let vec_id = "\\HH\\vec"
 
-let governed_id = "\\Governed"
+let dict_id = "\\HH\\dict"
 
-let construct_id = "__construct"
+let keyset_id = "\\HH\\keyset"
 
-let external_id = "\\External"
+let awaitable_id = "\\HH\\Awaitable"
 
-let callable_id = "\\CanCall"
+let construct_id = SN.Members.__construct
 
-let make_callable_name cls_name_opt name =
+let external_id = SN.UserAttributes.uaExternal
+
+let callable_id = SN.UserAttributes.uaCanCall
+
+let convert_ifc_fun_decl pos (tfd : T.ifc_fun_decl) : fun_decl_kind =
+  match tfd with
+  | T.FDInferFlows -> FDInferFlows
+  | T.FDPolicied None -> FDPolicied None
+  | T.FDPolicied (Some purpose) ->
+    FDPolicied (Some (Lattice.parse_policy (PosSet.singleton pos) purpose))
+
+let get_method_from_provider ~static ctx class_name method_name =
+  match Decl_provider.get_class ctx class_name with
+  | None -> None
+  | Some cls when static -> Decl_provider.Class.get_smethod cls method_name
+  | Some cls when String.equal method_name construct_id ->
+    let (construct_opt, _) = Typing_classes_heap.Api.construct cls in
+    construct_opt
+  | Some cls -> Decl_provider.Class.get_method cls method_name
+
+let convert_fun_type ctx fun_ty =
+  let open Typing_defs in
+  let resolve = Naming_provider.resolve_position ctx in
+  let pos = get_pos fun_ty |> resolve in
+  let fty = get_node fun_ty in
+  match fty with
+  | Tfun { ft_params; ft_ifc_decl; _ } ->
+    let fd_kind = convert_ifc_fun_decl pos ft_ifc_decl in
+    let mk_arg fp =
+      let pos = resolve fp.fp_pos in
+      match (T.get_fp_ifc_can_call fp, T.get_fp_ifc_external fp) with
+      | (_, true) -> AKExternal pos
+      | (true, _) -> AKCallable pos
+      | (false, false) -> AKDefault
+    in
+    let fd_args = List.map ft_params ~f:mk_arg in
+    { fd_kind; fd_args }
+  | _ -> fail "Expected a Tfun type from function declaration"
+
+(* Grab a function from the decl heap and convert it into a fun decl*)
+let get_fun (ctx : Provider_context.t) (fun_name : string) : fun_decl option =
+  let open Typing_defs in
+  match Decl_provider.get_fun ctx fun_name with
+  | None -> None
+  | Some { fe_type; _ } -> Some (convert_fun_type ctx fe_type)
+
+(* Grab a method from the decl heap and convert it into a fun_decl *)
+let get_method
+    (ctx : Provider_context.t) (class_name : string) (method_name : string) :
+    fun_decl option =
+  let open Typing_defs in
+  match get_method_from_provider ~static:false ctx class_name method_name with
+  (* The default constructor for classes is public and takes no arguments *)
+  | None when String.equal method_name construct_id ->
+    let default_kind =
+      convert_ifc_fun_decl Pos.none Typing_defs.default_ifc_fun_decl
+    in
+    Some { fd_kind = default_kind; fd_args = [] }
+  | None -> None
+  | Some { ce_type = (lazy fun_type); _ } ->
+    Some (convert_fun_type ctx fun_type)
+
+let get_static_method
+    (ctx : Provider_context.t) (class_name : string) (method_name : string) :
+    fun_decl option =
+  let open Typing_defs in
+  match get_method_from_provider ~static:true ctx class_name method_name with
+  | None -> None
+  | Some { ce_type = (lazy fun_type); _ } ->
+    Some (convert_fun_type ctx fun_type)
+
+(* Grab any callable from the decl heap *)
+let get_callable_decl (ctx : Provider_context.t) (callable_name : callable_name)
+    : fun_decl option =
+  match callable_name with
+  | Method (cls, name) -> get_method ctx cls name
+  | StaticMethod (cls, name) -> get_static_method ctx cls name
+  | Function name -> get_fun ctx name
+
+let callable_name_to_string = function
+  | StaticMethod (cls, name)
+  | Method (cls, name) ->
+    cls ^ "#" ^ name
+  | Function name -> name
+
+let make_callable_name ~is_static cls_name_opt name =
   match cls_name_opt with
-  | None -> name
-  | Some cls_name -> cls_name ^ "#" ^ name
+  | None -> Function name
+  | Some cls_name when is_static -> StaticMethod (cls_name, name)
+  | Some cls_name -> Method (cls_name, name)
 
+(* Grab an attribute from a list of attrs. Only used for policy properties *)
 let get_attr attr attrs =
   let is_attr a = String.equal (snd a.A.ua_name) attr in
   match List.filter ~f:is_attr attrs with
   | [] -> None
   | [a] -> Some a
   | _ -> fail ("multiple '" ^ attr ^ "' attributes found")
-
-let callable_decl attrs args =
-  let fd_kind =
-    match get_attr governed_id attrs with
-    | Some attr ->
-      let policy =
-        match attr.A.ua_params with
-        | [] -> None
-        | [((pos, _), A.String purpose)] ->
-          Some (Lattice.parse_policy (PosSet.singleton pos) purpose)
-        | _ -> fail "expected a string literal as governed by argument."
-      in
-      FDGovernedBy policy
-    | None ->
-      if Option.is_some (get_attr infer_flows_id attrs) then
-        FDInferFlows
-      else
-        (* Eventually, make this (FDGovernedBy Pbot) *)
-        FDInferFlows
-  in
-  let fd_args =
-    let mk_arg_kind param id f def =
-      match get_attr id param.A.param_user_attributes with
-      | Some { A.ua_name = (pos, _); _ } -> f pos
-      | None -> def
-    in
-    let f param =
-      AKDefault
-      |> mk_arg_kind param external_id (fun p -> AKExternal p)
-      |> mk_arg_kind param callable_id (fun p -> AKCallable p)
-    in
-    List.map ~f args
-  in
-  { fd_kind; fd_args }
-
-let fun_ { A.f_name = (_, name); f_user_attributes = attrs; f_params = args; _ }
-    =
-  (make_callable_name None name, callable_decl attrs args)
-
-let meth
-    class_name
-    { A.m_name = (_, name); m_user_attributes = attrs; m_params = args; _ } =
-  (make_callable_name (Some class_name) name, callable_decl attrs args)
 
 let immediate_supers { A.c_uses; A.c_extends; _ } =
   let id_of_hint = function
@@ -142,7 +189,9 @@ let add_super class_decl_env class_decl_acc super =
     let super_props = List.filter ~f:is_visible cd_policied_properties in
     let props = super_props @ class_decl_acc.cd_policied_properties in
     { cd_policied_properties = props }
-  | None -> fail @@ super ^ " wasn't found in the inheritance hierarchy"
+  | None ->
+    (* Must be a builtin. Assume that builtins don't have policied properties *)
+    class_decl_acc
 
 let mk_policied_prop
     {
@@ -157,7 +206,7 @@ let mk_policied_prop
     | None -> `No_policy
     | Some attr ->
       (match attr.A.ua_params with
-      | [(_, A.String purpose)] -> `Policy purpose
+      | [(_, _, A.String purpose)] -> `Policy purpose
       | _ -> fail "expected a string literal as a purpose argument")
   in
   match find_policy attrs with
@@ -183,17 +232,7 @@ let class_ class_decl_env class_ =
   in
   let class_decl = { cd_policied_properties } in
 
-  (* Function declarations out of methods *)
-  let fun_decls = List.map ~f:(meth name) class_.A.c_methods in
-
-  (name, class_decl, fun_decls)
-
-let magic_class_decls =
-  SMap.of_list
-    [
-      (vec_id, { cd_policied_properties = [] });
-      (exception_id, { cd_policied_properties = [] });
-    ]
+  (name, class_decl)
 
 let topsort_classes classes =
   (* Record the class hierarchy *)
@@ -219,9 +258,8 @@ let topsort_classes classes =
         schedule := class_ :: !schedule
       end
     | None ->
-      (* If it's a magic builtin, then it has no dependencies, so do nothing *)
-      if not @@ SMap.mem id magic_class_decls then
-        fail @@ id ^ " is missing entity in the inheritance hierarchy"
+      (* Must be a builtin. Assume that builtins don't have policied properties *)
+      ()
   in
   List.iter ~f:process (List.map ~f:(fun c -> snd c.A.c_name) classes);
 
@@ -229,29 +267,21 @@ let topsort_classes classes =
 
 (* Removes all the auxiliary info needed only during declaration analysis. *)
 let collect_sigs defs =
-  (* Prepare class and function definitions *)
   let pick = function
-    | A.Class class_ -> `Fst class_
-    | A.Fun fun_ -> `Snd fun_
-    | _ -> `Trd ()
+    | A.Class class_ -> Some class_
+    | _ -> None
   in
-  let (classes, funs, _) = List.partition3_map ~f:pick defs in
-  let classes = topsort_classes classes in
-
-  (* Process and accumulate function decls *)
-  let fun_decls = SMap.of_list (List.map ~f:fun_ funs) in
-
+  let classes = List.filter_map ~f:pick defs |> topsort_classes in
   (* Process and accumulate class decls *)
-  let init = { de_class = magic_class_decls; de_fun = fun_decls } in
-  let add_class_decl { de_class; de_fun } cls =
-    let (class_name, class_decl, meth_decls) = class_ de_class cls in
+  let init = { de_class = SMap.empty } in
+  let add_class_decl { de_class } cls =
+    let (class_name, class_decl) = class_ de_class cls in
     let de_class = SMap.add class_name class_decl de_class in
-    let de_fun = SMap.union (SMap.of_list meth_decls) de_fun in
-    { de_class; de_fun }
+    { de_class }
   in
   List.fold ~f:add_class_decl ~init classes
 
-let property_policy { de_class; _ } cname pname =
+let property_policy { de_class } cname pname =
   Option.(
     SMap.find_opt cname de_class >>= fun cls ->
     List.find
@@ -272,7 +302,6 @@ let make_callable_scheme renv pol fp args =
     | None -> Env.new_policy_var renv "implicit"
   in
   let rec set_policy p pty = Mapper.ptype (set_policy p) (const p) pty in
-  let pbot = Pbot PosSet.empty in
   let (acc, args) =
     let f acc ty = function
       | AKDefault -> (acc, set_policy policy ty)
@@ -283,7 +312,12 @@ let make_callable_scheme renv pol fp args =
         let c = Env.new_policy_var renv "callable" in
         (L.(policy < c) ~pos acc, set_policy c ty)
     in
-    List.map2_env [] ~f fp.fp_type.f_args args
+
+    (* The length of arguments in the function type may not match that of
+       argument kinds which is derived from the decl. Since all default
+       arguments are public, we simply truncate the list. *)
+    let fp_args = fp.fp_type.f_args in
+    List.map2_env [] ~f fp_args (List.take args @@ List.length fp_args)
   in
   let fp' =
     {

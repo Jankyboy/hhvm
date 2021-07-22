@@ -60,16 +60,16 @@ int64_t c_Pair::linearSearch(const Variant& value) const {
 }
 
 Array c_Pair::toPHPArrayImpl() const {
-  return make_map_array(0, tvAsCVarRef(&elm0),
-                        1, tvAsCVarRef(&elm1));
+  return make_dict_array(0, tvAsCVarRef(&elm0),
+                         1, tvAsCVarRef(&elm1));
 }
 
 Array c_Pair::toVArrayImpl() const {
-  return make_varray(tvAsCVarRef(&elm0), tvAsCVarRef(&elm1));
+  return make_vec_array(tvAsCVarRef(&elm0), tvAsCVarRef(&elm1));
 }
 
 Array c_Pair::toDArrayImpl() const {
-  return make_darray(0, tvAsCVarRef(&elm0), 1, tvAsCVarRef(&elm1));
+  return make_dict_array(0, tvAsCVarRef(&elm0), 1, tvAsCVarRef(&elm1));
 }
 
 c_Pair* c_Pair::Clone(ObjectData* obj) {
@@ -153,7 +153,7 @@ void CollectionsExtension::initPair() {
 
   loadSystemlib("collections-pair");
 
-  c_Pair::s_cls = Unit::lookupClass(s_HH_Pair.get());
+  c_Pair::s_cls = Class::lookup(s_HH_Pair.get());
   assertx(c_Pair::s_cls);
 
   finishClass<c_Pair>();

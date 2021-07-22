@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_IRGEN_FUNC_PROLOGUE_H
-#define incl_HPHP_JIT_IRGEN_FUNC_PROLOGUE_H
+#pragma once
 
 #include "hphp/runtime/vm/func.h"
 #include "hphp/runtime/vm/jit/types.h"
@@ -32,22 +31,35 @@ struct IRGS;
 
 ///////////////////////////////////////////////////////////////////////////////
 
-void emitPrologueLocals(IRGS& env, const Func* callee, uint32_t argc,
-                        SSATmp* callFlags, SSATmp* closureOpt);
+/*
+ * Check for presence, count and wildcard match of generics.
+ *
+ * If `pushed' is true, generics are on the stack. Otherwise, generics may or
+ * may not be above the stack, depending on the callFlags.
+ *
+ * After this check, generics will be on the stack iff the function has reified
+ * generics.
+ */
+void emitCalleeGenericsChecks(IRGS& env, const Func* callee, SSATmp* callFlags,
+                              bool pushed);
+
+void emitCalleeDynamicCallChecks(IRGS& env, const Func* callee,
+                                SSATmp* callFlags);
+
+void emitCalleeCoeffectChecks(IRGS& env, const Func* callee,
+                              SSATmp* callFlags, SSATmp* providedCoeffects,
+                              uint32_t argc, SSATmp* prologueCtx);
+
+void emitCalleeRecordFuncCoverage(IRGS& env, const Func* callee);
+
+void emitInitFuncInputs(IRGS& env, const Func* callee, uint32_t argc);
+
+void emitInitFuncLocals(IRGS& env, const Func* callee, SSATmp* prologueCtx);
 
 void emitFuncPrologue(IRGS& env, const Func* callee, uint32_t argc,
                       TransID transID);
-
-void emitGenericsMismatchCheck(IRGS& env, const Func* callee,
-                               SSATmp* callFlags);
-
-void emitCalleeDynamicCallCheck(IRGS& env, const Func* callee,
-                                SSATmp* callFlags);
-
-void emitImplicitContextCheck(IRGS& env, const Func* callee);
 
 ///////////////////////////////////////////////////////////////////////////////
 
 }}}
 
-#endif // incl_HPHP_JIT_IRGEN_FUNC_PROLOGUE_H

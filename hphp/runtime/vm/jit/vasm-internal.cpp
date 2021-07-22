@@ -20,10 +20,10 @@
 #include "hphp/runtime/vm/jit/cg-meta.h"
 #include "hphp/runtime/vm/jit/containers.h"
 #include "hphp/runtime/vm/jit/ir-opcode.h"
-#include "hphp/runtime/vm/jit/service-requests.h"
 #include "hphp/runtime/vm/jit/smashable-instr.h"
 #include "hphp/runtime/vm/jit/srcdb.h"
 #include "hphp/runtime/vm/jit/tc.h"
+#include "hphp/runtime/vm/jit/tc-internal.h"
 #include "hphp/runtime/vm/jit/trans-db.h"
 #include "hphp/runtime/vm/jit/trans-rec.h"
 #include "hphp/runtime/vm/jit/unique-stubs.h"
@@ -72,12 +72,10 @@ void IRMetadataUpdater::register_inst(const Vinstr& inst) {
   // Update HHBC mappings for the TransDB.
   if (m_bcmap && m_origin) {
     auto const sk = inst.origin->marker().sk();
-    if (m_bcmap->empty() ||
-        m_bcmap->back().sha1 != sk.unit()->sha1() ||
-        m_bcmap->back().bcStart != sk.offset()) {
+    if (m_bcmap->empty() || m_bcmap->back().sk != sk) {
       m_bcmap->push_back(TransBCMapping{
         sk.unit()->sha1(),
-        sk.offset(),
+        sk,
         m_env.text.main().code.frontier(),
         m_env.text.cold().code.frontier(),
         m_env.text.frozen().code.frontier()
@@ -190,48 +188,53 @@ bool emit(Venv& env, const callphps& i) {
 
 bool emit(Venv& env, const bindjmp& i) {
   auto const jmp = emitSmashableJmp(*env.cb, env.meta, env.cb->frontier());
-  env.stubs.push_back({jmp, nullptr, i});
   setJmpTransID(env, jmp);
-  env.meta.smashableJumpData[jmp] = {i.target, CGMeta::JumpKind::Bindjmp};
+  env.meta.smashableBinds.push_back({
+    IncomingBranch::jmpFrom(jmp), i.target, i.spOff, false /* fallback */});
   return true;
 }
 
 bool emit(Venv& env, const bindjcc& i) {
   auto const jcc =
     emitSmashableJcc(*env.cb, env.meta, env.cb->frontier(), i.cc);
-  env.stubs.push_back({nullptr, jcc, i});
   setJmpTransID(env, jcc);
-  env.meta.smashableJumpData[jcc] = {i.target, CGMeta::JumpKind::Bindjcc};
+  env.meta.smashableBinds.push_back({
+    IncomingBranch::jccFrom(jcc), i.target, i.spOff, false /* fallback */});
   return true;
 }
 
 bool emit(Venv& env, const bindaddr& i) {
-  env.stubs.push_back({nullptr, nullptr, i});
   setJmpTransID(env, TCA(i.addr.get()));
   env.meta.codePointers.emplace(i.addr.get());
+  env.meta.smashableBinds.push_back({
+    IncomingBranch::addr(i.addr.get()), i.target, i.spOff,
+    false /* fallback */});
+  return true;
+}
+
+bool emit(Venv& env, const ldbindaddr& i) {
+  auto const mov_addr = emitSmashableMovq(*env.cb, env.meta, 0, r64(i.d));
+  setJmpTransID(env, mov_addr);
+  env.meta.smashableBinds.push_back({
+    IncomingBranch::ldaddr(mov_addr), i.target, i.spOff,
+    false /* fallback */});
   return true;
 }
 
 bool emit(Venv& env, const fallback& i) {
   auto const jmp = emitSmashableJmp(*env.cb, env.meta, env.cb->frontier());
-  env.stubs.push_back({jmp, nullptr, i});
   registerFallbackJump(env, jmp, CC_None);
-  env.meta.smashableJumpData[jmp] = {i.target, CGMeta::JumpKind::Fallback};
+  env.meta.smashableBinds.push_back({
+    IncomingBranch::jmpFrom(jmp), i.target, i.spOff, true /* fallback */});
   return true;
 }
 
 bool emit(Venv& env, const fallbackcc& i) {
   auto const jcc =
     emitSmashableJcc(*env.cb, env.meta, env.cb->frontier(), i.cc);
-  env.stubs.push_back({nullptr, jcc, i});
   registerFallbackJump(env, jcc, i.cc);
-  env.meta.smashableJumpData[jcc] = {i.target, CGMeta::JumpKind::Fallbackcc};
-  return true;
-}
-
-bool emit(Venv& env, const retransopt& i) {
-  svcreq::emit_retranslate_opt_stub(*env.cb, env.text.data(), env.meta,
-                                    i.spOff, i.sk);
+  env.meta.smashableBinds.push_back({
+    IncomingBranch::jccFrom(jcc), i.target, i.spOff, true /* fallback */});
   return true;
 }
 
@@ -239,15 +242,6 @@ bool emit(Venv& env, const movqs& i) {
   auto const mov = emitSmashableMovq(*env.cb, env.meta, i.s.q(), r64(i.d));
   if (i.addr.isValid()) {
     env.vaddrs[i.addr] = mov;
-  }
-  return true;
-}
-
-bool emit(Venv& env, const debugguardjmp& i) {
-  auto const jmp = emitSmashableJmp(*env.cb, env.meta, i.realCode);
-  if (i.watch) {
-    *i.watch = jmp;
-    env.meta.watchpoints.push_back(i.watch);
   }
   return true;
 }
@@ -262,83 +256,6 @@ bool emit(Venv& env, const jmps& i) {
     env.pending_vaddrs.push_back({i.taken_addr, i.targets[1]});
   }
   return true;
-}
-
-///////////////////////////////////////////////////////////////////////////////
-
-void emit_svcreq_stub(Venv& env, const Venv::SvcReqPatch& p) {
-  auto& frozen = env.text.frozen().code;
-
-  TCA stub = nullptr;
-
-  switch (p.svcreq.op) {
-    case Vinstr::bindjmp:
-      { auto const& i = p.svcreq.bindjmp_;
-        assertx(p.jmp && !p.jcc);
-        stub = svcreq::emit_bindjmp_stub(frozen, env.text.data(),
-                                         env.meta, i.spOff, p.jmp,
-                                         i.target, i.trflags);
-      } break;
-
-    case Vinstr::bindjcc:
-      { auto const& i = p.svcreq.bindjcc_;
-        assertx(!p.jmp && p.jcc);
-        stub = svcreq::emit_bindjmp_stub(frozen, env.text.data(),
-                                         env.meta, i.spOff, p.jcc,
-                                         i.target, i.trflags);
-      } break;
-
-    case Vinstr::bindaddr:
-      { auto const& i = p.svcreq.bindaddr_;
-        assertx(!p.jmp && !p.jcc);
-        stub = svcreq::emit_bindaddr_stub(frozen, env.text.data(),
-                                          env.meta, i.spOff, i.addr.get(),
-                                          i.target, TransFlags{});
-        // The bound pointer may not belong to the data segment, as is the case
-        // with SSwitchMap (see #10347945)
-        auto realAddr = env.text.data().contains((TCA)i.addr.get())
-          ? (TCA*)env.text.data().toDestAddress((TCA)i.addr.get())
-          : (TCA*)i.addr.get();
-        *realAddr = stub;
-      } break;
-
-    case Vinstr::fallback:
-      { auto const& i = p.svcreq.fallback_;
-        assertx(p.jmp && !p.jcc);
-
-        auto const srcrec = tc::findSrcRec(i.target);
-        always_assert(srcrec);
-        stub = i.trflags.packed
-          ? svcreq::emit_retranslate_stub(frozen, env.text.data(), env.meta,
-                                          i.spOff, i.target, i.trflags)
-          : srcrec->getFallbackTranslation();
-      } break;
-
-    case Vinstr::fallbackcc:
-      { auto const& i = p.svcreq.fallbackcc_;
-        assertx(!p.jmp && p.jcc);
-
-        auto const srcrec = tc::findSrcRec(i.target);
-        always_assert(srcrec);
-        stub = i.trflags.packed
-          ? svcreq::emit_retranslate_stub(frozen, env.text.data(), env.meta,
-                                          i.spOff, i.target, i.trflags)
-          : srcrec->getFallbackTranslation();
-      } break;
-
-    default: always_assert(false);
-  }
-  assertx(stub != nullptr);
-
-  // Register any necessary patches by creating fake labels for the stubs.
-  if (p.jmp) {
-    env.jmps.push_back({p.jmp, Vlabel { env.addrs.size() }});
-    env.addrs.push_back(stub);
-  }
-  if (p.jcc) {
-    env.jccs.push_back({p.jcc, Vlabel { env.addrs.size() }});
-    env.addrs.push_back(stub);
-  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -383,7 +300,7 @@ void computeFrames(Vunit& unit) {
 
           unit.frames.emplace_back(
             inst.inlinestart_.func,
-            origin->marker().bcOff() - origin->marker().func()->base(),
+            origin->marker().bcOff(),
             frame,
             inst.inlinestart_.cost,
             block.weight

@@ -15,8 +15,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EXT_IMAGICK_H_
-#define incl_HPHP_EXT_IMAGICK_H_
+#pragma once
 
 #include <vector>
 
@@ -82,7 +81,7 @@ struct ImagickExtension final : Extension {
     \
    private: \
     static void initClass() {                                   \
-      cls = Unit::lookupClass(                                  \
+      cls = Class::lookup(                                  \
         req::ptr<StringData>::attach(                           \
           StringData::Make(#CLS)                                \
         ).get()                                                 \
@@ -314,7 +313,7 @@ typename std::enable_if<
   std::is_scalar<typename std::remove_pointer<T>::type>::value,
   Array
 >::type convertArray(size_t num, const T* arr) {
-  VArrayInit ret(num);
+  VecInit ret(num);
   for (size_t i = 0; i < num; ++i) {
     ret.append(arr[i]);
   }
@@ -388,4 +387,3 @@ void loadImagickPixelIteratorClass();
 //////////////////////////////////////////////////////////////////////////////
 } // namespace HPHP
 
-#endif // incl_HPHP_EXT_IMAGICK_H_

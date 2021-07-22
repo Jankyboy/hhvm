@@ -14,6 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
+#include "hphp/runtime/vm/func-emitter.h"
 #include "hphp/runtime/vm/hhbc-codec.h"
 #include "hphp/runtime/vm/unit-emitter.h"
 #include "hphp/runtime/vm/unit.h"
@@ -45,17 +46,21 @@ MemberKey decode_member_key(PC& pc, Either<const Unit*, const UnitEmitter*> u) {
   auto const mcode = static_cast<MemberCode>(decode_byte(pc));
 
   switch (mcode) {
-    case MEC: case MPC:
-      return MemberKey{mcode, static_cast<int32_t>(decode_iva(pc))};
-
-    case MEL: case MPL:
-      return MemberKey{mcode, decode_named_local(pc)};
-
-    case MEI:
-      return MemberKey{mcode, decode_raw<int64_t>(pc)};
-
+    case MEC: case MPC: {
+      auto const iva = static_cast<int32_t>(decode_iva(pc));
+      return MemberKey{mcode, iva, decode_oa<ReadOnlyOp>(pc)};
+    }
+    case MEL: case MPL: {
+      auto const local = decode_named_local(pc);
+      return MemberKey{mcode, local, decode_oa<ReadOnlyOp>(pc)};
+    }
+    case MEI: {
+      auto const i64 = decode_raw<int64_t>(pc);
+      return MemberKey{mcode, i64, decode_oa<ReadOnlyOp>(pc)};
+    }
     case MET: case MPT: case MQT: {
-      return MemberKey{mcode, decode_string(pc, u)};
+      auto const str = decode_string(pc, u);
+      return MemberKey{mcode, str, decode_oa<ReadOnlyOp>(pc)};
     }
 
     case MW:
@@ -64,24 +69,28 @@ MemberKey decode_member_key(PC& pc, Either<const Unit*, const UnitEmitter*> u) {
   not_reached();
 }
 
-void encode_member_key(MemberKey mk, UnitEmitter& ue) {
-  ue.emitByte(mk.mcode);
+void encode_member_key(MemberKey mk, FuncEmitter& fe) {
+  fe.emitByte(mk.mcode);
 
   switch (mk.mcode) {
     case MEC: case MPC:
-      ue.emitIVA(mk.iva);
+      fe.emitIVA(mk.iva);
+      fe.emitByte(static_cast<uint8_t>(mk.rop));
       break;
 
     case MEL: case MPL:
-      ue.emitNamedLocal(mk.local);
+      fe.emitNamedLocal(mk.local);
+      fe.emitByte(static_cast<uint8_t>(mk.rop));
       break;
 
     case MEI:
-      ue.emitInt64(mk.int64);
+      fe.emitInt64(mk.int64);
+      fe.emitByte(static_cast<uint8_t>(mk.rop));
       break;
 
     case MET: case MPT: case MQT:
-      ue.emitInt32(ue.mergeLitstr(mk.litstr));
+      fe.emitInt32(fe.ue().mergeLitstr(mk.litstr));
+      fe.emitByte(static_cast<uint8_t>(mk.rop));
       break;
 
     case MW:
@@ -92,9 +101,9 @@ void encode_member_key(MemberKey mk, UnitEmitter& ue) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-void encodeLocalRange(UnitEmitter& ue, const LocalRange& range) {
-  ue.emitIVA(range.first);
-  ue.emitIVA(range.count);
+void encodeLocalRange(FuncEmitter& fe, const LocalRange& range) {
+  fe.emitIVA(range.first);
+  fe.emitIVA(range.count);
 }
 
 LocalRange decodeLocalRange(const unsigned char*& pc) {
@@ -105,11 +114,11 @@ LocalRange decodeLocalRange(const unsigned char*& pc) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-void encodeIterArgs(UnitEmitter& ue, const IterArgs& args) {
-  ue.emitByte(args.flags);
-  ue.emitIVA(args.iterId);
-  ue.emitIVA(args.keyId - IterArgs::kNoKey);
-  ue.emitIVA(args.valId);
+void encodeIterArgs(FuncEmitter& fe, const IterArgs& args) {
+  fe.emitByte(args.flags);
+  fe.emitIVA(args.iterId);
+  fe.emitIVA(args.keyId - IterArgs::kNoKey);
+  fe.emitIVA(args.valId);
 }
 
 IterArgs decodeIterArgs(PC& pc) {
@@ -122,7 +131,7 @@ IterArgs decodeIterArgs(PC& pc) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-void encodeFCallArgsBase(UnitEmitter& ue, const FCallArgsBase& fca,
+void encodeFCallArgsBase(FuncEmitter& fe, const FCallArgsBase& fca,
                          bool hasInoutArgs, bool hasAsyncEagerOffset,
                          bool hasContext) {
   auto flags = uint8_t{fca.flags};
@@ -132,14 +141,14 @@ void encodeFCallArgsBase(UnitEmitter& ue, const FCallArgsBase& fca,
   if (hasAsyncEagerOffset) flags |= FCallArgsBase::HasAsyncEagerOffset;
   if (hasContext) flags |= FCallArgsBase::ExplicitContext;
 
-  ue.emitByte(flags);
-  ue.emitIVA(fca.numArgs);
-  if (fca.numRets != 1) ue.emitIVA(fca.numRets);
+  fe.emitByte(flags);
+  fe.emitIVA(fca.numArgs);
+  if (fca.numRets != 1) fe.emitIVA(fca.numRets);
 }
 
-void encodeFCallArgsIO(UnitEmitter& ue, int numBytes,
+void encodeFCallArgsIO(FuncEmitter& fe, int numBytes,
                        const uint8_t* inoutArgs) {
-  for (auto i = 0; i < numBytes; ++i) ue.emitByte(inoutArgs[i]);
+  for (auto i = 0; i < numBytes; ++i) fe.emitByte(inoutArgs[i]);
 }
 
 FCallArgs decodeFCallArgs(Op thisOpcode, PC& pc, StringDecoder u) {

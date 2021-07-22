@@ -1,7 +1,8 @@
 <?hh
 
 function main($b) {
-  $a .= $b;
+  $a = '';
+  $a .= (string)($b);
   var_dump($a);
 }
 class b { function __toString() { return 'b'; }}

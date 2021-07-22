@@ -673,7 +673,6 @@ descriptions:
   Int - denotes the integer type
   Dbl - denotes the double-precision floating-point type
   Str - denotes the string type
-  Arr - denotes the array type
   Vec - denotes the vec type
   Dict - denotes the dict type
   Keyset - denotes the keyset type
@@ -727,9 +726,18 @@ instruction ends with a different location descriptor (for example, Set*). Each
 instruction in the group perform similar actions but take different kinds of
 inputs to specify the location to access.
 
+There are numerous instructions which incorporate a readonly immediate.
+These opcodes can be Mutable, Any, ReadOnly, or CheckROCOW, and specify the
+readonlyness constraint on the property read/written by the instruction.
+The Any immediate is equivalent to no runtime check. The ReadOnly immediate 
+specifies this property must be readonly. The Mutable immediate specifies
+this property must be mutable. The CheckROCOW immediate specifies this property
+can be readonly, if it is COW, and otherwise must be mutable.
+
 The member instructions provide functionality to operate on elements and
-properties. Many of these instructions incorporate an immediate argument which
-specifies a one of the following member descriptors:
+properties. Many of these instructions incorporate a readonly immediate
+argument, as well as an immediate argument which specifies one of the 
+following member descriptors.
 
   EC       - consume a cell from the evaluation stack as an element
   EL:<id>  - consume a local given by an immediate id as an element
@@ -785,12 +793,6 @@ PopU2                 [U C:<T>]  ->  [C:<T>]
 
   Pop two. Discards the uninit underneath the cell on top of the stack.
 
-PopFrame<num-skip>    [UUUC..C] -> [C..C]
-
-  Pops three Uninit values from the stack which sit below num-skip cell values.
-  This instruction is used to pop the place holder uninit values pushed for a
-  frame that was never called.
-
 PopL <local variable id>    [C]  ->  []
 
   Teleport value from the stack into a local. This instruction marks the local
@@ -830,7 +832,6 @@ NullUninit                      []  ->  [U]
 Int <signed 64-bit integer value>    []  ->  [C:Int]
 Double <double value>                []  ->  [C:Dbl]
 String <litstr id>                   []  ->  [C:Str]
-Array <scalar array id>              []  ->  [C:Arr]
 Vec <scalar vec id>                  []  ->  [C:Vec]
 Dict <scalar dict id>                []  ->  [C:Dict]
 Keyset <scalar keyset id>            []  ->  [C:Keyset]
@@ -838,52 +839,11 @@ LazyClass <litstr id>                []  ->  [C:LazyClass]
 
   Push immediate. Pushes %1 onto the stack.
 
-NewArray <capacity hint>    []  ->  [C:Arr]
-
-  New array, with a capacity hint. Creates a new array and pushes it onto the
-  stack. The implementation may make use of the hint in %1 to pre-size the
-  array. The hint %1 must be greater than or equal to 0.
-
-NewMixedArray <capacity hint>    []  ->  [C:Arr]
-
-  New array in mixed mode, with a capacity hint. Creates a new array and pushes
-  it onto the stack. The implementation may make use of the hint in %1 to
-  pre-size the array. The hint %1 must be greater than or equal to 0.
-
 NewDictArray <capacity hint>    []  ->  [C:Dict]
 
   New dict, with a capacity hint. Creates a new dict and pushes
   it onto the stack. The implementation may make use of the hint in %1 to
   pre-size the array. The hint %1 must be greater than or equal to 0.
-
-NewPackedArray <num elems>    [C..C]  ->  [C]
-
-  New array. Creates a new array from the top %1 cells on the stack, pops those
-  cells, then pushes the new array onto the stack. Elements are pushed on the
-  stack in array insertion order and are implicitly numbered from 0 to %1 - 1.
-  $1 is at index %i - 1, $2 at %1-2, and so on; $(%1) is at index 0.
-
-NewStructArray <litstr id vector>    [C..C]  ->  [C]
-
-  New array. Creates a new array from the names given in %1 and values from the
-  stack. The vector of litstr ids gives the element names, one value for each
-  name is popped from the stack. Names are in array insertion order, and values
-  were pushed onto the stack in insertion order, so are added to the array in
-  reverse order (the topmost value will become the last element in the array).
-  For example:
-
-    NewStructArray < "a" "b" >  [ 1 2 ]  ->  [ array("a"=>1, "b"=>2) ]
-
-NewStructDArray <litstr id vector>    [C..C]  ->  [C]
-
-  New dict-like array. Creates a new dict-like array from the names given in %1
-  and values from the stack. The vector of litstr ids gives the element names,
-  one value for each name is popped from the stack. Names are in array
-  insertion order, and values were pushed onto the stack in insertion order, so
-  are added to the array in reverse order (the topmost value will become the
-  last element in the array). For example:
-
-    NewStructDArray < "a" "b" >  [ 1 2 ]  ->  [ darray("a"=>1, "b"=>2) ]
 
 NewStructDict <litstr id vector>    [C..C]  ->  [C:Dict]
 
@@ -907,18 +867,6 @@ NewKeysetArray <num elems>    [C..C]  ->  [C:Keyset]
   New keyset. Creates a new keyset from the top %1 cells on the stack, pops
   those cells, then pushes the new keyset onto the stack.  Elements are pushed
   on the stack in keyset insertion order.
-
-NewVArray <num elems>   [C..]  ->  [C:Arr]
-
- New vec-like array. Creates a new vec-like array from the top %1 cells on the
- stack, pops those cells, then pushes the new array onto the stack. Elements
- are pushed on the stack in array insertion order.
-
-NewDArray <capacity hint>    []  ->  [C:Arr]
-
-  New dict-like array with a capacity hint. Creates a new dict-like array and
-  pushes it onto the stack. The implementation may make use of the hint in %1
-  to pre-size the array. The hint %1 must be greater than or equal to 0.
 
 NewRecord <record-name><litstr id vector>    [C..C]  ->  [C:Rec]
 
@@ -980,6 +928,12 @@ ClsCns <litstr id>  [C:Class]  ->  [C:Null|Bool|Int|Dbl|Str|Arr|Vec|Dict|Keyset|
   named %1 from the class $1 onto the stack. If there is no class
   constant named %1 in class $1, this instruction throws a fatal error.
 
+ClsCnsL <local variable id>  [C:Class]  ->  [C:Null|Bool|Int|Dbl|Str|Arr|Vec|Dict|Keyset|Resource]
+
+  Get class constant (local). This instruction pushes the value of the class
+  named %1 from the class $1 onto the stack. If there is no class constant
+  named %1 in class $1, this instruction throws a fatal error.
+
 ClsCnsD <litstr id> <litstr id>    []  ->  [C:Null|Bool|Int|Dbl|Str|Arr|Vec|Dict|Keyset|Resource]
 
   Get class constant (direct). This instruction first checks if %2 matches the
@@ -1009,6 +963,9 @@ ClassName    [C:Class] ->  [C:Static Str]
 
   Push the name of the class in $1 as a string.
 
+LazyClassFromClass    [C:Class] ->  [C:LazyClass]
+
+  Push the lazy class corresponding to the class in $1.
 
 3. Operator instructions
 ------------------------
@@ -1020,11 +977,6 @@ Concat    [C C]  ->  [C:Str]
 ConcatN <n>   [C..C]  ->  [C:Str]
 
   Concatenation (.). Pushes ((string)$n . ... . (string)$1) on the stack.
-
-Abs    [C] -> [C:Int|Dbl|Bool]
-
-  Absolute value. Computes the absolute value of $1 and pushes the result onto
-  the stack.
 
 Add    [C:Arr C:Arr]  ->  [C:Arr]
        [C:<T2> C:<T1>]  ->  [C:Dbl]    (where T1 == Dbl || T2 == Dbl)
@@ -1087,19 +1039,6 @@ Pow    [C C]  ->  [C:Int|Dbl]
 
   Power. Pushes $2 raised to the power of $1 onto the stack. This instruction
   never throws a fatal error.
-
-Sqrt   [C]    ->  [C:Null|Dbl]
-
-  Square root. Computes the square root of $1 and pushes the result onto the
-  stack. If $1 is not null, a bool, an int, a double, or a numeric string, it
-  raises a warning and pushes null onto the stack.
-
-  If $1 is a negative number, this instruction pushes a floating-point value
-  representing NAN onto the stack.
-
-Xor    [C C]  ->  [C:Bool]
-
-  Logical xor (xor). Pushes ((bool)$2 xor (bool)$1) onto the stack.
 
 Not    [C]  ->  [C:Bool]
 
@@ -1176,16 +1115,6 @@ Shr    [C C]  ->  [C:Int]
   Shift right (>>). Pushes ((int)$2 >> (int)$1) onto the stack. This
   instruction never throws a fatal error.
 
-Floor    [C]  ->  [C:Dbl]
-
-  Round $1 to nearest integer value not greater than $1. Converts $1 to numeric
-  as appropriate and then takes floor of resulting numeric value.
-
-Ceil    [C]  ->  [C:Dbl]
-
-  Round $1 to nearest integer value not less than $1. Converts $1 to numeric as
-  appropriate and then takes ceil of resulting numeric value.
-
 CastBool    [C]  ->  [C:Bool]
 
   Cast to boolean ((bool),(boolean)). Pushes (bool)$1 onto the stack.
@@ -1205,10 +1134,6 @@ CastString    [C]  ->  [C:Str]
   $1->__toString(). If $1 is an object that does not implement __toString
   method, the string cast throws a fatal error.
 
-CastArray    [C]  ->  [C:Arr]
-
-  Cast to array ((array)). Pushes (array)$1 onto the stack.
-
 CastVec       [C]  ->  [C:Vec]
 
   Cast to vec array. Pushes vec($1) onto the stack.
@@ -1220,16 +1145,6 @@ CastDict      [C]  ->  [C:Dict]
 CastKeyset    [C]  ->  [C:Keyset]
 
   Cast to keyset. Pushes keyset($1) onto the stack.
-
-CastVArray    [C]  ->  [C:Arr]
-
-  Cast to vec-like array. Performs an array cast, but drops any keys from the
-  input and handles object inputs like CastVec.
-
-CastDArray    [C]  ->  [C:Arr]
-
-  Cast to dict-like array. Performs an array cast, but handles object inputs
-  like CastDict.
 
 InstanceOf    [C C]  ->  [C:Bool]
 
@@ -1453,7 +1368,7 @@ CGetG    [C]  ->  [C]
   If there is not a global variable defined named x, this instruction pushes
   null onto the stack.
 
-CGetS    [C C:Class]  ->  [C]
+CGetS <readonly op>    [C C:Class]  ->  [C]
 
   Get static property as cell. This instruction first checks if class $1 has a
   visible and accessible static property named (string)$2. If it doesn't, this
@@ -1471,7 +1386,7 @@ ClassGetC                          [C]  ->  [C:Class]
   class of the object. If $1 is not any of the above cases, this instruction
   throws a fatal error.
 
-ClassGetTS                         [C:DArr]  ->  [C:Class, C:StaticVArr|Null]
+ClassGetTS                         [C:Dict]  ->  [C:Class, C:StaticVec|Null]
 
   Fetch class from type-structure. This instruction checks if $1 is a valid
   type-structure (darray or dict). If not, this instruction throws a fatal
@@ -1534,10 +1449,9 @@ IsTypeC  <op>                     [C]  ->  [C:Bool]
       Dict     | Dict
       Keyset   | Keyset
       Obj      | Obj
-      ArrLike  | Arr or Vec or Dict or Keyset
+      ArrLike  | Vec or Dict or Keyset
       Scalar   | Int or Dbl or Str or Bool
       Res      | Res
-      PHPArr   | Arr
 
   If t is Obj, this instruction checks if the operand in an object.
     Instances of a special class __PHP_Incomplete_Class are not considered
@@ -1561,10 +1475,9 @@ IsTypeL  <local variable id> <op>     []  ->  [C:Bool]
       Dict     | Dict
       Keyset   | Keyset
       Obj      | Obj
-      ArrLike  | Arr or Vec or Dict or Keyset
+      ArrLike  | Vec or Dict or Keyset
       Scalar   | Int or Dbl or Str or Bool
       Res      | Res
-      PHPArr   | Arr
 
   If the local variable given by %1 is defined, the logic is the same as for
     IsTypeC (see above).
@@ -1590,7 +1503,7 @@ SetG    [C C]  ->  [C]
   defined, assigns the value $1 to the global variable, and then pushes $1 onto
   the stack.
 
-SetS    [C C:Class C]  ->  [C]
+SetS <readonly op>   [C C:Class C]  ->  [C]
 
   Set static property. First this instruction checks if the class $2 has an
   accessible static property named (string)$3. If it doesn't, this instruction
@@ -1723,9 +1636,9 @@ InitProp <propName> <op> [C] -> []
 --------------------
 
 NewObj                                      [C:Class]              ->  [C:Obj]
-NewObjR                                     [C:Class, C:VArr|Null] ->  [C:Obj]
+NewObjR                                     [C:Class, C:Vec|Null]  ->  [C:Obj]
 NewObjD   <litstr id>                       []                     ->  [C:Obj]
-NewObjRD  <litstr id>                       [C:VArr|Null]          ->  [C:Obj]
+NewObjRD  <litstr id>                       [C:Vec|Null]           ->  [C:Obj]
 NewObjS   <mode>                            []                     ->  [C:Obj]
 
   New object. First, these instructions load a class into x as given
@@ -1807,8 +1720,8 @@ FCall* opcodes
   LockWhileUnwinding: whether to lock newly constructed objects if unwinding the
   constructor call.
 
-FCallFunc <fca>                 [U U U C|V..C|V C]  ->  [C..C]
-FCallFuncD <fca> <litstr id>    [U U U C|V..C|V]  ->  [C..C]
+FCallFunc <fca>                 [U U C|V..C|V C]  ->  [C..C]
+FCallFuncD <fca> <litstr id>    [U U C|V..C|V]  ->  [C..C]
 
   Call a callable. First, these instructions load a value into x as given by
   the following table:
@@ -1839,9 +1752,9 @@ FCallFuncD <fca> <litstr id>    [U U U C|V..C|V]  ->  [C..C]
   throws a fatal error.
 
 FCallObjMethod <fca> <class hint> <nullsafe>
-  [C U U C|V..C|V C]  ->  [C..C]
+  [C U C|V..C|V C]  ->  [C..C]
 FCallObjMethodD <fca> <class hint> <nullsafe> <litstr id>
-  [C U U C|V..C|V]  ->  [C..C]
+  [C U C|V..C|V]  ->  [C..C]
 
   Call an instance method. First, these instructions load values into x
   and y as given by the following table:
@@ -1863,13 +1776,13 @@ FCallObjMethodD <fca> <class hint> <nullsafe> <litstr id>
   the class name with the implementation of method y that will be called.
 
 FCallClsMethod <fca> <class hint> <op>
-  [U U U C|V..C|V C C:Class]  ->  [C..C]
+  [U U C|V..C|V C C:Class]  ->  [C..C]
 FCallClsMethodD <fca> <class hint> <litstr id> <litstr id>
-  [U U U C|V..C|V]    ->  [C..C]
+  [U U C|V..C|V]    ->  [C..C]
 FCallClsMethodS <fca> <class hint> <mode>
-  [U U U C|V..C|V C]  ->  [C..C]
+  [U U C|V..C|V C]  ->  [C..C]
 FCallClsMethodSD <fca> <class hint> <mode> <litstr id>
-  [U U U C|V..C|V]    ->  [C..C]
+  [U U C|V..C|V]    ->  [C..C]
 
   Call a static method. First, these instructions load values into x and
   y as given by the following table:
@@ -1902,7 +1815,7 @@ FCallClsMethodSD <fca> <class hint> <mode> <litstr id>
   If op is DontLogAsDynamicCall all logging set up for dynamic calls will be
   skipped.
 
-FCallCtor <fca> <class hint>  [C:Obj U U C|V..C|V]  ->  [C]
+FCallCtor <fca> <class hint>  [C:Obj U C|V..C|V]  ->  [C]
 
   This instruction calls a constructor for class of the object given by
   $(num args + has unpack + 3).
@@ -1911,22 +1824,6 @@ FCallCtor <fca> <class hint>  [C:Obj U U C|V..C|V]  ->  [C]
   the class name with the implementation of __construct() that will be called.
 
   Constructors do not support inout, so the "num returns" in %1 must be 1.
-
-FCallBuiltin  <total params> <passed params> <num out> <litstr id>
-              [C|V|U..C|V|U]  -> [C]
-
-  Optimized builtin call without an ActRec. This instruction attempts to lookup
-  a builtin function named %3. If no function named %3 is defined, this
-  instruction throws a fatal error. Otherwise, this function gets address of
-  the builtin function named %3, transfers the top %1 values from the stack to
-  the callee as parameters, and then invokes the dispatcher to call the callee.
-  %2 denotes the number of non-default parameters pushed onto stack by user
-  level code. When the callee returns, it will transfer the return value onto
-  the caller's evaluation stack using the C flavor.
-
-  FCallBuiltin supports standalone methods and static methods for which the
-  class name is statically known. For static methods, the litstr id will be a
-  fully-qualified cls::fn name (e.g. "HH\Map::fromItems").
 
 
 9. Member operations
@@ -2730,7 +2627,7 @@ BaseGL <local id>    <member op mode>    []  ->  []
 
   BaseG{C,L}{,W,D} member operation.
 
-BaseSC <stack index> <stack index> <member op mode>    []  ->  []
+BaseSC <stack index> <stack index> <member op mode> <readonly op>    []  ->  []
 
   BaseSC member operation. %1 gives the location of the static property name,
   and %2 gives the location of the class.
@@ -3018,13 +2915,6 @@ CheckThis    []  ->  []
   Check existence of this. This instruction checks the current instance, and if
   it is null, throws a fatal error.
 
-InitThisLoc <local variable id>    []  ->  []
-
-  Initialize this local variable. This instruction checks the current instance,
-  and if it is not null this instruction stores it to the specified local
-  variable. If the current instance is null, or if this bytecode appears in a
-  function body that is not a class method, this instruction does nothing.
-
 ChainFaults    [C C]  ->  [C]
 
   Chain exception objects. If either $1 or $2 is not an object that implements
@@ -3097,7 +2987,7 @@ LateBoundCls             []  ->  [C:Class]
   Late-bound class. Push a class that refers to the current late-bound
   class.
 
-RecordReifiedGeneric [C:VArr] -> [C:VArr]
+RecordReifiedGeneric [C:Vec] -> [C:Vec]
 
   Takes a varray or vec based on runtime flag of type structures from $1
   and unless the entry already exists adds a mapping from the grouped name of
@@ -3105,7 +2995,7 @@ RecordReifiedGeneric [C:VArr] -> [C:VArr]
   representation of these type structures to the global reified generics table.
   Pushes the resulting static list of type structures.
 
-CheckReifiedGenericMismatch [C:VArr] -> []
+CheckReifiedGenericMismatch [C:Vec] -> []
 
   Throws a fatal error unless whether each generic in $1 is reified or erased
   matches exactly to the expectations of the current class. If there is
@@ -3263,7 +3153,7 @@ ResolveMethCaller <litstr id>   []  ->  [C]
   of the stack. The meth caller must exist in the same unit as the resolving
   function.
 
-ResolveRFunc <litstr id> [C:VArr]  ->  [C]
+ResolveRFunc <litstr id> [C:Vec]  ->  [C]
 
   Similar to ResolveFunc, resolve %1 as a function name to a function pointer
   and raises an error if the resolution fails. $1 contains a list of reified
@@ -3304,9 +3194,9 @@ ResolveClsMethodS <mode>      <litstr id>   []        -> [C]
   used to call that method and pushes the resulting class method pointer onto
   the stack.
 
-ResolveRClsMethod  <litstr id>               [C:VArr C:Class] -> [C]
-ResolveRClsMethodD <litstr id> <litstr id>   [C:VArr]         -> [C]
-ResolveRClsMethodS <mode>      <litstr id>   [C:VArr]         -> [C]
+ResolveRClsMethod  <litstr id>               [C:Vec C:Class] -> [C]
+ResolveRClsMethodD <litstr id> <litstr id>   [C:Vec]         -> [C]
+ResolveRClsMethodS <mode>      <litstr id>   [C:Vec]         -> [C]
 
   Similar to their non-reified counterparts (ResolveClsMethod*), these
   instructions load values into x and y based on the same table and performing

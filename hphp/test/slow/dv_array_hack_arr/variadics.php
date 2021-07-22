@@ -11,13 +11,13 @@ function test($x) {
   variadic(1, 2, 3, 4);
   variadic(1, 2, ...$x);
   if (count($x) > 0) variadic(...$x);
-  if (count($x) > 0) call_user_func_array(fun('variadic'), $x);
+  if (count($x) > 0) call_user_func_array(variadic<>, $x);
 }
 
 <<__EntryPoint>>
 function main_variadics() {
-test(__hhvm_intrinsics\dummy_cast_to_kindofarray(vec[]));
-test(__hhvm_intrinsics\dummy_cast_to_kindofarray(vec[3, 4, 5]));
+test(darray[]);
+test(darray(vec[3, 4, 5]));
 test(vec[]);
 test(vec[3, 4, 5]);
 test(dict['a' => 3, 'b' => 4, 'c' => 5]);

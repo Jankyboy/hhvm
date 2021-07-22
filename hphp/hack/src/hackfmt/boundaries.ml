@@ -15,7 +15,7 @@ let get_line_boundaries text =
   let lines = String_utils.split_on_newlines text in
   let bytes_seen = ref 0 in
   Array.of_list
-  @@ List.map lines (fun line ->
+  @@ List.map lines ~f:(fun line ->
          let line_start = !bytes_seen in
          let line_end = line_start + String.length line + 1 in
          bytes_seen := line_end;
@@ -80,11 +80,13 @@ let get_atom_boundaries chunk_groups =
 let expand_to_atom_boundaries boundaries (r_st, r_ed) =
   let rev_bounds = List.rev boundaries in
   let st =
-    try fst (List.find_exn rev_bounds ~f:(fun (b_st, _) -> b_st <= r_st))
-    with Caml.Not_found -> r_st
+    match List.find rev_bounds ~f:(fun (b_st, _) -> b_st <= r_st) with
+    | Some bound -> fst bound
+    | None -> r_st
   in
   let ed =
-    try snd (List.find_exn boundaries ~f:(fun (_, b_ed) -> b_ed >= r_ed))
-    with Caml.Not_found -> r_ed
+    match List.find boundaries ~f:(fun (_, b_ed) -> b_ed >= r_ed) with
+    | Some bound -> snd bound
+    | None -> r_ed
   in
   (st, ed)

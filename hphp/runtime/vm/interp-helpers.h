@@ -17,16 +17,18 @@
 #pragma once
 
 #include "hphp/runtime/base/builtin-functions.h"
+#include "hphp/runtime/base/coeffects-config.h"
 #include "hphp/runtime/base/exceptions.h"
 #include "hphp/runtime/base/runtime-error.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/request-info.h"
 #include "hphp/runtime/vm/act-rec.h"
 #include "hphp/runtime/vm/bytecode.h"
+#include "hphp/runtime/vm/coeffects.h"
 #include "hphp/runtime/vm/func.h"
 #include "hphp/runtime/vm/hhbc.h"
+#include "hphp/runtime/vm/reified-generics.h"
 #include "hphp/runtime/vm/runtime.h"
-#include "hphp/runtime/vm/rx.h"
 #include "hphp/util/text-util.h"
 #include "hphp/util/trace.h"
 
@@ -38,27 +40,46 @@ namespace HPHP {
  * RAII wrapper for popping/pushing generics from/to the VM stack.
  */
 struct GenericsSaver {
-  GenericsSaver(bool hasGenerics) : m_generics(pop(hasGenerics)) {}
+  explicit GenericsSaver(bool hasGenerics) : m_generics(pop(hasGenerics)) {}
   ~GenericsSaver() { push(std::move(m_generics)); }
 
   static Array pop(bool hasGenerics) {
     if (LIKELY(!hasGenerics)) return Array();
-    assertx(tvIsHAMSafeVArray(vmStack().topC()));
+    assertx(tvIsVec(vmStack().topC()));
     auto const generics = vmStack().topC()->m_data.parr;
     vmStack().discard();
     return Array::attach(generics);
   }
   static void push(Array&& generics) {
     if (LIKELY(generics.isNull())) return;
-    if (RuntimeOption::EvalHackArrDVArrs) {
-      vmStack().pushVecNoRc(generics.detach());
-    } else {
-      vmStack().pushArrayNoRc(generics.detach());
-    }
+    vmStack().pushArrayLikeNoRc(generics.detach());
   }
 
 private:
   Array m_generics;
+};
+
+/*
+ * RAII wrapper for popping/pushing coeffects from/to the VM stack.
+ */
+struct CoeffectsSaver {
+  explicit CoeffectsSaver(bool hasCoeffects) : m_coeffects(pop(hasCoeffects)) {}
+  ~CoeffectsSaver() { push(m_coeffects); }
+
+  static Optional<RuntimeCoeffects> pop(bool hasCoeffects) {
+    if (LIKELY(!hasCoeffects)) return std::nullopt;
+    assertx(tvIsInt(vmStack().topC()));
+    auto const coeffects = vmStack().topC()->m_data.num;
+    vmStack().discard();
+    return RuntimeCoeffects::fromValue(coeffects);
+  }
+  static void push(Optional<RuntimeCoeffects> coeffects) {
+    if (LIKELY(!coeffects)) return;
+    vmStack().pushInt(coeffects->value());
+  }
+
+private:
+  Optional<RuntimeCoeffects> m_coeffects;
 };
 
 inline void callerInOutChecks(const Func* func, const FCallArgs& fca) {
@@ -84,6 +105,7 @@ inline void callerDynamicCallChecks(const Func* func,
         : RO::EvalForbidDynamicCallsToInstMeth)
     : RO::EvalForbidDynamicCallsToFunc;
   if (level <= 0) return;
+  if (dynCallable && level < 2) return;
 
   if (auto const rate = func->dynCallSampleRate()) {
     if (folly::Random::rand32(*rate) != 0) return;
@@ -144,21 +166,110 @@ inline void calleeDynamicCallChecks(const Func* func, bool dynamicCall,
 }
 
 /*
- * Check if a call from `caller` to `callee` satisfies reactivity constraints.
+ * Check if the `callee` satisfies the coeffect constraints on the call flags.
  * Returns true if yes, otherwise raise a warning and return false or raise
  * an exception.
  */
-inline bool callerRxChecks(const ActRec* caller, const Func* callee) {
-  if (RuntimeOption::EvalPureEnforceCalls <= 0) return true;
-  // Conditional reactivity is not tracked yet, so assume the caller has minimum
-  // and the callee has maximum possible level of reactivity.
-  auto const callerLevel = caller->rxMinLevel();
-  if (!rxEnforceCallsInLevel(callerLevel)) return true;
-
-  auto const minReqCalleeLevel = rxRequiredCalleeLevel(callerLevel);
-  if (LIKELY(callee->rxLevel() >= minReqCalleeLevel)) return true;
-  raiseRxCallViolation(caller, callee);
+inline bool calleeCoeffectChecks(const Func* callee,
+                                 RuntimeCoeffects providedCoeffects,
+                                 uint32_t numArgsInclUnpack,
+                                 void* prologueCtx) {
+  if (!CoeffectsConfig::enabled()) {
+    if (callee->hasCoeffectsLocal()) {
+      vmStack().pushInt(RuntimeCoeffects::none().value());
+    }
+    return true;
+  }
+  auto const requiredCoeffects = [&] {
+    auto required = callee->requiredCoeffects();
+    if (!callee->hasCoeffectRules()) return required;
+    for (auto const& rule : callee->getCoeffectRules()) {
+      required |= rule.emit(callee, numArgsInclUnpack, prologueCtx,
+                            providedCoeffects);
+    }
+    if (callee->hasCoeffectsLocal()) vmStack().pushInt(required.value());
+    return required;
+  }();
+  if (LIKELY(providedCoeffects.canCall(requiredCoeffects))) return true;
+  raiseCoeffectsCallViolation(callee, providedCoeffects, requiredCoeffects);
   return false;
+}
+
+/*
+ * Check for presence, count and wildcard match of generics.
+ */
+inline void calleeGenericsChecks(const Func* callee, bool hasGenerics) {
+  if (LIKELY(!callee->hasReifiedGenerics())) {
+    if (UNLIKELY(hasGenerics)) vmStack().popC();
+    return;
+  }
+
+  if (!hasGenerics) {
+    if (!areAllGenericsSoft(callee->getReifiedGenericsInfo())) {
+      throw_call_reified_func_without_generics(callee);
+    }
+
+    raise_warning_for_soft_reified(0, true, callee->fullName());
+
+    // Push an empty array, as the remainder of the call setup assumes generics
+    // are on the stack.
+    auto const ad = ArrayData::CreateVec();
+    vmStack().pushArrayLikeNoRc(ad);
+    return;
+  }
+
+  auto const generics = vmStack().topC();
+  assertx(tvIsVec(generics));
+  checkFunReifiedGenericMismatch(callee, val(generics).parr);
+}
+
+/*
+ * Check for too few or too many arguments and trim extra args.
+ */
+inline void calleeArgumentArityChecks(const Func* callee,
+                                      uint32_t numArgsInclUnpack) {
+  if (numArgsInclUnpack < callee->numRequiredParams()) {
+    throwMissingArgument(callee, numArgsInclUnpack);
+  }
+
+  if (numArgsInclUnpack > callee->numParams()) {
+    assertx(!callee->hasVariadicCaptureParam());
+    assertx(numArgsInclUnpack == callee->numNonVariadicParams() + 1);
+
+    GenericsSaver gs{callee->hasReifiedGenerics()};
+
+    assertx(tvIsVec(vmStack().topC()));
+    auto const numUnpackArgs = vmStack().topC()->m_data.parr->size();
+    vmStack().popC();
+
+    if (numUnpackArgs != 0) {
+      raiseTooManyArguments(callee, numArgsInclUnpack + numUnpackArgs - 1);
+    }
+  }
+}
+
+inline void initFuncInputs(const Func* callee, uint32_t numArgsInclUnpack) {
+  assertx(numArgsInclUnpack <= callee->numNonVariadicParams() + 1);
+
+  // All arguments already initialized. Extra arguments already popped
+  // by calleeArgumentArityChecks().
+  if (LIKELY(numArgsInclUnpack >= callee->numParams())) return;
+
+  CoeffectsSaver cs{callee->hasCoeffectsLocal()};
+  GenericsSaver gs{callee->hasReifiedGenerics()};
+  auto const numParams = callee->numNonVariadicParams();
+  while (numArgsInclUnpack < numParams) {
+    vmStack().pushUninit();
+    ++numArgsInclUnpack;
+  }
+
+  if (callee->hasVariadicCaptureParam()) {
+    auto const ad = ArrayData::CreateVec();
+    vmStack().pushArrayLikeNoRc(ad);
+    ++numArgsInclUnpack;
+  }
+
+  assertx(numArgsInclUnpack == callee->numParams());
 }
 
 /*

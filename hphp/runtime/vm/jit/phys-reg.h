@@ -14,14 +14,11 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_PHYSREG_H_
-#define incl_HPHP_JIT_PHYSREG_H_
+#pragma once
 
 #include "hphp/util/asm-x64.h"
 #include "hphp/util/bitops.h"
 #include "hphp/vixl/a64/assembler-a64.h"
-
-#include <folly/Optional.h>
 
 #include <type_traits>
 
@@ -502,5 +499,3 @@ namespace std {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-
-#endif

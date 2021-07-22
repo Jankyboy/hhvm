@@ -14,13 +14,11 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_ARRAY_OFFSET_PROFILE_H_
-#define incl_HPHP_JIT_ARRAY_OFFSET_PROFILE_H_
+#pragma once
 
 #include "hphp/runtime/vm/jit/extra-data.h"
 
 #include <folly/dynamic.h>
-#include <folly/Optional.h>
 
 #include <cstdint>
 
@@ -61,6 +59,7 @@ struct ArrayAccessProfile {
     SizeHintData size_hint;
     Action empty;
     Action missing;
+    std::string toString() const;
   };
 
   /*
@@ -120,5 +119,3 @@ private:
 ///////////////////////////////////////////////////////////////////////////////
 
 }}
-
-#endif

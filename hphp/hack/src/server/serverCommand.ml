@@ -11,7 +11,7 @@ open Hh_prelude
 open Utils
 open ServerCommandTypes
 
-exception Nonfatal_rpc_exception of exn * string * ServerEnv.env
+exception Nonfatal_rpc_exception of Exception.t * ServerEnv.env
 
 (* Some client commands require full check to be run in order to update global
  * state that they depend on *)
@@ -53,8 +53,13 @@ let rpc_command_needs_full_check : type a. a t -> bool =
   | STATS -> false
   | DISCONNECT -> false
   | STATUS_SINGLE _ -> false
+  | STATUS_SINGLE_REMOTE_EXECUTION _ -> true
+  | STATUS_REMOTE_EXECUTION _ -> true
+  | STATUS_MULTI_REMOTE_EXECUTION _ -> true
   | INFER_TYPE _ -> false
   | INFER_TYPE_BATCH _ -> false
+  | INFER_TYPE_ERROR _ -> false
+  | TAST_HOLES _ -> false
   | IDE_HOVER _ -> false
   | DOCBLOCK_AT _ -> false
   | DOCBLOCK_FOR_SYMBOL _ -> false
@@ -86,7 +91,6 @@ let rpc_command_needs_full_check : type a. a t -> bool =
   | CLOSE_FILE _ -> false
   | EDIT_FILE _ -> false
   | FUN_DEPS_BATCH _ -> false
-  | FUN_IS_LOCALLABLE_BATCH _ -> false
   | FILE_DEPENDENTS _ -> true
   | IDENTIFY_TYPES _ -> false
   | EXTRACT_STANDALONE _ -> false
@@ -100,11 +104,11 @@ let rpc_command_needs_full_check : type a. a t -> bool =
   | VERBOSE _ -> false
 
 let command_needs_full_check = function
-  | Rpc x -> rpc_command_needs_full_check x
-  | Debug -> false
+  | Rpc (_metadata, x) -> rpc_command_needs_full_check x
+  | Debug_DO_NOT_USE -> failwith "Debug_DO_NOT_USE"
 
 let is_edit : type a. a command -> bool = function
-  | Rpc (EDIT_FILE _) -> true
+  | Rpc (_metadata, EDIT_FILE _) -> true
   | _ -> false
 
 let rpc_command_needs_writes : type a. a t -> bool = function
@@ -116,12 +120,12 @@ let rpc_command_needs_writes : type a. a t -> bool = function
   | _ -> false
 
 let commands_needs_writes = function
-  | Rpc x -> rpc_command_needs_writes x
-  | _ -> false
+  | Rpc (_metadata, x) -> rpc_command_needs_writes x
+  | Debug_DO_NOT_USE -> failwith "Debug_DO_NOT_USE"
 
-let full_recheck_if_needed' genv env reason =
+let full_recheck_if_needed' genv env reason profiling =
   if
-    ServerEnv.(is_full_check_done env.full_check)
+    ServerEnv.(is_full_check_done env.full_check_status)
     && Relative_path.Set.is_empty env.ServerEnv.ide_needs_parsing
   then
     env
@@ -130,18 +134,48 @@ let full_recheck_if_needed' genv env reason =
     let start_time = Unix.gettimeofday () in
     let env = { env with ServerEnv.can_interrupt = false } in
     let (env, _res, _telemetry) =
-      ServerTypeCheck.(type_check genv env Full_check start_time)
+      ServerTypeCheck.(type_check genv env Full_check start_time profiling)
     in
     let env = { env with ServerEnv.can_interrupt = true } in
-    assert (ServerEnv.(is_full_check_done env.full_check));
+    assert (ServerEnv.(is_full_check_done env.full_check_status));
     env
 
 let force_remote = function
-  | Rpc (STATUS status) -> status.remote
+  | Rpc (_metadata, STATUS status) -> status.remote
   | _ -> false
 
+let rpc_files : type a. a t -> Relative_path.Set.t = function
+  | STATUS_SINGLE_REMOTE_EXECUTION fn ->
+    Relative_path.Set.singleton (Relative_path.create_detect_prefix fn)
+  | STATUS_MULTI_REMOTE_EXECUTION fns ->
+    List.fold fns ~init:Relative_path.Set.empty ~f:(fun acc fn ->
+        Relative_path.Set.add acc (Relative_path.create_detect_prefix fn))
+  | _ -> Relative_path.Set.empty
+
+let force_remote_execution_files = function
+  | Rpc (_metadata, x) -> rpc_files x
+  | _ -> Relative_path.Set.empty
+
+let rpc_remote_execution : type a. a t -> ReEnv.t option = function
+  | STATUS_REMOTE_EXECUTION (mode, _) ->
+    let re_env =
+      if String.equal mode "warm" then
+        Re.initialize_lease ~acquire_new_lease:false
+      else if String.equal mode "cold" then
+        Re.initialize_lease ~acquire_new_lease:true
+      else
+        failwith
+          "Invalid argument to --remote-execution. Please specify \"cold\" or \"warm\""
+    in
+    Some re_env
+  | _ -> None
+
+let force_remote_execution = function
+  | Rpc (_metadata, x) -> rpc_remote_execution x
+  | _ -> None
+
 let ignore_ide = function
-  | Rpc (STATUS status) -> status.ignore_ide
+  | Rpc (_metadata, STATUS status) -> status.ignore_ide
   | _ -> false
 
 let apply_changes env changes =
@@ -163,10 +197,11 @@ let full_recheck_if_needed genv env msg =
     let (ide, disk) = get_unsaved_changes env in
     let env = apply_changes env disk in
     let env =
-      full_recheck_if_needed'
-        genv
-        { env with ServerEnv.remote = force_remote msg }
-        (reason msg)
+      CgroupProfiler.profile_memory ~event:(`Recheck "Full_check")
+      @@ full_recheck_if_needed'
+           genv
+           { env with ServerEnv.remote = force_remote msg }
+           (reason msg)
     in
     apply_changes env ide
   else
@@ -179,76 +214,18 @@ let full_recheck_if_needed genv env msg =
 (* Only grant access to dependency table to commands that declared that they
  * need full check - without full check, there are no guarantees about
  * dependency table being up to date. *)
-let with_dependency_table_reads full_recheck_needed f =
+let with_dependency_table_reads mode full_recheck_needed f =
   let deptable_unlocked =
     if full_recheck_needed then
-      Some (Typing_deps.allow_dependency_table_reads true)
+      Some (Typing_deps.allow_dependency_table_reads mode true)
     else
       None
   in
   try_finally ~f ~finally:(fun () ->
       Option.iter deptable_unlocked ~f:(fun deptable_unlocked ->
           ignore
-            (Typing_deps.allow_dependency_table_reads deptable_unlocked : bool)))
-
-(* Given a set of declaration names, put them in shared memory. We do it here, because
- * declarations computed while handling IDE commands will likely be useful for subsequent IDE
- * commands too, but are not persisted outside of make_then_revert_local_changes closure. *)
-let predeclare_ide_deps
-    genv ctx { FileInfo.n_funs; n_classes; n_record_defs; n_types; n_consts } =
-  if genv.ServerEnv.local_config.ServerLocalConfig.predeclare_ide_deps then
-    Utils.try_finally
-      ~f:
-        begin
-          fun () ->
-          (* We only want to populate declaration heap, without wasting space in lower
-           * heaps (similar to what Typing_check_service.check_files does) *)
-          File_provider.local_changes_push_sharedmem_stack ();
-          Ast_provider.local_changes_push_sharedmem_stack ();
-          let iter :
-              type a. (Provider_context.t -> string -> a) -> SSet.t -> unit =
-           fun declare s ->
-            SSet.iter
-              begin
-                fun x ->
-                (* Depending on Decl_provider putting the thing we ask for in shared memory *)
-                ignore @@ (declare ctx x : a)
-              end
-              s
-          in
-          let declare_class ctx x =
-            let cls = Decl_provider.get_class ctx x in
-            (* For now, is_disposable forces the eager computation of all ancestor
-           declarations. In the future, we will want to explicitly declare all
-           ancestors when shallow decl is enabled instead. *)
-            let (_ : bool option) =
-              Option.map cls Decl_provider.Class.is_disposable
-            in
-            ()
-          in
-          iter Decl_provider.get_fun n_funs;
-          iter declare_class n_classes;
-          iter declare_class n_record_defs;
-          iter Decl_provider.get_typedef n_types;
-          iter Decl_provider.get_gconst n_consts
-        end
-      ~finally:
-        begin
-          fun () ->
-          Ast_provider.local_changes_pop_sharedmem_stack ();
-          File_provider.local_changes_pop_sharedmem_stack ()
-        end
-
-(* Run f while collecting all declarations that it caused. *)
-let with_decl_tracking f =
-  try
-    Decl.start_tracking ();
-    let res = f () in
-    (res, Decl.stop_tracking ())
-  with e ->
-    let stack = Caml.Printexc.get_raw_backtrace () in
-    let (_ : FileInfo.names) = Decl.stop_tracking () in
-    Caml.Printexc.raise_with_backtrace e stack
+            (Typing_deps.allow_dependency_table_reads mode deptable_unlocked
+              : bool)))
 
 (* Construct a continuation that will finish handling the command and update
  * the environment. Server can execute the continuation immediately, or store it
@@ -256,11 +233,12 @@ let with_decl_tracking f =
  * available, when current recheck is cancelled... *)
 let actually_handle genv client msg full_recheck_needed ~is_stale env =
   Hh_logger.debug "SeverCommand.actually_handle preamble";
-  with_dependency_table_reads full_recheck_needed @@ fun () ->
+  with_dependency_table_reads env.ServerEnv.deps_mode full_recheck_needed
+  @@ fun () ->
   Errors.ignore_ @@ fun () ->
   assert (
-    (not full_recheck_needed) || ServerEnv.(is_full_check_done env.full_check)
-  );
+    (not full_recheck_needed)
+    || ServerEnv.(is_full_check_done env.full_check_status));
 
   (* There might be additional rechecking required when there are unsaved IDE
    * changes and we asked for an answer that requires ignoring those.
@@ -269,9 +247,12 @@ let actually_handle genv client msg full_recheck_needed ~is_stale env =
   ClientProvider.track client ~key:Connection_tracker.Server_done_full_recheck;
 
   match msg with
-  | Rpc cmd ->
+  | Rpc ({ ServerCommandTypes.from; _ }, cmd) ->
     let cmd_string = ServerCommandTypesUtils.debug_describe_t cmd in
-    Hh_logger.debug "ServerCommand.actually_handle rpc %s" cmd_string;
+    Hh_logger.debug
+      "ServerCommand.actually_handle rpc %s, --from %s"
+      cmd_string
+      from;
     ClientProvider.ping client;
     let t_start = Unix.gettimeofday () in
     ClientProvider.track
@@ -280,22 +261,19 @@ let actually_handle genv client msg full_recheck_needed ~is_stale env =
       ~time:t_start;
     Sys_utils.start_gc_profiling ();
     Full_fidelity_parser_profiling.start_profiling ();
-    let ((new_env, response), declared_names) =
-      try
-        with_decl_tracking @@ fun () -> ServerRpc.handle ~is_stale genv env cmd
-      with e ->
-        let stack = Caml.Printexc.get_raw_backtrace () in
+
+    let (new_env, response) =
+      try ServerRpc.handle ~is_stale genv env cmd with
+      | exn ->
+        let e = Exception.wrap exn in
         if ServerCommandTypes.is_critical_rpc cmd then
-          Caml.Printexc.raise_with_backtrace e stack
+          Exception.reraise e
         else
-          raise
-            (Nonfatal_rpc_exception
-               (e, Caml.Printexc.raw_backtrace_to_string stack, env))
+          raise (Nonfatal_rpc_exception (e, env))
     in
+
     let parsed_files = Full_fidelity_parser_profiling.stop_profiling () in
-    let ctx = Provider_utils.ctx_from_server_env env in
     ClientProvider.track client ~key:Connection_tracker.Server_end_handle;
-    predeclare_ide_deps genv ctx declared_names;
     let t_end = Unix.gettimeofday () in
     ClientProvider.track
       client
@@ -320,18 +298,16 @@ let actually_handle genv client msg full_recheck_needed ~is_stale env =
       ~major_gc_time
       ~minor_gc_time
       ~parsed_files;
+
     ClientProvider.send_response_to_client client response;
+
     if
       ServerCommandTypes.is_disconnect_rpc cmd
       || (not @@ ClientProvider.is_persistent client)
     then
       ClientProvider.shutdown_client client;
     new_env
-  | Debug ->
-    let (ic, oc) = ClientProvider.get_channels client in
-    genv.ServerEnv.debug_channels <- Some (ic, oc);
-    ServerDebug.say_hello genv;
-    env
+  | Debug_DO_NOT_USE -> failwith "Debug_DO_NOT_USE"
 
 let handle
     (genv : ServerEnv.genv)
@@ -339,26 +315,44 @@ let handle
     (client : ClientProvider.client) :
     ServerEnv.env ServerUtils.handle_command_result =
   ClientProvider.track client ~key:Connection_tracker.Server_waiting_for_cmd;
+
   let msg = ClientProvider.read_client_msg client in
+
   ClientProvider.track client ~key:Connection_tracker.Server_got_cmd;
+  ServerProgress.send_progress
+    ~include_in_logs:false
+    "%s"
+    (ServerCommandTypesUtils.status_describe_cmd msg);
+  let env =
+    {
+      env with
+      ServerEnv.remote_execution_files = force_remote_execution_files msg;
+      ServerEnv.remote_execution = force_remote_execution msg;
+    }
+  in
   let env = { env with ServerEnv.remote = force_remote msg } in
   let full_recheck_needed = command_needs_full_check msg in
   let is_stale = ServerEnv.(env.last_recheck_loop_stats.updates_stale) in
-  let continuation =
+
+  let handle_command =
     actually_handle genv client msg full_recheck_needed ~is_stale
   in
+
   if commands_needs_writes msg then
     (* IDE edits can come in quick succession and be immediately followed
      * by time sensitivie queries (like autocomplete). There is a constant cost
      * to stopping and resuming the global typechecking jobs, which leads to
      * flaky experience. To avoid this, we don't restart the global rechecking
-     * after IDE edits - you need to save the file againg to restart it. *)
+     * after IDE edits - you need to save the file again to restart it. *)
     ServerUtils.Needs_writes
-      ( env,
-        continuation,
-        not (is_edit msg),
-        ServerCommandTypesUtils.debug_describe_cmd msg )
+      {
+        env;
+        finish_command_handling = handle_command;
+        recheck_restart_is_needed = not (is_edit msg);
+        reason = ServerCommandTypesUtils.debug_describe_cmd msg;
+      }
   else if full_recheck_needed then
-    ServerUtils.Needs_full_recheck (env, continuation, reason msg)
+    ServerUtils.Needs_full_recheck
+      { env; finish_command_handling = handle_command; reason = reason msg }
   else
-    ServerUtils.Done (continuation env)
+    ServerUtils.Done (handle_command env)

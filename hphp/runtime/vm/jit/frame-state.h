@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_FRAME_STATE_H_
-#define incl_HPHP_JIT_FRAME_STATE_H_
+#pragma once
 
 #include "hphp/runtime/vm/jit/alias-class.h"
 #include "hphp/runtime/vm/jit/cfg.h"
@@ -25,7 +24,6 @@
 #include "hphp/runtime/vm/jit/type-source.h"
 
 #include <boost/dynamic_bitset.hpp>
-#include <folly/Optional.h>
 
 #include <memory>
 #include <vector>
@@ -111,6 +109,9 @@ using LocalState = LocationState<LTag::Local>;
 using StackState = LocationState<LTag::Stack>;
 using MBaseState = LocationState<LTag::MBase>;
 
+using LocalStateMap = jit::hash_map<uint32_t,LocalState>;
+using StackStateMap = jit::hash_map<SBInvOffset,StackState,SBInvOffset::Hash>;
+
 /*
  * MBRState tracks the value and type of the member base register pointer.
  *
@@ -130,23 +131,35 @@ struct MBRState {
  * stack, that we push and pop as we enter and leave inlined frames.
  */
 struct FrameState {
+  explicit FrameState(const Func* func);
+  bool checkInvariants() const;
+
   /*
-   * Current Func, VM stack pointer, VM frame pointer, offset between sp and
-   * fp, and bytecode position.
+   * Function, instructions are emitted on behalf of. This may be different from
+   * the function of the `fpValue` frame, e.g. stublogues run in the context of
+   * the caller, but the code is emitted on behalf of the callee.
    */
   const Func* curFunc;
+
+  /*
+   * VM frame pointer.
+   */
   SSATmp* fpValue{nullptr};
 
   /*
-   * Tracking of in-memory state of the evaluation stack.
+   * Logical stack base.
+   *
+   * - `spValue` points to an arbitrary stack position, which may even be
+   *   outside of the logical stack
+   * - `irSPOff` is an offset from the logical stack base to `spValue`
    */
   SSATmp* spValue{nullptr};
-  FPInvOffset irSPOff;  // delta from vmfp to `spValue'
+  SBInvOffset irSPOff{0};
 
   /*
    * Depth of the in-memory eval stack.
    */
-  FPInvOffset bcSPOff{0};
+  SBInvOffset bcSPOff{0};
 
   /*
    * Tracks whether we are currently in the stublogue context. This is set in
@@ -170,17 +183,21 @@ struct FrameState {
   bool stackModified{false};
 
   /*
-   * The values in the eval stack in memory, either above or below the current
-   * spValue pointer.  These are indexed relative to the base of the eval stack
-   * for the whole function.
+   * Whether the tracking of all locals has been cleared since the unit's entry.
    */
-  jit::vector<StackState> stack;
+  bool localsCleared{false};
 
   /*
-   * Vector of local variable information; sized for numLocals on the curFunc
-   * (if the state is initialized).
+   * The values in the eval stack in memory, either above or below the current
+   * spValue pointer.  This is keyed by the offset to the base of the eval stack
+   * for the whole function (SBInvOffset).
    */
-  jit::vector<LocalState> locals;
+  StackStateMap stack;
+
+  /*
+   * Maps the local ids to local variable information.
+   */
+  LocalStateMap locals;
 
   /*
    * Values and types of the member base register and its pointee.
@@ -219,7 +236,7 @@ struct FrameState {
  *   - current function and bytecode offset
  */
 struct FrameStateMgr final {
-  explicit FrameStateMgr(const BCMarker&);
+  explicit FrameStateMgr(const Func* func);
 
   FrameStateMgr(const FrameStateMgr&) = delete;
   FrameStateMgr(FrameStateMgr&&) = default;
@@ -300,12 +317,11 @@ struct FrameStateMgr final {
    * In the presence of inlining, these return state for the most-inlined
    * frame.
    */
-  const Func* func()              const { return cur().curFunc; }
   SSATmp*     fp()                const { return cur().fpValue; }
   SSATmp*     sp()                const { return cur().spValue; }
   SSATmp*     ctx()               const { return cur().ctx; }
-  FPInvOffset irSPOff()           const { return cur().irSPOff; }
-  FPInvOffset bcSPOff()           const { return cur().bcSPOff; }
+  SBInvOffset irSPOff()           const { return cur().irSPOff; }
+  SBInvOffset bcSPOff()           const { return cur().bcSPOff; }
   bool        stublogue()         const { return cur().stublogue; }
   bool        stackModified()     const { return cur().stackModified; }
 
@@ -319,9 +335,8 @@ struct FrameStateMgr final {
    *
    * @requires: inlineDepth() > 0
    */
-  FPInvOffset callerIRSPOff() const {
-    assertx(inlineDepth() > 0);
-    return m_stack.at(m_stack.size() - 2).irSPOff;
+  SBInvOffset callerIRSPOff() const {
+    return caller().irSPOff;
   }
 
   /*
@@ -331,7 +346,7 @@ struct FrameStateMgr final {
    * frame.
    */
   void resetStackModified()             { cur().stackModified = false; }
-  void setBCSPOff(FPInvOffset o)        { cur().bcSPOff = o; }
+  void setBCSPOff(SBInvOffset o)        { cur().bcSPOff = o; }
   void incBCSPDepth(int32_t n = 1)      { cur().bcSPOff += n; }
   void decBCSPDepth(int32_t n = 1)      { cur().bcSPOff -= n; }
 
@@ -339,9 +354,20 @@ struct FrameStateMgr final {
    * Return the LocationState for local `id' or stack element at `off' in the
    * most-inlined frame.
    */
-  const LocalState& local(uint32_t id) const;
-  const StackState& stack(IRSPRelOffset off) const;
-  const StackState& stack(FPInvOffset off) const;
+  LocalState local(uint32_t id) const;
+  StackState stack(IRSPRelOffset off) const;
+  StackState stack(SBInvOffset off) const;
+
+  /*
+   * Return whether the given location is currently being tracked.
+   */
+  bool tracked(Location l) const;
+
+  /*
+   * Return whether the state of the locals have even been cleared since the
+   * unit's entry.
+   */
+  bool localsCleared() const { return cur().localsCleared; }
 
   /*
    * Generic accessors for LocationState members.
@@ -349,7 +375,7 @@ struct FrameStateMgr final {
   SSATmp* valueOf(Location l) const;
   Type typeOf(Location l) const;
   Type predictedTypeOf(Location l) const;
-  const TypeSourceSet& typeSrcsOf(Location l) const;
+  TypeSourceSet typeSrcsOf(Location l) const;
 
   /*
    * Return tracked state for the member base register.
@@ -358,15 +384,20 @@ struct FrameStateMgr final {
   const MBaseState& mbase() const { return cur().mbase; }
 
   /*
-   * Set the value, type, and (optionally) predicted type for mbase().
+   * Set the value and type for mbase() or mbr().
    */
-  void setMemberBase(SSATmp* base,
-                     folly::Optional<Type> predicted = folly::none);
+  void setMemberBase(SSATmp* base);
+  void setMBR(SSATmp* base);
 
   /*
    * Update the predicted type for `l'.
    */
   void refinePredictedType(Location l, Type type);
+
+  /*
+   * Debug stringification.
+   */
+  std::string show() const;
 
   /////////////////////////////////////////////////////////////////////////////
 
@@ -376,7 +407,16 @@ private:
     return m_stack.back();
   }
   const FrameState& cur() const {
-    return const_cast<FrameStateMgr*>(this)->cur();
+    assertx(!m_stack.empty());
+    return m_stack.back();
+  }
+  FrameState& caller() {
+    assertx(inlineDepth() > 0);
+    return m_stack.at(m_stack.size() - 2);
+  }
+  const FrameState& caller() const {
+    assertx(inlineDepth() > 0);
+    return m_stack.at(m_stack.size() - 2);
   }
 
   /*
@@ -388,7 +428,7 @@ private:
   LocalState& localState(uint32_t);
   LocalState& localState(Location l); // @requires: l.tag() == LTag::Local
   StackState& stackState(IRSPRelOffset);
-  StackState& stackState(FPInvOffset);
+  StackState& stackState(SBInvOffset);
   StackState& stackState(Location l); // @requires: l.tag() == LTag::Stack
 
   /*
@@ -397,6 +437,8 @@ private:
   bool checkInvariants() const;
   void updateMInstr(const IRInstruction*);
   void updateMBase(const IRInstruction*);
+  void initStack(SSATmp* sp, SBInvOffset irSPOff, SBInvOffset bcSPOff);
+  void uninitStack();
   void trackInlineCall(const IRInstruction* inst);
   void trackInlineReturn();
   void trackCall();
@@ -405,7 +447,7 @@ private:
    * Per-block state helpers.
    */
   bool save(Block* b, Block* pred = nullptr);
-  void collectPostConds(Block* exitBlock);
+  PostConditions collectPostConds();
 
   /*
    * LocationState update helpers.
@@ -421,7 +463,7 @@ private:
 
   template<LTag tag>
   void setValueImpl(Location l, LocationState<tag>& state, SSATmp* value,
-                    folly::Optional<Type> predicted = folly::none);
+                    Optional<Type> predicted = std::nullopt);
   template<LTag tag>
   void refinePredictedTypeImpl(LocationState<tag>& state, Type type);
 
@@ -440,9 +482,9 @@ private:
     jit::vector<FrameState> in;
     // Optionally-saved out-state.  Non-none but empty indicates that out-state
     // should be saved.
-    folly::Optional<jit::vector<FrameState>> out;
+    Optional<jit::vector<FrameState>> out;
     // Paused state, used by IRBuilder::{push,pop}Block().
-    folly::Optional<jit::vector<FrameState>> paused;
+    Optional<jit::vector<FrameState>> paused;
   };
 
   /////////////////////////////////////////////////////////////////////////////
@@ -468,13 +510,4 @@ private:
 
 ///////////////////////////////////////////////////////////////////////////////
 
-/*
- * Debug stringification.
- */
-std::string show(const FrameStateMgr&);
-
-///////////////////////////////////////////////////////////////////////////////
-
 }}}
-
-#endif

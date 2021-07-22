@@ -409,6 +409,14 @@ checkWidths(const Vunit& unit, const jit::vector<Vlabel>& blocks) {
                   std::is_same<decltype(inst.loadzbq_.d),Vreg64>::value,
                   "loadzbq should write a quad\n");
                   break;
+            case Vinstr::loadzwq:
+              static_assert(
+                  std::is_same<decltype(inst.loadzwq_.s),Vptr16>::value,
+                  "loadzwq should load a word\n");
+              static_assert(
+                  std::is_same<decltype(inst.loadzwq_.d),Vreg64>::value,
+                  "loadzwq should write a quad\n");
+                  break;
             case Vinstr::loadzlq:
               static_assert(
                   std::is_same<decltype(inst.loadzlq_.s),Vptr32>::value,
@@ -482,4 +490,52 @@ bool checkBlockEnd(const Vunit& unit, Vlabel b) {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
+
+bool checkNoSideExits(const Vunit& unit) {
+  auto const DEBUG_ONLY isSideExit = [] (const Vinstr& inst) {
+    return
+      inst.op == Vinstr::jcci ||
+      inst.op == Vinstr::fallbackcc ||
+      inst.op == Vinstr::bindjcc;
+  };
+
+  auto const blocks = sortBlocks(unit);
+  for (auto const b : blocks) {
+    for (DEBUG_ONLY auto const& inst : unit.blocks[b].code) {
+      assert_flog(
+        !isSideExit(inst),
+        "Disallowed side-exiting instruction {} in {}\n{}",
+        show(unit, inst),
+        b,
+        show(unit)
+      );
+    }
+  }
+
+  return true;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+bool checkNoCriticalEdges(const Vunit& unit) {
+  auto const blocks = sortBlocks(unit);
+  auto const DEBUG_ONLY preds = computePreds(unit);
+  for (auto const b : blocks) {
+    auto const& block = unit.blocks[b];
+    auto const successors = succs(block);
+    if (successors.size() < 2) continue;
+    for (auto const DEBUG_ONLY succ : successors) {
+      assert_flog(
+        preds[succ].size() <= 1,
+        "Disallowed critical edge from {} to {}\n{}",
+        b, succ,
+        show(unit)
+      );
+    }
+  }
+  return true;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
 }}

@@ -12,6 +12,7 @@ module Inf = Typing_inference_env
 module Env = Typing_env
 module Sub = Typing_subtype
 module MakeType = Typing_make_type
+module ITySet = Internal_type_set
 
 module StateErrors = struct
   module IdentMap = WrappedMap.Make (Ident)
@@ -32,34 +33,37 @@ module StateErrors = struct
   let cardinal t = IdentMap.fold (fun _ l acc -> acc + List.length l) !t 0
 end
 
-let make_error_callback errors var ?code msgl =
+let convert_on_error :
+    (Errors.error -> unit) -> Pos.t -> Errors.error_from_reasons_callback =
+ fun on_error pos ?code reasons ->
   let code =
     Option.value code ~default:Error_codes.Typing.(err_code UnifyError)
   in
-  StateErrors.add errors var (Errors.make_error code msgl)
+  on_error (Errors.make_error code (pos, "Typing_error") reasons)
 
 let catch_exc
     pos
-    (on_error : Errors.typing_error_callback)
+    (on_error : Errors.error -> unit)
     (r : 'a)
     ?(verbose = false)
-    (f : Errors.typing_error_callback -> 'a) : 'a =
+    (f : Errors.error_from_reasons_callback -> 'a) : 'a =
   try
     let (other_errors, v) =
       Errors.do_with_context (Pos.filename pos) Errors.Typing (fun () ->
-          f on_error)
+          f @@ convert_on_error on_error pos)
     in
-    List.iter (Errors.get_error_list other_errors) ~f:(fun error ->
-        on_error (Errors.to_list error));
+    List.iter (Errors.get_error_list other_errors) ~f:on_error;
     v
-  with Inf.InconsistentTypeVarState _ as e ->
+  with
+  | Inf.InconsistentTypeVarState _ as e ->
     if verbose then (
       let stack = Caml.Printexc.get_raw_backtrace () in
       prerr_endline (Caml.Printexc.to_string e);
       Caml.Printexc.print_raw_backtrace stderr stack
     );
     let e = Printf.sprintf "Exception: %s" (Exn.to_string e) in
-    on_error [(pos, e)];
+    on_error
+      (Errors.make_error Error_codes.Typing.(err_code UnifyError) (pos, e) []);
     r
 
 let is_ordered_solving env = GlobalOptions.tco_ordered_solving env.genv.tcopt
@@ -87,7 +91,7 @@ let build_ty_map (ctx : Provider_context.t) (tast : Tast.def) : global_type_map
     =
   let get_global_var_pos env (ty : locl_ty) =
     (object
-       inherit [Pos.t option] Type_visitor.locl_type_visitor
+       inherit [Pos_or_decl.t option] Type_visitor.locl_type_visitor
 
        method! on_tvar pos _ tvar =
          match pos with
@@ -114,7 +118,7 @@ let build_ty_map (ctx : Provider_context.t) (tast : Tast.def) : global_type_map
         match get_global_var_pos (Tast_env.tast_env_as_typing_env env) hi with
         | None -> ()
         | Some pos ->
-          let pos = Pos.to_absolute pos in
+          let pos = Pos.to_absolute @@ Pos_or_decl.unsafe_to_raw_pos pos in
           ty_map := Pos.AbsolutePosMap.add pos hi !ty_map
 
       method! on_fun_with_env state ({ Aast.f_ret; _ } as fun_) =
@@ -204,7 +208,7 @@ module StateConstraintGraph = struct
     in
     let ty = MakeType.tyvar Reason.Rnone var
     and ty' = MakeType.tyvar Reason.Rnone var' in
-    let on_err = make_error_callback errors var in
+    let on_err = StateErrors.add errors var in
     let env = catch_exc on_err env (Sub.sub_type env ty ty') in
     let env = catch_exc on_err env (Sub.sub_type env ty' ty) in
     let (env, vars_in_lower_bounds, vars_in_upper_bounds) =
@@ -271,15 +275,16 @@ module StateConstraintGraph = struct
       (type_map, env, errors)
     else
       (* Collect each global tyvar and map it to a global environment in
-      * which it lives. Give preference to the global environment which also
-      * has positional information for this type variable *)
-      let initial_tyvar_sources : (Pos.t * Inf.t_global) IMap.t =
+         * which it lives. Give preference to the global environment which also
+         * has positional information for this type variable *)
+      let initial_tyvar_sources : (Pos_or_decl.t * Inf.t_global) IMap.t =
         List.fold subgraphs ~init:IMap.empty ~f:(fun m (_, genv) ->
             List.fold (Inf.get_vars_g genv) ~init:m ~f:(fun m var ->
                 IMap.update
                   var
                   (function
-                    | Some (pos, genv) when not (Pos.equal pos Pos.none) ->
+                    | Some (pos, genv)
+                      when not (Pos_or_decl.equal pos Pos_or_decl.none) ->
                       Some (pos, genv)
                     | None
                     | Some (_, _) ->
@@ -311,7 +316,7 @@ module StateSolvedGraph = struct
   let from_constraint_graph ((type_map, env, errors) : StateConstraintGraph.t) :
       t =
     (* For any errors seen during the last step (that is graph merging), we bind
-    the corresponding tyvar to Terr *)
+       the corresponding tyvar to Terr *)
     let vars = Env.get_all_tyvars env in
     let env =
       List.fold vars ~init:env ~f:(fun env var ->
@@ -320,13 +325,14 @@ module StateSolvedGraph = struct
           else
             env)
     in
-    let make_on_error = make_error_callback errors in
+    let make_on_error = StateErrors.add errors in
     let env =
       catch_exc Pos.none (make_on_error 0) env @@ fun _ ->
+      let make_on_error v = convert_on_error (make_on_error v) Pos.none in
       if is_ordered_solving env then
         Typing_ordered_solver.solve_env env make_on_error
       else
-        Typing_solver.solve_all_unsolved_tyvars_gi env make_on_error
+        Typing_solver.solve_all_unsolved_tyvars_gi env
     in
     (env, errors, type_map)
 end

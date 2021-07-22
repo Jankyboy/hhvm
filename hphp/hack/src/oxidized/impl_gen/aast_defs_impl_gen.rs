@@ -3,88 +3,12 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the "hack" directory of this source tree.
 //
-// @generated SignedSource<<7c05235740e15397bd62765891d1a1e4>>
+// @generated SignedSource<<215f713730d1139c4d1363a2ac23ac51>>
 //
 // To regenerate this file, run:
-//   hphp/hack/src/oxidized/regen.sh
+//   hphp/hack/src/oxidized_regen.sh
 
 use crate::aast_defs::*;
-impl FuncReactive {
-    pub fn mk_fpure() -> Self {
-        FuncReactive::FPure
-    }
-    pub fn mk_freactive() -> Self {
-        FuncReactive::FReactive
-    }
-    pub fn mk_flocal() -> Self {
-        FuncReactive::FLocal
-    }
-    pub fn mk_fshallow() -> Self {
-        FuncReactive::FShallow
-    }
-    pub fn mk_fnonreactive() -> Self {
-        FuncReactive::FNonreactive
-    }
-    pub fn is_fpure(&self) -> bool {
-        match self {
-            FuncReactive::FPure => true,
-            _ => false,
-        }
-    }
-    pub fn is_freactive(&self) -> bool {
-        match self {
-            FuncReactive::FReactive => true,
-            _ => false,
-        }
-    }
-    pub fn is_flocal(&self) -> bool {
-        match self {
-            FuncReactive::FLocal => true,
-            _ => false,
-        }
-    }
-    pub fn is_fshallow(&self) -> bool {
-        match self {
-            FuncReactive::FShallow => true,
-            _ => false,
-        }
-    }
-    pub fn is_fnonreactive(&self) -> bool {
-        match self {
-            FuncReactive::FNonreactive => true,
-            _ => false,
-        }
-    }
-}
-impl ParamMutability {
-    pub fn mk_pmutable() -> Self {
-        ParamMutability::PMutable
-    }
-    pub fn mk_powned_mutable() -> Self {
-        ParamMutability::POwnedMutable
-    }
-    pub fn mk_pmaybe_mutable() -> Self {
-        ParamMutability::PMaybeMutable
-    }
-    pub fn is_pmutable(&self) -> bool {
-        match self {
-            ParamMutability::PMutable => true,
-            _ => false,
-        }
-    }
-    pub fn is_powned_mutable(&self) -> bool {
-        match self {
-            ParamMutability::POwnedMutable => true,
-            _ => false,
-        }
-    }
-    pub fn is_pmaybe_mutable(&self) -> bool {
-        match self {
-            ParamMutability::PMaybeMutable => true,
-            _ => false,
-        }
-    }
-}
 impl ImportFlavor {
     pub fn mk_include() -> Self {
         ImportFlavor::Include
@@ -302,9 +226,6 @@ impl Hint_ {
     pub fn mk_habstr(p0: String, p1: Vec<Hint>) -> Self {
         Hint_::Habstr(p0, p1)
     }
-    pub fn mk_harray(p0: Option<Hint>, p1: Option<Hint>) -> Self {
-        Hint_::Harray(p0, p1)
-    }
     pub fn mk_hdarray(p0: Hint, p1: Hint) -> Self {
         Hint_::Hdarray(p0, p1)
     }
@@ -313,6 +234,9 @@ impl Hint_ {
     }
     pub fn mk_hvarray_or_darray(p0: Option<Hint>, p1: Hint) -> Self {
         Hint_::HvarrayOrDarray(p0, p1)
+    }
+    pub fn mk_hvec_or_dict(p0: Option<Hint>, p1: Hint) -> Self {
+        Hint_::HvecOrDict(p0, p1)
     }
     pub fn mk_hprim(p0: Tprim) -> Self {
         Hint_::Hprim(p0)
@@ -326,14 +250,17 @@ impl Hint_ {
     pub fn mk_hnothing() -> Self {
         Hint_::Hnothing
     }
-    pub fn mk_hpu_access(p0: Hint, p1: Sid) -> Self {
-        Hint_::HpuAccess(p0, p1)
-    }
     pub fn mk_hunion(p0: Vec<Hint>) -> Self {
         Hint_::Hunion(p0)
     }
     pub fn mk_hintersection(p0: Vec<Hint>) -> Self {
         Hint_::Hintersection(p0)
+    }
+    pub fn mk_hfun_context(p0: String) -> Self {
+        Hint_::HfunContext(p0)
+    }
+    pub fn mk_hvar(p0: String) -> Self {
+        Hint_::Hvar(p0)
     }
     pub fn is_hoption(&self) -> bool {
         match self {
@@ -413,12 +340,6 @@ impl Hint_ {
             _ => false,
         }
     }
-    pub fn is_harray(&self) -> bool {
-        match self {
-            Hint_::Harray(..) => true,
-            _ => false,
-        }
-    }
     pub fn is_hdarray(&self) -> bool {
         match self {
             Hint_::Hdarray(..) => true,
@@ -434,6 +355,12 @@ impl Hint_ {
     pub fn is_hvarray_or_darray(&self) -> bool {
         match self {
             Hint_::HvarrayOrDarray(..) => true,
+            _ => false,
+        }
+    }
+    pub fn is_hvec_or_dict(&self) -> bool {
+        match self {
+            Hint_::HvecOrDict(..) => true,
             _ => false,
         }
     }
@@ -461,12 +388,6 @@ impl Hint_ {
             _ => false,
         }
     }
-    pub fn is_hpu_access(&self) -> bool {
-        match self {
-            Hint_::HpuAccess(..) => true,
-            _ => false,
-        }
-    }
     pub fn is_hunion(&self) -> bool {
         match self {
             Hint_::Hunion(..) => true,
@@ -476,6 +397,18 @@ impl Hint_ {
     pub fn is_hintersection(&self) -> bool {
         match self {
             Hint_::Hintersection(..) => true,
+            _ => false,
+        }
+    }
+    pub fn is_hfun_context(&self) -> bool {
+        match self {
+            Hint_::HfunContext(..) => true,
+            _ => false,
+        }
+    }
+    pub fn is_hvar(&self) -> bool {
+        match self {
+            Hint_::Hvar(..) => true,
             _ => false,
         }
     }
@@ -533,12 +466,6 @@ impl Hint_ {
             _ => None,
         }
     }
-    pub fn as_harray(&self) -> Option<(&Option<Hint>, &Option<Hint>)> {
-        match self {
-            Hint_::Harray(p0, p1) => Some((p0, p1)),
-            _ => None,
-        }
-    }
     pub fn as_hdarray(&self) -> Option<(&Hint, &Hint)> {
         match self {
             Hint_::Hdarray(p0, p1) => Some((p0, p1)),
@@ -557,15 +484,15 @@ impl Hint_ {
             _ => None,
         }
     }
-    pub fn as_hprim(&self) -> Option<&Tprim> {
+    pub fn as_hvec_or_dict(&self) -> Option<(&Option<Hint>, &Hint)> {
         match self {
-            Hint_::Hprim(p0) => Some(p0),
+            Hint_::HvecOrDict(p0, p1) => Some((p0, p1)),
             _ => None,
         }
     }
-    pub fn as_hpu_access(&self) -> Option<(&Hint, &Sid)> {
+    pub fn as_hprim(&self) -> Option<&Tprim> {
         match self {
-            Hint_::HpuAccess(p0, p1) => Some((p0, p1)),
+            Hint_::Hprim(p0) => Some(p0),
             _ => None,
         }
     }
@@ -578,6 +505,18 @@ impl Hint_ {
     pub fn as_hintersection(&self) -> Option<&Vec<Hint>> {
         match self {
             Hint_::Hintersection(p0) => Some(p0),
+            _ => None,
+        }
+    }
+    pub fn as_hfun_context(&self) -> Option<&String> {
+        match self {
+            Hint_::HfunContext(p0) => Some(p0),
+            _ => None,
+        }
+    }
+    pub fn as_hvar(&self) -> Option<&String> {
+        match self {
+            Hint_::Hvar(p0) => Some(p0),
             _ => None,
         }
     }
@@ -635,12 +574,6 @@ impl Hint_ {
             _ => None,
         }
     }
-    pub fn as_harray_mut(&mut self) -> Option<(&mut Option<Hint>, &mut Option<Hint>)> {
-        match self {
-            Hint_::Harray(p0, p1) => Some((p0, p1)),
-            _ => None,
-        }
-    }
     pub fn as_hdarray_mut(&mut self) -> Option<(&mut Hint, &mut Hint)> {
         match self {
             Hint_::Hdarray(p0, p1) => Some((p0, p1)),
@@ -659,15 +592,15 @@ impl Hint_ {
             _ => None,
         }
     }
-    pub fn as_hprim_mut(&mut self) -> Option<&mut Tprim> {
+    pub fn as_hvec_or_dict_mut(&mut self) -> Option<(&mut Option<Hint>, &mut Hint)> {
         match self {
-            Hint_::Hprim(p0) => Some(p0),
+            Hint_::HvecOrDict(p0, p1) => Some((p0, p1)),
             _ => None,
         }
     }
-    pub fn as_hpu_access_mut(&mut self) -> Option<(&mut Hint, &mut Sid)> {
+    pub fn as_hprim_mut(&mut self) -> Option<&mut Tprim> {
         match self {
-            Hint_::HpuAccess(p0, p1) => Some((p0, p1)),
+            Hint_::Hprim(p0) => Some(p0),
             _ => None,
         }
     }
@@ -680,6 +613,18 @@ impl Hint_ {
     pub fn as_hintersection_mut(&mut self) -> Option<&mut Vec<Hint>> {
         match self {
             Hint_::Hintersection(p0) => Some(p0),
+            _ => None,
+        }
+    }
+    pub fn as_hfun_context_mut(&mut self) -> Option<&mut String> {
+        match self {
+            Hint_::HfunContext(p0) => Some(p0),
+            _ => None,
+        }
+    }
+    pub fn as_hvar_mut(&mut self) -> Option<&mut String> {
+        match self {
+            Hint_::Hvar(p0) => Some(p0),
             _ => None,
         }
     }
@@ -737,12 +682,6 @@ impl Hint_ {
             _ => None,
         }
     }
-    pub fn as_harray_into(self) -> Option<(Option<Hint>, Option<Hint>)> {
-        match self {
-            Hint_::Harray(p0, p1) => Some((p0, p1)),
-            _ => None,
-        }
-    }
     pub fn as_hdarray_into(self) -> Option<(Hint, Hint)> {
         match self {
             Hint_::Hdarray(p0, p1) => Some((p0, p1)),
@@ -761,15 +700,15 @@ impl Hint_ {
             _ => None,
         }
     }
-    pub fn as_hprim_into(self) -> Option<Tprim> {
+    pub fn as_hvec_or_dict_into(self) -> Option<(Option<Hint>, Hint)> {
         match self {
-            Hint_::Hprim(p0) => Some(p0),
+            Hint_::HvecOrDict(p0, p1) => Some((p0, p1)),
             _ => None,
         }
     }
-    pub fn as_hpu_access_into(self) -> Option<(Hint, Sid)> {
+    pub fn as_hprim_into(self) -> Option<Tprim> {
         match self {
-            Hint_::HpuAccess(p0, p1) => Some((p0, p1)),
+            Hint_::Hprim(p0) => Some(p0),
             _ => None,
         }
     }
@@ -782,6 +721,18 @@ impl Hint_ {
     pub fn as_hintersection_into(self) -> Option<Vec<Hint>> {
         match self {
             Hint_::Hintersection(p0) => Some(p0),
+            _ => None,
+        }
+    }
+    pub fn as_hfun_context_into(self) -> Option<String> {
+        match self {
+            Hint_::HfunContext(p0) => Some(p0),
+            _ => None,
+        }
+    }
+    pub fn as_hvar_into(self) -> Option<String> {
+        match self {
+            Hint_::Hvar(p0) => Some(p0),
             _ => None,
         }
     }
@@ -816,9 +767,6 @@ impl Tprim {
     }
     pub fn mk_tnoreturn() -> Self {
         Tprim::Tnoreturn
-    }
-    pub fn mk_tatom(p0: String) -> Self {
-        Tprim::Tatom(p0)
     }
     pub fn is_tnull(&self) -> bool {
         match self {
@@ -880,30 +828,6 @@ impl Tprim {
             _ => false,
         }
     }
-    pub fn is_tatom(&self) -> bool {
-        match self {
-            Tprim::Tatom(..) => true,
-            _ => false,
-        }
-    }
-    pub fn as_tatom(&self) -> Option<&String> {
-        match self {
-            Tprim::Tatom(p0) => Some(p0),
-            _ => None,
-        }
-    }
-    pub fn as_tatom_mut(&mut self) -> Option<&mut String> {
-        match self {
-            Tprim::Tatom(p0) => Some(p0),
-            _ => None,
-        }
-    }
-    pub fn as_tatom_into(self) -> Option<String> {
-        match self {
-            Tprim::Tatom(p0) => Some(p0),
-            _ => None,
-        }
-    }
 }
 impl KvcKind {
     pub fn mk_map() -> Self {
@@ -950,9 +874,6 @@ impl VcKind {
     pub fn mk_imm_set() -> Self {
         VcKind::ImmSet
     }
-    pub fn mk_pair_() -> Self {
-        VcKind::Pair_
-    }
     pub fn mk_keyset() -> Self {
         VcKind::Keyset
     }
@@ -986,44 +907,9 @@ impl VcKind {
             _ => false,
         }
     }
-    pub fn is_pair_(&self) -> bool {
-        match self {
-            VcKind::Pair_ => true,
-            _ => false,
-        }
-    }
     pub fn is_keyset(&self) -> bool {
         match self {
             VcKind::Keyset => true,
-            _ => false,
-        }
-    }
-}
-impl Visibility {
-    pub fn mk_private() -> Self {
-        Visibility::Private
-    }
-    pub fn mk_public() -> Self {
-        Visibility::Public
-    }
-    pub fn mk_protected() -> Self {
-        Visibility::Protected
-    }
-    pub fn is_private(&self) -> bool {
-        match self {
-            Visibility::Private => true,
-            _ => false,
-        }
-    }
-    pub fn is_public(&self) -> bool {
-        match self {
-            Visibility::Public => true,
-            _ => false,
-        }
-    }
-    pub fn is_protected(&self) -> bool {
-        match self {
-            Visibility::Protected => true,
             _ => false,
         }
     }
@@ -1073,6 +959,9 @@ impl TypedefVisibility {
     pub fn mk_opaque() -> Self {
         TypedefVisibility::Opaque
     }
+    pub fn mk_tinternal() -> Self {
+        TypedefVisibility::Tinternal
+    }
     pub fn is_transparent(&self) -> bool {
         match self {
             TypedefVisibility::Transparent => true,
@@ -1082,6 +971,41 @@ impl TypedefVisibility {
     pub fn is_opaque(&self) -> bool {
         match self {
             TypedefVisibility::Opaque => true,
+            _ => false,
+        }
+    }
+    pub fn is_tinternal(&self) -> bool {
+        match self {
+            TypedefVisibility::Tinternal => true,
+            _ => false,
+        }
+    }
+}
+impl ReifyKind {
+    pub fn mk_erased() -> Self {
+        ReifyKind::Erased
+    }
+    pub fn mk_soft_reified() -> Self {
+        ReifyKind::SoftReified
+    }
+    pub fn mk_reified() -> Self {
+        ReifyKind::Reified
+    }
+    pub fn is_erased(&self) -> bool {
+        match self {
+            ReifyKind::Erased => true,
+            _ => false,
+        }
+    }
+    pub fn is_soft_reified(&self) -> bool {
+        match self {
+            ReifyKind::SoftReified => true,
+            _ => false,
+        }
+    }
+    pub fn is_reified(&self) -> bool {
+        match self {
+            ReifyKind::Reified => true,
             _ => false,
         }
     }

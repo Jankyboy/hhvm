@@ -15,8 +15,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EXT_APACHE_H_
-#define incl_HPHP_EXT_APACHE_H_
+#pragma once
 
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/ext/extension.h"
@@ -27,6 +26,7 @@
 namespace HPHP {
 
 Array HHVM_FUNCTION(apache_request_headers);
+Array HHVM_FUNCTION(apache_proxygen_headers);
 
 struct ApacheExtension final : Extension {
   ApacheExtension();
@@ -46,14 +46,14 @@ struct ApacheExtension final : Extension {
 };
 
 static Array get_headers(const HeaderMap& headers, bool allHeaders = false) {
-  DArrayInit ret(headers.size());
+  DictInit ret(headers.size());
   for (auto& iter : headers) {
     const auto& values = iter.second;
     if (auto size = values.size()) {
       if (!allHeaders) {
         ret.set(String(iter.first), String(values.back()));
       } else {
-        VArrayInit dups(size);
+        VecInit dups(size);
         for (auto& dup : values) {
           dups.append(String(dup));
         }
@@ -65,5 +65,3 @@ static Array get_headers(const HeaderMap& headers, bool allHeaders = false) {
 }
 
 }
-
-#endif // incl_HPHP_EXT_APACHE_H_

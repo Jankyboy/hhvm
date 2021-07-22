@@ -172,10 +172,10 @@ bool isObjprofRoot(
   if ((flags & ObjprofFlags::USER_TYPES_ONLY) != 0) {
     if (cls_name.compare(0, 3, "HH\\") == 0) return false;
   }
-  if (SSWH::NullHandle.bound() && SSWH::NullHandle.isInit()) {
-    if (obj == SSWH::NullHandle->get())  return false;
-    if (obj == SSWH::TrueHandle->get())  return false;
-    if (obj == SSWH::FalseHandle->get()) return false;
+  if (SSWH::NullHandle.bound() && SSWH::NullHandle.isInitNoProfile()) {
+    if (obj == SSWH::NullHandle.getNoProfile()->get())  return false;
+    if (obj == SSWH::TrueHandle.getNoProfile()->get())  return false;
+    if (obj == SSWH::FalseHandle.getNoProfile()->get()) return false;
   }
   return true;
 }
@@ -206,8 +206,8 @@ std::pair<int, double> sizeOfArray(
 
   int size = 0;
   double sized = 0;
-  if (ad->hasVanillaPackedLayout()) {
-    FTRACE(2, "Iterating packed array\n");
+  if (ad->isVecType()) {
+    FTRACE(2, "Iterating vec\n");
     if (stack) stack->push_back("ArrayIndex");
 
     IterateV(ad, [&] (TypedValue v) {
@@ -289,10 +289,6 @@ std::pair<int, double> sizeOfArray(
         case KindOfResource:
         case KindOfVec:
         case KindOfDict:
-        case KindOfPersistentDArray:
-        case KindOfDArray:
-        case KindOfPersistentVArray:
-        case KindOfVArray:
         case KindOfKeyset:
         case KindOfRFunc:
         case KindOfFunc:
@@ -355,7 +351,7 @@ void stringsOfArray(
 
   path->push_back(std::string("array()"));
 
-  if (ad->hasVanillaPackedLayout()) {
+  if (ad->isVanillaVec()) {
     path->push_back(std::string("[]"));
     IterateV(ad, [&] (TypedValue v) {
       tvGetStrings(v, metrics, path, pointers, val_stack);
@@ -392,10 +388,6 @@ void stringsOfArray(
         case KindOfResource:
         case KindOfVec:
         case KindOfDict:
-        case KindOfPersistentDArray:
-        case KindOfDArray:
-        case KindOfPersistentVArray:
-        case KindOfVArray:
         case KindOfKeyset:
         case KindOfRFunc:
         case KindOfFunc:
@@ -457,14 +449,9 @@ std::pair<int, double> tvGetSize(
       );
       size += sizeof(*arr);
       size += size_of_array_pair.first;
-      if (one_bit_refcount) {
-        sized += sizeof(*arr);
-        sized += size_of_array_pair.second;
-      } else {
-        assertx(arr_ref_count > 0);
-        sized += sizeof(*arr) / (double)arr_ref_count;
-        sized += size_of_array_pair.second / (double)(arr_ref_count);
-      }
+      assertx(arr_ref_count > 0);
+      sized += sizeof(*arr) / (double)arr_ref_count;
+      sized += size_of_array_pair.second / (double)(arr_ref_count);
     } else {
       // static or uncounted array
       FTRACE(3, " ArrayData tv: at {} not refcounted\n", (void*)arr);
@@ -506,12 +493,8 @@ std::pair<int, double> tvGetSize(
             (void*)obj,
             obj_ref_count
           );
-          if (one_bit_refcount) {
-            sized += obj_size_pair.second;
-          } else {
-            assertx(obj_ref_count > 0);
-            sized += obj_size_pair.second / (double)(obj_ref_count);
-          }
+          assertx(obj_ref_count > 0);
+          sized += obj_size_pair.second / (double)(obj_ref_count);
         }
       } else if (stack && paths) {
         // notice we might have multiple OBJ->path->OBJ for same path
@@ -538,10 +521,6 @@ std::pair<int, double> tvGetSize(
       break;
     }
 
-    case KindOfPersistentDArray:
-    case KindOfDArray:
-    case KindOfPersistentVArray:
-    case KindOfVArray:
     case KindOfPersistentVec:
     case KindOfVec:
     case KindOfPersistentDict:
@@ -560,12 +539,8 @@ std::pair<int, double> tvGetSize(
       auto resource = tv.m_data.pres;
       auto resource_size = resource->heapSize();
       size += resource_size;
-      if (one_bit_refcount) {
-        sized += resource_size;
-      } else {
-        assertx(tvGetCount(tv) > 0);
-        sized += resource_size / (double)(tvGetCount(tv));
-      }
+      assertx(tvGetCount(tv) > 0);
+      sized += resource_size / (double)(tvGetCount(tv));
       break;
     }
     case KindOfPersistentString:
@@ -579,12 +554,8 @@ std::pair<int, double> tvGetSize(
           (void*)str,
           str_ref_count
         );
-        if (one_bit_refcount) {
-          sized += str->size();
-        } else {
-          assertx(str_ref_count > 0);
-          sized += (str->size() / (double)(str_ref_count));
-        }
+        assertx(str_ref_count > 0);
+        sized += (str->size() / (double)(str_ref_count));
       } else {
         // static or uncounted string
         FTRACE(3, " String tv: {} string at {} uncounted\n",
@@ -594,28 +565,8 @@ std::pair<int, double> tvGetSize(
       break;
     }
     case KindOfClsMeth: {
-      if (use_lowptr) {
-        FTRACE(3, " ClsMeth tv: clsmeth at {} uncounted\n",
-              (void*)tv.m_data.pclsmeth.get());
-      } else {
-        auto const clsmeth = tv.m_data.pclsmeth;
-        auto const sz = sizeof(*clsmeth);
-        size += sz;
-        if (isRefCountedClsMeth(clsmeth)) {
-          auto ref_count = int{tvGetCount(tv)};
-          FTRACE(3, " ClsMeth tv: clsmeth at {} with ref count {}\n",
-                (void*)clsmeth.get(), ref_count);
-          if (one_bit_refcount) {
-            sized += sz;
-          } else {
-            assertx(ref_count > 0);
-            sized += sz / (double)ref_count;
-          }
-        } else {
-          FTRACE(3, " ClsMeth tv: clsmeth at {} uncounted\n",
-                (void*)clsmeth.get());
-        }
-      }
+      FTRACE(3, " ClsMeth tv: clsmeth at {} uncounted\n",
+            (void*)tv.m_data.pclsmeth.get());
       break;
     }
 
@@ -626,12 +577,8 @@ std::pair<int, double> tvGetSize(
       size += sz;
       FTRACE(3, " RClsMeth tv: rclsmeth at {} with ref count {}\n",
              (void*)rclsmeth, ref_count);
-      if (one_bit_refcount) {
-        sized += sz;
-      } else {
-        assertx(ref_count > 0);
-        sized += sz / (double)ref_count;
-      }
+      assertx(ref_count > 0);
+      sized += sz / (double)ref_count;
       add_array_size(rclsmeth->m_arr);
     }
 
@@ -669,10 +616,6 @@ void tvGetStrings(
       // This is a shallow size function, not a recursive one
       break;
     }
-    case HPHP::KindOfPersistentDArray:
-    case HPHP::KindOfDArray:
-    case HPHP::KindOfPersistentVArray:
-    case HPHP::KindOfVArray:
     case HPHP::KindOfPersistentVec:
     case HPHP::KindOfVec:
     case HPHP::KindOfPersistentDict:
@@ -802,7 +745,7 @@ std::pair<int, double> getObjSize(
     return std::make_pair(size, sized);
   }
 
-  IteratePropMemOrderNoInc(
+  IteratePropMemOrder(
     obj,
     [&](Slot slot, const Class::Prop& prop, tv_rval val) {
       FTRACE(2, "Skipping declared property key {}\n", prop.name->data());
@@ -931,7 +874,7 @@ void getObjStrings(
   }
 
   path->push_back(obj->getClassName().data());
-  IteratePropMemOrderNoInc(
+  IteratePropMemOrder(
     obj,
     [&](Slot slot, const Class::Prop& prop, tv_rval val) {
       FTRACE(2, "Skipping declared property key {}\n", prop.name->data());
@@ -976,11 +919,11 @@ Array HHVM_FUNCTION(objprof_get_strings, int min_dup) {
   });
 
   // Create response
-  DArrayInit objs(metrics.size());
+  DictInit objs(metrics.size());
   for (auto& it : metrics) {
     if (it.second.dups < min_dup) continue;
 
-    auto metrics_val = make_darray(
+    auto metrics_val = make_dict_array(
       s_dups, Variant(it.second.dups),
       s_refs, Variant(it.second.refs),
       s_srefs, Variant(it.second.srefs),
@@ -1045,7 +988,7 @@ Array HHVM_FUNCTION(objprof_get_data,
   });
 
   // Create response
-  DArrayInit objs(histogram.size());
+  DictInit objs(histogram.size());
   for (auto const& it : histogram) {
     auto c = it.first;
     auto cls = c.first;
@@ -1055,7 +998,7 @@ Array HHVM_FUNCTION(objprof_get_data,
       key += "::" + c.second;
     }
 
-    auto metrics_val = make_darray(
+    auto metrics_val = make_dict_array(
       s_instances, Variant(it.second.instances),
       s_bytes, Variant(it.second.bytes),
       s_bytes_rel, it.second.bytes_rel,
@@ -1187,21 +1130,21 @@ Array HHVM_FUNCTION(objprof_get_paths,
   });
 
   // Create response
-  DArrayInit objs(histogram.size());
+  DictInit objs(histogram.size());
   for (auto const& it : histogram) {
     auto c = it.first;
     auto clsPaths = pathsToClass[c.first];
-    DArrayInit pathsArr(clsPaths.size());
+    DictInit pathsArr(clsPaths.size());
     for (auto const& pathIt : clsPaths) {
       auto pathStr = pathIt.first;
-      auto path_metrics_val = make_darray(
+      auto path_metrics_val = make_dict_array(
         s_refs, pathIt.second.refs
       );
 
       pathsArr.setValidKey(Variant(pathStr), Variant(path_metrics_val));
     }
 
-    auto metrics_val = make_darray(
+    auto metrics_val = make_dict_array(
       s_instances, Variant(it.second.instances),
       s_bytes, Variant(it.second.bytes),
       s_bytes_rel, it.second.bytes_rel,
@@ -1262,7 +1205,7 @@ Array HHVM_FUNCTION(thread_memory_stats, void) {
   auto stack_size = get_thread_stack_size();
   auto stack_size_peak = get_thread_stack_peak_size();
 
-  auto stats = make_darray(
+  auto stats = make_dict_array(
       s_cpp_stack, Variant(stack_size),
       s_cpp_stack_peak, Variant(stack_size_peak)
   );

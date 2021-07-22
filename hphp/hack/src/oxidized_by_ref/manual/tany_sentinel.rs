@@ -3,8 +3,11 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the "hack" directory of this source tree.
 
-use ocamlrep_derive::{FromOcamlRep, FromOcamlRepIn, ToOcamlRep};
 use serde::{Deserialize, Serialize};
+
+use eq_modulo_pos::EqModuloPos;
+use no_pos_hash::NoPosHash;
+use ocamlrep_derive::{FromOcamlRep, FromOcamlRepIn, ToOcamlRep};
 
 #[derive(
     Copy,
@@ -12,7 +15,9 @@ use serde::{Deserialize, Serialize};
     Debug,
     Deserialize,
     Eq,
+    EqModuloPos,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -22,5 +27,7 @@ use serde::{Deserialize, Serialize};
     Serialize
 )]
 pub struct TanySentinel;
+
+arena_deserializer::impl_deserialize_in_arena!(TanySentinel);
 
 impl arena_trait::TrivialDrop for TanySentinel {}

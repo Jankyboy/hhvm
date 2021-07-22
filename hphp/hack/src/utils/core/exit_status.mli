@@ -30,6 +30,7 @@ type t =
   | Unused_server
   | Lock_stolen
   | Lost_parent_monitor
+  | Server_got_eof_from_monitor
   | Interrupted
   | Worker_oomed
   | Worker_busy
@@ -76,6 +77,7 @@ type t =
   | Failed_to_load_should_retry
   | Failed_to_load_should_abort
   | Server_non_opt_build_mode
+  | Not_restarting_server_with_precomputed_saved_state
 [@@deriving show]
 
 exception Exit_with of t

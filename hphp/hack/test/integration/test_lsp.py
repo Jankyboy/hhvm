@@ -26,11 +26,11 @@ class InsertTextFormat(enum.Enum):
 
 
 class LspTestDriver(common_tests.CommonTestDriver):
-    def write_load_config(self, use_saved_state: bool = False) -> None:
+    def write_load_config(
+        self, use_serverless_ide: bool = False, use_saved_state: bool = False
+    ) -> None:
         # Will use the .hhconfig already in the repo directory
         # As for hh.conf, we'll write it explicitly each test.
-        # Note that hh.conf uses lower-case...
-        use_saved_state_str = "true" if use_saved_state else "false"
         with open(os.path.join(self.repo_dir, "hh.conf"), "w") as f:
             f.write(
                 """
@@ -46,8 +46,11 @@ lazy_decl = {use_saved_state}
 lazy_parse = {use_saved_state}
 lazy_init2 = {use_saved_state}
 symbolindex_search_provider = SqliteIndex
+allow_unstable_features = true
+ide_serverless = {use_serverless_ide}
 """.format(
-                    use_saved_state=use_saved_state_str
+                    use_saved_state=str(use_saved_state).lower(),
+                    use_serverless_ide=str(use_serverless_ide).lower(),
                 )
             )
 
@@ -204,9 +207,7 @@ class TestLsp(TestCase[LspTestDriver]):
         elif use_serverless_ide:
             self.test_driver.stop_hh_server()
 
-        with LspCommandProcessor.create(
-            self.test_driver.test_env, use_serverless_ide=use_serverless_ide
-        ) as lsp:
+        with LspCommandProcessor.create(self.test_driver.test_env) as lsp:
             observed_transcript = lsp.communicate(test)
 
         self.write_observed(test_name, observed_transcript)
@@ -248,7 +249,7 @@ class TestLsp(TestCase[LspTestDriver]):
 
     def prepare_server_environment(self) -> None:
         self.maxDiff = None
-        self.test_driver.write_load_config()
+        self.test_driver.write_load_config(use_serverless_ide=False)
         self.test_driver.start_hh_server()
         (output, err, _) = self.test_driver.run_check()
         if "Error: Ran out of retries" in err:
@@ -257,7 +258,9 @@ class TestLsp(TestCase[LspTestDriver]):
 
     def prepare_serverless_ide_environment(self) -> Mapping[str, str]:
         self.maxDiff = None
-        self.test_driver.write_load_config(use_saved_state=False)
+        self.test_driver.write_load_config(
+            use_serverless_ide=True, use_saved_state=False
+        )
         naming_table_saved_state_path = (
             self.test_driver.write_naming_table_saved_state()
         )
@@ -293,7 +296,7 @@ class TestLsp(TestCase[LspTestDriver]):
             self.test_driver.stop_hh_server()
 
         with LspCommandProcessor.create(
-            self.test_driver.test_env, use_serverless_ide=use_serverless_ide
+            self.test_driver.test_env
         ) as lsp_command_processor:
             (observed_transcript, error_details) = spec.run(
                 lsp_command_processor=lsp_command_processor, variables=variables
@@ -546,6 +549,26 @@ class TestLsp(TestCase[LspTestDriver]):
                             "insertTextFormat": InsertTextFormat.PlainText.value,
                             "data": {"fullname": ":ab:cd:text"},
                         },
+                        {
+                            "label": "xhp:enum-attribute",
+                            "kind": 7,
+                            "detail": "class",
+                            "inlineDetail": "class",
+                            "sortText": "xhp:enum-attribute",
+                            "insertText": "xhp:enum-attribute",
+                            "insertTextFormat": InsertTextFormat.PlainText.value,
+                            "data": {"fullname": ":xhp:enum-attribute"},
+                        },
+                        {
+                            "label": "xhp:generic",
+                            "kind": 7,
+                            "detail": "class",
+                            "inlineDetail": "class",
+                            "sortText": "xhp:generic",
+                            "insertText": "xhp:generic",
+                            "insertTextFormat": InsertTextFormat.PlainText.value,
+                            "data": {"fullname": ":xhp:generic"},
+                        },
                     ],
                 },
                 powered_by="serverless_ide",
@@ -689,7 +712,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "insertTextFormat": InsertTextFormat.PlainText.value,
                             "data": {
                                 "fullname": ":width",
-                                "filename": "${root_path}/completion_extras.php",
+                                "filename": "${root_path}/xhp_class_definitions.php",
                                 "line": 5,
                                 "char": 27,
                                 "base_class": "\\:ab:cd:text",
@@ -705,7 +728,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "insertTextFormat": InsertTextFormat.PlainText.value,
                             "data": {
                                 "fullname": ":color",
-                                "filename": "${root_path}/completion_extras.php",
+                                "filename": "${root_path}/xhp_class_definitions.php",
                                 "line": 5,
                                 "char": 13,
                                 "base_class": "\\:ab:cd:text",
@@ -752,7 +775,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "insertTextFormat": InsertTextFormat.PlainText.value,
                             "data": {
                                 "fullname": ":width",
-                                "filename": "${root_path}/completion_extras.php",
+                                "filename": "${root_path}/xhp_class_definitions.php",
                                 "line": 5,
                                 "char": 27,
                                 "base_class": "\\:ab:cd:text",
@@ -768,7 +791,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "insertTextFormat": InsertTextFormat.PlainText.value,
                             "data": {
                                 "fullname": ":color",
-                                "filename": "${root_path}/completion_extras.php",
+                                "filename": "${root_path}/xhp_class_definitions.php",
                                 "line": 5,
                                 "char": 13,
                                 "base_class": "\\:ab:cd:text",
@@ -824,6 +847,26 @@ class TestLsp(TestCase[LspTestDriver]):
                             "insertText": ":ab:cd:text",
                             "insertTextFormat": InsertTextFormat.PlainText.value,
                             "data": {"fullname": ":ab:cd:text"},
+                        },
+                        {
+                            "label": ":xhp:enum-attribute",
+                            "kind": 7,
+                            "detail": "class",
+                            "inlineDetail": "class",
+                            "sortText": ":xhp:enum-attribute",
+                            "insertText": ":xhp:enum-attribute",
+                            "insertTextFormat": InsertTextFormat.PlainText.value,
+                            "data": {"fullname": ":xhp:enum-attribute"},
+                        },
+                        {
+                            "label": ":xhp:generic",
+                            "kind": 7,
+                            "detail": "class",
+                            "inlineDetail": "class",
+                            "sortText": ":xhp:generic",
+                            "insertText": ":xhp:generic",
+                            "insertTextFormat": InsertTextFormat.PlainText.value,
+                            "data": {"fullname": ":xhp:generic"},
                         },
                     ],
                 },
@@ -1028,7 +1071,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "insertTextFormat": InsertTextFormat.PlainText.value,
                             "data": {
                                 "fullname": ":width",
-                                "filename": "${root_path}/completion_extras.php",
+                                "filename": "${root_path}/xhp_class_definitions.php",
                                 "line": 5,
                                 "char": 27,
                                 "base_class": "\\:ab:cd:text",
@@ -1044,7 +1087,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "insertTextFormat": InsertTextFormat.PlainText.value,
                             "data": {
                                 "fullname": ":color",
-                                "filename": "${root_path}/completion_extras.php",
+                                "filename": "${root_path}/xhp_class_definitions.php",
                                 "line": 5,
                                 "char": 13,
                                 "base_class": "\\:ab:cd:text",
@@ -1091,7 +1134,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "insertTextFormat": InsertTextFormat.PlainText.value,
                             "data": {
                                 "fullname": ":width",
-                                "filename": "${root_path}/completion_extras.php",
+                                "filename": "${root_path}/xhp_class_definitions.php",
                                 "line": 5,
                                 "char": 27,
                                 "base_class": "\\:ab:cd:text",
@@ -1107,7 +1150,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "insertTextFormat": InsertTextFormat.PlainText.value,
                             "data": {
                                 "fullname": ":color",
-                                "filename": "${root_path}/completion_extras.php",
+                                "filename": "${root_path}/xhp_class_definitions.php",
                                 "line": 5,
                                 "char": 13,
                                 "base_class": "\\:ab:cd:text",
@@ -1261,7 +1304,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "class",
                                 "filename": "${root_path}/completion_extras.php",
-                                "line": 13,
+                                "line": 3,
                                 "char": 6,
                                 "base_class": "\\Elsa",
                             },
@@ -1277,7 +1320,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "Bard",
                                 "filename": "${root_path}/completion_extras.php",
-                                "line": 13,
+                                "line": 3,
                                 "char": 12,
                                 "base_class": "\\Elsa",
                             },
@@ -1293,7 +1336,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "Alonso",
                                 "filename": "${root_path}/completion_extras.php",
-                                "line": 13,
+                                "line": 3,
                                 "char": 12,
                                 "base_class": "\\Elsa",
                             },
@@ -1310,7 +1353,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "isValid",
                                 "filename": "${hhi_path}/BuiltinEnum.hhi",
-                                "line": 49,
+                                "line": 46,
                                 "char": 32,
                                 "base_class": "\\Elsa",
                             },
@@ -1318,16 +1361,16 @@ class TestLsp(TestCase[LspTestDriver]):
                         {
                             "label": "getValues",
                             "kind": 2,
-                            "detail": "function(): darray<string, Elsa>",
+                            "detail": "function(): dict<string, Elsa>",
                             "inlineDetail": "()",
-                            "itemType": "darray<string, Elsa>",
+                            "itemType": "dict<string, Elsa>",
                             "sortText": "getValues",
                             "insertText": "getValues()",
                             "insertTextFormat": InsertTextFormat.Snippet.value,
                             "data": {
                                 "fullname": "getValues",
                                 "filename": "${hhi_path}/BuiltinEnum.hhi",
-                                "line": 34,
+                                "line": 33,
                                 "char": 32,
                                 "base_class": "\\Elsa",
                             },
@@ -1335,16 +1378,16 @@ class TestLsp(TestCase[LspTestDriver]):
                         {
                             "label": "getNames",
                             "kind": 2,
-                            "detail": "function(): darray<Elsa, string>",
+                            "detail": "function(): dict<Elsa, string>",
                             "inlineDetail": "()",
-                            "itemType": "darray<Elsa, string>",
+                            "itemType": "dict<Elsa, string>",
                             "sortText": "getNames",
                             "insertText": "getNames()",
                             "insertTextFormat": InsertTextFormat.Snippet.value,
                             "data": {
                                 "fullname": "getNames",
                                 "filename": "${hhi_path}/BuiltinEnum.hhi",
-                                "line": 43,
+                                "line": 41,
                                 "char": 32,
                                 "base_class": "\\Elsa",
                             },
@@ -1361,7 +1404,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "coerce",
                                 "filename": "${hhi_path}/BuiltinEnum.hhi",
-                                "line": 56,
+                                "line": 52,
                                 "char": 32,
                                 "base_class": "\\Elsa",
                             },
@@ -1378,7 +1421,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "assertAll",
                                 "filename": "${hhi_path}/BuiltinEnum.hhi",
-                                "line": 70,
+                                "line": 64,
                                 "char": 32,
                                 "base_class": "\\Elsa",
                             },
@@ -1395,7 +1438,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "assert",
                                 "filename": "${hhi_path}/BuiltinEnum.hhi",
-                                "line": 63,
+                                "line": 58,
                                 "char": 32,
                                 "base_class": "\\Elsa",
                             },
@@ -1440,7 +1483,7 @@ class TestLsp(TestCase[LspTestDriver]):
                     },
                     "data": {
                         "filename": "${hhi_path}/BuiltinEnum.hhi",
-                        "line": 49,
+                        "line": 46,
                         "char": 32,
                     },
                 },
@@ -1464,7 +1507,7 @@ class TestLsp(TestCase[LspTestDriver]):
                     },
                     "data": {
                         "filename": "${hhi_path}/BuiltinEnum.hhi",
-                        "line": 49,
+                        "line": 46,
                         "char": 32,
                     },
                 },
@@ -1654,7 +1697,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "class",
                                 "filename": "${root_path}/completion_extras.php",
-                                "line": 18,
+                                "line": 8,
                                 "char": 13,
                                 "base_class": "\\DeprecatedClass",
                             },
@@ -1671,7 +1714,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "test_do_not_use",
                                 "filename": "${root_path}/completion_extras.php",
-                                "line": 22,
+                                "line": 12,
                                 "char": 26,
                                 "base_class": "\\DeprecatedClass",
                             },
@@ -1688,7 +1731,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "getName",
                                 "filename": "${root_path}/completion_extras.php",
-                                "line": 19,
+                                "line": 9,
                                 "char": 26,
                                 "base_class": "\\DeprecatedClass",
                             },
@@ -1705,7 +1748,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "getAttributes_DO_NOT_USE",
                                 "filename": "${root_path}/completion_extras.php",
-                                "line": 21,
+                                "line": 11,
                                 "char": 26,
                                 "base_class": "\\DeprecatedClass",
                             },
@@ -1722,7 +1765,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "__getLoader",
                                 "filename": "${root_path}/completion_extras.php",
-                                "line": 20,
+                                "line": 10,
                                 "char": 26,
                                 "base_class": "\\DeprecatedClass",
                             },
@@ -1824,6 +1867,258 @@ class TestLsp(TestCase[LspTestDriver]):
                 },
                 powered_by="serverless_ide",
             )
+            .notification(
+                comment="Add 'call_via_label#'",
+                method="textDocument/didChange",
+                params={
+                    "textDocument": {"uri": "${php_file_uri}"},
+                    "contentChanges": [
+                        {
+                            "range": {
+                                "start": {"line": 35, "character": 0},
+                                "end": {"line": 35, "character": 0},
+                            },
+                            "text": "  call_via_label#",
+                        }
+                    ],
+                },
+            )
+            .request(
+                line=line(),
+                comment="autocomplete results for 'call_via_label#'",
+                method="textDocument/completion",
+                params={
+                    "textDocument": {"uri": "${php_file_uri}"},
+                    "position": {"line": 35, "character": 17},
+                },
+                result={
+                    "isIncomplete": False,
+                    "items": [
+                        {
+                            "label": "First",
+                            "kind": 21,
+                            "detail": "HH\\MemberOf<MyEnumClass, MyEnumClassKind>",
+                            "inlineDetail": "HH\\MemberOf<MyEnumClass, MyEnumClassKind>",
+                            "sortText": "First",
+                            "insertText": "First",
+                            "insertTextFormat": 1,
+                            "data": {
+                                "fullname": "First",
+                                "filename": "${root_path}/definition.php",
+                                "line": 51,
+                                "char": 19,
+                                "base_class": "\\MyEnumClass",
+                            },
+                        },
+                        {
+                            "label": "Second",
+                            "kind": 21,
+                            "detail": "HH\\MemberOf<MyEnumClass, MyEnumClassKind>",
+                            "inlineDetail": "HH\\MemberOf<MyEnumClass, MyEnumClassKind>",
+                            "sortText": "Second",
+                            "insertText": "Second",
+                            "insertTextFormat": 1,
+                            "data": {
+                                "fullname": "Second",
+                                "filename": "${root_path}/definition.php",
+                                "line": 52,
+                                "char": 19,
+                                "base_class": "\\MyEnumClass",
+                            },
+                        },
+                    ],
+                },
+                powered_by="serverless_ide",
+            )
+            .notification(
+                comment="Add '<xhp:enum-attribute enum-attribute={}'",
+                method="textDocument/didChange",
+                params={
+                    "textDocument": {"uri": "${php_file_uri}"},
+                    "contentChanges": [
+                        {
+                            "range": {
+                                "start": {"line": 3, "character": 0},
+                                "end": {"line": 3, "character": 17},
+                            },
+                            "text": "<xhp:enum-attribute enum-attribute={}",
+                        }
+                    ],
+                },
+            )
+            .request(
+                line=line(),
+                comment="autocomplete after '<xhp:enum-attribute enum-attribute={'",
+                method="textDocument/completion",
+                params={
+                    "textDocument": {"uri": "${php_file_uri}"},
+                    "position": {"line": 3, "character": 36},
+                    "context": {"triggerKind": 2, "triggerCharacter": "{"},
+                },
+                result={
+                    "isIncomplete": False,
+                    "items": [
+                        {
+                            "label": "MyEnum::TYPE_C",
+                            "kind": 13,
+                            "detail": "enum",
+                            "inlineDetail": "enum",
+                            "sortText": "MyEnum::TYPE_C",
+                            "insertText": "MyEnum::TYPE_C",
+                            "insertTextFormat": 1,
+                            "data": {
+                                "fullname": "MyEnum::TYPE_C",
+                                "filename": "${root_path}/xhp_class_definitions.php",
+                                "line": 13,
+                                "char": 14,
+                                "base_class": "\\MyEnum",
+                            },
+                        },
+                        {
+                            "label": "MyEnum::TYPE_A",
+                            "kind": 13,
+                            "detail": "enum",
+                            "inlineDetail": "enum",
+                            "sortText": "MyEnum::TYPE_A",
+                            "insertTextFormat": 1,
+                            "insertText": "MyEnum::TYPE_A",
+                            "data": {
+                                "fullname": "MyEnum::TYPE_A",
+                                "filename": "${root_path}/xhp_class_definitions.php",
+                                "line": 13,
+                                "char": 14,
+                                "base_class": "\\MyEnum",
+                            },
+                        },
+                        {
+                            "label": "MyEnum::TYPE_B",
+                            "kind": 13,
+                            "detail": "enum",
+                            "inlineDetail": "enum",
+                            "sortText": "MyEnum::TYPE_B",
+                            "insertTextFormat": 1,
+                            "insertText": "MyEnum::TYPE_B",
+                            "data": {
+                                "fullname": "MyEnum::TYPE_B",
+                                "filename": "${root_path}/xhp_class_definitions.php",
+                                "line": 13,
+                                "char": 14,
+                                "base_class": "\\MyEnum",
+                            },
+                        },
+                    ],
+                },
+                powered_by="serverless_ide",
+            )
+            .notification(
+                comment="Add '1 is strin'",
+                method="textDocument/didChange",
+                params={
+                    "textDocument": {"uri": "${php_file_uri}"},
+                    "contentChanges": [
+                        {
+                            "range": {
+                                "start": {"line": 3, "character": 0},
+                                "end": {"line": 3, "character": 37},
+                            },
+                            "text": "1 is strin",
+                        }
+                    ],
+                },
+            )
+            .request(
+                line=line(),
+                comment="autocomplete after '1 is strin'",
+                method="textDocument/completion",
+                params={
+                    "textDocument": {"uri": "${php_file_uri}"},
+                    "position": {"line": 3, "character": 10},
+                },
+                result={
+                    "isIncomplete": False,
+                    "items": [
+                        {
+                            "data": {"fullname": "string"},
+                            "detail": "builtin",
+                            "documentation": {
+                                "kind": "markdown",
+                                "value": "A sequence of zero or more characters. Strings are usually manipulated with functions from the `Str\\` namespace",
+                            },
+                            "inlineDetail": "builtin",
+                            "insertText": "string",
+                            "insertTextFormat": 1,
+                            "kind": 25,
+                            "label": "string",
+                            "sortText": "string",
+                        },
+                        {
+                            "data": {"fullname": "StringBuffer"},
+                            "detail": "class",
+                            "inlineDetail": "class",
+                            "insertText": "StringBuffer",
+                            "insertTextFormat": 1,
+                            "kind": 7,
+                            "label": "StringBuffer",
+                            "sortText": "StringBuffer",
+                        },
+                        {
+                            "data": {"fullname": "Stringish"},
+                            "detail": "interface",
+                            "inlineDetail": "interface",
+                            "insertText": "Stringish",
+                            "insertTextFormat": 1,
+                            "kind": 8,
+                            "label": "Stringish",
+                            "sortText": "Stringish",
+                        },
+                        {
+                            "data": {"fullname": "StringishObject"},
+                            "detail": "interface",
+                            "inlineDetail": "interface",
+                            "insertText": "StringishObject",
+                            "insertTextFormat": 1,
+                            "kind": 8,
+                            "label": "StringishObject",
+                            "sortText": "StringishObject",
+                        },
+                    ],
+                },
+                powered_by="serverless_ide",
+            )
+            .request(
+                line=line(),
+                comment="autocomplete resolving after '1 is strin'",
+                method="completionItem/resolve",
+                params={
+                    "data": {"fullname": "string"},
+                    "detail": "builtin",
+                    "documentation": {
+                        "kind": "markdown",
+                        "value": "A sequence of zero or more characters. Strings are usually manipulated with functions from the `Str\\` namespace",
+                    },
+                    "inlineDetail": "builtin",
+                    "insertText": "string",
+                    "insertTextFormat": 1,
+                    "kind": 25,
+                    "label": "string",
+                    "sortText": "string",
+                },
+                result={
+                    "data": {"fullname": "string"},
+                    "detail": "builtin",
+                    "documentation": {
+                        "kind": "markdown",
+                        "value": "A sequence of zero or more characters. Strings are usually manipulated with functions from the `Str\\` namespace",
+                    },
+                    "inlineDetail": "builtin",
+                    "insertText": "string",
+                    "insertTextFormat": 1,
+                    "kind": 25,
+                    "label": "string",
+                    "sortText": "string",
+                },
+                powered_by="serverless_ide",
+            )
             .request(line=line(), method="shutdown", params={}, result=None)
             .notification(method="exit", params={})
         )
@@ -1895,6 +2190,26 @@ class TestLsp(TestCase[LspTestDriver]):
                             "insertText": "ab:cd:text",
                             "insertTextFormat": InsertTextFormat.PlainText.value,
                             "data": {"fullname": ":ab:cd:text"},
+                        },
+                        {
+                            "label": "xhp:enum-attribute",
+                            "kind": 7,
+                            "detail": "class",
+                            "inlineDetail": "class",
+                            "sortText": "xhp:enum-attribute",
+                            "insertText": "xhp:enum-attribute",
+                            "insertTextFormat": InsertTextFormat.PlainText.value,
+                            "data": {"fullname": ":xhp:enum-attribute"},
+                        },
+                        {
+                            "label": "xhp:generic",
+                            "kind": 7,
+                            "detail": "class",
+                            "inlineDetail": "class",
+                            "sortText": "xhp:generic",
+                            "insertText": "xhp:generic",
+                            "insertTextFormat": InsertTextFormat.PlainText.value,
+                            "data": {"fullname": ":xhp:generic"},
                         },
                     ],
                 },
@@ -2039,7 +2354,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "insertTextFormat": InsertTextFormat.PlainText.value,
                             "data": {
                                 "fullname": ":width",
-                                "filename": "${root_path}/completion_extras.php",
+                                "filename": "${root_path}/xhp_class_definitions.php",
                                 "line": 5,
                                 "char": 27,
                                 "base_class": "\\:ab:cd:text",
@@ -2055,7 +2370,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "insertTextFormat": InsertTextFormat.PlainText.value,
                             "data": {
                                 "fullname": ":color",
-                                "filename": "${root_path}/completion_extras.php",
+                                "filename": "${root_path}/xhp_class_definitions.php",
                                 "line": 5,
                                 "char": 13,
                                 "base_class": "\\:ab:cd:text",
@@ -2102,7 +2417,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "insertTextFormat": InsertTextFormat.PlainText.value,
                             "data": {
                                 "fullname": ":width",
-                                "filename": "${root_path}/completion_extras.php",
+                                "filename": "${root_path}/xhp_class_definitions.php",
                                 "line": 5,
                                 "char": 27,
                                 "base_class": "\\:ab:cd:text",
@@ -2118,7 +2433,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "insertTextFormat": InsertTextFormat.PlainText.value,
                             "data": {
                                 "fullname": ":color",
-                                "filename": "${root_path}/completion_extras.php",
+                                "filename": "${root_path}/xhp_class_definitions.php",
                                 "line": 5,
                                 "char": 13,
                                 "base_class": "\\:ab:cd:text",
@@ -2174,6 +2489,26 @@ class TestLsp(TestCase[LspTestDriver]):
                             "insertText": ":ab:cd:text",
                             "insertTextFormat": InsertTextFormat.PlainText.value,
                             "data": {"fullname": ":ab:cd:text"},
+                        },
+                        {
+                            "label": ":xhp:enum-attribute",
+                            "kind": 7,
+                            "detail": "class",
+                            "inlineDetail": "class",
+                            "sortText": ":xhp:enum-attribute",
+                            "insertText": ":xhp:enum-attribute",
+                            "insertTextFormat": InsertTextFormat.PlainText.value,
+                            "data": {"fullname": ":xhp:enum-attribute"},
+                        },
+                        {
+                            "label": ":xhp:generic",
+                            "kind": 7,
+                            "detail": "class",
+                            "inlineDetail": "class",
+                            "sortText": ":xhp:generic",
+                            "insertText": ":xhp:generic",
+                            "insertTextFormat": InsertTextFormat.PlainText.value,
+                            "data": {"fullname": ":xhp:generic"},
                         },
                     ],
                 },
@@ -2298,7 +2633,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "insertTextFormat": InsertTextFormat.PlainText.value,
                             "data": {
                                 "fullname": ":width",
-                                "filename": "${root_path}/completion_extras.php",
+                                "filename": "${root_path}/xhp_class_definitions.php",
                                 "line": 5,
                                 "char": 27,
                                 "base_class": "\\:ab:cd:text",
@@ -2314,7 +2649,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "insertTextFormat": InsertTextFormat.PlainText.value,
                             "data": {
                                 "fullname": ":color",
-                                "filename": "${root_path}/completion_extras.php",
+                                "filename": "${root_path}/xhp_class_definitions.php",
                                 "line": 5,
                                 "char": 13,
                                 "base_class": "\\:ab:cd:text",
@@ -2361,7 +2696,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "insertTextFormat": InsertTextFormat.PlainText.value,
                             "data": {
                                 "fullname": ":width",
-                                "filename": "${root_path}/completion_extras.php",
+                                "filename": "${root_path}/xhp_class_definitions.php",
                                 "line": 5,
                                 "char": 27,
                                 "base_class": "\\:ab:cd:text",
@@ -2377,7 +2712,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "insertTextFormat": InsertTextFormat.PlainText.value,
                             "data": {
                                 "fullname": ":color",
-                                "filename": "${root_path}/completion_extras.php",
+                                "filename": "${root_path}/xhp_class_definitions.php",
                                 "line": 5,
                                 "char": 13,
                                 "base_class": "\\:ab:cd:text",
@@ -2531,7 +2866,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "class",
                                 "filename": "${root_path}/completion_extras.php",
-                                "line": 13,
+                                "line": 3,
                                 "char": 6,
                                 "base_class": "\\Elsa",
                             },
@@ -2547,7 +2882,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "Bard",
                                 "filename": "${root_path}/completion_extras.php",
-                                "line": 13,
+                                "line": 3,
                                 "char": 12,
                                 "base_class": "\\Elsa",
                             },
@@ -2563,7 +2898,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "Alonso",
                                 "filename": "${root_path}/completion_extras.php",
-                                "line": 13,
+                                "line": 3,
                                 "char": 12,
                                 "base_class": "\\Elsa",
                             },
@@ -2580,7 +2915,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "isValid",
                                 "filename": "${hhi_path}/BuiltinEnum.hhi",
-                                "line": 49,
+                                "line": 46,
                                 "char": 32,
                                 "base_class": "\\Elsa",
                             },
@@ -2588,16 +2923,16 @@ class TestLsp(TestCase[LspTestDriver]):
                         {
                             "label": "getValues",
                             "kind": 2,
-                            "detail": "function(): darray<string, Elsa>",
+                            "detail": "function(): dict<string, Elsa>",
                             "inlineDetail": "()",
-                            "itemType": "darray<string, Elsa>",
+                            "itemType": "dict<string, Elsa>",
                             "sortText": "getValues",
                             "insertText": "getValues()",
                             "insertTextFormat": InsertTextFormat.Snippet.value,
                             "data": {
                                 "fullname": "getValues",
                                 "filename": "${hhi_path}/BuiltinEnum.hhi",
-                                "line": 34,
+                                "line": 33,
                                 "char": 32,
                                 "base_class": "\\Elsa",
                             },
@@ -2605,16 +2940,16 @@ class TestLsp(TestCase[LspTestDriver]):
                         {
                             "label": "getNames",
                             "kind": 2,
-                            "detail": "function(): darray<Elsa, string>",
+                            "detail": "function(): dict<Elsa, string>",
                             "inlineDetail": "()",
-                            "itemType": "darray<Elsa, string>",
+                            "itemType": "dict<Elsa, string>",
                             "sortText": "getNames",
                             "insertText": "getNames()",
                             "insertTextFormat": InsertTextFormat.Snippet.value,
                             "data": {
                                 "fullname": "getNames",
                                 "filename": "${hhi_path}/BuiltinEnum.hhi",
-                                "line": 43,
+                                "line": 41,
                                 "char": 32,
                                 "base_class": "\\Elsa",
                             },
@@ -2631,7 +2966,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "coerce",
                                 "filename": "${hhi_path}/BuiltinEnum.hhi",
-                                "line": 56,
+                                "line": 52,
                                 "char": 32,
                                 "base_class": "\\Elsa",
                             },
@@ -2648,7 +2983,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "assertAll",
                                 "filename": "${hhi_path}/BuiltinEnum.hhi",
-                                "line": 70,
+                                "line": 64,
                                 "char": 32,
                                 "base_class": "\\Elsa",
                             },
@@ -2665,7 +3000,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "assert",
                                 "filename": "${hhi_path}/BuiltinEnum.hhi",
-                                "line": 63,
+                                "line": 58,
                                 "char": 32,
                                 "base_class": "\\Elsa",
                             },
@@ -2739,7 +3074,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "class",
                                 "filename": "${root_path}/completion_extras.php",
-                                "line": 18,
+                                "line": 8,
                                 "char": 13,
                                 "base_class": "\\DeprecatedClass",
                             },
@@ -2756,7 +3091,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "test_do_not_use",
                                 "filename": "${root_path}/completion_extras.php",
-                                "line": 22,
+                                "line": 12,
                                 "char": 26,
                                 "base_class": "\\DeprecatedClass",
                             },
@@ -2773,7 +3108,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "getName",
                                 "filename": "${root_path}/completion_extras.php",
-                                "line": 19,
+                                "line": 9,
                                 "char": 26,
                                 "base_class": "\\DeprecatedClass",
                             },
@@ -2790,7 +3125,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "getAttributes_DO_NOT_USE",
                                 "filename": "${root_path}/completion_extras.php",
-                                "line": 21,
+                                "line": 11,
                                 "char": 26,
                                 "base_class": "\\DeprecatedClass",
                             },
@@ -2807,7 +3142,7 @@ class TestLsp(TestCase[LspTestDriver]):
                             "data": {
                                 "fullname": "__getLoader",
                                 "filename": "${root_path}/completion_extras.php",
-                                "line": 20,
+                                "line": 10,
                                 "char": 26,
                                 "base_class": "\\DeprecatedClass",
                             },
@@ -3061,7 +3396,7 @@ class TestLsp(TestCase[LspTestDriver]):
             )
             .request(
                 line=line(),
-                comment="find overridden method from trait",
+                comment="find overridden method from trait. It's arbitrary which one we pick. This test embodies current (alphabetical) implementation.",
                 method="textDocument/definition",
                 params={
                     "textDocument": {"uri": "${php_file_uri}"},
@@ -3081,7 +3416,7 @@ class TestLsp(TestCase[LspTestDriver]):
             )
             .request(
                 line=line(),
-                comment="find overridden static method",
+                comment="find overridden static method. It's arbitrary which one we pick. This test embodies current (alphabetical) implementation.",
                 method="textDocument/definition",
                 params={
                     "textDocument": {"uri": "${php_file_uri}"},
@@ -3150,6 +3485,29 @@ class TestLsp(TestCase[LspTestDriver]):
                 method="textDocument/documentSymbol",
                 params={"textDocument": {"uri": "${php_file_uri}"}},
                 result=[
+                    {
+                        "name": "First",
+                        "kind": 14,
+                        "location": {
+                            "uri": "file://${root_path}/definition.php",
+                            "range": {
+                                "start": {"line": 50, "character": 18},
+                                "end": {"line": 50, "character": 47},
+                            },
+                        },
+                        "containerName": "MyEnumClass",
+                    },
+                    {
+                        "name": "MyEnumClass",
+                        "kind": 10,
+                        "location": {
+                            "uri": "file://${root_path}/definition.php",
+                            "range": {
+                                "start": {"line": 49, "character": 0},
+                                "end": {"line": 52, "character": 1},
+                            },
+                        },
+                    },
                     {
                         "name": "testClassMemberInsideConstructorInvocation",
                         "kind": 12,
@@ -3319,6 +3677,29 @@ class TestLsp(TestCase[LspTestDriver]):
                             },
                         },
                     },
+                    {
+                        "name": "MyEnumClassKind",
+                        "kind": 5,
+                        "location": {
+                            "uri": "file://${root_path}/definition.php",
+                            "range": {
+                                "start": {"line": 48, "character": 0},
+                                "end": {"line": 48, "character": 24},
+                            },
+                        },
+                    },
+                    {
+                        "name": "Second",
+                        "kind": 14,
+                        "location": {
+                            "uri": "${php_file_uri}",
+                            "range": {
+                                "start": {"line": 51, "character": 18},
+                                "end": {"line": 51, "character": 48},
+                            },
+                        },
+                        "containerName": "MyEnumClass",
+                    },
                 ],
                 powered_by="serverless_ide",
             )
@@ -3372,13 +3753,24 @@ class TestLsp(TestCase[LspTestDriver]):
                         "openClose": True,
                         "change": 2,
                         "willSave": False,
-                        "willSaveWaitUntil": False,
+                        "willSaveWaitUntil": True,
                         "save": {"includeText": False},
                     },
                     "hoverProvider": True,
                     "completionProvider": {
                         "resolveProvider": True,
-                        "triggerCharacters": ["$", ">", "\\", ":", "<", "[", "'", '"'],
+                        "triggerCharacters": [
+                            "$",
+                            ">",
+                            "\\",
+                            ":",
+                            "<",
+                            "[",
+                            "'",
+                            '"',
+                            "{",
+                            "#",
+                        ],
                     },
                     "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
                     "definitionProvider": True,
@@ -3410,7 +3802,12 @@ class TestLsp(TestCase[LspTestDriver]):
                             "id": "did-change-watched-files",
                             "method": "workspace/didChangeWatchedFiles",
                             "registerOptions": {
-                                "watchers": [{"globPattern": "**", "kind": 7}]
+                                "watchers": [
+                                    {
+                                        "globPattern": "**/*.{php,phpt,hack,hackpartial,hck,hh,hhi,xhp}",
+                                        "kind": 7,
+                                    }
+                                ]
                             },
                         }
                     ]
@@ -3758,6 +4155,100 @@ class TestLsp(TestCase[LspTestDriver]):
                     "range": {
                         "start": {"line": 58, "character": 2},
                         "end": {"line": 58, "character": 16},
+                    },
+                },
+                powered_by="serverless_ide",
+            )
+            .request(
+                line=line(),
+                comment="hover over an primitive attribute in an xhp literal",
+                method="textDocument/hover",
+                params={
+                    "textDocument": {"uri": "${php_file_uri}"},
+                    "position": {"line": 62, "character": 25},
+                },
+                result={
+                    "contents": [
+                        {"language": "hack", "value": "public ?string name"},
+                        ":xhp:enum-attribute::name docblock",
+                    ],
+                    "range": {
+                        "start": {"line": 62, "character": 22},
+                        "end": {"line": 62, "character": 26},
+                    },
+                },
+                powered_by="serverless_ide",
+            )
+            .request(
+                line=line(),
+                comment="hover over a nonprimitive attribute in an xhp literal",
+                method="textDocument/hover",
+                params={
+                    "textDocument": {"uri": "${php_file_uri}"},
+                    "position": {"line": 62, "character": 36},
+                },
+                result={
+                    "contents": [
+                        {"language": "hack", "value": "public ?MyEnum enum-attribute"}
+                    ],
+                    "range": {
+                        "start": {"line": 62, "character": 33},
+                        "end": {"line": 62, "character": 47},
+                    },
+                },
+                powered_by="serverless_ide",
+            )
+            .request(
+                line=line(),
+                comment="hover over a generic attribute in an xhp literal",
+                method="textDocument/hover",
+                params={
+                    "textDocument": {"uri": "${php_file_uri}"},
+                    "position": {"line": 63, "character": 16},
+                },
+                result={
+                    "contents": [
+                        {"language": "hack", "value": "public ?ID<EntSomething> id"}
+                    ],
+                    "range": {
+                        "start": {"line": 63, "character": 15},
+                        "end": {"line": 63, "character": 17},
+                    },
+                },
+                powered_by="serverless_ide",
+            )
+            .notification(
+                comment="Add '<xhp:enum-attribute name' to test hover for incomplete xhp attribute",
+                method="textDocument/didChange",
+                params={
+                    "textDocument": {"uri": "${php_file_uri}"},
+                    "contentChanges": [
+                        {
+                            "range": {
+                                "start": {"line": 69, "character": 0},
+                                "end": {"line": 69, "character": 0},
+                            },
+                            "text": "<xhp:enum-attribute name",
+                        }
+                    ],
+                },
+            )
+            .request(
+                line=line(),
+                comment="hover over an attribute in an xhp literal without a value",
+                method="textDocument/hover",
+                params={
+                    "textDocument": {"uri": "${php_file_uri}"},
+                    "position": {"line": 69, "character": 22},
+                },
+                result={
+                    "contents": [
+                        {"language": "hack", "value": "public ?string name"},
+                        ":xhp:enum-attribute::name docblock",
+                    ],
+                    "range": {
+                        "start": {"line": 69, "character": 20},
+                        "end": {"line": 69, "character": 24},
                     },
                 },
                 powered_by="serverless_ide",
@@ -4967,7 +5458,7 @@ class BaseClassIncremental {
 function a_hover(): int {
   return b_hover();
 }
-# A comment describing b_hover differently.
+// A comment describing b_hover differently.
 function b_hover(): string {
   return 42;
 }
@@ -5773,8 +6264,8 @@ If you want to examine the raw LSP logs, you can check the `.sent.log` and
         self.run_spec(spec, variables, wait_for_server=False, use_serverless_ide=True)
 
     def test_status_stopped(self) -> None:
-        variables = dict(self.prepare_serverless_ide_environment())
-        variables.update(self.setup_php_file("hover.php"))
+        self.prepare_server_environment()
+        variables = self.setup_php_file("hover.php")
         self.test_driver.stop_hh_server()
 
         spec = (
@@ -5799,8 +6290,8 @@ If you want to examine the raw LSP logs, you can check the `.sent.log` and
         self.run_spec(spec, variables, wait_for_server=False, use_serverless_ide=False)
 
     def test_status_running(self) -> None:
-        variables = dict(self.prepare_serverless_ide_environment())
-        variables.update(self.setup_php_file("hover.php"))
+        self.prepare_server_environment()
+        variables = self.setup_php_file("hover.php")
 
         spec = (
             self.initialize_spec(

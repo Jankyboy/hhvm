@@ -15,8 +15,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EXT_DOMDOCUMENT_H_
-#define incl_HPHP_EXT_DOMDOCUMENT_H_
+#pragma once
 
 #include "hphp/runtime/base/array-iterator.h"
 #include "hphp/runtime/ext/extension.h"
@@ -52,7 +51,9 @@ struct DOMNode {
   // for __clone
   DOMNode& operator=(const DOMNode& copy);
 
-  req::ptr<XMLDocumentData> doc() const { return m_node->doc(); }
+  req::ptr<XMLDocumentData> doc() const {
+    return m_node ? m_node->doc() : nullptr;
+  }
   XMLNode node() const { return m_node; }
   xmlNodePtr nodep() const {
     return m_node ? m_node->nodep() : nullptr;
@@ -147,4 +148,3 @@ struct DOMXPath {
 ///////////////////////////////////////////////////////////////////////////////
 }
 
-#endif // incl_HPHP_EXT_DOMDOCUMENT_H_

@@ -17,6 +17,12 @@ val expr :
   Nast.expr ->
   Typing_env_types.env * Tast.expr * Typing_defs.locl_ty
 
+val expr_with_pure_coeffects :
+  ?expected:Typing_helpers.ExpectedTy.t ->
+  Typing_env_types.env ->
+  Nast.expr ->
+  Typing_env_types.env * Tast.expr * Typing_defs.locl_ty
+
 val user_attribute :
   Typing_env_types.env ->
   Nast.user_attribute ->
@@ -26,6 +32,7 @@ val stmt : Typing_env_types.env -> Nast.stmt -> Typing_env_types.env * Tast.stmt
 
 val bind_param :
   Typing_env_types.env ->
+  ?immutable:bool ->
   Typing_defs.locl_ty * Nast.fun_param ->
   Typing_env_types.env * Tast.fun_param
 
@@ -58,3 +65,32 @@ val check_shape_keys_validity :
   Pos.t ->
   Ast_defs.shape_field_name list ->
   Typing_env_types.env
+
+val type_capability :
+  Typing_env_types.env ->
+  Aast.contexts option ->
+  Aast.contexts option ->
+  Pos.t ->
+  Typing_env_types.env * Typing_defs.locl_ty * Typing_defs.locl_ty
+
+val call :
+  expected:Typing_helpers.ExpectedTy.t option ->
+  ?nullsafe:Pos.t option ->
+  ?in_await:Typing_reason.t ->
+  Pos.t ->
+  Typing_env_types.env ->
+  Typing_defs.locl_ty ->
+  Nast.expr list ->
+  Nast.expr option ->
+  Typing_env_types.env
+  * (Tast.expr list * Tast.expr option * Typing_defs.locl_ty * bool)
+
+val with_special_coeffects :
+  Typing_env_types.env ->
+  Typing_defs.locl_ty ->
+  Typing_defs.locl_ty ->
+  (Typing_env_types.env -> Typing_env_types.env * 'a) ->
+  Typing_env_types.env * 'a
+
+val triple_to_pair :
+  Typing_env_types.env * 'a * 'b -> Typing_env_types.env * ('a * 'b)

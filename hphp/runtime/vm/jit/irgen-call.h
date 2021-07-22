@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_JIT_IRGEN_CALL_H_
-#define incl_HPHP_JIT_IRGEN_CALL_H_
+#pragma once
 
 #include <cstdint>
 
@@ -40,8 +39,6 @@ struct IRGS;
 void emitDirectCall(IRGS& env, Func* callee, uint32_t numParams,
                     SSATmp* const* const args);
 
-void emitCallerRxChecksKnown(IRGS& env, const Func* callee);
-
 Type callReturnType(const Func* callee);
 Type awaitedCallReturnType(const Func* callee);
 Type callOutType(const Func* callee, uint32_t index);
@@ -50,4 +47,3 @@ Type callOutType(const Func* callee, uint32_t index);
 
 }}}
 
-#endif

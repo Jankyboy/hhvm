@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_IR_INSTRUCTION_H_
-#define incl_HPHP_IR_INSTRUCTION_H_
+#pragma once
 
 #include "hphp/runtime/vm/jit/bc-marker.h"
 #include "hphp/runtime/vm/jit/extra-data.h"
@@ -301,6 +300,7 @@ struct IRInstruction {
    */
   folly::Range<SSATmp**> srcs() const;
   folly::Range<SSATmp**> dsts();
+  folly::Range<SSATmp* const *> dsts() const;
 
   /*
    * Set a single src or all srcs.
@@ -411,6 +411,11 @@ struct IRInstruction {
    */
   void clearEdges();
 
+  /*
+   * Whether the next() edge is unreachable based on type information.
+   */
+  bool isNextEdgeUnreachable() const;
+
 private:
   /*
    * Block/edge implementations.
@@ -480,4 +485,3 @@ Type thisTypeFromFunc(const Func* func);
 
 #include "hphp/runtime/vm/jit/ir-instruction-inl.h"
 
-#endif

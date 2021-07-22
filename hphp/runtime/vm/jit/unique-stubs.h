@@ -142,20 +142,7 @@ struct UniqueStubs {
    * @context:  func prologue
    */
   TCA fcallHelperThunk;
-
-  /*
-   * Look up or emit a func body entry point and jump to it---or, failing that,
-   * fall back to the interpreter.
-   *
-   * This func body is just the translation for Func::base(), for functions
-   * with no DV init funclets.  For functions with DV funclets, the func body
-   * first dispatches to any necessary funclets before jumping to the base()
-   * translation.
-   *
-   * @reached:  call from enterTCHelper$callTC
-   * @context:  func body
-   */
-  TCA funcBodyHelperThunk;
+  TCA fcallHelperNoTranslateThunk;
 
   /*
    * Call EventHook::onFunctionCall() and handle the case where it requests
@@ -186,8 +173,8 @@ struct UniqueStubs {
    * Return from a function when the ActRec was pushed by the interpreter.
    *
    * The return IP on the ActRec will be set to one of these stubs, so if
-   * someone tries to execute a return instruction, we get a chance to set up
-   * state for a POST_INTERP_RET service request.
+   * someone tries to execute a return instruction, handlePostInterpRet() gets
+   * a chance to translate the code starting at the return address.
    *
    * Generators need a different stub because the ActRec for a generator is in
    * the heap.
@@ -198,16 +185,6 @@ struct UniqueStubs {
   TCA retHelper;
   TCA genRetHelper;       // version for generator
   TCA asyncGenRetHelper;  // version for async generators
-
-  /*
-   * Return from a function when the ActRec was pushed by an inlined call.
-   *
-   * This is the same as retHelper, but is kept separate to aid in debugging.
-   *
-   * @reached:  phpret from TC
-   * @context:  func body (after returning to caller)
-   */
-  TCA retInlHelper;
 
   /*
    * Return from a resumed async function.
@@ -265,27 +242,26 @@ struct UniqueStubs {
    *
    * Expects that all VM registers are synced.
    *
-   * @reached:  jmp from funcBodyHelperThunk
+   * @reached:  entry from jit::enterTC
    *            jmp from fcallHelperThunk
    *            call from enterTCHelper
    * @context:  func body
    */
   TCA resumeHelper;
+  TCA resumeHelperNoTranslate;
 
   /*
    * Like resumeHelper, but interpret a basic block first to ensure we make
    * forward progress.
    *
-   * interpHelper expects the correct value of vmpc to be in the first argument
-   * register and syncs it, whereas interpHelperSyncedPC expects vmpc to be
-   * synced a priori.  Both stubs will sync the vmsp and vmfp registers to
-   * vmRegs before passing control to the interpreter.
+   * Expects vmpc to be synced. Both stubs will sync the vmsp and vmfp registers
+   * to vmRegs before passing control to the interpreter.
    *
    * @reached:  jmp from TC
    * @context:  func body
    */
   TCA interpHelper;
-  TCA interpHelperSyncedPC;
+  TCA interpHelperNoTranslate;
 
   /*
    * Stubs for each bytecode with the CF flag, which InterpOne the bytecode and
@@ -370,6 +346,9 @@ struct UniqueStubs {
    * the stublogue header. Unwinder uses it to determine the catch trace of
    * the return adddress belonging to the same logical vmfp().
    *
+   * The endCatchStubloguePrologueHelper initializes the ActRec space pointed
+   * to by the rvmsp() to uninits and continues at endCatchStublogueHelper.
+   *
    * If the unwinder has set state indicating a return address to jump to, we
    * load vmfp and vmsp and jump there.  Otherwise, we call _Unwind_Resume.
    */
@@ -379,6 +358,7 @@ struct UniqueStubs {
   TCA endCatchHelper;
   TCA endCatchHelperPast;
   TCA endCatchStublogueHelper;
+  TCA endCatchStubloguePrologueHelper;
   TCA unwinderAsyncRet;
   TCA unwinderAsyncNullRet;
 
@@ -388,15 +368,31 @@ struct UniqueStubs {
   TCA throwExceptionWhileUnwinding;
 
   /*
-   * Service request helper.
-   *
-   * Packs service request arguments into a struct on the stack before calling
-   * the C++ service request handler.
+   * Handle a request to translate the code at the given current location.
+   * See svcreq::handleTranslate() for more details.
    *
    * @reached:  jmp from TC
    * @context:  func body
    */
-  TCA handleSRHelper;
+  TCA handleTranslate;
+
+  /*
+   * Handle a request to retranslate the code at the given current location.
+   * See svcreq::handleRetranslate() for more details.
+   *
+   * @reached:  jmp from TC
+   * @context:  func body
+   */
+  TCA handleRetranslate;
+
+  /*
+   * Handle a request to retranslate the current function in optimized mode.
+   * See svcreq::handleRetranslateOpt() for more details.
+   *
+   * @reached:  jmp from TC
+   * @context:  func body
+   */
+  TCA handleRetranslateOpt;
 
   /////////////////////////////////////////////////////////////////////////////
 
@@ -456,7 +452,8 @@ RegSet interp_one_cf_regs();
 /*
  * Emit code to `v' which jumps to interpHelper with the proper arguments.
  */
-void emitInterpReq(Vout& v, SrcKey sk, FPInvOffset spOff);
+void emitInterpReq(Vout& v, SrcKey sk, SBInvOffset spOff);
+void emitInterpReqNoTranslate(Vout& v, SrcKey sk, SBInvOffset spOff);
 
 ///////////////////////////////////////////////////////////////////////////////
 

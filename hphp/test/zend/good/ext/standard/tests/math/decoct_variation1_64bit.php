@@ -4,15 +4,8 @@
  * Source code: ext/standard/math.c
  */
 
-// get a class
-class classA
-{
-}
 <<__EntryPoint>> function main(): void {
 echo "*** Testing decoct() : usage variations ***\n";
-//get an unset variable
-$unset_var = 10;
-unset ($unset_var);
 
 
 // heredoc string
@@ -60,17 +53,8 @@ $inputs = varray[
        'abcxyz',
        $heredoc,
 
-       // object data
-/*24*/ new classA(),
-
-       // undefined data
-/*25*/ @$undefined_var,
-
-       // unset data
-/*26*/ @$unset_var,
-
        // resource variable
-/*27*/ $fp
+/*25*/ $fp
 ];
 
 // loop through each element of $inputs to check the behaviour of decoct()

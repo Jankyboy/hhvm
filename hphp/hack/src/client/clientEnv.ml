@@ -60,10 +60,14 @@ type client_mode =
   | MODE_STATS
   | MODE_STATUS
   | MODE_STATUS_SINGLE of string (* filename *)
+  | MODE_STATUS_SINGLE_REMOTE_EXECUTION of string (* filename *)
+  | MODE_STATUS_REMOTE_EXECUTION of string (* "warm" or "cold" *)
+  | MODE_STATUS_MULTI_REMOTE_EXECUTION
   | MODE_TYPE_AT_POS of string
   | MODE_TYPE_AT_POS_BATCH of string list
+  | MODE_TYPE_ERROR_AT_POS of string
+  | MODE_TAST_HOLES of string
   | MODE_FUN_DEPS_AT_POS_BATCH of string list
-  | MODE_FUN_IS_LOCALLABLE_AT_POS_BATCH of string list
   | MODE_FILE_DEPENDENTS
   | MODE_GLOBAL_INFERENCE of ServerGlobalInferenceTypes.mode * string list
   | MODE_VERBOSE of bool
@@ -86,8 +90,10 @@ type client_check_env = {
   max_errors: int option;
   mode: client_mode;
   no_load: bool;
+  save_64bit: string option;
   output_json: bool;
   prechecked: bool option;
+  mini_state: string option;
   profile_log: bool;
   remote: bool;
   replace_state_after_saving: bool;
@@ -97,6 +103,8 @@ type client_check_env = {
   deadline: float option;
   watchman_debug_logging: bool;
   allow_non_opt_build: bool;
+      (** desc is a human-readable string description, to appear in "hh_server busy [desc]" *)
+  desc: string;
 }
 
 let mode_to_string = function
@@ -151,11 +159,15 @@ let mode_to_string = function
   | MODE_STATS -> "MODE_STATS"
   | MODE_STATUS -> "MODE_STATUS"
   | MODE_STATUS_SINGLE _ -> "MODE_STATUS_SINGLE"
+  | MODE_STATUS_SINGLE_REMOTE_EXECUTION _ ->
+    "MODE_STATUS_SINGLE_REMOTE_EXECUTION"
+  | MODE_STATUS_REMOTE_EXECUTION _ -> "MODE_STATUS_REMOTE_EXECUTION"
+  | MODE_STATUS_MULTI_REMOTE_EXECUTION -> "MODE_STATUS_MULTI_REMOTE_EXECUTION"
   | MODE_TYPE_AT_POS _ -> "MODE_TYPE_AT_POS"
   | MODE_TYPE_AT_POS_BATCH _ -> "MODE_TYPE_AT_POS_BATCH"
+  | MODE_TYPE_ERROR_AT_POS _ -> "MODE_TYPE_ERROR_AT_POS"
+  | MODE_TAST_HOLES _ -> "MODE_TAST_HOLES"
   | MODE_FUN_DEPS_AT_POS_BATCH _ -> "MODE_FUN_DEPS_AT_POS_BATCH"
-  | MODE_FUN_IS_LOCALLABLE_AT_POS_BATCH _ ->
-    "MODE_FUN_IS_LOCALLABLE_AT_POS_BATCH"
   | MODE_FILE_DEPENDENTS -> "MODE_FILE_LEVEL_DEPENDENCIES"
   | MODE_GLOBAL_INFERENCE _ -> "MODE_GLOBAL_INFERENCE"
   | MODE_VERBOSE _ -> "MODE_VERBOSE"

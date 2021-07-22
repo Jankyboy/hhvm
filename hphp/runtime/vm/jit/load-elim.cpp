@@ -19,7 +19,6 @@
 #include <algorithm>
 
 #include <boost/variant.hpp>
-#include <folly/Optional.h>
 #include <folly/ScopeGuard.h>
 #include <folly/Hash.h>
 
@@ -315,15 +314,21 @@ void clear_everything(Local& env) {
   env.state.avail.reset();
 }
 
+// Construct an immediate that represents all of an iterator's type fields.
+int64_t iter_type_immediate(const IterTypeData& data) {
+  return static_cast<uint32_t>(data.type.as_byte) << 16 |
+         static_cast<uint32_t>(data.layout.toUint16());
+}
+
 TrackedLoc* find_tracked(State& state,
-                         folly::Optional<ALocMeta> meta) {
+                         Optional<ALocMeta> meta) {
   if (!meta) return nullptr;
   return state.avail[meta->index] ? &state.tracked[meta->index]
                                   : nullptr;
 }
 
 TrackedLoc* find_tracked(Local& env,
-                         folly::Optional<ALocMeta> meta) {
+                         Optional<ALocMeta> meta) {
   return find_tracked(env.state, meta);
 }
 
@@ -454,9 +459,9 @@ Flags handle_general_effects(Local& env,
     return FNone{};
   }
 
-  auto handleCheck = [&](Type typeParam) -> folly::Optional<Flags> {
+  auto handleCheck = [&](Type typeParam) -> Optional<Flags> {
     auto const meta = env.global.ainfo.find(canonicalize(m.loads));
-    if (!meta) return folly::none;
+    if (!meta) return std::nullopt;
 
     auto const tloc = &env.state.tracked[meta->index];
     if (!env.state.avail[meta->index]) {
@@ -480,7 +485,7 @@ Flags handle_general_effects(Local& env,
     if (tloc->knownValue != nullptr) {
       return Flags{FReducible{tloc->knownValue, tloc->knownType, meta->index}};
     }
-    return folly::none;
+    return std::nullopt;
   };
 
   switch (inst.op()) {
@@ -500,7 +505,8 @@ Flags handle_general_effects(Local& env,
     if (!meta || !env.state.avail[meta->index]) break;
     auto const& type = env.state.tracked[meta->index].knownType;
     if (!type.hasConstVal(TInt)) break;
-    auto const match = type.intVal() == inst.extra<CheckIter>()->type.as_byte;
+    auto const value = iter_type_immediate(*inst.extra<CheckIter>());
+    auto const match = type.intVal() == value;
     return match ? Flags{FJmpNext{}} : Flags{FJmpTaken{}};
   }
 
@@ -535,7 +541,7 @@ Flags handle_general_effects(Local& env,
   }
 
   case CheckVecBounds: {
-    assertx(inst.src(0)->type().subtypeOfAny(TVArr, TVec));
+    assertx(inst.src(0)->isA(TVec));
     if (!inst.src(1)->hasConstVal(TInt)) break;
 
     auto const idx = inst.src(1)->intVal();
@@ -587,7 +593,7 @@ void handle_call_effects(Local& env,
 }
 
 Flags handle_assert(Local& env, const IRInstruction& inst) {
-  auto const acls = [&] () -> folly::Optional<AliasClass> {
+  auto const acls = [&] () -> Optional<AliasClass> {
     switch (inst.op()) {
     case AssertLoc:
       return AliasClass {
@@ -595,19 +601,26 @@ Flags handle_assert(Local& env, const IRInstruction& inst) {
       };
     case AssertStk:
       return AliasClass {
-        AStack { inst.src(0), inst.extra<AssertStk>()->offset, 1 }
+        AStack::at(inst.extra<AssertStk>()->offset)
       };
     default: break;
     }
-    return folly::none;
+    return std::nullopt;
   }();
   if (!acls) return FNone{};
 
   auto const meta = env.global.ainfo.find(canonicalize(*acls));
-  auto const tloc = find_tracked(env, meta);
-  if (!tloc) {
+  if (!meta) {
     FTRACE(4, "      untracked assert\n");
     return FNone{};
+  }
+
+  auto const tloc = &env.state.tracked[meta->index];
+  if (!env.state.avail[meta->index]) {
+    // We know nothing about the location. Initialize it with our typeParam.
+    tloc->knownValue = nullptr;
+    tloc->knownType = inst.typeParam();
+    env.state.avail.set(meta->index);
   }
 
   tloc->knownType &= inst.typeParam();
@@ -641,19 +654,6 @@ void check_decref_eligible(
     }
   };
 
-int32_t findSPOffset(const IRUnit& unit, const SSATmp* fp,
-                     const IRInstruction* defSP) {
-  assertx(fp->isA(TFramePtr));
-  auto const inst = fp->inst();
-
-  if (inst->is(BeginInlining)) {
-    return inst->extra<BeginInlining>()->spOffset.offset;
-  }
-  assertx(inst->is(DefFP, DefFuncEntryFP));
-  assertx(defSP->is(DefFrameRelSP, DefRegSP));
-  return defSP->extra<FPInvOffsetData>()->offset.offset;
-}
-
 Flags handle_end_catch(Local& env, const IRInstruction& inst) {
   if (!RuntimeOption::EvalHHIRLoadEnableTeardownOpts) return FNone{};
   assertx(inst.op() == EndCatch);
@@ -664,7 +664,7 @@ Flags handle_end_catch(Local& env, const IRInstruction& inst) {
     FTRACE(4, "      non-reducible EndCatch\n");
     return FNone{};
   }
-  auto pc = inst.marker().fixupSk().unit()->entry() + inst.marker().bcOff();
+  auto pc = inst.marker().fixupSk().func()->entry() + inst.marker().bcOff();
   auto const op = decode_op(pc);
   if (op == OpFCallCtor &&
       decodeFCallArgs(op, pc, nullptr /*StringDecoder*/).lockWhileUnwinding()) {
@@ -673,57 +673,7 @@ Flags handle_end_catch(Local& env, const IRInstruction& inst) {
   }
   assertx(data->stublogue != EndCatchData::FrameMode::Stublogue);
   auto const numLocals = inst.func()->numLocals();
-  auto const astk = AStack { inst.src(1), data->offset, 0 };
-  auto const numStackElemsWithInlining =
-    inst.marker().resumeMode() != ResumeMode::None
-      ? -astk.offset.offset
-      : -astk.offset.offset - inst.func()->numSlotsInFrame();
-  assertx(numStackElemsWithInlining >= 0);
-
-  /*
-
-  Reference to guide around stack offset calculations:
-
-  +---------------------------------+
-  | ActRec for outer Func           |
-  +---------------------------------+ <-+ DefFp    <-+          <-+
-  | Local1 for outer Func           |   |            |            |
-  | Local2 for outer Func           |   |            |            |
-  | Local3 for outer Func           |   |            | defSP      |
-  | Local4 for outer Func           |   |            |  ->spOff   | findSpOffset
-  +---------------------------------+   |            |            |
-  |                                 |   |            |            |
-  | Stack slots for outer Func      |   |            |            |
-  |                                 | <-] inst.src(0) [ sp ]      | <-+
-  +---------------------------------+   |                         |   |
-  | ActRec for inlined func one     |   |                         |   |
-  +---------------------------------+ <-+ BeginInlining           |   |
-  | Locals for inlined func one     |   |                         |   |
-  +---------------------------------+   |                         |   |
-  | Stack slots for inlined func one|   |                         |   |
-  +---------------------------------+   |                         |   | EndCatch
-  | ActRec for inlined func two     |   |                         |   |  .offset
-  +---------------------------------+ <-+ inst.src(1) [ fp ]    <-+   |
-  | Local1 for inlined func two     |   |                         |   |
-  | Local2 for inlined func two     |   |                         |   |
-  +---------------------------------+ <-+                         |   |
-  | Stack slots for inlined func two|                                 |
-  +---------------------------------+                               <-+
-
-  */
-
-  auto const adjustSP = [&]() -> int32_t {
-    auto const fpReg = inst.src(0);
-    auto const defSP = inst.src(1)->inst();
-    auto const spOff = findSPOffset(env.global.unit, fpReg, defSP);
-    auto const defSPOff = defSP->extra<FPInvOffsetData>()->offset.offset;
-    assertx(!fpReg->inst()->is(DefFP, DefFuncEntryFP) || defSPOff == spOff);
-    return spOff - defSPOff;
-  }();
-
-  // We need to adjust the number of stack elements since we only want to emit
-  // decrefs for the most inlined frame
-  auto const numStackElems = numStackElemsWithInlining + adjustSP;
+  auto const numStackElems = inst.marker().bcSPOff() - SBInvOffset{0};
 
   if (numStackElems + numLocals > kMaxTrackedFrameElems) {
     FTRACE(4, "      non-reducible EndCatch - too many values\n");
@@ -751,7 +701,7 @@ Flags handle_end_catch(Local& env, const IRInstruction& inst) {
     // Iterate from higher addresses to lower so that tracing prints them in
     // the memory layout order
     for (int32_t i = numStackElems - 1; i >= 0; --i) {
-      auto const astk_ = AStack { inst.src(1), data->offset + i, 1 };
+      auto const astk_ = AStack::at(data->offset + i);
       check_decref_eligible(
         env,
         elems,
@@ -772,7 +722,7 @@ Flags handle_end_catch(Local& env, const IRInstruction& inst) {
 Flags handle_enter_tc_unwind(Local& env, const IRInstruction& inst) {
   if (!RuntimeOption::EvalHHIRLoadEnableTeardownOpts) return FNone{};
   assertx(inst.op() == EnterTCUnwind);
-  auto const data = inst.extra<EnterTCUnwindData>();
+  auto const data = inst.extra<EnterTCUnwind>();
   if (!data->teardown || inst.func()->isCPPBuiltin()) {
     FTRACE(4, "      non-reducible EnterTCUnwind\n");
     return FNone{};
@@ -790,7 +740,7 @@ Flags handle_enter_tc_unwind(Local& env, const IRInstruction& inst) {
       env,
       locals,
       i,
-      AliasClass { ALocal { inst.marker().fp(), i }});
+      AliasClass { ALocal { inst.src(1), i }});
   }
 
   if (locals.size() > RuntimeOption::EvalHHIRLoadThrowMaxDecrefs) {
@@ -879,10 +829,10 @@ Flags analyze_inst(Local& env, const IRInstruction& inst) {
   case StIterType: {
     // StIterType stores an immediate to the iter's type fields. We construct a
     // tmp to represent the immediate. (memory-effects can't do so w/o a unit.)
-    auto const iter = inst.extra<StIterType>()->iterId;
-    auto const type = inst.extra<StIterType>()->type;
-    auto const acls = canonicalize(aiter_type(inst.src(0), iter));
-    store(env, acls, env.global.unit.cns(type.as_byte));
+    auto const extra = inst.extra<StIterType>();
+    auto const value = iter_type_immediate(*extra);
+    auto const acls = canonicalize(aiter_type(inst.src(0), extra->iterId));
+    store(env, acls, env.global.unit.cns(value));
     break;
   }
   default:
@@ -1039,7 +989,7 @@ void reduce_inst(Global& env, IRInstruction& inst, const FReducible& flags) {
   DEBUG_ONLY Opcode oldOp = inst.op();
   DEBUG_ONLY Opcode newOp;
 
-  auto const reduce_to = [&] (Opcode op, folly::Optional<Type> typeParam) {
+  auto const reduce_to = [&] (Opcode op, Optional<Type> typeParam) {
     auto const taken = hasEdges(op) ? inst.taken() : nullptr;
     auto const newInst = env.unit.gen(
       op,
@@ -1066,7 +1016,7 @@ void reduce_inst(Global& env, IRInstruction& inst, const FReducible& flags) {
     break;
 
   case CheckInitMem:
-    reduce_to(CheckInit, folly::none);
+    reduce_to(CheckInit, std::nullopt);
     break;
 
   case AssertLoc:
@@ -1118,7 +1068,8 @@ void optimize_end_catch(Global& env, IRInstruction& inst,
   };
 
   auto const original = inst.extra<EndCatchData>();
-  if (original->mode != EndCatchData::CatchMode::LocalsDecRefd) {
+  if (RuntimeOption::EvalHHIRGenerateAsserts &&
+      original->mode != EndCatchData::CatchMode::LocalsDecRefd) {
     block->insert(block->iteratorTo(&inst),
       env.unit.gen(DbgCheckLocalsDecRefd, inst.bcctx(), inst.src(0)));
   }
@@ -1163,6 +1114,8 @@ void optimize_enter_tc_unwind(
   FTRACE(3, "Optimizing EnterTCUnwind\n{}\n", inst.marker().show());
 
   auto const block = inst.block();
+  auto const extra = inst.extra<EnterTCUnwind>();
+  assertx(extra->teardown);
 
   for (auto local : locals) {
     int locId = local.first;
@@ -1176,8 +1129,9 @@ void optimize_enter_tc_unwind(
       env.unit.gen(DecRef, inst.bcctx(), DecRefData{locId}, loadInst->dst());
     block->insert(block->iteratorTo(&inst), decref);
   }
-  auto const data = EnterTCUnwindData { false };
-  env.unit.replace(&inst, EnterTCUnwind, data, inst.src(0));
+  auto const etcData = EnterTCUnwindData { extra->offset, false };
+  env.unit.replace(&inst, EnterTCUnwind, etcData, inst.src(0), inst.src(1),
+                   inst.src(2));
   env.stackTeardownsOptimized++;
 }
 
@@ -1197,7 +1151,7 @@ void optimize_inst(Global& env, IRInstruction& inst, Flags flags) {
              redundantFlags.knownType.toString(),
              resolved->toString());
 
-      if (resolved->type() <= TCell) {
+      if (resolved->type().subtypeOfAny(TCell, TMemToCell)) {
         env.unit.replace(&inst, AssertType, redundantFlags.knownType, resolved);
       } else {
         env.unit.replace(&inst, Mov, resolved);
@@ -1592,7 +1546,7 @@ void optimizeLoads(IRUnit& unit) {
         [&](StructuredLogEntry& cols) {
           auto const func = unit.context().initSrcKey.func();
           cols.setStr("func", func->fullName()->slice());
-          cols.setStr("filename", func->unit()->filepath()->slice());
+          cols.setStr("filename", func->unit()->origFilepath()->slice());
           cols.setStr("hhir_unit", show(unit));
         }
       );

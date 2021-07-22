@@ -14,6 +14,7 @@ module Rewriter = Full_fidelity_rewriter.WithSyntax (Syntax)
 module PositionedTree =
   Full_fidelity_syntax_tree.WithSyntax (Full_fidelity_positioned_syntax)
 module Reason = Typing_reason
+module ITySet = Internal_type_set
 open Syntax
 
 let scuba_table = Scuba.Table.of_name "hh_global_inference"
@@ -33,7 +34,7 @@ let is_not_acceptable ~is_return ty =
         | _ -> acc
 
       (* We consider both dynamic and nothing to be non acceptable as
-      they are "too narrow" and imprecise *)
+         they are "too narrow" and imprecise *)
       method! on_tdynamic _ _ = true
 
       method! on_tnonnull _ _ = true
@@ -42,9 +43,9 @@ let is_not_acceptable ~is_return ty =
       method! on_tunion _ _ _ = true
 
       (* mixed, even though we could infer it and add it, might lead to further
-      problems and doesn't gives us a lot of information. More conceptually
-      adding mixed annotations says "it is fine to add mixed types everywhere"
-      which is not really fine. *)
+         problems and doesn't gives us a lot of information. More conceptually
+         adding mixed annotations says "it is fine to add mixed types everywhere"
+         which is not really fine. *)
       method! on_toption acc _ ty =
         match Typing_defs.get_node ty with
         | Typing_defs.Tnonnull -> true
@@ -160,7 +161,7 @@ module Mode_export_json = struct
     let tyvar_to_json env var =
       let type_to_json ty = "\"" ^ Typing_print.full_i env ty ^ "\"" in
       let bounds_to_json bounds =
-        "[" ^ (List.map bounds type_to_json |> String.concat ~sep:", ") ^ "]"
+        "[" ^ (List.map bounds ~f:type_to_json |> String.concat ~sep:", ") ^ "]"
       in
       let tyvar_pos = Inf.get_tyvar_pos env.inference_env var in
       let upper_bounds = Inf.get_tyvar_upper_bounds env.inference_env var in
@@ -178,10 +179,10 @@ module Mode_export_json = struct
     List.iter
       ~f:(fun var ->
         let key =
-          ( if !is_start then
+          (if !is_start then
             ","
           else
-            "" )
+            "")
           ^ Printf.sprintf "\n\"#%d\": %s" var (tyvar_to_json env var)
         in
         is_start := true;
@@ -406,6 +407,7 @@ let get_patches
                                 parameter_attribute;
                                 parameter_visibility;
                                 parameter_call_convention;
+                                parameter_readonly = _;
                                 parameter_type;
                                 parameter_name;
                                 parameter_default_value = _;
@@ -493,14 +495,14 @@ let get_patches
           in
           modifier >>= fun modifier ->
           declarator_and_has_multiple >>= fun (declarator, has_multiple) ->
-          ( if has_multiple then begin
+          (if has_multiple then begin
             Hh_logger.log
               "%s"
-              ( "warning: generate patch: can't generate patch for"
-              ^ " class property with multiple declarators." );
+              ("warning: generate patch: can't generate patch for"
+              ^ " class property with multiple declarators.");
             None
           end else
-            Some () )
+            Some ())
           >>= fun () ->
           Option.first_some
             (match syntax declarator with
@@ -519,7 +521,7 @@ let get_patches
                type_map
                property_type)
           >>= fun type_str ->
-          ( if is_missing property_attribute_spec then
+          (if is_missing property_attribute_spec then
             position file modifier >>| fun pos ->
             [
               ServerRefactorTypes.(
@@ -528,10 +530,10 @@ let get_patches
           else (
             Hh_logger.log
               "%s"
-              ( "warning: generate patch: can't generate patch for"
-              ^ " class property that already has property attributes." );
+              ("warning: generate patch: can't generate patch for"
+              ^ " class property that already has property attributes.");
             None
-          ) )
+          ))
           >>= fun soft_patch ->
           position_exclusive file property_type >>| fun pos ->
           let patch =

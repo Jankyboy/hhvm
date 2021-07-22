@@ -7,7 +7,7 @@
  *
  *)
 
-open Core_kernel
+open Hh_prelude
 
 (*****************************************************************************)
 (* Module building workers.
@@ -50,7 +50,7 @@ type worker
  * the result of the job when the task is done (cf multiWorker.ml).
  *)
 (*****************************************************************************)
-type ('a, 'b) handle
+type ('job, 'result) handle
 
 (* An empty type *)
 type void
@@ -80,18 +80,27 @@ val close : worker -> (void, Worker.request) Daemon.handle -> unit
 
 type call_wrapper = { wrap: 'x 'b. ('x -> 'b) -> 'x -> 'b }
 
-type 'a entry
+type 'a entry_state = 'a * Gc.control * SharedMem.handle * int
 
-val register_entry_point : restore:('a -> worker_id:int -> unit) -> 'a entry
+(* The first bool parameter specifies whether to use worker clones
+ * or not: for non-longlived-workers, we must clone. *)
+type 'a worker_params = {
+  longlived_workers: bool;
+  entry_state: 'a entry_state;
+  controller_fd: Unix.file_descr option;
+}
+
+type 'a entry = ('a worker_params, Worker.request, void) Daemon.entry
 
 (* Creates a pool of workers. *)
 val make :
   ?call_wrapper:
     (* See docs in WorkerController.worker for call_wrapper. *)
     call_wrapper ->
+  longlived_workers:bool ->
   saved_state:'a ->
   entry:'a entry ->
-  nbr_procs:int ->
+  int ->
   gc_control:Gc.control ->
   heap_handle:SharedMem.handle ->
   worker list

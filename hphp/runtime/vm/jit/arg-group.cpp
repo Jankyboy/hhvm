@@ -43,7 +43,7 @@ const char* destTypeName(DestType dt) {
 ArgDesc::ArgDesc(SSATmp* tmp,
                  Vloc loc,
                  bool val,
-                 folly::Optional<AuxUnion> aux) {
+                 Optional<AuxUnion> aux) {
   assertx(IMPLIES(aux, !val));
 
   auto const setTypeImm = [&] {
@@ -98,32 +98,29 @@ ArgDesc::ArgDesc(SSATmp* tmp,
 ///////////////////////////////////////////////////////////////////////////////
 
 ArgGroup& ArgGroup::ssa(int i, bool allowFP) {
-  auto s = m_inst->src(i);
-  ArgDesc arg(s, m_locs[s]);
+  auto const s = m_inst->src(i);
+  auto const loc = m_locs[s];
+
   if (s->isA(TDbl) && allowFP) {
-    push_SIMDarg(arg, s->type());
-    if (arch() == Arch::PPC64) {
-      // PPC64 ABIv2 compliant: reserve the aligned GP if FP is used
-      push_arg(ArgDesc(ArgDesc::Kind::Imm, 0)); // Push a dummy parameter
-    }
+    push_SIMDarg(ArgDesc{s, loc}, s->type());
   } else {
-    if (wide_tv_val && (s->isA(TLvalToCell) && !s->isA(TBottom))) {
+    if (s->isA(TLvalToCell) && !s->isA(TBottom)) {
       // If there's exactly one register argument slot left, the whole tv_lval
       // goes on the stack instead of being split between a register and the
       // stack.
       if (m_gpArgs.size() == num_arg_regs() - 1) m_override = &m_stkArgs;
       SCOPE_EXIT { m_override = nullptr; };
 
-      push_arg(arg, s->type());
-      push_arg(ArgDesc{ArgDesc::Kind::Reg, m_locs[s].reg(1), -1});
+      push_arg(ArgDesc{ArgDesc::Kind::Reg, loc.reg(0), -1}, s->type());
+      push_arg(ArgDesc{ArgDesc::Kind::Reg, loc.reg(1), -1});
     } else {
-      push_arg(arg, s->type());
+      push_arg(ArgDesc{s, loc}, s->type());
     }
   }
   return *this;
 }
 
-ArgGroup& ArgGroup::typedValue(int i, folly::Optional<AuxUnion> aux) {
+ArgGroup& ArgGroup::typedValue(int i, Optional<AuxUnion> aux) {
   // If there's exactly one register argument slot left, the whole TypedValue
   // goes on the stack instead of being split between a register and the stack.
   if (m_gpArgs.size() == num_arg_regs() - 1) m_override = &m_stkArgs;

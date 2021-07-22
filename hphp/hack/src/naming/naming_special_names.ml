@@ -34,6 +34,8 @@ module Classes = struct
 
   let cHH_BuiltinEnum = "\\HH\\BuiltinEnum"
 
+  let cHH_BuiltinEnumClass = "\\HH\\BuiltinEnumClass"
+
   let cThrowable = "\\Throwable"
 
   let cStdClass = "\\stdClass"
@@ -48,6 +50,8 @@ module Classes = struct
 
   let cStringish = "\\Stringish"
 
+  let cStringishObject = "\\StringishObject"
+
   let cXHPChild = "\\XHPChild"
 
   let cIMemoizeParam = "\\HH\\IMemoizeParam"
@@ -59,19 +63,32 @@ module Classes = struct
   let cIDisposable = "\\IDisposable"
 
   let cIAsyncDisposable = "\\IAsyncDisposable"
+
+  let cMemberOf = "\\HH\\MemberOf"
+
+  let cEnumClassLabel = "\\HH\\EnumClass\\Label"
+
+  (* Classes that can be spliced into ExpressionTrees *)
+  let cSpliceable = "\\Spliceable"
 end
 
 module Collections = struct
   (* concrete classes *)
   let cVector = "\\HH\\Vector"
 
+  let cMutableVector = "\\HH\\MutableVector"
+
   let cImmVector = "\\HH\\ImmVector"
 
   let cSet = "\\HH\\Set"
 
+  let cMutableSet = "\\HH\\MutableSet"
+
   let cImmSet = "\\HH\\ImmSet"
 
   let cMap = "\\HH\\Map"
+
+  let cMutableMap = "\\HH\\MutableMap"
 
   let cImmMap = "\\HH\\ImmMap"
 
@@ -94,6 +111,8 @@ module Collections = struct
 
   let cConstCollection = "\\ConstCollection"
 
+  let cAnyArray = "\\HH\\AnyArray"
+
   let cDict = "\\HH\\dict"
 
   let cVec = "\\HH\\vec"
@@ -102,6 +121,8 @@ module Collections = struct
 end
 
 module Members = struct
+  let mGetInstanceKey = "getInstanceKey"
+
   let mClass = "class"
 
   let __construct = "__construct"
@@ -194,6 +215,10 @@ module AttributeKinds = struct
 
   let typeconst = "\\HH\\TypeConstantAttribute"
 
+  let lambda = "\\HH\\LambdaAttribute"
+
+  let enumcls = "\\HH\\EnumClassAttribute"
+
   let plain_english_map =
     List.fold_left
       ~init:SMap.empty
@@ -210,6 +235,8 @@ module AttributeKinds = struct
         (typeparam, "a type parameter");
         (file, "a file");
         (typeconst, "a type constant");
+        (lambda, "a lambda expression");
+        (enumcls, "an enum class");
       ]
 end
 
@@ -228,57 +255,29 @@ module UserAttributes = struct
 
   let uaMemoizeLSB = "__MemoizeLSB"
 
-  let uaPHPStdLib = "__PHPStdLib"
+  let uaPolicyShardedMemoize = "__PolicyShardedMemoize"
 
-  let uaHipHopSpecific = "__HipHopSpecific"
+  let uaPolicyShardedMemoizeLSB = "__PolicyShardedMemoizeLSB"
+
+  let uaPHPStdLib = "__PHPStdLib"
 
   let uaAcceptDisposable = "__AcceptDisposable"
 
   let uaReturnDisposable = "__ReturnDisposable"
 
-  let uaPure = "__Pure"
-
-  let uaCipp = "__Cipp"
-
-  let uaCippLocal = "__CippLocal"
-
-  let uaCippGlobal = "__CippGlobal"
-
-  let uaReactive = "__Rx"
-
-  let uaLocalReactive = "__RxLocal"
-
-  let uaShallowReactive = "__RxShallow"
-
-  let uaMutable = "__Mutable"
-
-  let uaMutableReturn = "__MutableReturn"
-
-  let uaOnlyRxIfImpl = "__OnlyRxIfImpl"
-
   let uaLSB = "__LSB"
-
-  let uaAtMostRxAsFunc = "__AtMostRxAsFunc"
-
-  let uaAtMostRxAsArgs = "__AtMostRxAsArgs"
 
   let uaSealed = "__Sealed"
 
-  let uaReturnsVoidToRx = "__ReturnsVoidToRx"
-
-  let uaMaybeMutable = "__MaybeMutable"
-
   let uaLateInit = "__LateInit"
-
-  let uaOwnedMutable = "__OwnedMutable"
-
-  let uaNonRx = "__NonRx"
 
   let uaNewable = "__Newable"
 
   let uaEnforceable = "__Enforceable"
 
   let uaExplicit = "__Explicit"
+
+  let uaNonDisjoint = "__NonDisjoint"
 
   let uaSoft = "__Soft"
 
@@ -308,9 +307,27 @@ module UserAttributes = struct
 
   let uaAlwaysInline = "__ALWAYS_INLINE"
 
-  let uaPu = "__Pu"
-
   let uaEnableUnstableFeatures = "__EnableUnstableFeatures"
+
+  let uaEnumClass = "__EnumClass"
+
+  let uaPolicied = "__Policied"
+
+  let uaInferFlows = "__InferFlows"
+
+  let uaExternal = "__External"
+
+  let uaCanCall = "__CanCall"
+
+  let uaViaLabel = "__ViaLabel"
+
+  let uaSupportDynamicType = "__SupportDynamicType"
+
+  let uaNoRequireDynamic = "__NoRequireDynamic"
+
+  let uaModule = "__Module"
+
+  let uaInternal = "__Internal"
 
   let as_map =
     AttributeKinds.(
@@ -322,44 +339,49 @@ module UserAttributes = struct
           (uaDeprecated, [fn; mthd]);
           (uaEntryPoint, [fn]);
           (uaMemoize, [fn; mthd]);
-          (uaMemoizeLSB, [fn; mthd]);
+          (uaMemoizeLSB, [mthd]);
+          (uaPolicyShardedMemoize, [fn; mthd]);
+          (uaPolicyShardedMemoizeLSB, [mthd]);
           (uaPHPStdLib, [cls; fn; mthd]);
-          (uaHipHopSpecific, [cls]);
           (uaAcceptDisposable, [parameter]);
-          (uaReturnDisposable, [fn; mthd]);
-          (uaPure, [fn; mthd]);
-          (uaCipp, [fn; mthd]);
-          (uaCippLocal, [fn; mthd]);
-          (uaCippGlobal, [fn; mthd]);
-          (uaReactive, [fn; mthd]);
-          (uaLocalReactive, [fn; mthd]);
-          (uaMutable, [mthd; parameter]);
-          (uaMutableReturn, [fn; mthd]);
-          (uaShallowReactive, [fn; mthd]);
-          (uaOnlyRxIfImpl, [parameter; mthd]);
+          (uaReturnDisposable, [fn; mthd; lambda]);
           (uaLSB, [staticProperty]);
-          (uaSealed, [cls]);
-          (uaReturnsVoidToRx, [fn; mthd]);
-          (uaMaybeMutable, [mthd; parameter]);
-          (uaLateInit, [instProperty; parameter; staticProperty]);
-          (uaAtMostRxAsFunc, [parameter]);
-          (uaAtMostRxAsArgs, [fn; mthd]);
-          (uaOwnedMutable, [parameter]);
-          (uaNonRx, [fn; mthd]);
+          (uaSealed, [cls; enumcls; enum]);
+          (uaLateInit, [instProperty; staticProperty]);
           (uaNewable, [typeparam]);
           (uaEnforceable, [typeconst; typeparam]);
           (uaExplicit, [typeparam]);
+          (uaNonDisjoint, [typeparam]);
           (uaSoft, [instProperty; parameter; staticProperty; typeparam]);
           (uaWarn, [typeparam]);
           (uaMockClass, [cls]);
-          (uaProvenanceSkipFrame, [fn; mthd]);
+          (uaProvenanceSkipFrame, [fn; mthd; lambda]);
           (uaDynamicallyCallable, [fn; mthd]);
           (uaDynamicallyConstructible, [cls]);
           (uaReifiable, [typeconst]);
           (uaNeverInline, [fn; mthd]);
           (uaDisableTypecheckerInternal, [fn; mthd]);
-          (uaPu, [cls]);
           (uaEnableUnstableFeatures, [file]);
+          (uaEnumClass, [cls; enumcls]);
+          (uaPolicied, [fn; mthd; instProperty; parameter]);
+          (uaInferFlows, [fn; mthd]);
+          (uaExternal, [parameter]);
+          (uaCanCall, [parameter]);
+          (uaViaLabel, [parameter]);
+          (uaSupportDynamicType, [fn; cls; mthd]);
+          (uaNoRequireDynamic, [typeparam]);
+          (uaModule, [fn; cls; file; typealias; enum; enumcls]);
+          ( uaInternal,
+            [
+              fn;
+              mthd;
+              cls;
+              instProperty;
+              staticProperty;
+              typealias;
+              enum;
+              enumcls;
+            ] );
         ])
 
   (* These are names which are allowed in the systemlib but not in normal programs *)
@@ -378,18 +400,12 @@ end
 
 (* Tested before \\-prepending name-canonicalization *)
 module SpecialFunctions = struct
-  let tuple = "tuple" (* pseudo-function *)
-
   let echo = "echo" (* pseudo-function *)
-
-  let assert_ = "assert"
 
   let hhas_adata = "__hhas_adata"
 
   let is_special_function =
-    let all_special_functions =
-      HashSet.of_list [tuple; echo; assert_; hhas_adata]
-    in
+    let all_special_functions = HashSet.of_list [echo; hhas_adata] in
     (fun x -> HashSet.mem all_special_functions x)
 end
 
@@ -421,7 +437,7 @@ module SpecialIdents = struct
   let tmp_var_prefix = "__tmp$"
 
   let is_tmp_var name =
-    String.length name > 6 && String.(sub name 0 6 = tmp_var_prefix)
+    String.length name > 6 && String.(sub name ~pos:0 ~len:6 = tmp_var_prefix)
 
   let assert_tmp_var name = assert (is_tmp_var name)
 end
@@ -444,8 +460,6 @@ module PseudoFunctions = struct
 
   let hh_loop_forever = "\\hh_loop_forever"
 
-  let assert_ = "\\assert"
-
   let echo = "\\echo"
 
   let empty = "\\empty"
@@ -453,6 +467,8 @@ module PseudoFunctions = struct
   let exit = "\\exit"
 
   let die = "\\die"
+
+  let unsafe_cast = "\\HH\\FIXME\\UNSAFE_CAST"
 
   let all_pseudo_functions =
     HashSet.of_list
@@ -464,11 +480,11 @@ module PseudoFunctions = struct
         hh_log_level;
         hh_force_solve;
         hh_loop_forever;
-        assert_;
         echo;
         empty;
         exit;
         die;
+        unsafe_cast;
       ]
 
   let is_pseudo_function x = HashSet.mem all_pseudo_functions x
@@ -498,6 +514,22 @@ module StdlibFunctions = struct
   let is_dict_or_darray = "\\HH\\is_dict_or_darray"
 
   let is_vec_or_varray = "\\HH\\is_vec_or_varray"
+
+  (* All Id funcions that Typing.dispatch_call handles specially *)
+  let special_dispatch =
+    String.Hash_set.of_list
+      ~growth_allowed:false
+      [
+        SpecialFunctions.echo;
+        PseudoFunctions.isset;
+        PseudoFunctions.unset;
+        array_filter;
+        type_structure;
+        array_map;
+        PseudoFunctions.unsafe_cast;
+      ]
+
+  let needs_special_dispatch x = Hash_set.mem special_dispatch x
 end
 
 module Typehints = struct
@@ -531,13 +563,13 @@ module Typehints = struct
 
   let string = "string"
 
-  let array = "array"
-
   let darray = "darray"
 
   let varray = "varray"
 
   let varray_or_darray = "varray_or_darray"
+
+  let vec_or_dict = "vec_or_dict"
 
   let callable = "callable"
 
@@ -562,10 +594,10 @@ module Typehints = struct
           bool;
           float;
           string;
-          array;
           darray;
           varray;
           varray_or_darray;
+          vec_or_dict;
           callable;
           wildcard;
         ]
@@ -573,8 +605,7 @@ module Typehints = struct
     (fun x -> HashSet.mem reserved_typehints x)
 
   let is_reserved_global_name x =
-    String.equal x array
-    || String.equal x callable
+    String.equal x callable
     || String.equal x Classes.cSelf
     || String.equal x Classes.cParent
 
@@ -588,7 +619,6 @@ module Typehints = struct
     || String.equal x string
     || String.equal x resource
     || String.equal x mixed
-    || String.equal x array
     || String.equal x arraykey
     || String.equal x dynamic
     || String.equal x wildcard
@@ -683,41 +713,7 @@ module HH = struct
 end
 
 module Rx = struct
-  let freeze = "\\HH\\Rx\\freeze"
-
-  let mutable_ = "\\HH\\Rx\\mutable"
-
-  let cTraversable = "\\HH\\Rx\\Traversable"
-
-  let is_enabled v =
-    String.equal v "\\HH\\Rx\\IS_ENABLED" || String.equal v "\\Rx\\IS_ENABLED"
-
-  let cKeyedTraversable = "\\HH\\Rx\\KeyedTraversable"
-
-  let cAsyncIterator = "\\HH\\Rx\\AsyncIterator"
-
-  let move = "\\HH\\Rx\\move"
-
-  let hPure = "Pure"
-
-  let hRx = "Rx"
-
-  let hRxShallow = "RxShallow"
-
-  let hRxLocal = "RxLocal"
-
-  let hMutable = "Mutable"
-
-  let hMaybeMutable = "MaybeMutable"
-
-  let hOwnedMutable = "OwnedMutable"
-
-  let is_reactive_typehint =
-    let reactive_typehints =
-      [hPure; hRx; hRxShallow; hRxLocal; hMutable; hMaybeMutable; hOwnedMutable]
-    in
-    fun name ->
-      List.exists reactive_typehints ~f:(fun th -> String.equal th name)
+  let is_enabled = "\\HH\\Rx\\IS_ENABLED"
 end
 
 module Shapes = struct
@@ -755,25 +751,6 @@ module Superglobals = struct
     (fun x -> HashSet.mem superglobals x)
 end
 
-module PPLFunctions = struct
-  let all_reserved =
-    HashSet.of_list
-      [
-        "sample";
-        "\\sample";
-        "factor";
-        "\\factor";
-        "observe";
-        "\\observe";
-        "condition";
-        "\\condition";
-        "sample_model";
-        "\\sample_model";
-      ]
-
-  let is_reserved name = HashSet.mem all_reserved name
-end
-
 module Regex = struct
   let tPattern = "\\HH\\Lib\\Regex\\Pattern"
 end
@@ -786,10 +763,8 @@ module EmitterSpecialFunctions = struct
   let eval = "\\eval"
 
   let set_frame_metadata = "\\HH\\set_frame_metadata"
-end
 
-module PocketUniverses = struct
-  let members = "Members"
+  let systemlib_reified_generics = "\\__systemlib_reified_generics"
 end
 
 module XHP = struct
@@ -809,4 +784,114 @@ end
  * to the typechecker *)
 module UnstableFeatures = struct
   let coeffects_provisional = "coeffects_provisional"
+
+  let ifc = "ifc"
+
+  let readonly = "readonly"
+
+  let expression_trees = "expression_trees"
+
+  let modules = "modules"
+end
+
+module Coeffects = struct
+  let capability = "$#capability"
+
+  let local_capability = "$#local_capability"
+
+  let contexts = "\\HH\\Contexts"
+
+  let unsafe_contexts = contexts ^ "\\Unsafe"
+end
+
+module Readonly = struct
+  let prefix = "\\HH\\Readonly\\"
+
+  let as_mut = prefix ^ "as_mut"
+end
+
+module Capabilities = struct
+  let defaults = Coeffects.contexts ^ "\\defaults"
+
+  let prefix = "\\HH\\Capabilities\\"
+
+  let writeProperty = prefix ^ "WriteProperty"
+
+  let accessGlobals = prefix ^ "AccessGlobals"
+
+  let readGlobals = prefix ^ "ReadGlobals"
+
+  let system = prefix ^ "System"
+
+  let implicitPolicy = prefix ^ "ImplicitPolicy"
+
+  let implicitPolicyLocal = prefix ^ "ImplicitPolicyLocal"
+
+  let io = prefix ^ "IO"
+
+  let rx = prefix ^ "Rx"
+
+  let rxLocal = rx ^ "Local"
+
+  let codegen = prefix ^ "Codegen"
+end
+
+module ExpressionTrees = struct
+  let makeTree = "makeTree"
+
+  let intType = "intType"
+
+  let floatType = "floatType"
+
+  let boolType = "boolType"
+
+  let stringType = "stringType"
+
+  let nullType = "nullType"
+
+  let voidType = "voidType"
+
+  let symbolType = "symbolType"
+
+  let visitInt = "visitInt"
+
+  let visitFloat = "visitFloat"
+
+  let visitBool = "visitBool"
+
+  let visitString = "visitString"
+
+  let visitNull = "visitNull"
+
+  let visitBinop = "visitBinop"
+
+  let visitUnop = "visitUnop"
+
+  let visitLocal = "visitLocal"
+
+  let visitLambda = "visitLambda"
+
+  let visitGlobalFunction = "visitGlobalFunction"
+
+  let visitStaticMethod = "visitStaticMethod"
+
+  let visitCall = "visitCall"
+
+  let visitAssign = "visitAssign"
+
+  let visitTernary = "visitTernary"
+
+  let visitIf = "visitIf"
+
+  let visitWhile = "visitWhile"
+
+  let visitReturn = "visitReturn"
+
+  let visitFor = "visitFor"
+
+  let visitBreak = "visitBreak"
+
+  let visitContinue = "visitContinue"
+
+  let splice = "splice"
 end

@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_ARRAY_UTIL_H_
-#define incl_HPHP_ARRAY_UTIL_H_
+#pragma once
 
 #include "hphp/runtime/base/type-variant.h"
 #include "hphp/runtime/base/req-hash-set.h"
@@ -37,11 +36,11 @@ struct ArrayUtil final {
 
   /**
    * Removes the elements designated by offset and length and replace them
-   * with supplied array.
+   * with supplied array. Adds the removed elements to `removed`, which must
+   * be non-null and empty.
    */
-  static Variant Splice(const Array& input, int offset, int64_t length = 0,
-                        const Variant& replacement = uninit_variant,
-                        Array *removed = nullptr);
+  static Variant Splice(const Array& input, int offset, int64_t length,
+                        const Variant& replacement, Array& removed);
 
   /**
    * Returns a copy of input array padded with pad_value to size pad_size.
@@ -136,4 +135,3 @@ struct ArrayUtil final {
 ///////////////////////////////////////////////////////////////////////////////
 }
 
-#endif // incl_HPHP_ARRAY_UTIL_H_

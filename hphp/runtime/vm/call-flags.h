@@ -19,6 +19,7 @@
 #include <cstdint>
 
 #include "hphp/runtime/base/types.h"
+#include "hphp/runtime/vm/coeffects.h"
 #include "hphp/util/assertions.h"
 
 namespace HPHP {
@@ -35,20 +36,23 @@ namespace HPHP {
  * Bit 3: flag indicating whether async eager return was requested
  * Bits 4-31: call offset (from the beginning of the function's entry point)
  * Bits 32-47: generics bitmap
- * Bits 48-63: currently unused
+ * Bits 48-63: coeffects
  */
 struct CallFlags {
   enum Flags {
     HasGenerics,
     IsDynamicCall,
-    ReservedZero,
+    ReservedZero0,
+    ReservedZero1,
     AsyncEagerReturn,
     CallOffsetStart,
     GenericsBitmapStart = 32,
+    CoeffectsStart = 48,
   };
 
   CallFlags(bool hasGenerics, bool isDynamicCall, bool asyncEagerReturn,
-            Offset callOffset, uint32_t genericsBitmap) {
+            Offset callOffset, uint16_t genericsBitmap,
+            RuntimeCoeffects coeffects) {
     auto const callOffsetBits = (uint64_t)callOffset << Flags::CallOffsetStart;
     assertx((callOffsetBits >> Flags::GenericsBitmapStart) == 0);
     assertx(hasGenerics || genericsBitmap == 0);
@@ -57,7 +61,8 @@ struct CallFlags {
       ((isDynamicCall ? 1 : 0) << Flags::IsDynamicCall) |
       ((asyncEagerReturn ? 1 : 0) << Flags::AsyncEagerReturn) |
       callOffsetBits |
-      ((uint64_t)genericsBitmap << Flags::GenericsBitmapStart);
+      ((uint64_t)genericsBitmap << Flags::GenericsBitmapStart) |
+      ((uint64_t)coeffects.value() << Flags::CoeffectsStart);
   }
 
   bool hasGenerics() const { return m_bits & (1 << Flags::HasGenerics); }
@@ -69,6 +74,10 @@ struct CallFlags {
     return ((uint32_t)m_bits) >> Flags::CallOffsetStart;
   }
   int64_t value() const { return static_cast<int64_t>(m_bits); }
+
+  RuntimeCoeffects coeffects() const {
+    return RuntimeCoeffects::fromValue((uint16_t)(m_bits >> CoeffectsStart));
+  }
 
 private:
   uint64_t m_bits;

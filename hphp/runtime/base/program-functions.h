@@ -14,13 +14,13 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_PROGRAM_FUNCTIONS_H_
-#define incl_HPHP_PROGRAM_FUNCTIONS_H_
+#pragma once
 
 #include "hphp/runtime/base/types.h"
 #include "hphp/runtime/vm/treadmill.h"
+#include "hphp/util/optional.h"
+
 #include <boost/program_options/parsers.hpp>
-#include <folly/Optional.h>
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -88,6 +88,7 @@ time_t start_time();
 struct ExecutionContext;
 
 void hphp_process_init();
+void cli_client_init();
 void hphp_session_init(Treadmill::SessionKind session_kind,
                        Transport* transport = nullptr);
 
@@ -116,6 +117,8 @@ void hphp_context_exit();
 void hphp_thread_init();
 void hphp_thread_exit();
 
+void init_current_pthread_stack_limits();
+
 void hphp_memory_cleanup();
 /*
  * Tear down various internal state at the very end of a session. If transport
@@ -131,6 +134,8 @@ std::string get_systemlib(std::string* hhas = nullptr,
 
 // Helper function for stats tracking with exceptions.
 void bump_counter_and_rethrow(bool isPsp);
+
+std::vector<int> get_executable_lines(const Unit*);
 
 struct HphpSession {
   explicit HphpSession(Treadmill::SessionKind sk) {
@@ -156,10 +161,8 @@ struct HphpSessionAndThread {
   HphpSessionAndThread(const HphpSessionAndThread&) = delete;
   HphpSessionAndThread& operator=(const HphpSessionAndThread&) = delete;
  private:
-  folly::Optional<HphpSession> session;
+  Optional<HphpSession> session;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif // incl_HPHP_PROGRAM_FUNCTIONS_H_

@@ -60,7 +60,27 @@ Array HHVM_FUNCTION(apache_request_headers) {
     auto const& headers = transport->getHeaders();
     return get_headers(headers);
   }
-  return empty_darray();
+  return empty_dict_array();
+}
+
+static Array get_raw_headers(const proxygen::HTTPHeaders &headers) {
+  VecInit ret(headers.size());
+  headers.forEach([&] (const std::string &header, const std::string &val) {
+    auto headerValPair = make_vec_array(header.c_str(), val.c_str());
+    ret.append(headerValPair);
+  });
+  return ret.toArray();
+}
+
+Array HHVM_FUNCTION(get_proxygen_headers) {
+  Transport *transport = g_context->getTransport();
+  if (transport) {
+    auto const headers = transport->getProxygenHeaders();
+    if (headers) {
+      return get_raw_headers(*headers);
+    }
+  }
+  return empty_vec_array();
 }
 
 Array HHVM_FUNCTION(apache_response_headers) {
@@ -70,7 +90,7 @@ Array HHVM_FUNCTION(apache_response_headers) {
     transport->getResponseHeaders(headers);
     return get_headers(headers);
   }
-  return empty_darray();
+  return empty_dict_array();
 }
 
 bool HHVM_FUNCTION(apache_setenv, const String& /*variable*/,
@@ -100,7 +120,7 @@ Array HHVM_FUNCTION(apache_get_config) {
     health_level = (int)(ApacheExtension::GetHealthLevel());
   }
 
-  return make_darray(
+  return make_dict_array(
     s_restart_time, HttpServer::StartTime,
     s_max_clients, RuntimeOption::ServerThreadCount,
     s_active_clients, workers,
@@ -115,7 +135,7 @@ Array HHVM_FUNCTION(get_headers_secure) {
     auto const& headers = transport->getHeaders();
     return get_headers(headers, true);
   }
-  return empty_darray();
+  return empty_dict_array();
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -133,6 +153,7 @@ void ApacheExtension::moduleInit() {
   HHVM_FALIAS(getallheaders, apache_request_headers);
   HHVM_FE(apache_get_config);
   HHVM_FALIAS(HH\\get_headers_secure, get_headers_secure);
+  HHVM_FALIAS(HH\\get_proxygen_headers, get_proxygen_headers);
 
   HHVM_RC_INT(APACHE_MAP, 200);
 

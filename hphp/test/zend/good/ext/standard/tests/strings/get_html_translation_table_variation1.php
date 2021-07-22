@@ -12,9 +12,6 @@ echo "*** Testing get_html_translation_table() : usage variations ***\n";
 // initialize all required variables
 $quote_style = ENT_COMPAT;
 
-// get an unset variable
-$unset_var = 10;
-unset($unset_var);
 
 // a resource variable
 $fp = fopen(__FILE__, "r");
@@ -40,7 +37,7 @@ $values =  varray [
   'string',
 
   // objects
-  new stdclass(),
+  new stdClass(),
 
   // empty string
   "",
@@ -52,12 +49,6 @@ $values =  varray [
 
   // resource var
   $fp,
-
-  // undefined variable
-  @$undefined_var,
-
-  // unset variable
-  @$unset_var
 ];
 
 

@@ -6,7 +6,7 @@
  *
  *)
 
-open Core_kernel
+open Hh_prelude
 
 module Types = struct
   type job_id = Job_id of Int64.t [@@deriving show, eq]
@@ -22,20 +22,23 @@ module type S = sig
   type status [@@deriving show]
 
   (* Note on the nonce parameter: it is up to the caller to specify a nonce that
-    results in the desired behavior, such as grouping multiple commands together.
-    It can be used later in `begin_cancel` to cancel a group of commands, for example. *)
+     results in the desired behavior, such as grouping multiple commands together.
+     It can be used later in `begin_cancel` to cancel a group of commands, for example. *)
   val create_command :
-    nonce:Int64.t ->
+    nonce:string ->
     key:string ->
     hash:string ->
     check_id:string ->
     transport_channel:string option ->
     file_system_mode:string ->
+    recli_version:string ->
+    max_cas_bytes:int ->
+    max_inline_bytes:int ->
     root:string ->
     min_log_level:Hh_logger.Level.t ->
     version_specifier:string option ->
     eden:bool ->
-    command
+    command Future.t
 
   val is_alive : status -> bool
 

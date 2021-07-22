@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_WORKLOAD_STATS_H_
-#define incl_HPHP_WORKLOAD_STATS_H_
+#pragma once
 
 #include <cstdint>
 
@@ -56,8 +55,8 @@ struct WorkloadStats final {
   WorkloadStats& operator=(const WorkloadStats&) = delete;
 
   static int64_t GetAndResetAvgRelativeInterp();
+  static void EnsureInit();
 };
 
 }
 
-#endif

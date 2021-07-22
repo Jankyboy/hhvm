@@ -44,7 +44,6 @@ pub enum Operator {
     UnaryMinusOperator,
     NotOperator,
     LogicalNotOperator,
-    SuspendOperator,
     RemainderOperator,
     MultiplicationOperator,
     DivisionOperator,
@@ -60,7 +59,6 @@ pub enum Operator {
     GreaterThanOperator,
     StrictNotEqualOperator,
     StrictEqualOperator,
-    PhpNotEqualOperator,
     NotEqualOperator,
     EqualOperator,
     AndOperator,
@@ -93,4 +91,6 @@ pub enum Operator {
     IncludeOperator,
     IncludeOnceOperator,
     AwaitOperator,
+    ReadonlyOperator,
+    EnumClassLabelOperator,
 }

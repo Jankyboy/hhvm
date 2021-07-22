@@ -3,12 +3,13 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the "hack" directory of this source tree.
 //
-// @generated SignedSource<<63bfd83b652578821f43b4596a4b1978>>
+// @generated SignedSource<<de15adb64e4c3b95ff20b542733ae72b>>
 //
 // To regenerate this file, run:
-//   hphp/hack/src/oxidized/regen.sh
+//   hphp/hack/src/oxidized_regen.sh
 
 use arena_trait::TrivialDrop;
+use no_pos_hash::NoPosHash;
 use ocamlrep_derive::FromOcamlRep;
 use ocamlrep_derive::FromOcamlRepIn;
 use ocamlrep_derive::ToOcamlRep;
@@ -22,12 +23,10 @@ pub use aast_defs::*;
 pub use doc_comment::DocComment;
 
 /// Aast.program represents the top-level definitions in a Hack program.
-/// ex: Expression annotation type (when typechecking, the inferred dtype)
+/// ex: Expression annotation type (when typechecking, the inferred type)
 /// fb: Function body tag (e.g. has naming occurred)
 /// en: Environment (tracking state inside functions and classes)
-/// hi: Hint annotation (when typechecking it will be the localized type hint or the
-/// inferred missing type if the hint is missing)
-pub type Program<Ex, Fb, En, Hi> = Vec<Def<Ex, Fb, En, Hi>>;
+pub type Program<Ex, Fb, En> = Vec<Def<Ex, Fb, En>>;
 
 #[derive(
     Clone,
@@ -36,13 +35,14 @@ pub type Program<Ex, Fb, En, Hi> = Vec<Def<Ex, Fb, En, Hi>>;
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Stmt<Ex, Fb, En, Hi>(pub Pos, pub Stmt_<Ex, Fb, En, Hi>);
+pub struct Stmt<Ex, Fb, En>(pub Pos, pub Stmt_<Ex, Fb, En>);
 
 #[derive(
     Clone,
@@ -51,64 +51,140 @@ pub struct Stmt<Ex, Fb, En, Hi>(pub Pos, pub Stmt_<Ex, Fb, En, Hi>);
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum Stmt_<Ex, Fb, En, Hi> {
+pub enum Stmt_<Ex, Fb, En> {
+    /// Marker for a switch statement that falls through.
+    ///
+    /// // FALLTHROUGH
     Fallthrough,
-    Expr(Box<Expr<Ex, Fb, En, Hi>>),
+    /// Standalone expression.
+    ///
+    /// 1 + 2;
+    Expr(Box<Expr<Ex, Fb, En>>),
+    /// Break inside a loop or switch statement.
+    ///
+    /// break;
     Break,
+    /// Continue inside a loop or switch statement.
+    ///
+    /// continue;
     Continue,
-    Throw(Box<Expr<Ex, Fb, En, Hi>>),
-    Return(Box<Option<Expr<Ex, Fb, En, Hi>>>),
-    GotoLabel(Box<Pstring>),
-    Goto(Box<Pstring>),
-    Awaitall(
-        Box<(
-            Vec<(Option<Lid>, Expr<Ex, Fb, En, Hi>)>,
-            Block<Ex, Fb, En, Hi>,
-        )>,
-    ),
-    If(
-        Box<(
-            Expr<Ex, Fb, En, Hi>,
-            Block<Ex, Fb, En, Hi>,
-            Block<Ex, Fb, En, Hi>,
-        )>,
-    ),
-    Do(Box<(Block<Ex, Fb, En, Hi>, Expr<Ex, Fb, En, Hi>)>),
-    While(Box<(Expr<Ex, Fb, En, Hi>, Block<Ex, Fb, En, Hi>)>),
-    Using(Box<UsingStmt<Ex, Fb, En, Hi>>),
+    /// Throw an exception.
+    ///
+    /// throw $foo;
+    Throw(Box<Expr<Ex, Fb, En>>),
+    /// Return, with an optional value.
+    ///
+    /// return;
+    /// return $foo;
+    Return(Box<Option<Expr<Ex, Fb, En>>>),
+    /// Yield break, terminating the current generator. This behaves like
+    /// return; but is more explicit, and ensures the function is treated
+    /// as a generator.
+    ///
+    /// yield break;
+    YieldBreak,
+    /// Concurrent block. All the await expressions are awaited at the
+    /// same time, similar to genva().
+    ///
+    /// We store the desugared form. In the below example, the list is:
+    /// [('__tmp$1', f()), (__tmp$2, g()), (None, h())]
+    /// and the block assigns the temporary variables back to the locals.
+    /// { $foo = __tmp$1; $bar = __tmp$2; }
+    ///
+    /// concurrent {
+    /// $foo = await f();
+    /// $bar = await g();
+    /// await h();
+    /// }
+    Awaitall(Box<(Vec<(Option<Lid>, Expr<Ex, Fb, En>)>, Block<Ex, Fb, En>)>),
+    /// If statement.
+    ///
+    /// if ($foo) { ... } else { ... }
+    If(Box<(Expr<Ex, Fb, En>, Block<Ex, Fb, En>, Block<Ex, Fb, En>)>),
+    /// Do-while loop.
+    ///
+    /// do {
+    /// bar();
+    /// } while($foo)
+    Do(Box<(Block<Ex, Fb, En>, Expr<Ex, Fb, En>)>),
+    /// While loop.
+    ///
+    /// while ($foo) {
+    /// bar();
+    /// }
+    While(Box<(Expr<Ex, Fb, En>, Block<Ex, Fb, En>)>),
+    /// Initialize a value that is automatically disposed of.
+    ///
+    /// using $foo = bar(); // disposed at the end of the function
+    /// using ($foo = bar(), $baz = quux()) {} // disposed after the block
+    Using(Box<UsingStmt<Ex, Fb, En>>),
+    /// For loop. The initializer and increment parts can include
+    /// multiple comma-separated statements. The termination condition is
+    /// optional.
+    ///
+    /// for ($i = 0; $i < 100; $i++) { ... }
+    /// for ($x = 0, $y = 0; ; $x++, $y++) { ... }
     For(
         Box<(
-            Expr<Ex, Fb, En, Hi>,
-            Expr<Ex, Fb, En, Hi>,
-            Expr<Ex, Fb, En, Hi>,
-            Block<Ex, Fb, En, Hi>,
+            Vec<Expr<Ex, Fb, En>>,
+            Option<Expr<Ex, Fb, En>>,
+            Vec<Expr<Ex, Fb, En>>,
+            Block<Ex, Fb, En>,
         )>,
     ),
-    Switch(Box<(Expr<Ex, Fb, En, Hi>, Vec<Case<Ex, Fb, En, Hi>>)>),
-    Foreach(
-        Box<(
-            Expr<Ex, Fb, En, Hi>,
-            AsExpr<Ex, Fb, En, Hi>,
-            Block<Ex, Fb, En, Hi>,
-        )>,
-    ),
-    Try(
-        Box<(
-            Block<Ex, Fb, En, Hi>,
-            Vec<Catch<Ex, Fb, En, Hi>>,
-            Block<Ex, Fb, En, Hi>,
-        )>,
-    ),
+    /// Switch statement.
+    ///
+    /// switch ($foo) {
+    /// case X:
+    /// bar();
+    /// break;
+    /// default:
+    /// baz();
+    /// break;
+    /// }
+    Switch(Box<(Expr<Ex, Fb, En>, Vec<Case<Ex, Fb, En>>)>),
+    /// For-each loop.
+    ///
+    /// foreach ($items as $item) { ... }
+    /// foreach ($items as $key => value) { ... }
+    /// foreach ($items await as $item) { ... } // AsyncIterator<_>
+    /// foreach ($items await as $key => value) { ... } // AsyncKeyedIterator<_>
+    Foreach(Box<(Expr<Ex, Fb, En>, AsExpr<Ex, Fb, En>, Block<Ex, Fb, En>)>),
+    /// Try statement, with catch blocks and a finally block.
+    ///
+    /// try {
+    /// foo();
+    /// } catch (SomeException $e) {
+    /// bar();
+    /// } finally {
+    /// baz();
+    /// }
+    Try(Box<(Block<Ex, Fb, En>, Vec<Catch<Ex, Fb, En>>, Block<Ex, Fb, En>)>),
+    /// No-op, the empty statement.
+    ///
+    /// {}
+    /// while (true) ;
+    /// if ($foo) {} // the else is Noop here
     Noop,
-    Block(Block<Ex, Fb, En, Hi>),
+    /// Block, a list of statements in curly braces.
+    ///
+    /// { $foo = 42; }
+    Block(Block<Ex, Fb, En>),
+    /// The mode tag at the beginning of a file.
+    /// TODO: this really belongs in def.
+    ///
+    /// <?hh
     Markup(Box<Pstring>),
-    AssertEnv(Box<(EnvAnnot, LocalIdMap<Ex>)>),
+    /// Used in IFC to track type inference environments. Not user
+    /// denotable.
+    AssertEnv(Box<(EnvAnnot, LocalIdMap<(Pos, Ex)>)>),
 }
 
 #[derive(
@@ -120,6 +196,7 @@ pub enum Stmt_<Ex, Fb, En, Hi> {
     FromOcamlRep,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -131,6 +208,7 @@ pub enum EnvAnnot {
     Refinement,
 }
 impl TrivialDrop for EnvAnnot {}
+arena_deserializer::impl_deserialize_in_arena!(EnvAnnot);
 
 #[derive(
     Clone,
@@ -139,17 +217,18 @@ impl TrivialDrop for EnvAnnot {}
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct UsingStmt<Ex, Fb, En, Hi> {
+pub struct UsingStmt<Ex, Fb, En> {
     pub is_block_scoped: bool,
     pub has_await: bool,
-    pub expr: Expr<Ex, Fb, En, Hi>,
-    pub block: Block<Ex, Fb, En, Hi>,
+    pub exprs: (Pos, Vec<Expr<Ex, Fb, En>>),
+    pub block: Block<Ex, Fb, En>,
 }
 
 #[derive(
@@ -159,20 +238,21 @@ pub struct UsingStmt<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum AsExpr<Ex, Fb, En, Hi> {
-    AsV(Expr<Ex, Fb, En, Hi>),
-    AsKv(Expr<Ex, Fb, En, Hi>, Expr<Ex, Fb, En, Hi>),
-    AwaitAsV(Pos, Expr<Ex, Fb, En, Hi>),
-    AwaitAsKv(Pos, Expr<Ex, Fb, En, Hi>, Expr<Ex, Fb, En, Hi>),
+pub enum AsExpr<Ex, Fb, En> {
+    AsV(Expr<Ex, Fb, En>),
+    AsKv(Expr<Ex, Fb, En>, Expr<Ex, Fb, En>),
+    AwaitAsV(Pos, Expr<Ex, Fb, En>),
+    AwaitAsKv(Pos, Expr<Ex, Fb, En>, Expr<Ex, Fb, En>),
 }
 
-pub type Block<Ex, Fb, En, Hi> = Vec<Stmt<Ex, Fb, En, Hi>>;
+pub type Block<Ex, Fb, En> = Vec<Stmt<Ex, Fb, En>>;
 
 #[derive(
     Clone,
@@ -181,14 +261,16 @@ pub type Block<Ex, Fb, En, Hi> = Vec<Stmt<Ex, Fb, En, Hi>>;
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct ClassId<Ex, Fb, En, Hi>(pub Ex, pub ClassId_<Ex, Fb, En, Hi>);
+pub struct ClassId<Ex, Fb, En>(pub Ex, pub Pos, pub ClassId_<Ex, Fb, En>);
 
+/// Class ID, used in things like instantiation and static property access.
 #[derive(
     Clone,
     Debug,
@@ -196,17 +278,55 @@ pub struct ClassId<Ex, Fb, En, Hi>(pub Ex, pub ClassId_<Ex, Fb, En, Hi>);
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum ClassId_<Ex, Fb, En, Hi> {
+pub enum ClassId_<Ex, Fb, En> {
+    /// The class ID of the parent of the lexically scoped class.
+    ///
+    /// In a trait, it is the parent class ID of the using class.
+    ///
+    /// parent::some_meth()
+    /// parent::$prop = 1;
+    /// new parent();
     CIparent,
+    /// The class ID of the lexically scoped class.
+    ///
+    /// In a trait, it is the class ID of the using class.
+    ///
+    /// self::some_meth()
+    /// self::$prop = 1;
+    /// new self();
     CIself,
+    /// The class ID of the late static bound class.
+    ///
+    /// https://www.php.net/manual/en/language.oop5.late-static-bindings.php
+    ///
+    /// In a trait, it is the late static bound class ID of the using class.
+    ///
+    /// static::some_meth()
+    /// static::$prop = 1;
+    /// new static();
     CIstatic,
-    CIexpr(Expr<Ex, Fb, En, Hi>),
+    /// Dynamic class name.
+    ///
+    /// TODO: Syntactically this can only be an Lvar/This/Lplacehodller.
+    /// We should use lid rather than expr.
+    ///
+    /// // Assume $d has type dynamic.
+    /// $d::some_meth();
+    /// $d::$prop = 1;
+    /// new $d();
+    CIexpr(Expr<Ex, Fb, En>),
+    /// Explicit class name. This is the common case.
+    ///
+    /// Foop::some_meth()
+    /// Foo::$prop = 1;
+    /// new Foo();
     CI(Sid),
 }
 
@@ -217,13 +337,14 @@ pub enum ClassId_<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Expr<Ex, Fb, En, Hi>(pub Ex, pub Expr_<Ex, Fb, En, Hi>);
+pub struct Expr<Ex, Fb, En>(pub Ex, pub Pos, pub Expr_<Ex, Fb, En>);
 
 #[derive(
     Clone,
@@ -232,15 +353,16 @@ pub struct Expr<Ex, Fb, En, Hi>(pub Ex, pub Expr_<Ex, Fb, En, Hi>);
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum CollectionTarg<Hi> {
-    CollectionTV(Targ<Hi>),
-    CollectionTKV(Targ<Hi>, Targ<Hi>),
+pub enum CollectionTarg<Ex> {
+    CollectionTV(Targ<Ex>),
+    CollectionTKV(Targ<Ex>, Targ<Ex>),
 }
 
 #[derive(
@@ -250,15 +372,16 @@ pub enum CollectionTarg<Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum FunctionPtrId<Ex, Fb, En, Hi> {
+pub enum FunctionPtrId<Ex, Fb, En> {
     FPId(Sid),
-    FPClassConst(ClassId<Ex, Fb, En, Hi>, Pstring),
+    FPClassConst(ClassId<Ex, Fb, En>, Pstring),
 }
 
 #[derive(
@@ -268,122 +391,415 @@ pub enum FunctionPtrId<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum Expr_<Ex, Fb, En, Hi> {
+pub struct ExpressionTree<Ex, Fb, En> {
+    pub hint: Hint,
+    pub splices: Block<Ex, Fb, En>,
+    pub virtualized_expr: Expr<Ex, Fb, En>,
+    pub runtime_expr: Expr<Ex, Fb, En>,
+}
+
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRep,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub enum Expr_<Ex, Fb, En> {
+    /// darray literal.
+    ///
+    /// darray['x' => 0, 'y' => 1]
+    /// darray<string, int>['x' => 0, 'y' => 1]
     Darray(
         Box<(
-            Option<(Targ<Hi>, Targ<Hi>)>,
-            Vec<(Expr<Ex, Fb, En, Hi>, Expr<Ex, Fb, En, Hi>)>,
+            Option<(Targ<Ex>, Targ<Ex>)>,
+            Vec<(Expr<Ex, Fb, En>, Expr<Ex, Fb, En>)>,
         )>,
     ),
-    Varray(Box<(Option<Targ<Hi>>, Vec<Expr<Ex, Fb, En, Hi>>)>),
-    Shape(Vec<(ast_defs::ShapeFieldName, Expr<Ex, Fb, En, Hi>)>),
-    /// TODO: T38184446 Consolidate collections in AAST
-    ValCollection(Box<(VcKind, Option<Targ<Hi>>, Vec<Expr<Ex, Fb, En, Hi>>)>),
-    /// TODO: T38184446 Consolidate collections in AAST
+    /// varray literal.
+    ///
+    /// varray['hello', 'world']
+    /// varray<string>['hello', 'world']
+    Varray(Box<(Option<Targ<Ex>>, Vec<Expr<Ex, Fb, En>>)>),
+    /// Shape literal.
+    ///
+    /// shape('x' => 1, 'y' => 2)
+    Shape(Vec<(ast_defs::ShapeFieldName, Expr<Ex, Fb, En>)>),
+    /// Collection literal for indexable structures.
+    ///
+    /// Vector {1, 2}
+    /// ImmVector {}
+    /// Set<string> {'foo', 'bar'}
+    /// vec[1, 2]
+    /// keyset[]
+    ValCollection(Box<(VcKind, Option<Targ<Ex>>, Vec<Expr<Ex, Fb, En>>)>),
+    /// Collection literal for key-value structures.
+    ///
+    /// dict['x' => 1, 'y' => 2]
+    /// Map<int, string> {}
+    /// ImmMap {}
     KeyValCollection(
         Box<(
             KvcKind,
-            Option<(Targ<Hi>, Targ<Hi>)>,
-            Vec<Field<Ex, Fb, En, Hi>>,
+            Option<(Targ<Ex>, Targ<Ex>)>,
+            Vec<Field<Ex, Fb, En>>,
         )>,
     ),
+    /// Null literal.
+    ///
+    /// null
     Null,
+    /// The local variable representing the current class instance.
+    ///
+    /// $this
     This,
+    /// Boolean literal.
+    ///
+    /// true
     True,
+    /// Boolean literal.
+    ///
+    /// false
     False,
+    /// The empty expression.
+    ///
+    /// list(, $y) = vec[1, 2] // Omitted is the first expression inside list()
     Omitted,
+    /// An identifier. Used for method names and global constants.
+    ///
+    /// SOME_CONST
+    /// $x->foo() // id: "foo"
     Id(Box<Sid>),
+    /// Local variable.
+    ///
+    /// $foo
     Lvar(Box<Lid>),
+    /// The extra variable in a pipe expression.
+    ///
+    /// $$
     Dollardollar(Box<Lid>),
-    Clone(Box<Expr<Ex, Fb, En, Hi>>),
-    ObjGet(Box<(Expr<Ex, Fb, En, Hi>, Expr<Ex, Fb, En, Hi>, OgNullFlavor)>),
-    ArrayGet(Box<(Expr<Ex, Fb, En, Hi>, Option<Expr<Ex, Fb, En, Hi>>)>),
-    ClassGet(Box<(ClassId<Ex, Fb, En, Hi>, ClassGetExpr<Ex, Fb, En, Hi>)>),
-    ClassConst(Box<(ClassId<Ex, Fb, En, Hi>, Pstring)>),
+    /// Clone expression.
+    ///
+    /// clone $foo
+    Clone(Box<Expr<Ex, Fb, En>>),
+    /// Array indexing.
+    ///
+    /// $foo[]
+    /// $foo[$bar]
+    ArrayGet(Box<(Expr<Ex, Fb, En>, Option<Expr<Ex, Fb, En>>)>),
+    /// Instance property or method access.  is_prop_call is always
+    /// false, except when inside a call is accessing a property.
+    ///
+    /// $foo->bar // (Obj_get false) property access
+    /// $foo->bar() // (Call (Obj_get false)) method call
+    /// ($foo->bar)() // (Call (Obj_get true)) call lambda stored in property
+    /// $foo?->bar // nullsafe access
+    ObjGet(Box<(Expr<Ex, Fb, En>, Expr<Ex, Fb, En>, OgNullFlavor, bool)>),
+    /// Static property access.
+    ///
+    /// Foo::$bar
+    /// $some_classname::$bar
+    /// Foo::${$bar} // only in partial mode
+    ClassGet(Box<(ClassId<Ex, Fb, En>, ClassGetExpr<Ex, Fb, En>, bool)>),
+    /// Class constant or static method call. As a standalone expression,
+    /// this is a class constant. Inside a Call node, this is a static
+    /// method call.
+    ///
+    /// This is not ambiguous, because constants are not allowed to
+    /// contain functions.
+    ///
+    /// Foo::some_const // Class_const
+    /// Foo::someStaticMeth() // Call (Class_const)
+    ///
+    /// This syntax is used for both static and instance methods when
+    /// calling the implementation on the superclass.
+    ///
+    /// parent::someStaticMeth()
+    /// parent::someInstanceMeth()
+    ClassConst(Box<(ClassId<Ex, Fb, En>, Pstring)>),
+    /// Function or method call.
+    ///
+    /// foo()
+    /// $x()
+    /// foo<int>(1, 2, ...$rest)
+    /// $x->foo()
+    ///
+    /// async { return 1; }
+    /// // lowered to:
+    /// (async () ==> { return 1; })()
     Call(
         Box<(
-            Expr<Ex, Fb, En, Hi>,
-            Vec<Targ<Hi>>,
-            Vec<Expr<Ex, Fb, En, Hi>>,
-            Option<Expr<Ex, Fb, En, Hi>>,
+            Expr<Ex, Fb, En>,
+            Vec<Targ<Ex>>,
+            Vec<Expr<Ex, Fb, En>>,
+            Option<Expr<Ex, Fb, En>>,
         )>,
     ),
-    FunctionPointer(Box<(FunctionPtrId<Ex, Fb, En, Hi>, Vec<Targ<Hi>>)>),
+    /// A reference to a function or method.
+    ///
+    /// foo_fun<>
+    /// FooCls::meth<int>
+    FunctionPointer(Box<(FunctionPtrId<Ex, Fb, En>, Vec<Targ<Ex>>)>),
+    /// Integer literal.
+    ///
+    /// 42
+    /// 0123 // octal
+    /// 0xBEEF // hexadecimal
+    /// 0b11111111 // binary
     Int(String),
+    /// Float literal.
+    ///
+    /// 1.0
+    /// 1.2e3
+    /// 7E-10
     Float(String),
+    /// String literal.
+    ///
+    /// "foo"
+    /// 'foo'
+    ///
+    /// <<<DOC
+    /// foo
+    /// DOC
+    ///
+    /// <<<'DOC'
+    /// foo
+    /// DOC
     String(bstr::BString),
-    String2(Vec<Expr<Ex, Fb, En, Hi>>),
-    PrefixedString(Box<(String, Expr<Ex, Fb, En, Hi>)>),
-    Yield(Box<Afield<Ex, Fb, En, Hi>>),
-    YieldBreak,
-    Await(Box<Expr<Ex, Fb, En, Hi>>),
-    Suspend(Box<Expr<Ex, Fb, En, Hi>>),
-    List(Vec<Expr<Ex, Fb, En, Hi>>),
-    ExprList(Vec<Expr<Ex, Fb, En, Hi>>),
-    Cast(Box<(Hint, Expr<Ex, Fb, En, Hi>)>),
-    Unop(Box<(ast_defs::Uop, Expr<Ex, Fb, En, Hi>)>),
-    Binop(Box<(ast_defs::Bop, Expr<Ex, Fb, En, Hi>, Expr<Ex, Fb, En, Hi>)>),
-    /// The lid is the ID of the $$ that is implicitly declared by this pipe.
-    Pipe(Box<(Lid, Expr<Ex, Fb, En, Hi>, Expr<Ex, Fb, En, Hi>)>),
-    Eif(
-        Box<(
-            Expr<Ex, Fb, En, Hi>,
-            Option<Expr<Ex, Fb, En, Hi>>,
-            Expr<Ex, Fb, En, Hi>,
-        )>,
-    ),
-    Is(Box<(Expr<Ex, Fb, En, Hi>, Hint)>),
-    As(Box<(Expr<Ex, Fb, En, Hi>, Hint, bool)>),
+    /// Interpolated string literal.
+    ///
+    /// "hello $foo $bar"
+    ///
+    /// <<<DOC
+    /// hello $foo $bar
+    /// DOC
+    String2(Vec<Expr<Ex, Fb, En>>),
+    /// Prefixed string literal. Only used for regular expressions.
+    ///
+    /// re"foo"
+    PrefixedString(Box<(String, Expr<Ex, Fb, En>)>),
+    /// Yield expression. The enclosing function should have an Iterator
+    /// return type.
+    ///
+    /// yield $foo // enclosing function returns an Iterator
+    /// yield $foo => $bar // enclosing function returns a KeyedIterator
+    Yield(Box<Afield<Ex, Fb, En>>),
+    /// Await expression.
+    ///
+    /// await $foo
+    Await(Box<Expr<Ex, Fb, En>>),
+    /// Readonly expression.
+    ///
+    /// readonly $foo
+    ReadonlyExpr(Box<Expr<Ex, Fb, En>>),
+    /// Tuple expression.
+    ///
+    /// tuple("a", 1, $foo)
+    Tuple(Vec<Expr<Ex, Fb, En>>),
+    /// List expression, only used in destructuring. Allows any arbitrary
+    /// lvalue as a subexpression. May also nest.
+    ///
+    /// list($x, $y) = vec[1, 2];
+    /// list(, $y) = vec[1, 2]; // skipping items
+    /// list(list($x)) = vec[vec[1]]; // nesting
+    /// list($v[0], $x[], $y->foo) = $blah;
+    List(Vec<Expr<Ex, Fb, En>>),
+    /// Cast expression, converting a value to a different type. Only
+    /// primitive types are supported in the hint position.
+    ///
+    /// (int)$foo
+    /// (string)$foo
+    Cast(Box<(Hint, Expr<Ex, Fb, En>)>),
+    /// Unary operator.
+    ///
+    /// !$foo
+    /// -$foo
+    /// +$foo
+    Unop(Box<(ast_defs::Uop, Expr<Ex, Fb, En>)>),
+    /// Binary operator.
+    ///
+    /// $foo + $bar
+    Binop(Box<(ast_defs::Bop, Expr<Ex, Fb, En>, Expr<Ex, Fb, En>)>),
+    /// Pipe expression. The lid is the ID of the $$ that is implicitly
+    /// declared by this pipe.
+    ///
+    /// See also Dollardollar.
+    ///
+    /// $foo |> bar() // equivalent: bar($foo)
+    /// $foo |> bar(1, $$) // equivalent: bar(1, $foo)
+    Pipe(Box<(Lid, Expr<Ex, Fb, En>, Expr<Ex, Fb, En>)>),
+    /// Ternary operator, or elvis operator.
+    ///
+    /// $foo ? $bar : $baz // ternary
+    /// $foo ?: $baz // elvis
+    Eif(Box<(Expr<Ex, Fb, En>, Option<Expr<Ex, Fb, En>>, Expr<Ex, Fb, En>)>),
+    /// Is operator.
+    ///
+    /// $foo is SomeType
+    Is(Box<(Expr<Ex, Fb, En>, Hint)>),
+    /// As operator.
+    ///
+    /// $foo as int
+    /// $foo ?as int
+    As(Box<(Expr<Ex, Fb, En>, Hint, bool)>),
+    /// Instantiation.
+    ///
+    /// new Foo(1, 2);
+    /// new Foo<int, T>();
+    /// new Foo('blah', ...$rest);
     New(
         Box<(
-            ClassId<Ex, Fb, En, Hi>,
-            Vec<Targ<Hi>>,
-            Vec<Expr<Ex, Fb, En, Hi>>,
-            Option<Expr<Ex, Fb, En, Hi>>,
+            ClassId<Ex, Fb, En>,
+            Vec<Targ<Ex>>,
+            Vec<Expr<Ex, Fb, En>>,
+            Option<Expr<Ex, Fb, En>>,
             Ex,
         )>,
     ),
-    Record(Box<(Sid, Vec<(Expr<Ex, Fb, En, Hi>, Expr<Ex, Fb, En, Hi>)>)>),
-    Efun(Box<(Fun_<Ex, Fb, En, Hi>, Vec<Lid>)>),
-    Lfun(Box<(Fun_<Ex, Fb, En, Hi>, Vec<Lid>)>),
-    Xml(
-        Box<(
-            Sid,
-            Vec<XhpAttribute<Ex, Fb, En, Hi>>,
-            Vec<Expr<Ex, Fb, En, Hi>>,
-        )>,
-    ),
-    Callconv(Box<(ast_defs::ParamKind, Expr<Ex, Fb, En, Hi>)>),
-    Import(Box<(ImportFlavor, Expr<Ex, Fb, En, Hi>)>),
-    /// TODO: T38184446 Consolidate collections in AAST
-    Collection(Box<(Sid, Option<CollectionTarg<Hi>>, Vec<Afield<Ex, Fb, En, Hi>>)>),
-    BracedExpr(Box<Expr<Ex, Fb, En, Hi>>),
-    ParenthesizedExpr(Box<Expr<Ex, Fb, En, Hi>>),
-    ExpressionTree(Box<(Hint, Expr<Ex, Fb, En, Hi>, Option<Expr<Ex, Fb, En, Hi>>)>),
+    /// Record literal.
+    ///
+    /// MyRecord['x' => $foo, 'y' => $bar]
+    Record(Box<(Sid, Vec<(Expr<Ex, Fb, En>, Expr<Ex, Fb, En>)>)>),
+    /// PHP-style lambda. Does not capture variables unless explicitly
+    /// specified.
+    ///
+    /// Mnemonic: 'expanded lambda', since we can desugar Lfun to Efun.
+    ///
+    /// function($x) { return $x; }
+    /// function(int $x): int { return $x; }
+    /// function($x) use ($y) { return $y; }
+    /// function($x): int use ($y, $z) { return $x + $y + $z; }
+    Efun(Box<(Fun_<Ex, Fb, En>, Vec<Lid>)>),
+    /// Hack lambda. Captures variables automatically.
+    ///
+    /// $x ==> $x
+    /// (int $x): int ==> $x + $other
+    /// ($x, $y) ==> { return $x + $y; }
+    Lfun(Box<(Fun_<Ex, Fb, En>, Vec<Lid>)>),
+    /// XHP expression. May contain interpolated expressions.
+    ///
+    /// <foo x="hello" y={$foo}>hello {$bar}</foo>
+    Xml(Box<(Sid, Vec<XhpAttribute<Ex, Fb, En>>, Vec<Expr<Ex, Fb, En>>)>),
+    /// Explicit calling convention, used for inout. Inout supports any lvalue.
+    ///
+    /// TODO: This could be a flag on parameters in Call.
+    ///
+    /// foo(inout $x[0])
+    Callconv(Box<(ast_defs::ParamKind, Expr<Ex, Fb, En>)>),
+    /// Include or require expression.
+    ///
+    /// require('foo.php')
+    /// require_once('foo.php')
+    /// include('foo.php')
+    /// include_once('foo.php')
+    Import(Box<(ImportFlavor, Expr<Ex, Fb, En>)>),
+    /// Collection literal.
+    ///
+    /// TODO: T38184446 this is redundant with ValCollection/KeyValCollection.
+    ///
+    /// Vector {}
+    Collection(Box<(Sid, Option<CollectionTarg<Ex>>, Vec<Afield<Ex, Fb, En>>)>),
+    /// Expression tree literal. Expression trees are not evaluated at
+    /// runtime, but desugared to an expression representing the code.
+    ///
+    /// Foo`1 + bar()`
+    /// Foo`$x ==> $x * ${$value}` // splicing $value
+    ExpressionTree(Box<ExpressionTree<Ex, Fb, En>>),
+    /// Placeholder local variable.
+    ///
+    /// $_
     Lplaceholder(Box<Pos>),
+    /// Global function reference.
+    ///
+    /// fun('foo')
     FunId(Box<Sid>),
-    MethodId(Box<(Expr<Ex, Fb, En, Hi>, Pstring)>),
-    /// meth_caller('Class name', 'method name')
+    /// Instance method reference on a specific instance.
+    ///
+    /// TODO: This is only created in naming, and ought to happen in
+    /// lowering or be removed. The emitter just sees a normal Call.
+    ///
+    /// inst_meth($f, 'some_meth') // equivalent: $f->some_meth<>
+    MethodId(Box<(Expr<Ex, Fb, En>, Pstring)>),
+    /// Instance method reference that can be called with an instance.
+    ///
+    /// meth_caller(FooClass::class, 'some_meth')
+    /// meth_caller('FooClass', 'some_meth')
+    ///
+    /// These examples are equivalent to:
+    ///
+    /// (FooClass $f, ...$args) ==> $f->some_meth(...$args)
     MethodCaller(Box<(Sid, Pstring)>),
-    SmethodId(Box<(ClassId<Ex, Fb, En, Hi>, Pstring)>),
+    /// Static method reference.
+    ///
+    /// class_meth('FooClass', 'some_static_meth')
+    /// // equivalent: FooClass::some_static_meth<>
+    SmethodId(Box<(ClassId<Ex, Fb, En>, Pstring)>),
+    /// Pair literal.
+    ///
+    /// Pair {$foo, $bar}
     Pair(
         Box<(
-            Option<(Targ<Hi>, Targ<Hi>)>,
-            Expr<Ex, Fb, En, Hi>,
-            Expr<Ex, Fb, En, Hi>,
+            Option<(Targ<Ex>, Targ<Ex>)>,
+            Expr<Ex, Fb, En>,
+            Expr<Ex, Fb, En>,
         )>,
     ),
-    Assert(Box<AssertExpr<Ex, Fb, En, Hi>>),
-    PUAtom(String),
-    PUIdentifier(Box<(ClassId<Ex, Fb, En, Hi>, Pstring, Pstring)>),
-    ETSplice(Box<Expr<Ex, Fb, En, Hi>>),
-    Any,
+    /// Expression tree splice expression. Only valid inside an
+    /// expression tree literal (backticks).
+    ///
+    /// ${$foo}
+    ETSplice(Box<Expr<Ex, Fb, En>>),
+    /// Label used for enum classes.
+    ///
+    /// enum_name#label_name or #label_name
+    EnumClassLabel(Box<(Option<Sid>, String)>),
+    /// Annotation used to record failure in subtyping or coercion of an
+    /// expression and calls to [unsafe_cast] or [enforced_cast].
+    ///
+    /// The [hole_source] indicates whether this came from an
+    /// explicit call to [unsafe_cast] or [enforced_cast] or was
+    /// generated during typing.
+    ///
+    /// Given a call to [unsafe_cast]:
+    /// ```
+    ///          function f(int $x): void { /* ... */ }
+    ///
+    ///          function g(float $x): void {
+    ///             f(unsafe_cast<float,int>($x));
+    ///          }
+    /// ```
+    /// After typing, this is represented by the following TAST fragment
+    /// ```
+    ///          Call
+    ///            ( ( (..., function(int $x): void), Id (..., "\f"))
+    ///            , []
+    ///            , [ ( (..., int)
+    ///                , Hole
+    ///                    ( ((..., float), Lvar (..., $x))
+    ///                    , float
+    ///                    , int
+    ///                    , UnsafeCast
+    ///                    )
+    ///                )
+    ///              ]
+    ///            , None
+    ///            )
+    /// ```
+    Hole(Box<(Expr<Ex, Fb, En>, Ex, Ex, HoleSource)>),
 }
 
 #[derive(
@@ -393,15 +809,16 @@ pub enum Expr_<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum ClassGetExpr<Ex, Fb, En, Hi> {
+pub enum ClassGetExpr<Ex, Fb, En> {
     CGstring(Pstring),
-    CGexpr(Expr<Ex, Fb, En, Hi>),
+    CGexpr(Expr<Ex, Fb, En>),
 }
 
 #[derive(
@@ -411,14 +828,16 @@ pub enum ClassGetExpr<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum AssertExpr<Ex, Fb, En, Hi> {
-    AEAssert(Expr<Ex, Fb, En, Hi>),
+pub enum Case<Ex, Fb, En> {
+    Default(Pos, Block<Ex, Fb, En>),
+    Case(Expr<Ex, Fb, En>, Block<Ex, Fb, En>),
 }
 
 #[derive(
@@ -428,15 +847,48 @@ pub enum AssertExpr<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum Case<Ex, Fb, En, Hi> {
-    Default(Pos, Block<Ex, Fb, En, Hi>),
-    Case(Expr<Ex, Fb, En, Hi>, Block<Ex, Fb, En, Hi>),
+pub struct Catch<Ex, Fb, En>(pub Sid, pub Lid, pub Block<Ex, Fb, En>);
+
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRep,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub struct Field<Ex, Fb, En>(pub Expr<Ex, Fb, En>, pub Expr<Ex, Fb, En>);
+
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRep,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub enum Afield<Ex, Fb, En> {
+    AFvalue(Expr<Ex, Fb, En>),
+    AFkvalue(Expr<Ex, Fb, En>, Expr<Ex, Fb, En>),
 }
 
 #[derive(
@@ -446,45 +898,17 @@ pub enum Case<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Catch<Ex, Fb, En, Hi>(pub Sid, pub Lid, pub Block<Ex, Fb, En, Hi>);
-
-#[derive(
-    Clone,
-    Debug,
-    Deserialize,
-    Eq,
-    FromOcamlRep,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToOcamlRep
-)]
-pub struct Field<Ex, Fb, En, Hi>(pub Expr<Ex, Fb, En, Hi>, pub Expr<Ex, Fb, En, Hi>);
-
-#[derive(
-    Clone,
-    Debug,
-    Deserialize,
-    Eq,
-    FromOcamlRep,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToOcamlRep
-)]
-pub enum Afield<Ex, Fb, En, Hi> {
-    AFvalue(Expr<Ex, Fb, En, Hi>),
-    AFkvalue(Expr<Ex, Fb, En, Hi>, Expr<Ex, Fb, En, Hi>),
+pub struct XhpSimple<Ex, Fb, En> {
+    pub name: Pstring,
+    pub type_: Ex,
+    pub expr: Expr<Ex, Fb, En>,
 }
 
 #[derive(
@@ -494,15 +918,16 @@ pub enum Afield<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum XhpAttribute<Ex, Fb, En, Hi> {
-    XhpSimple(Pstring, Expr<Ex, Fb, En, Hi>),
-    XhpSpread(Expr<Ex, Fb, En, Hi>),
+pub enum XhpAttribute<Ex, Fb, En> {
+    XhpSimple(XhpSimple<Ex, Fb, En>),
+    XhpSpread(Expr<Ex, Fb, En>),
 }
 
 pub type IsVariadic = bool;
@@ -514,25 +939,27 @@ pub type IsVariadic = bool;
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct FunParam<Ex, Fb, En, Hi> {
+pub struct FunParam<Ex, Fb, En> {
     pub annotation: Ex,
-    pub type_hint: TypeHint<Hi>,
+    pub type_hint: TypeHint<Ex>,
     pub is_variadic: IsVariadic,
     pub pos: Pos,
     pub name: String,
-    pub expr: Option<Expr<Ex, Fb, En, Hi>>,
+    pub expr: Option<Expr<Ex, Fb, En>>,
+    pub readonly: Option<ast_defs::ReadonlyKind>,
     pub callconv: Option<ast_defs::ParamKind>,
-    pub user_attributes: Vec<UserAttribute<Ex, Fb, En, Hi>>,
+    pub user_attributes: Vec<UserAttribute<Ex, Fb, En>>,
     pub visibility: Option<Visibility>,
 }
 
-/// does function take varying number of args?
+/// Does this function/method take a variable number of arguments?
 #[derive(
     Clone,
     Debug,
@@ -540,18 +967,23 @@ pub struct FunParam<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum FunVariadicity<Ex, Fb, En, Hi> {
-    /// PHP5.6 ...$args finishes the func declaration
-    FVvariadicArg(FunParam<Ex, Fb, En, Hi>),
-    /// HH ... finishes the declaration; deprecate for ...$args?
+pub enum FunVariadicity<Ex, Fb, En> {
+    /// Named variadic argument.
+    ///
+    /// function foo(int ...$args): void {}
+    FVvariadicArg(FunParam<Ex, Fb, En>),
+    /// Unnamed variaidic argument. Partial mode only.
+    ///
+    /// function foo(...): void {}
     FVellipsis(Pos),
-    /// standard non variadic function
+    /// Function is not variadic, takes an exact number of arguments.
     FVnonVariadic,
 }
 
@@ -562,34 +994,33 @@ pub enum FunVariadicity<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Fun_<Ex, Fb, En, Hi> {
+pub struct Fun_<Ex, Fb, En> {
     pub span: Pos,
+    pub readonly_this: Option<ast_defs::ReadonlyKind>,
     pub annotation: En,
-    pub mode: file_info::Mode,
-    pub ret: TypeHint<Hi>,
+    pub readonly_ret: Option<ast_defs::ReadonlyKind>,
+    pub ret: TypeHint<Ex>,
     pub name: Sid,
-    pub tparams: Vec<Tparam<Ex, Fb, En, Hi>>,
-    pub where_constraints: Vec<WhereConstraint>,
-    pub variadic: FunVariadicity<Ex, Fb, En, Hi>,
-    pub params: Vec<FunParam<Ex, Fb, En, Hi>>,
-    pub cap: TypeHint<Hi>,
-    pub unsafe_cap: TypeHint<Hi>,
-    pub body: FuncBody<Ex, Fb, En, Hi>,
+    pub tparams: Vec<Tparam<Ex, Fb, En>>,
+    pub where_constraints: Vec<WhereConstraintHint>,
+    pub variadic: FunVariadicity<Ex, Fb, En>,
+    pub params: Vec<FunParam<Ex, Fb, En>>,
+    pub ctxs: Option<Contexts>,
+    pub unsafe_ctxs: Option<Contexts>,
+    pub body: FuncBody<Ex, Fb, En>,
     pub fun_kind: ast_defs::FunKind,
-    pub user_attributes: Vec<UserAttribute<Ex, Fb, En, Hi>>,
-    pub file_attributes: Vec<FileAttribute<Ex, Fb, En, Hi>>,
+    pub user_attributes: Vec<UserAttribute<Ex, Fb, En>>,
     /// true if this declaration has no body because it is an
     /// external function declaration (e.g. from an HHI file)
     pub external: bool,
-    pub namespace: Nsenv,
     pub doc_comment: Option<DocComment>,
-    pub static_: bool,
 }
 
 /// Naming has two phases and the annotation helps to indicate the phase.
@@ -605,14 +1036,15 @@ pub struct Fun_<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct FuncBody<Ex, Fb, En, Hi> {
-    pub ast: Block<Ex, Fb, En, Hi>,
+pub struct FuncBody<Ex, Fb, En> {
+    pub ast: Block<Ex, Fb, En>,
     pub annotation: Fb,
 }
 
@@ -626,17 +1058,18 @@ pub struct FuncBody<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct TypeHint<Hi>(pub Hi, pub TypeHint_);
+pub struct TypeHint<Ex>(pub Ex, pub TypeHint_);
 
 /// Explicit type argument to function, constructor, or collection literal.
-/// 'hi = unit in NAST
-/// 'hi = Typing_defs.(locl ty) in TAST,
+/// 'ex = unit in NAST
+/// 'ex = Typing_defs.(locl ty) in TAST,
 /// and is used to record inferred type arguments, with wildcard hint.
 #[derive(
     Clone,
@@ -645,13 +1078,14 @@ pub struct TypeHint<Hi>(pub Hi, pub TypeHint_);
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Targ<Hi>(pub Hi, pub Hint);
+pub struct Targ<Ex>(pub Ex, pub Hint);
 
 pub type TypeHint_ = Option<Hint>;
 
@@ -662,16 +1096,17 @@ pub type TypeHint_ = Option<Hint>;
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct UserAttribute<Ex, Fb, En, Hi> {
+pub struct UserAttribute<Ex, Fb, En> {
     pub name: Sid,
     /// user attributes are restricted to scalar values
-    pub params: Vec<Expr<Ex, Fb, En, Hi>>,
+    pub params: Vec<Expr<Ex, Fb, En>>,
 }
 
 #[derive(
@@ -681,14 +1116,15 @@ pub struct UserAttribute<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct FileAttribute<Ex, Fb, En, Hi> {
-    pub user_attributes: Vec<UserAttribute<Ex, Fb, En, Hi>>,
+pub struct FileAttribute<Ex, Fb, En> {
+    pub user_attributes: Vec<UserAttribute<Ex, Fb, En>>,
     pub namespace: Nsenv,
 }
 
@@ -699,19 +1135,20 @@ pub struct FileAttribute<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Tparam<Ex, Fb, En, Hi> {
+pub struct Tparam<Ex, Fb, En> {
     pub variance: ast_defs::Variance,
     pub name: Sid,
-    pub parameters: Vec<Tparam<Ex, Fb, En, Hi>>,
+    pub parameters: Vec<Tparam<Ex, Fb, En>>,
     pub constraints: Vec<(ast_defs::ConstraintKind, Hint)>,
     pub reified: ReifyKind,
-    pub user_attributes: Vec<UserAttribute<Ex, Fb, En, Hi>>,
+    pub user_attributes: Vec<UserAttribute<Ex, Fb, En>>,
 }
 
 #[derive(
@@ -721,6 +1158,7 @@ pub struct Tparam<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -741,6 +1179,7 @@ pub struct UseAsAlias(
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -760,6 +1199,7 @@ pub type IsExtends = bool;
     FromOcamlRep,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -770,6 +1210,7 @@ pub enum EmitId {
     EmitId(isize),
     Anonymous,
 }
+arena_deserializer::impl_deserialize_in_arena!(EmitId);
 
 #[derive(
     Clone,
@@ -778,13 +1219,14 @@ pub enum EmitId {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Class_<Ex, Fb, En, Hi> {
+pub struct Class_<Ex, Fb, En> {
     pub span: Pos,
     pub annotation: En,
     pub mode: file_info::Mode,
@@ -794,28 +1236,32 @@ pub struct Class_<Ex, Fb, En, Hi> {
     pub kind: ast_defs::ClassKind,
     pub name: Sid,
     /// The type parameters of a class A<T> (T is the parameter)
-    pub tparams: Vec<Tparam<Ex, Fb, En, Hi>>,
+    pub tparams: Vec<Tparam<Ex, Fb, En>>,
     pub extends: Vec<ClassHint>,
     pub uses: Vec<TraitHint>,
+    /// PHP feature not supported in hack but required
+    /// because we have runtime support.
     pub use_as_alias: Vec<UseAsAlias>,
+    /// PHP feature not supported in hack but required
+    /// because we have runtime support.
     pub insteadof_alias: Vec<InsteadofAlias>,
     pub xhp_attr_uses: Vec<XhpAttrHint>,
     pub xhp_category: Option<(Pos, Vec<Pstring>)>,
     pub reqs: Vec<(ClassHint, IsExtends)>,
     pub implements: Vec<ClassHint>,
-    pub where_constraints: Vec<WhereConstraint>,
-    pub consts: Vec<ClassConst<Ex, Fb, En, Hi>>,
-    pub typeconsts: Vec<ClassTypeconst<Ex, Fb, En, Hi>>,
-    pub vars: Vec<ClassVar<Ex, Fb, En, Hi>>,
-    pub methods: Vec<Method_<Ex, Fb, En, Hi>>,
-    pub attributes: Vec<ClassAttr<Ex, Fb, En, Hi>>,
+    pub support_dynamic_type: bool,
+    pub where_constraints: Vec<WhereConstraintHint>,
+    pub consts: Vec<ClassConst<Ex, Fb, En>>,
+    pub typeconsts: Vec<ClassTypeconstDef<Ex, Fb, En>>,
+    pub vars: Vec<ClassVar<Ex, Fb, En>>,
+    pub methods: Vec<Method_<Ex, Fb, En>>,
+    pub attributes: Vec<ClassAttr<Ex, Fb, En>>,
     pub xhp_children: Vec<(Pos, XhpChild)>,
-    pub xhp_attrs: Vec<XhpAttr<Ex, Fb, En, Hi>>,
+    pub xhp_attrs: Vec<XhpAttr<Ex, Fb, En>>,
     pub namespace: Nsenv,
-    pub user_attributes: Vec<UserAttribute<Ex, Fb, En, Hi>>,
-    pub file_attributes: Vec<FileAttribute<Ex, Fb, En, Hi>>,
+    pub user_attributes: Vec<UserAttribute<Ex, Fb, En>>,
+    pub file_attributes: Vec<FileAttribute<Ex, Fb, En>>,
     pub enum_: Option<Enum_>,
-    pub pu_enums: Vec<PuEnum<Ex, Fb, En, Hi>>,
     pub doc_comment: Option<DocComment>,
     pub emit_id: Option<EmitId>,
 }
@@ -835,6 +1281,7 @@ pub type XhpAttrHint = Hint;
     FromOcamlRep,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -846,6 +1293,7 @@ pub enum XhpAttrTag {
     LateInit,
 }
 impl TrivialDrop for XhpAttrTag {}
+arena_deserializer::impl_deserialize_in_arena!(XhpAttrTag);
 
 #[derive(
     Clone,
@@ -854,17 +1302,18 @@ impl TrivialDrop for XhpAttrTag {}
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct XhpAttr<Ex, Fb, En, Hi>(
-    pub TypeHint<Hi>,
-    pub ClassVar<Ex, Fb, En, Hi>,
+pub struct XhpAttr<Ex, Fb, En>(
+    pub TypeHint<Ex>,
+    pub ClassVar<Ex, Fb, En>,
     pub Option<XhpAttrTag>,
-    pub Option<(Pos, Vec<Expr<Ex, Fb, En, Hi>>)>,
+    pub Option<(Pos, Vec<Expr<Ex, Fb, En>>)>,
 );
 
 #[derive(
@@ -874,15 +1323,16 @@ pub struct XhpAttr<Ex, Fb, En, Hi>(
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum ClassAttr<Ex, Fb, En, Hi> {
+pub enum ClassAttr<Ex, Fb, En> {
     CAName(Sid),
-    CAField(CaField<Ex, Fb, En, Hi>),
+    CAField(CaField<Ex, Fb, En>),
 }
 
 #[derive(
@@ -892,16 +1342,17 @@ pub enum ClassAttr<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct CaField<Ex, Fb, En, Hi> {
+pub struct CaField<Ex, Fb, En> {
     pub type_: CaType,
     pub id: Sid,
-    pub value: Option<Expr<Ex, Fb, En, Hi>>,
+    pub value: Option<Expr<Ex, Fb, En>>,
     pub required: bool,
 }
 
@@ -912,6 +1363,7 @@ pub struct CaField<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -930,17 +1382,43 @@ pub enum CaType {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct ClassConst<Ex, Fb, En, Hi> {
+pub enum ClassConstKind<Ex, Fb, En> {
+    /// CCAbstract represents the states
+    ///    abstract const int X;
+    ///    abstract const int Y = 4;
+    /// The expr option is a default value
+    CCAbstract(Option<Expr<Ex, Fb, En>>),
+    /// CCConcrete represents
+    ///    const int Z = 4;
+    /// The expr is the value of the constant. It is not optional
+    CCConcrete(Expr<Ex, Fb, En>),
+}
+
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRep,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub struct ClassConst<Ex, Fb, En> {
     pub type_: Option<Hint>,
     pub id: Sid,
-    /// expr = None indicates an abstract const
-    pub expr: Option<Expr<Ex, Fb, En, Hi>>,
+    pub kind: ClassConstKind<Ex, Fb, En>,
     pub doc_comment: Option<DocComment>,
 }
 
@@ -951,23 +1429,19 @@ pub struct ClassConst<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum TypeconstAbstractKind {
-    TCAbstract(Option<Hint>),
-    TCPartiallyAbstract,
-    TCConcrete,
+pub struct ClassAbstractTypeconst {
+    pub as_constraint: Option<Hint>,
+    pub super_constraint: Option<Hint>,
+    pub default: Option<Hint>,
 }
 
-/// This represents a type const definition. If a type const is abstract then
-/// then the type hint acts as a constraint. Any concrete definition of the
-/// type const must satisfy the constraint.
-///
-/// If the type const is not abstract then a type must be specified.
 #[derive(
     Clone,
     Debug,
@@ -975,31 +1449,87 @@ pub enum TypeconstAbstractKind {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct ClassTypeconst<Ex, Fb, En, Hi> {
-    pub abstract_: TypeconstAbstractKind,
+pub struct ClassConcreteTypeconst {
+    pub c_tc_type: Hint,
+}
+
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRep,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub struct ClassPartiallyAbstractTypeconst {
+    pub constraint: Hint,
+    pub type_: Hint,
+}
+
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRep,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub enum ClassTypeconst {
+    TCAbstract(ClassAbstractTypeconst),
+    TCConcrete(ClassConcreteTypeconst),
+    TCPartiallyAbstract(ClassPartiallyAbstractTypeconst),
+}
+
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    FromOcamlRep,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+pub struct ClassTypeconstDef<Ex, Fb, En> {
+    pub user_attributes: Vec<UserAttribute<Ex, Fb, En>>,
     pub name: Sid,
-    pub constraint: Option<Hint>,
-    pub type_: Option<Hint>,
-    pub user_attributes: Vec<UserAttribute<Ex, Fb, En, Hi>>,
+    pub kind: ClassTypeconst,
     pub span: Pos,
     pub doc_comment: Option<DocComment>,
+    pub is_ctx: bool,
 }
 
 #[derive(
     Clone,
-    Copy,
     Debug,
     Deserialize,
     Eq,
     FromOcamlRep,
-    FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -1007,7 +1537,8 @@ pub struct ClassTypeconst<Ex, Fb, En, Hi> {
     ToOcamlRep
 )]
 pub struct XhpAttrInfo {
-    pub xai_tag: Option<XhpAttrTag>,
+    pub tag: Option<XhpAttrTag>,
+    pub enum_values: Vec<ast_defs::XhpEnumValue>,
 }
 
 #[derive(
@@ -1017,21 +1548,23 @@ pub struct XhpAttrInfo {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct ClassVar<Ex, Fb, En, Hi> {
+pub struct ClassVar<Ex, Fb, En> {
     pub final_: bool,
     pub xhp_attr: Option<XhpAttrInfo>,
     pub abstract_: bool,
+    pub readonly: bool,
     pub visibility: Visibility,
-    pub type_: TypeHint<Hi>,
+    pub type_: TypeHint<Ex>,
     pub id: Sid,
-    pub expr: Option<Expr<Ex, Fb, En, Hi>>,
-    pub user_attributes: Vec<UserAttribute<Ex, Fb, En, Hi>>,
+    pub expr: Option<Expr<Ex, Fb, En>>,
+    pub user_attributes: Vec<UserAttribute<Ex, Fb, En>>,
     pub doc_comment: Option<DocComment>,
     pub is_promoted_variadic: bool,
     pub is_static: bool,
@@ -1045,30 +1578,33 @@ pub struct ClassVar<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Method_<Ex, Fb, En, Hi> {
+pub struct Method_<Ex, Fb, En> {
     pub span: Pos,
     pub annotation: En,
     pub final_: bool,
     pub abstract_: bool,
     pub static_: bool,
+    pub readonly_this: bool,
     pub visibility: Visibility,
     pub name: Sid,
-    pub tparams: Vec<Tparam<Ex, Fb, En, Hi>>,
-    pub where_constraints: Vec<WhereConstraint>,
-    pub variadic: FunVariadicity<Ex, Fb, En, Hi>,
-    pub params: Vec<FunParam<Ex, Fb, En, Hi>>,
-    pub cap: TypeHint<Hi>,
-    pub unsafe_cap: TypeHint<Hi>,
-    pub body: FuncBody<Ex, Fb, En, Hi>,
+    pub tparams: Vec<Tparam<Ex, Fb, En>>,
+    pub where_constraints: Vec<WhereConstraintHint>,
+    pub variadic: FunVariadicity<Ex, Fb, En>,
+    pub params: Vec<FunParam<Ex, Fb, En>>,
+    pub ctxs: Option<Contexts>,
+    pub unsafe_ctxs: Option<Contexts>,
+    pub body: FuncBody<Ex, Fb, En>,
     pub fun_kind: ast_defs::FunKind,
-    pub user_attributes: Vec<UserAttribute<Ex, Fb, En, Hi>>,
-    pub ret: TypeHint<Hi>,
+    pub user_attributes: Vec<UserAttribute<Ex, Fb, En>>,
+    pub readonly_ret: Option<ast_defs::ReadonlyKind>,
+    pub ret: TypeHint<Ex>,
     /// true if this declaration has no body because it is an external method
     /// declaration (e.g. from an HHI file)
     pub external: bool,
@@ -1084,24 +1620,26 @@ pub type Nsenv = ocamlrep::rc::RcOc<namespace_env::Env>;
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Typedef<Ex, Fb, En, Hi> {
+pub struct Typedef<Ex, Fb, En> {
     pub annotation: En,
     pub name: Sid,
-    pub tparams: Vec<Tparam<Ex, Fb, En, Hi>>,
+    pub tparams: Vec<Tparam<Ex, Fb, En>>,
     pub constraint: Option<Hint>,
     pub kind: Hint,
-    pub user_attributes: Vec<UserAttribute<Ex, Fb, En, Hi>>,
+    pub user_attributes: Vec<UserAttribute<Ex, Fb, En>>,
     pub mode: file_info::Mode,
     pub vis: TypedefVisibility,
     pub namespace: Nsenv,
     pub span: Pos,
     pub emit_id: Option<EmitId>,
+    pub is_ctx: bool,
 }
 
 #[derive(
@@ -1111,18 +1649,19 @@ pub struct Typedef<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct Gconst<Ex, Fb, En, Hi> {
+pub struct Gconst<Ex, Fb, En> {
     pub annotation: En,
     pub mode: file_info::Mode,
     pub name: Sid,
     pub type_: Option<Hint>,
-    pub value: Expr<Ex, Fb, En, Hi>,
+    pub value: Expr<Ex, Fb, En>,
     pub namespace: Nsenv,
     pub span: Pos,
     pub emit_id: Option<EmitId>,
@@ -1135,19 +1674,20 @@ pub struct Gconst<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct RecordDef<Ex, Fb, En, Hi> {
+pub struct RecordDef<Ex, Fb, En> {
     pub annotation: En,
     pub name: Sid,
     pub extends: Option<RecordHint>,
     pub abstract_: bool,
-    pub fields: Vec<(Sid, Hint, Option<Expr<Ex, Fb, En, Hi>>)>,
-    pub user_attributes: Vec<UserAttribute<Ex, Fb, En, Hi>>,
+    pub fields: Vec<(Sid, Hint, Option<Expr<Ex, Fb, En>>)>,
+    pub user_attributes: Vec<UserAttribute<Ex, Fb, En>>,
     pub namespace: Nsenv,
     pub span: Pos,
     pub doc_comment: Option<DocComment>,
@@ -1156,32 +1696,6 @@ pub struct RecordDef<Ex, Fb, En, Hi> {
 
 pub type RecordHint = Hint;
 
-/// Pocket Universe Enumeration, e.g.
-///
-/// ```
-///   enum Foo { // pu_name
-///     // pu_case_types
-///     case type T0;
-///     case type T1;
-///
-///     // pu_case_values
-///     case ?T0 default_value;
-///     case T1 foo;
-///
-///     // pu_members
-///     :@A( // pum_atom
-///       // pum_types
-///       type T0 = string,
-///       type T1 = int,
-///
-///       // pum_exprs
-///       default_value = null,
-///       foo = 42,
-///     );
-///     :@B( ... )
-///     ...
-///   }
-/// ```
 #[derive(
     Clone,
     Debug,
@@ -1189,20 +1703,18 @@ pub type RecordHint = Hint;
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct PuEnum<Ex, Fb, En, Hi> {
-    pub annotation: En,
-    pub name: Sid,
-    pub user_attributes: Vec<UserAttribute<Ex, Fb, En, Hi>>,
-    pub is_final: bool,
-    pub case_types: Vec<Tparam<Ex, Fb, En, Hi>>,
-    pub case_values: Vec<PuCaseValue>,
-    pub members: Vec<PuMember<Ex, Fb, En, Hi>>,
+pub struct FunDef<Ex, Fb, En> {
+    pub namespace: Nsenv,
+    pub file_attributes: Vec<FileAttribute<Ex, Fb, En>>,
+    pub mode: file_info::Mode,
+    pub fun: Fun_<Ex, Fb, En>,
 }
 
 #[derive(
@@ -1212,59 +1724,24 @@ pub struct PuEnum<Ex, Fb, En, Hi> {
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub struct PuCaseValue(pub Sid, pub Hint);
-
-#[derive(
-    Clone,
-    Debug,
-    Deserialize,
-    Eq,
-    FromOcamlRep,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToOcamlRep
-)]
-pub struct PuMember<Ex, Fb, En, Hi> {
-    pub atom: Sid,
-    pub types: Vec<(Sid, Hint)>,
-    pub exprs: Vec<(Sid, Expr<Ex, Fb, En, Hi>)>,
-}
-
-pub type FunDef<Ex, Fb, En, Hi> = Fun_<Ex, Fb, En, Hi>;
-
-#[derive(
-    Clone,
-    Debug,
-    Deserialize,
-    Eq,
-    FromOcamlRep,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    ToOcamlRep
-)]
-pub enum Def<Ex, Fb, En, Hi> {
-    Fun(Box<FunDef<Ex, Fb, En, Hi>>),
-    Class(Box<Class_<Ex, Fb, En, Hi>>),
-    RecordDef(Box<RecordDef<Ex, Fb, En, Hi>>),
-    Stmt(Box<Stmt<Ex, Fb, En, Hi>>),
-    Typedef(Box<Typedef<Ex, Fb, En, Hi>>),
-    Constant(Box<Gconst<Ex, Fb, En, Hi>>),
-    Namespace(Box<(Sid, Program<Ex, Fb, En, Hi>)>),
+pub enum Def<Ex, Fb, En> {
+    Fun(Box<FunDef<Ex, Fb, En>>),
+    Class(Box<Class_<Ex, Fb, En>>),
+    RecordDef(Box<RecordDef<Ex, Fb, En>>),
+    Stmt(Box<Stmt<Ex, Fb, En>>),
+    Typedef(Box<Typedef<Ex, Fb, En>>),
+    Constant(Box<Gconst<Ex, Fb, En>>),
+    Namespace(Box<(Sid, Program<Ex, Fb, En>)>),
     NamespaceUse(Vec<(NsKind, Sid, Sid)>),
     SetNamespaceEnv(Box<Nsenv>),
-    FileAttributes(Box<FileAttribute<Ex, Fb, En, Hi>>),
+    FileAttributes(Box<FileAttribute<Ex, Fb, En>>),
 }
 
 #[derive(
@@ -1276,6 +1753,7 @@ pub enum Def<Ex, Fb, En, Hi> {
     FromOcamlRep,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
@@ -1290,6 +1768,7 @@ pub enum NsKind {
     NSConst,
 }
 impl TrivialDrop for NsKind {}
+arena_deserializer::impl_deserialize_in_arena!(NsKind);
 
 #[derive(
     Clone,
@@ -1300,18 +1779,20 @@ impl TrivialDrop for NsKind {}
     FromOcamlRep,
     FromOcamlRepIn,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,
     Serialize,
     ToOcamlRep
 )]
-pub enum ReifyKind {
-    Erased,
-    SoftReified,
-    Reified,
+pub enum HoleSource {
+    Typing,
+    UnsafeCast,
+    EnforcedCast,
 }
-impl TrivialDrop for ReifyKind {}
+impl TrivialDrop for HoleSource {}
+arena_deserializer::impl_deserialize_in_arena!(HoleSource);
 
 #[derive(
     Clone,
@@ -1320,6 +1801,7 @@ impl TrivialDrop for ReifyKind {}
     Eq,
     FromOcamlRep,
     Hash,
+    NoPosHash,
     Ord,
     PartialEq,
     PartialOrd,

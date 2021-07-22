@@ -14,10 +14,11 @@ open Utils
 module Env = Tast_env
 module Cls = Decl_provider.Class
 module MakeType = Typing_make_type
+module SN = Naming_special_names
 
 let get_constant tc (seen, has_default) = function
   | Default _ -> (seen, true)
-  | Case (((pos, _), Class_const ((_, CI (_, cls)), (_, const))), _) ->
+  | Case ((_, pos, Class_const ((_, _, CI (_, cls)), (_, const))), _) ->
     if String.( <> ) cls (Cls.name tc) then (
       Errors.enum_switch_wrong_class pos (strip_ns (Cls.name tc)) (strip_ns cls);
       (seen, has_default)
@@ -28,7 +29,7 @@ let get_constant tc (seen, has_default) = function
         Errors.enum_switch_redundant const old_pos pos;
         (seen, has_default)
     )
-  | Case (((pos, _), _), _) ->
+  | Case ((_, pos, _), _) ->
     Errors.enum_switch_not_const pos;
     (seen, has_default)
 
@@ -48,9 +49,43 @@ let check_enum_exhaustiveness pos tc caselist coming_from_unresolved =
   let all_cases_handled = List.is_empty unhandled in
   match (all_cases_handled, has_default, coming_from_unresolved) with
   | (false, false, _) ->
-    Errors.enum_switch_nonexhaustive pos unhandled (Cls.pos tc)
+    (* In what order should we list the unhandled ones?
+       Some people might prefer an alphabetical order.
+       Some people might prefer to see the list in order of declaration.
+       It honestly doesn't matter. I'm picking this because I
+       like errors to be deterministic. *)
+    Errors.enum_switch_nonexhaustive
+      pos
+      (unhandled |> List.sort ~compare:String.compare)
+      (Cls.pos tc)
   | (true, true, false) -> Errors.enum_switch_redundant_default pos (Cls.pos tc)
   | _ -> ()
+
+(* Small reminder:
+ * - enums are localized to `Tnewtype (name, _, _)` where name is the name of
+ *   the enum. This can be checked using `Env.is_enum`
+ * - enum classes are not inhabited by design. The type of elements is
+ *   HH\MemberOf<name, _> were name is the name of the enum class. This
+ *   is localized as Tnewtype("HH\MemberOf", [enum; interface]) where
+ *   enum is localized as Tclass(name, _, _) where Env.is_enum_class name is
+ *   true.
+ *)
+(* Wrapper to share the logic that detects if a type is an enum or an enum
+ * class, or something else.
+ *)
+let apply_if_enum_or_enum_class
+    env ~(default : 'a) ~(f : Env.env -> string -> 'a) name args =
+  if Env.is_enum env name then
+    f env name
+  else
+    match args with
+    | [enum; _interface] ->
+      begin
+        match get_node enum with
+        | Tclass ((_, cid), _, _) when Env.is_enum_class env cid -> f env cid
+        | _ -> default
+      end
+    | _ -> default
 
 let rec check_exhaustiveness_ env pos ty caselist enum_coming_from_unresolved =
   (* Right now we only do exhaustiveness checking for enums. *)
@@ -58,6 +93,15 @@ let rec check_exhaustiveness_ env pos ty caselist enum_coming_from_unresolved =
      inside then it tells the enum exhaustiveness checker to
      not punish for extra default *)
   let (env, ty) = Env.expand_type env ty in
+  let check env id =
+    let dep = Typing_deps.Dep.AllMembers id in
+    let decl_env = Env.get_decl_env env in
+    Option.iter decl_env.Decl_env.droot ~f:(fun root ->
+        Typing_deps.add_idep (Env.get_deps_mode env) root dep);
+    let tc = unsafe_opt @@ Env.get_enum env id in
+    check_enum_exhaustiveness pos tc caselist enum_coming_from_unresolved;
+    env
+  in
   match get_node ty with
   | Tunion tyl ->
     let new_enum =
@@ -66,7 +110,13 @@ let rec check_exhaustiveness_ env pos ty caselist enum_coming_from_unresolved =
          && List.exists tyl ~f:(fun cur_ty ->
                 let (_, cur_ty) = Env.expand_type env cur_ty in
                 match get_node cur_ty with
-                | Tnewtype (cid, _, _) -> Env.is_enum env cid
+                | Tnewtype (name, args, _) ->
+                  apply_if_enum_or_enum_class
+                    env
+                    ~default:false
+                    ~f:(fun _ _ -> true)
+                    name
+                    args
                 | _ -> false)
     in
     List.fold_left tyl ~init:env ~f:(fun env ty ->
@@ -81,43 +131,35 @@ let rec check_exhaustiveness_ env pos ty caselist enum_coming_from_unresolved =
                caselist
                enum_coming_from_unresolved,
              () ))
-  | Tnewtype (id, _, _) when Env.is_enum env id ->
-    let dep = Typing_deps.Dep.AllMembers id in
-    let decl_env = Env.get_decl_env env in
-    Option.iter decl_env.Decl_env.droot (fun root ->
-        Typing_deps.add_idep root dep);
-    let tc = unsafe_opt @@ Env.get_enum env id in
-    check_enum_exhaustiveness pos tc caselist enum_coming_from_unresolved;
-    env
-  | Tpu _
-  | Tpu_type_access _ ->
-    (* TODO(T36532263)
-     * we can implement exhaustiveness check here if need be *)
-    env
+  | Tnewtype (name, args, _) ->
+    apply_if_enum_or_enum_class env ~default:env ~f:check name args
   | Terr
   | Tany _
   | Tnonnull
   | Tvarray _
   | Tdarray _
   | Tvarray_or_darray _
+  | Tvec_or_dict _
   | Tclass _
   | Toption _
   | Tprim _
   | Tvar _
   | Tfun _
   | Tgeneric _
-  | Tnewtype _
   | Tdependent _
   | Ttuple _
   | Tobject
   | Tshape _
-  | Tdynamic ->
+  | Tdynamic
+  | Taccess _
+  | Tneg _ ->
     env
   | Tunapplied_alias _ ->
     Typing_defs.error_Tunapplied_alias_in_illegal_context ()
 
 let check_exhaustiveness env pos ty caselist =
-  ignore (check_exhaustiveness_ env pos ty caselist false)
+  let (_ : Env.env) = check_exhaustiveness_ env pos ty caselist false in
+  ()
 
 let ensure_valid_switch_case_value_types env scrutinee_ty casel errorf =
   let is_subtype ty_sub ty_super = Env.can_subtype env ty_sub ty_super in
@@ -135,7 +177,7 @@ let ensure_valid_switch_case_value_types env scrutinee_ty casel errorf =
   in
   let ensure_valid_switch_case_value_type = function
     | Default _ -> ()
-    | Case (((case_value_p, case_value_ty), _), _) ->
+    | Case ((case_value_ty, case_value_p, _), _) ->
       if not (compatible_types case_value_ty scrutinee_ty) then
         errorf
           (Env.get_tcopt env)
@@ -143,7 +185,7 @@ let ensure_valid_switch_case_value_types env scrutinee_ty casel errorf =
           (Env.print_ty env case_value_ty)
           (Env.print_ty env scrutinee_ty)
   in
-  List.iter casel ensure_valid_switch_case_value_type
+  List.iter casel ~f:ensure_valid_switch_case_value_type
 
 let handler errorf =
   object
@@ -151,7 +193,7 @@ let handler errorf =
 
     method! at_stmt env x =
       match snd x with
-      | Switch (((scrutinee_pos, scrutinee_ty), _), casel) ->
+      | Switch ((scrutinee_ty, scrutinee_pos, _), casel) ->
         check_exhaustiveness env scrutinee_pos scrutinee_ty casel;
         ensure_valid_switch_case_value_types env scrutinee_ty casel errorf
       | _ -> ()

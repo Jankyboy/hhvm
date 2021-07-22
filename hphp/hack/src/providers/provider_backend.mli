@@ -13,7 +13,7 @@ module Decl_cache_entry : sig
     | Class_decl : string -> Obj.t t
     | Record_decl : string -> Typing_defs.record_def_type t
     | Typedef_decl : string -> Typing_defs.typedef_type t
-    | Gconst_decl : string -> (Typing_defs.decl_ty * Errors.t) t
+    | Gconst_decl : string -> Typing_defs.const_decl t
 
   type 'a key = 'a t
 
@@ -46,9 +46,7 @@ module Shallow_decl_cache : sig
 end
 
 module Linearization_cache_entry : sig
-  type _ t =
-    | Member_resolution_linearization : string -> Decl_defs.linearization t
-    | Ancestor_types_linearization : string -> Decl_defs.linearization t
+  type _ t = Linearization : string -> Decl_defs.lin t
 
   type 'a key = 'a t
 
@@ -162,14 +160,17 @@ type local_memory = {
 }
 
 type t =
-  | Shared_memory
-  | Local_memory of local_memory
+  | Shared_memory  (** Used by hh_server and hh_single_type_check *)
+  | Local_memory of local_memory  (** Used by serverless IDE *)
   | Decl_service of {
       decl: Decl_service_client.t;
       fixmes: Fixmes.t;
-    }
+    }  (** Used by the hh_server rearchitecture (hh_decl/hh_worker) *)
+  | Analysis
 
 val t_to_string : t -> string
+
+val set_analysis_backend : unit -> unit
 
 val set_shared_memory_backend : unit -> unit
 

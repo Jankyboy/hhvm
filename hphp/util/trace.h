@@ -15,8 +15,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_TRACE_H_
-#define incl_HPHP_TRACE_H_
+#pragma once
 
 #include <string>
 #include <vector>
@@ -94,12 +93,12 @@ namespace Trace {
       TM(traceAsync)  /* Meta: lazy writes to disk */ \
       TM(apc)           \
       TM(asmx64)        \
-      TM(asmppc64)      \
       TM(atomicvector)  \
       TM(bcinterp)      \
       TM(bespoke)       \
       TM(bisector)      \
       TM(class_load)    \
+      TM(coeffects)     \
       TM(cti)           \
       TM(datablock)     \
       TM(debugger)      \
@@ -111,6 +110,7 @@ namespace Trace {
       TM(ehframe)       \
       TM(emitter)       \
       TM(extern_compiler) \
+      TM(facts)         \
       TM(fixup)         \
       TM(fr)            \
       TM(funcorder)     \
@@ -143,11 +143,13 @@ namespace Trace {
       TM(hhir_licm)     \
       TM(hhir_load)     \
       TM(hhir_loop)     \
+      TM(hhir_outline)  \
       TM(hhir_phi)      \
       TM(hhir_refcount) \
       TM(hhir_refineTmps) \
       TM(hhir_store)    \
       TM(hhir_unreachable) \
+      TM(hhir_vanilla)  \
       TM(hhprof)        \
       TM(inlining)      \
       TM(instancebits)  \
@@ -165,6 +167,7 @@ namespace Trace {
       TM(objprof)       \
       TM(perf_mem_event) \
       TM(pgo)           \
+      TM(preg)          \
       TM(print_profiles)  \
       TM(printir)       \
       TM(printir_json)  \
@@ -185,6 +188,7 @@ namespace Trace {
       TM(statgroups)    \
       TM(stats)         \
       TM(strobelight)   \
+      TM(taint)         \
       TM(targetcache)   \
       TM(tcspace)       \
       TM(trans)         \
@@ -199,7 +203,6 @@ namespace Trace {
       TM(vasm_copy)     \
       TM(vasm_graph_color) \
       TM(vasm_phi)      \
-      TM(watchman_autoload) \
       TM(xenon)         \
       TM(xls)           \
       TM(xls_stats)     \
@@ -526,5 +529,3 @@ class FormatValue<Val,
   const Val& m_val;
 };
 }
-
-#endif /* incl_HPHP_TRACE_H_ */

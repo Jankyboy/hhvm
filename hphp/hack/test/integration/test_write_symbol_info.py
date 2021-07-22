@@ -28,6 +28,8 @@ from glean.schema.hack.types import (
     InterfaceDefinition,
     MethodDeclaration,
     MethodDefinition,
+    MethodOverrides,
+    NamespaceDeclaration,
     NamespaceQName,
     PropertyDeclaration,
     PropertyDefinition,
@@ -37,6 +39,7 @@ from glean.schema.hack.types import (
     TypeConstDeclaration,
     TypeConstDefinition,
     TypedefDeclaration,
+    TypedefDefinition,
 )
 from glean.schema.src.types import FileLines
 from hh_paths import hh_server
@@ -69,12 +72,21 @@ max_workers = 2
 """
             )
 
+    def tearDown(self) -> None:
+        try:
+            # driver.tearDown() can throw if the env is not as expected
+            super().tearDown()
+        except Exception as e:
+            print("Error during test teardown : {}".format(str(e)))
+
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
         test_driver = cls._test_driver
         if test_driver is not None:
             cls.write_repo = os.path.join(test_driver.repo_dir, "symbol_info_test_dir")
+        else:
+            print("Test driver error during class setup")
 
     def verify_json(self) -> None:
         for filename in os.listdir(self.write_repo):
@@ -101,10 +113,6 @@ max_workers = 2
                     for fact in pred_obj["facts"]:
                         try:
                             deserialize(
-                                # pyre-fixme[6]: Expected
-                                #  `Type[Variable[thrift.py3.serializer.sT (bound to
-                                #  thrift.py3.types.Struct)]]` for 1st param but got
-                                #  `Optional[Type[thrift.py3.types.Struct]]`.
                                 fact_type,
                                 json.dumps(fact).encode("UTF-8"),
                                 protocol=Protocol.JSON,
@@ -117,40 +125,43 @@ max_workers = 2
                             )
 
     def predicate_name_to_type(self, predicate_name: str) -> Optional[Type[Struct]]:
-        ver = 3
         predicate_dict = {
-            "hack.ClassConstDeclaration.{}".format(ver): ClassConstDeclaration,
-            "hack.ClassConstDefinition.{}".format(ver): ClassConstDefinition,
-            "hack.ClassDeclaration.{}".format(ver): ClassDeclaration,
-            "hack.ClassDefinition.{}".format(ver): ClassDefinition,
-            "hack.DeclarationComment.{}".format(ver): DeclarationComment,
-            "hack.DeclarationLocation.{}".format(ver): DeclarationLocation,
-            "hack.DeclarationSpan.{}".format(ver): DeclarationLocation,
-            "hack.EnumDeclaration.{}".format(ver): EnumDeclaration,
-            "hack.EnumDefinition.{}".format(ver): EnumDefinition,
-            "hack.Enumerator.{}".format(ver): Enumerator,
-            "hack.FileDeclarations.{}".format(ver): FileDeclarations,
-            "hack.FileXRefs.{}".format(ver): FileXRefs,
-            "hack.FunctionDeclaration.{}".format(ver): FunctionDeclaration,
-            "hack.FunctionDefinition.{}".format(ver): FunctionDefinition,
-            "hack.GlobalConstDeclaration.{}".format(ver): GlobalConstDeclaration,
-            "hack.GlobalConstDefinition.{}".format(ver): GlobalConstDefinition,
-            "hack.InterfaceDeclaration.{}".format(ver): InterfaceDeclaration,
-            "hack.InterfaceDefinition.{}".format(ver): InterfaceDefinition,
-            "hack.MethodDeclaration.{}".format(ver): MethodDeclaration,
-            "hack.MethodDefinition.{}".format(ver): MethodDefinition,
-            "hack.NamespaceQName.{}".format(ver): NamespaceQName,
-            "hack.PropertyDeclaration.{}".format(ver): PropertyDeclaration,
-            "hack.PropertyDefinition.{}".format(ver): PropertyDefinition,
-            "hack.QName.{}".format(ver): QName,
-            "hack.TraitDeclaration.{}".format(ver): TraitDeclaration,
-            "hack.TraitDefinition.{}".format(ver): TraitDefinition,
-            "hack.TypeConstDeclaration.{}".format(ver): TypeConstDeclaration,
-            "hack.TypeConstDefinition.{}".format(ver): TypeConstDefinition,
-            "hack.TypedefDeclaration.{}".format(ver): TypedefDeclaration,
-            "src.FileLines.1": FileLines,
+            "hack.ClassConstDeclaration": ClassConstDeclaration,
+            "hack.ClassConstDefinition": ClassConstDefinition,
+            "hack.ClassDeclaration": ClassDeclaration,
+            "hack.ClassDefinition": ClassDefinition,
+            "hack.DeclarationComment": DeclarationComment,
+            "hack.DeclarationLocation": DeclarationLocation,
+            "hack.DeclarationSpan": DeclarationSpan,
+            "hack.EnumDeclaration": EnumDeclaration,
+            "hack.EnumDefinition": EnumDefinition,
+            "hack.Enumerator": Enumerator,
+            "hack.FileDeclarations": FileDeclarations,
+            "hack.FileXRefs": FileXRefs,
+            "hack.FunctionDeclaration": FunctionDeclaration,
+            "hack.FunctionDefinition": FunctionDefinition,
+            "hack.GlobalConstDeclaration": GlobalConstDeclaration,
+            "hack.GlobalConstDefinition": GlobalConstDefinition,
+            "hack.InterfaceDeclaration": InterfaceDeclaration,
+            "hack.InterfaceDefinition": InterfaceDefinition,
+            "hack.MethodDeclaration": MethodDeclaration,
+            "hack.MethodDefinition": MethodDefinition,
+            "hack.MethodOverrides": MethodOverrides,
+            "hack.NamespaceDeclaration": NamespaceDeclaration,
+            "hack.NamespaceQName": NamespaceQName,
+            "hack.PropertyDeclaration": PropertyDeclaration,
+            "hack.PropertyDefinition": PropertyDefinition,
+            "hack.QName": QName,
+            "hack.TraitDeclaration": TraitDeclaration,
+            "hack.TraitDefinition": TraitDefinition,
+            "hack.TypeConstDeclaration": TypeConstDeclaration,
+            "hack.TypeConstDefinition": TypeConstDefinition,
+            "hack.TypedefDeclaration": TypedefDeclaration,
+            "hack.TypedefDefinition": TypedefDefinition,
+            "src.FileLines": FileLines,
         }
-        return predicate_dict.get(predicate_name)
+        predicate_base = predicate_name[: predicate_name.rfind(".")]
+        return predicate_dict.get(predicate_base)
 
     def start_hh_server(
         self,
@@ -158,7 +169,7 @@ max_workers = 2
         saved_state_path: Optional[str] = None,
         args: Optional[List[str]] = None,
     ) -> None:
-        """ Start an hh_server. changed_files is ignored here (as it
+        """Start an hh_server. changed_files is ignored here (as it
         has no meaning) and is only exposed in this API for the derived
         classes.
         """
@@ -166,12 +177,18 @@ max_workers = 2
             changed_files = []
         if args is None:
             args = []
-        cmd = [hh_server, "--max-procs", "2", self.test_driver.repo_dir] + args
+        cmd = [
+            hh_server,
+            "--max-procs",
+            "2",
+            "--config",
+            "symbolindex_search_provider=NoIndex",
+            self.test_driver.repo_dir,
+        ] + args
         self.test_driver.proc_call(cmd)
 
     def test_json_format(self) -> None:
         print("repo_contents : {}".format(os.listdir(self.test_driver.repo_dir)))
-        args: Optional[List[str]] = None
-        args = ["--write-symbol-info", self.write_repo]
+        args: Optional[List[str]] = ["--write-symbol-info", self.write_repo]
         self.start_hh_server(args=args)
         self.verify_json()

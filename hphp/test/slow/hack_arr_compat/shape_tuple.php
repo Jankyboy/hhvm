@@ -12,15 +12,7 @@ function check<reify T>($x): T {
 
 <<__EntryPoint>>
 function main() {
-  set_error_handler('handle_error');
-
-  print("\n===================================\nTesting reified tuple:\n");
-  print('varray: '); print(json_encode(check<(int, int)>(varray[]))."\n");
-  print('darray: '); print(json_encode(check<(int, int)>(darray[]))."\n");
-
-  print("\n===================================\nTesting reified shape:\n");
-  print('varray: '); print(json_encode(check<shape('a' => int)>(varray[]))."\n");
-  print('darray: '); print(json_encode(check<shape('a' => int)>(darray[]))."\n");
+  set_error_handler(handle_error<>);
 
   print("\n===================================\nTesting tuple:\n");
   print("\nUsing empty tuple:\n"); $tuple = varray[];

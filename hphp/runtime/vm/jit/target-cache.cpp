@@ -158,7 +158,7 @@ const Class* ClassCache::lookup(rds::Handle handle, StringData* name) {
   const StringData* pairSd = pair->m_key;
   if (!stringMatches(pairSd, name)) {
     TRACE(1, "ClassCache miss: %s\n", name->data());
-    Class* c = Unit::loadClass(name);
+    Class* c = Class::load(name);
     if (UNLIKELY(!c)) {
       raise_error(Strings::UNKNOWN_CLASS, name->data());
     }
@@ -192,8 +192,8 @@ LowPtr<const Class> TSClassCache::write(rds::Handle handle, ArrayData* ad) {
   auto const kind = get_ts_kind(ad);
   if (kind != TypeStructure::Kind::T_class) return nullptr;
   auto const name = get_ts_classname(ad);
-  Class* c = Unit::loadClass(name);
-  if (UNLIKELY(!c)) return nullptr;
+  Class* c = Class::load(name);
+  if (UNLIKELY(!c) || !classHasPersistentRDS(c)) return nullptr;
   assertx(!isInterface(c));
   pair->m_key = ad;
   pair->m_value = c;
@@ -212,7 +212,8 @@ namespace {
 
 NEVER_INLINE
 const Func* lookup(const Class* cls, const StringData* name, const Class* ctx) {
-  auto const func = lookupMethodCtx(cls, name, ctx, CallType::ObjMethod, true);
+  auto const func = lookupMethodCtx(cls, name, ctx, CallType::ObjMethod,
+                                    MethodLookupErrorOptions::RaiseOnNotFound);
   assertx(func);
   if (UNLIKELY(func->isStaticInPrologue())) {
     throw_has_this_need_static(func);
@@ -355,12 +356,10 @@ handleStaticCall(const Class* cls, const StringData* name, const Class* ctx,
   // true that oldFunc->name() == name bitwise.
   assertx(oldFunc->name()->isame(name));
   if (LIKELY(cand->name() == name)) {
-    if (LIKELY(cand->attrs() & AttrPublic)) {
-      // If the candidate function is public, then it has to be the
-      // right function.  There can be no other function with this
-      // name on `cls', and we already ruled out the case where
-      // dispatch should've gone to a private function with the same
-      // name, above.
+    if (LIKELY((cand->attrs() & AttrPublic) && !cand->hasPrivateAncestor())) {
+      // If the candidate function is public, then we also need to check it
+      // does not have a private ancestor. The private ancestor wins if
+      // the context has access to it, so this is a conservative check.
       //
       // The normal case here is an overridden public method.  But this
       // case can also occur on unrelated classes that happen to have
@@ -443,14 +442,14 @@ StaticMethodCache::lookup(rds::Handle handle, const NamedEntity *ne,
         clsName->data(), methName->data(), __builtin_return_address(0));
 
   const Func* f;
-  auto const cls = Unit::loadClass(ne, clsName);
+  auto const cls = Class::load(ne, clsName);
   if (UNLIKELY(!cls)) {
     raise_error(Strings::UNKNOWN_CLASS, clsName->data());
   }
 
   // After this call, it's a post-condition that the RDS entry for `cls' is
   // initialized, so make sure it has been as a side-effect of
-  // Unit::loadClass().
+  // Class::load().
   assertx(cls == ne->getCachedClass());
 
   LookupResult res = lookupClsMethod(f, cls, methName,
@@ -458,7 +457,7 @@ StaticMethodCache::lookup(rds::Handle handle, const NamedEntity *ne,
                                               // this, but we can just fall
                                               // through in that case.
                                      ctx,
-                                     false /*raise*/);
+                                     MethodLookupErrorOptions::None);
   if (LIKELY(res == LookupResult::MethodFoundNoThis &&
              !f->isAbstract() &&
              f->isStatic())) {
@@ -490,7 +489,7 @@ StaticMethodFCache::lookup(rds::Handle handle, const Class* cls,
   LookupResult res = lookupClsMethod(f, cls, methName,
                                      nullptr,
                                      ctx,
-                                     false /*raise*/);
+                                     MethodLookupErrorOptions::None);
   assertx(res != LookupResult::MethodFoundWithThis); // Not possible: no this.
   if (LIKELY(res == LookupResult::MethodFoundNoThis && !f->isAbstract())) {
     // We called lookupClsMethod with a NULL this and got back a method that

@@ -16,15 +16,25 @@
 
 #include "hphp/util/address-range.h"
 
+#include "hphp/util/alloc.h"
 #include "hphp/util/assertions.h"
+#include "hphp/util/jemalloc-util.h"
+
 #include <cinttypes>
 #include <folly/portability/SysMman.h>
 
-namespace HPHP { namespace alloc {
+namespace HPHP {
+
+HHVM_ATTRIBUTE_WEAK uintptr_t lowArenaMinAddr() {
+  return 1ull << 30;
+}
+
+namespace alloc {
 
 void RangeState::reserve() {
   auto const base = reinterpret_cast<void*>(low());
   auto const size = capacity();
+  if (size == 0) return;
   auto ret = mmap(base, size, PROT_NONE,
                   MAP_ANONYMOUS | MAP_PRIVATE | MAP_NORESERVE, -1, 0);
   if (ret != base) {
@@ -45,6 +55,21 @@ void RangeState::reserve() {
   }
 }
 
+size_t getLowMapped() {
+  size_t low_mapped = 0;
+#if USE_JEMALLOC_EXTENT_HOOKS
+  // The low range [1G, 4G) is divided into two ranges, and shared by 3
+  // arenas.
+  low_mapped += alloc::getRange(alloc::AddrRangeClass::VeryLow).used();
+  low_mapped += alloc::getRange(alloc::AddrRangeClass::Low).used();
+#elif USE_JEMALLOC
+  mallctlRead<size_t, true>(
+    folly::sformat("stats.arenas.{}.mapped", low_arena).c_str(),
+    &low_mapped
+  );
+#endif
+  return low_mapped;
+}
 
 RangeState::RangeState(uintptr_t lowAddr, uintptr_t highAddr, Reserved)
   : low_use(lowAddr)

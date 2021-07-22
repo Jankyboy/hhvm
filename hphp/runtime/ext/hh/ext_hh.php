@@ -8,6 +8,7 @@ namespace HH {
   * <<__Memoize>> functions
   */
 interface IMemoizeParam {
+  abstract const ctx CMemoParam = [defaults];
    /**
    * Serialize this object to a string that can be used as a
    * dictionary key to differentiate instances of this class.
@@ -141,7 +142,9 @@ function clear_static_memoization(?string $cls, ?string $func = null) : bool;
 <<__Native>>
 function ffp_parse_string_native(string $program): string;
 
-function ffp_parse_string(string $program): darray {
+newtype ParseTree = darray;
+
+function ffp_parse_string(string $program)[]: ParseTree {
   $json = ffp_parse_string_native($program);
   // 2048 is MAX_JSON_DEPTH to avoid making a global constant
   return \json_decode($json, true, 2048);
@@ -169,7 +172,7 @@ function clear_instance_memoization(object $obj) : bool;
  * using debug_backtrace(DEBUG_BACKTRACE_PROVIDE_METADATA).
  */
  <<__Native>>
-function set_frame_metadata(mixed $metadata): void;
+function set_frame_metadata(mixed $metadata)[]: void;
 
 /**
  * Get the total number of requests dispatched since the server started.
@@ -210,15 +213,15 @@ function prefetch_units(keyset<string> $paths, bool $hint): void;
  * Construct a function pointer for the function with $name. The function should
  * be marked __DynamicallyCallable.
  */
-<<__Native, __Pure>>
-function dynamic_fun(string $name): mixed;
+<<__Native>>
+function dynamic_fun(string $name)[]: mixed;
 
 /**
  * Construct a cls_meth pointer for the method $cls::$meth. The method should be
  * a static method marked __DynamicallyCallable.
  */
-<<__Native, __Pure>>
-function dynamic_class_meth(string $cls, string $meth): mixed;
+<<__Native>>
+function dynamic_class_meth(string $cls, string $meth)[]: mixed;
 
 /**
  * Same as dynamic_fun but can't be used in RepoAuthoritative mode and
@@ -240,12 +243,15 @@ function dynamic_class_meth_force(string $cls, string $meth): mixed;
 interface ClassLikeAttribute {}
 interface ClassAttribute extends ClassLikeAttribute {}
 interface EnumAttribute extends ClassLikeAttribute {}
+interface EnumClassAttribute extends ClassLikeAttribute {}
 
 interface TypeAliasAttribute {}
 
 // function-like
 interface FunctionAttribute {}
 interface MethodAttribute {}
+
+interface LambdaAttribute {}
 
 // properties
 interface PropertyAttribute {}
@@ -341,7 +347,7 @@ function clear_all_coverage_data(): void {
  * Returns the implicit context keyed by $key or null if such doesn't exist
  */
 <<__Native>>
-function get_implicit_context(string $key): mixed;
+function get_implicit_context(string $key)[policied]: mixed;
 
 /**
  * Sets implicit context $context keyed by $key using the $memokey when
@@ -352,55 +358,26 @@ function set_implicit_context(
   string $key,
   mixed $context,
   string $memokey
-): int;
+)[policied]: int;
 
 /*
  * Sets the implicit context to the implicit context that is at $index
  * and return previous context's index.
  */
 <<__Native>>
-function set_implicit_context_by_index(int $index): int;
+function set_implicit_context_by_index(int $index)[policied]: int;
 
 final class ImplicitContextConsts {
   const EMPTY_CONTEXT = -1;
 }
 
-/*
- * Runs $f without any context
- */
-function without_implicit_context<Tout>((function (): Tout) $f): Tout {
-  $prev = set_implicit_context_by_index(ImplicitContextConsts::EMPTY_CONTEXT);
-  try {
-    return $f();
-  } finally {
-    set_implicit_context_by_index($prev);
-  }
-}
-
-/*
- * Runs async function $f without any context
- */
-async function gen_without_implicit_context<Tout>(
-  (function (): Awaitable<Tout>) $f
-): Awaitable<Tout> {
-  $prev = set_implicit_context_by_index(ImplicitContextConsts::EMPTY_CONTEXT);
-  try {
-    $result = $f();
-  } finally {
-    set_implicit_context_by_index($prev);
-  }
-  // Needs to be awaited here so that context dependency is established
-  // between parent/child functions
-  return await $result;
-}
-
 abstract class ImplicitContext {
   abstract const type T as nonnull;
 
-  protected static async function genSet<Tout>(
+  protected static async function setAsync<Tout>(
     this::T $context,
     (function (): Awaitable<Tout>) $f
-  ): Awaitable<Tout> {
+  )[policied]: Awaitable<Tout> {
     $memokey = (string)\__hhvm_internal_getmemokeyl($context);
     $prev = set_implicit_context(static::class, $context, $memokey);
     try {
@@ -416,7 +393,7 @@ abstract class ImplicitContext {
   protected static function set<Tout>(
     this::T $context,
     (function (): Tout) $f
-  ): Tout {
+  )[policied]: Tout {
     $memokey = (string)\__hhvm_internal_getmemokeyl($context);
     $prev = set_implicit_context(static::class, $context, $memokey);
     try {
@@ -426,10 +403,50 @@ abstract class ImplicitContext {
     }
   }
 
-  protected static function get(): this::T {
+  protected static function get()[policied]: this::T {
     return get_implicit_context(static::class);
   }
 }
+
+/**
+ * Return a vector of lines known to be executable in $file. WARNING: there is
+ * no guarantee that these lines will be seen when running code-coverage mode.
+ * This API is purely a heuristic/best effort approximation of executable lines.
+ */
+<<__Native>>
+function get_executable_lines(string $file): mixed;
+
+/**
+ * Gets an integer which when combined with the thread ID (hphp_get_thread_id)
+ * and process id (posix_getpid), can be used to uniquely identify log lines
+ * generated by the current request.
+ *
+ * @return int - the per-thread request id used by logger to identify the
+ *   current request.
+ *
+ */
+<<__Native>>
+function hphp_get_logger_request_id(): int;
+
+/**
+ * Enables recording of called functions in the current request. The server must
+ * not be in repo authoritative mode and Eval.EnableFuncCoverage must be set,
+ * additionally coverage must not already have been enabled in the current
+ * request (or must have been disabled via a call to collect_function_coverage).
+ */
+<<__Native>>
+function enable_function_coverage(): void;
+
+/**
+ * Returns a dict keyed on functions called since enable_function_coverage was
+ * last called, with the paths of the files defining them as values,
+ * and disables collection of further function coverage.
+ *
+ * The enable_function_coverage function must have been called prior to this
+ * function.
+ */
+<<__Native>>
+function collect_function_coverage(): dict<string, string>;
 
 } // HH
 
@@ -501,17 +518,15 @@ namespace HH\ReifiedGenerics {
   /**
    * Returns the type structure representation of the reified type
    */
-  <<__Pure>>
-  function get_type_structure<reify T>(): mixed {
-    return ${'0ReifiedGenerics'}[0];
+  function get_type_structure<reify T>()[]: mixed {
+    return \__systemlib_reified_generics()[0];
   }
 
   /**
    * Returns the name of the class represented by this reified type.
    * If this type does not represent a class, throws an exception
    */
-  <<__Pure>>
-  function get_classname<reify T>(): classname<T> {
+  function get_classname<reify T>()[]: classname<T> {
     $clsname = idx(namespace\get_type_structure<T>(), 'classname', null);
     if ($clsname is null) {
       throw new \Exception('Trying to get the classname out of a reified type'.
@@ -519,5 +534,84 @@ namespace HH\ReifiedGenerics {
     }
     return $clsname;
   }
+
+}
+
+namespace HH\Coeffects {
+
+  /**
+   * Creates an unsafe way to call a function by providing defaults coeffects.
+   * EXTREMELY UNSAFE. USE WITH CAUTION.
+   */
+  <<__Native>>
+  function backdoor((function()[defaults]: Tout) $f)[]: mixed;
+
+  /**
+   * The internal entry point for policied_of functions
+   */
+  <<__Native>>
+  function enter_policied_of_internal<Tout, Tpolicy>(
+    (function()[policied_of<Tpolicy>]: Tout) $f
+  )[policied]: mixed /* Tout */;
+
+  /**
+   * The public entry point for policied_of functions
+   */
+  function enter_policied_of<Tout, Tcontext as ImplicitContext, Tval>(
+    classname<Tcontext> $cls,
+    Tval $value,
+    (function()[policied_of<Tval>]: Tout) $f,
+  )[policied]: Tout where Tval = Tcontext::T {
+    return $cls::set($value, ()[policied] ==> enter_policied_of_internal($f));
+  }
+
+  /**
+   * The public entry point for async policied_of functions
+   */
+  async function enter_policied_of_async<
+    Tout,
+    Tcontext as ImplicitContext,
+    Tval
+  >(
+    classname<Tcontext> $cls,
+    Tval $value,
+    (function()[policied_of<Tval>]: Awaitable<Tout>) $f,
+  )[policied]: Awaitable<Tout> where Tval = Tcontext::T {
+    return await $cls::setAsync(
+      $value,
+      ()[policied] ==> enter_policied_of_internal($f)
+    );
+  }
+
+}
+
+namespace __SystemLib {
+
+<<__Native, __IsFoldable>>
+function is_dynamically_callable_inst_method(
+    string $class,
+    string $method
+)[]: bool;
+
+<<__Native>>
+function reflection_class_get_name(
+    mixed $class,
+)[]: string;
+
+<<__Native>>
+function reflection_class_is_abstract(
+    mixed $class,
+)[]: bool;
+
+<<__Native>>
+function reflection_class_is_final(
+    mixed $class,
+)[]: bool;
+
+<<__Native>>
+function reflection_class_is_interface(
+    mixed $class,
+)[]: bool;
+
 
 }

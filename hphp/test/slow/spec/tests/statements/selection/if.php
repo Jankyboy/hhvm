@@ -45,11 +45,11 @@ foreach ($scalarValueList as $e)
     $text = HH\is_any_array($e) ? 'Array' : $e;
     if ($e)
     {
-        echo ">$text< is TRUE\t"; var_dump($e);
+        echo ">".(string)$text."< is TRUE\t"; var_dump($e);
     }
     else
     {
-        echo ">$text< is FALSE\t"; var_dump($e);
+        echo ">".(string)$text."< is FALSE\t"; var_dump($e);
     }
 }
 
@@ -65,21 +65,6 @@ if ($aName)
 else
 {
     echo ">\$aName< is FALSE\n";
-}
-
-// see what happens if I jump into a if statement
-
-goto label1;
-
-echo "Unreachable code\n";
-
-if ($colors)
-{
-label1: echo "TRUE path\n";
-}
-else
-{
-    echo "FALSE path\n";
 }
 
 // show that when elses are nested, an else matches the lexically nearest preceding if that is allowed by the syntax

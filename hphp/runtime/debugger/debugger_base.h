@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EVAL_DEBUGGER_BASE_H_
-#define incl_HPHP_EVAL_DEBUGGER_BASE_H_
+#pragma once
 
 #include <memory>
 #include <string>
@@ -149,11 +148,9 @@ struct DMachineInfo {
   DebuggerThriftBuffer m_thrift;
 
   DSandboxInfoPtr m_sandbox;
-  std::string m_rpcHost;
   bool m_interrupting{false}; // If the machine is paused at an interrupt
   bool m_sandboxAttached{false};
   bool m_initialized{false}; // If the initial connection protocol is complete
-  int m_rpcPort{0};
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -243,4 +240,3 @@ struct DebuggerUsageLogger {
 ///////////////////////////////////////////////////////////////////////////////
 }}
 
-#endif // incl_HPHP_EVAL_DEBUGGER_BASE_H_

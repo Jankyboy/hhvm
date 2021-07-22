@@ -2,8 +2,17 @@
   (name ai_stubs)
   (wrapped false)
   (modules
-    ai
-    ai_init
+    ai)
+  (libraries
+    ai_options
+    errors)
+  (preprocess
+    (pps lwt_ppx ppx_deriving.std)))
+
+(library
+  (name ai_options_stubs)
+  (wrapped false)
+  (modules
     ai_options)
   (libraries
     errors)
@@ -71,12 +80,23 @@
   (preprocess
     (pps lwt_ppx ppx_deriving.std)))
 
+
 (library
-  (name typing_service_api_stubs)
+  (name typing_service_delegate_types_stubs)
+  (wrapped false)
+  (modules
+    typing_service_delegate_types)
+  (preprocess
+    (pps lwt_ppx ppx_deriving.std)))
+
+
+(library
+  (name typing_service_delegate_stubs)
   (wrapped false)
   (modules
     typing_service_delegate)
   (libraries
+    typing_service_delegate_types_stubs
     typing_service_api)
   (preprocess
     (pps lwt_ppx ppx_deriving.std)))
@@ -116,7 +136,6 @@
   (name state_loader_stubs)
   (wrapped false)
   (modules
-    state_loader
     saved_state_loader
     state_loader_futures
     state_loader_lwt
@@ -137,10 +156,26 @@
     (pps lwt_ppx ppx_deriving.std)))
 
 (library
+  (name re_stubs)
+  (wrapped false)
+  (modules re reEnv)
+  (libraries errors relative_path typing_deps)
+  (preprocess
+    (pps lwt_ppx ppx_deriving.std)))
+
+(library
   (name experiments_config_file_stubs)
   (wrapped false)
   (modules
     experiments_config_file)
+  (preprocess
+    (pps lwt_ppx ppx_deriving.std)))
+
+(library
+  (name recli_stubs)
+  (wrapped false)
+  (modules cas)
+  (libraries errors relative_path typing_deps future)
   (preprocess
     (pps lwt_ppx ppx_deriving.std)))
 
@@ -151,6 +186,17 @@
     ci_util)
   (libraries
     future)
+  (preprocess
+    (pps lwt_ppx ppx_deriving.std)))
+
+(library
+  (name glean_dependency_graph_convert_stubs)
+  (wrapped false)
+  (modules
+    glean_dependency_graph_convert)
+  (libraries
+    hh_json
+    collections)
   (preprocess
     (pps lwt_ppx ppx_deriving.std)))
 
@@ -180,9 +226,19 @@
     (pps lwt_ppx ppx_deriving.std)))
 
 (library
-  (name flytrap)
+  (name flytrap_stubs)
   (wrapped false)
   (modules flytrap)
+  (preprocess
+    (pps lwt_ppx ppx_deriving.std)))
+
+(library
+  (name rage_stubs)
+  (wrapped false)
+  (modules clientRage)
+  (libraries
+    utils_exit
+    utils_core)
   (preprocess
     (pps lwt_ppx ppx_deriving.std)))
 
@@ -204,5 +260,21 @@
   (name folly_stubs)
   (wrapped false)
   (modules folly)
+  (preprocess
+    (pps lwt_ppx ppx_deriving.std)))
+
+(library
+  (name startup_initializer_stubs)
+  (wrapped false)
+  (modules
+    startup_initializer)
+  (preprocess
+    (pps lwt_ppx ppx_deriving.std)))
+
+(library
+  (name formatting_stubs)
+  (wrapped false)
+  (modules
+    formatting)
   (preprocess
     (pps lwt_ppx ppx_deriving.std)))

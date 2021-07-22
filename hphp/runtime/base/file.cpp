@@ -448,7 +448,7 @@ const StaticString
   s_wrapper_data("wrapper_data");
 
 Array File::getMetaData() {
-  return make_darray(
+  return make_dict_array(
     s_wrapper_type, getWrapperType(),
     s_stream_type,  getStreamType(),
     s_mode,         String(m_data->m_mode),
@@ -781,7 +781,7 @@ Array File::readCSV(int64_t length /* = 0 */,
   temp = (char *)malloc(temp_len + line_end_len + 1);
 
   /* Initialize return array */
-  auto ret = Array::CreateVArray();
+  auto ret = Array::CreateVec();
 
   /* Main loop to read CSV fields */
   /* NB this routine will return a single null entry for a blank line */
@@ -800,6 +800,7 @@ Array File::readCSV(int64_t length /* = 0 */,
     }
     if (*tmp == enclosure_char) {
       bptr = tmp;
+      inc_len = (bptr < limit);
     }
 
     if (first_field && bptr == line_end) {

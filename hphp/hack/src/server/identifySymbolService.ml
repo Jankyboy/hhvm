@@ -10,6 +10,7 @@
 open Hh_prelude
 open SymbolOccurrence
 open Typing_defs
+module SN = Naming_special_names
 
 module Result_set = Caml.Set.Make (struct
   type t = Relative_path.t SymbolOccurrence.t
@@ -21,8 +22,10 @@ let is_target target_line target_char { pos; _ } =
   let (l, start, end_) = Pos.info_pos pos in
   l = target_line && start <= target_char && target_char - 1 <= end_
 
-let process_class_id ?(is_declaration = false) (pos, cid) =
-  Result_set.singleton { name = cid; type_ = Class; is_declaration; pos }
+let process_class_id
+    ?(is_declaration = false) ?(class_id_type = ClassId) (pos, cid) =
+  Result_set.singleton
+    { name = cid; type_ = Class class_id_type; is_declaration; pos }
 
 let process_attribute (pos, name) class_name method_ =
   let type_ =
@@ -34,6 +37,20 @@ let process_attribute (pos, name) class_name method_ =
   in
   Result_set.singleton { name; type_; is_declaration = false; pos }
 
+let process_xml_attrs class_name attrs =
+  List.fold attrs ~init:Result_set.empty ~f:(fun acc attr ->
+      match attr with
+      | Aast.Xhp_simple { Aast.xs_name = (pos, name); _ } ->
+        Result_set.add
+          {
+            name;
+            type_ = XhpLiteralAttr (class_name, Utils.add_xhp_ns name);
+            is_declaration = false;
+            pos;
+          }
+          acc
+      | _ -> acc)
+
 let clean_member_name name = String_utils.lstrip name "$"
 
 let process_member ?(is_declaration = false) c_name id ~is_method ~is_const =
@@ -44,6 +61,12 @@ let process_member ?(is_declaration = false) c_name id ~is_method ~is_const =
     else if is_method then
       Method (c_name, member_name)
     else
+      (*
+        Per comment in symbolOcurrence.mli, XhpLiteralAttr
+        is only used for attributes in XHP literals. Since
+        process_member is not being used to handle XML attributes
+        it is fine to define every symbol as Property.
+      *)
       Property (c_name, member_name)
   in
   Result_set.singleton
@@ -78,7 +101,9 @@ let process_typeconst ?(is_declaration = false) (class_name, tconst_name, pos) =
 let process_class class_ =
   let acc = process_class_id ~is_declaration:true class_.Aast.c_name in
   let c_name = snd class_.Aast.c_name in
-  let (constructor, static_methods, methods) = Aast.split_methods class_ in
+  let (constructor, static_methods, methods) =
+    Aast.split_methods class_.Aast.c_methods
+  in
   let all_methods = static_methods @ methods in
   let acc =
     List.fold all_methods ~init:acc ~f:(fun acc method_ ->
@@ -152,9 +177,9 @@ let typed_property = typed_member_id ~is_method:false ~is_const:false
 let typed_constructor env ty pos =
   typed_method env ty (pos, SN.Members.__construct)
 
-let typed_class_id env ty pos =
+let typed_class_id ?(class_id_type = ClassId) env ty pos =
   Tast_env.get_class_ids env ty
-  |> List.map ~f:(fun cid -> process_class_id (pos, cid))
+  |> List.map ~f:(fun cid -> process_class_id ~class_id_type (pos, cid))
   |> List.fold ~init:Result_set.empty ~f:Result_set.union
 
 (* When we detect a function reference encapsulated in a string,
@@ -181,24 +206,31 @@ let visitor =
     method plus = Result_set.union
 
     method! on_expr env expr =
-      let pos = fst (fst expr) in
+      let (_, pos, expr_) = expr in
       let ( + ) = self#plus in
       let acc =
-        match snd expr with
-        | Aast.New (((p, ty), _), _, _, _, _) -> typed_constructor env ty p
-        | Aast.Obj_get (((_, ty), _), (_, Aast.Id mid), _) ->
+        match expr_ with
+        | Aast.New ((ty, p, _), _, _, _, _) -> typed_constructor env ty p
+        | Aast.Obj_get ((ty, _, _), (_, _, Aast.Id mid), _, _) ->
           typed_property env ty mid
-        | Aast.Class_const (((_, ty), _), mid) -> typed_const env ty mid
-        | Aast.Class_get (((_, ty), _), Aast.CGstring mid) ->
+        | Aast.Class_const ((ty, _, _), mid) -> typed_const env ty mid
+        | Aast.Class_get ((ty, _, _), Aast.CGstring mid, _) ->
           typed_property env ty mid
-        | Aast.Xml (cid, _, _) -> process_class_id cid
+        | Aast.Xml (cid, attrs, _) ->
+          let class_id = process_class_id cid in
+          let xhp_attributes = process_xml_attrs (snd cid) attrs in
+          self#plus class_id xhp_attributes
         | Aast.Fun_id id ->
           process_fun_id (pos, SN.AutoimportedFunctions.fun_)
           + process_fun_id (remove_apostrophes_from_function_eval id)
-        | Aast.Method_id (((_, ty), _), mid) ->
+        | Aast.FunctionPointer (Aast.FP_id id, _targs) -> process_fun_id id
+        | Aast.FunctionPointer (Aast.FP_class_const ((ty, _, _cid), mid), _targs)
+          ->
+          typed_method env ty mid
+        | Aast.Method_id ((ty, _, _), mid) ->
           process_fun_id (pos, SN.AutoimportedFunctions.inst_meth)
           + typed_method env ty (remove_apostrophes_from_function_eval mid)
-        | Aast.Smethod_id (((_, ty), _), mid) ->
+        | Aast.Smethod_id ((ty, _, _), mid) ->
           process_fun_id (pos, SN.AutoimportedFunctions.class_meth)
           + typed_method env ty (remove_apostrophes_from_function_eval mid)
         | Aast.Method_caller (((_, cid) as pcid), mid) ->
@@ -209,22 +241,98 @@ let visitor =
               (remove_apostrophes_from_function_eval mid)
               ~is_method:true
               ~is_const:false
+        | Aast.EnumClassLabel (enum_name, label_name) ->
+          (* We currently only support labels, not HH\Members using
+           * __ViaLabel. TODO(T86724606)
+           *)
+          begin
+            match enum_name with
+            | None ->
+              let (ety, _, _) = expr in
+              let ty = Typing_defs_core.get_node ety in
+              (match ty with
+              | Tnewtype (_, [ty_enum_class; _], _) ->
+                (match get_node ty_enum_class with
+                | Tclass ((_, enum_class_name), _, _)
+                | Tgeneric (enum_class_name, _) ->
+                  Result_set.singleton
+                    {
+                      (* TODO(T86724606) use "::" for __ViaLabel *)
+                      name = Utils.strip_ns enum_class_name ^ "#" ^ label_name;
+                      type_ = EnumClassLabel (enum_class_name, label_name);
+                      is_declaration = false;
+                      pos;
+                    }
+                | _ -> self#zero)
+              | _ -> self#zero)
+            | Some (_, enum_name) ->
+              Result_set.singleton
+                {
+                  name = Utils.strip_ns enum_name ^ "#" ^ label_name;
+                  type_ = EnumClassLabel (enum_name, label_name);
+                  is_declaration = false;
+                  pos;
+                }
+          end
         | _ -> self#zero
       in
       acc + super#on_expr env expr
 
-    method! on_class_id env ((p, ty), cid) =
+    method! on_expression_tree env Aast.{ et_hint; et_virtualized_expr; _ } =
+      (* We only want to consider completion from the hint and the
+         virtualized expression, not the visitor expression. The
+         visitor expression is unityped, so we can't do much.*)
+      let acc = self#on_hint env et_hint in
+
+      (* We're overriding super#on_expression_tree, so we need to
+         update the environment. *)
+      let env = Tast_env.set_in_expr_tree env true in
+
+      let (_, _, virtualized_expr_) = et_virtualized_expr in
+      let e =
+        match virtualized_expr_ with
+        | Aast.Call
+            ( ( _,
+                _,
+                Aast.Efun
+                  ( {
+                      Aast.f_body =
+                        { Aast.fb_ast = [(_, Aast.Return (Some e))]; _ };
+                      _;
+                    },
+                    _ ) ),
+              _,
+              _,
+              _ ) ->
+          (* The virtualized expression is wrapped in an invoked
+             lambda to help check unbound variables, which leads to
+             unwanted closure info in hovers. Use the inner
+             expression directly. *)
+          e
+        | _ -> et_virtualized_expr
+      in
+      self#plus acc (self#on_expr env e)
+
+    method! on_class_id env (ty, p, cid) =
       match cid with
       | Aast.CIexpr expr ->
         (* We want to special case this because we want to get the type of the
-         inner expression, which will have a type like `classname<Foo>`, rather
-         than the resolved type of the class ID, which will have a type like
-         `Foo`. Since the class ID and the inner expression have the same span,
-         it is not easy to distinguish them later. *)
+           inner expression, which will have a type like `classname<Foo>`, rather
+           than the resolved type of the class ID, which will have a type like
+           `Foo`. Since the class ID and the inner expression have the same span,
+           it is not easy to distinguish them later. *)
         self#on_expr env expr
-      | _ -> typed_class_id env ty p
+      | Aast.CIparent
+      | Aast.CIself
+      | Aast.CIstatic ->
+        (* We want to special case these because we want to keep track of the
+           original class id type. This information is useful in some cases, for
+           instance when refactoring class names, because we want to avoid
+           refactoring `self`, `static`, and `parent` class ids. *)
+        typed_class_id ~class_id_type:Other env ty p
+      | Aast.CI _ -> typed_class_id env ty p
 
-    method! on_Call env e tal el unpacked_element =
+    method! on_Call env ((_, _, expr_) as e) tal el unpacked_element =
       (* For Id, Obj_get (with an Id member), and Class_const, we don't want to
        * use the result of `self#on_expr env e`, since it would record a
        * property, class const, or global const access instead of a method call.
@@ -232,11 +340,16 @@ let visitor =
        * `self#on_expr env e` when necessary. *)
       let ( + ) = self#plus in
       let ea =
-        match snd e with
+        match expr_ with
+        | Aast.Call ((_, _, Aast.Class_const (_, (_, methName))), _, [arg], _)
+          when Tast_env.is_in_expr_tree env
+               && String.equal methName SN.ExpressionTrees.symbolType ->
+          (* Treat MyVisitor::symbolType(foo<>) as just foo(). *)
+          self#on_expr env arg
         | Aast.Id id -> process_fun_id id
-        | Aast.Obj_get ((((_, ty), _) as obj), (_, Aast.Id mid), _) ->
+        | Aast.Obj_get (((ty, _, _) as obj), (_, _, Aast.Id mid), _, _) ->
           self#on_expr env obj + typed_method env ty mid
-        | Aast.Class_const ((((_, ty), _) as cid), mid) ->
+        | Aast.Class_const (((ty, _, _) as cid), mid) ->
           self#on_class_id env cid + typed_method env ty mid
         | _ -> self#on_expr env e
       in
@@ -275,11 +388,10 @@ let visitor =
       self#plus acc (super#on_catch env (sid, lid, block))
 
     method! on_class_ env class_ =
-      Aast.(
-        class_name := Some class_.c_name;
-        let acc = process_class class_ in
+      class_name := Some class_.Aast.c_name;
+      let acc = process_class class_ in
 
-        (*
+      (*
       Enums implicitly extend BuiltinEnum. However, BuiltinEnums also extend
       the same Enum as a type parameter.
 
@@ -287,24 +399,105 @@ let visitor =
 
       This will return the definition of the enum twice when finding references
       on it. As a result, we set the extends property of an enum's tast to an empty list.
+
+      The same situation applies to Enum classes that extends
+      BuiltinEnumClass. However in this case we just want to filter out
+      this one extends, and keep the other unchanged.
     *)
-        let class_ =
-          match class_.c_extends with
-          | [(_, Happly ((_, builtin_enum), [(_, Happly (c_name, []))]))]
-            when String.equal (snd c_name) (snd class_.c_name)
-                 && String.equal
-                      builtin_enum
-                      Naming_special_names.Classes.cHH_BuiltinEnum ->
-            { class_ with c_extends = [] }
-          | _ -> class_
+      let class_ =
+        let open Aast in
+        let c_name = snd class_.c_name in
+        (* Checks if the hint is matching the pattern
+         * `HH\BuiltinEnumClass<HH\MemberOf<c_name, _>>`
+         *)
+        let is_generated_builtin_enum_class = function
+          | ( _,
+              Happly
+                ( (_, builtin_enum_class),
+                  [
+                    ( _,
+                      Happly
+                        ( (_, memberof),
+                          [(_, Happly ((_, name), [])); _interface] ) );
+                  ] ) ) ->
+            String.equal builtin_enum_class SN.Classes.cHH_BuiltinEnumClass
+            && String.equal memberof SN.Classes.cMemberOf
+            && String.equal name c_name
+          | _ -> false
         in
-        let acc = self#plus acc (super#on_class_ env class_) in
-        class_name := None;
-        acc)
+        (* Checks if the hint is matching the pattern
+         * `HH\BuiltinEnum<c_name>`
+         *)
+        let is_generated_builtin_enum = function
+          | (_, Happly ((_, builtin_enum), [(_, Happly ((_, name), []))])) ->
+            String.equal builtin_enum SN.Classes.cHH_BuiltinEnum
+            && String.equal name c_name
+          | _ -> false
+        in
+        match (class_.c_kind, class_.c_enum) with
+        | (Ast_defs.Cenum, Some enum) ->
+          (* If the class is an enum or enum class, remove the generated
+           * occurrences.
+           *)
+          if enum.Aast_defs.e_enum_class then
+            (* Enum classes might extend other classes, so we filter
+             * the list and we don't depend on their order.
+             *)
+            let c_extends =
+              List.filter_map
+                ~f:(fun h ->
+                  if is_generated_builtin_enum_class h then
+                    (* don't take this occurrence into account *)
+                    None
+                  else
+                    Some h)
+                class_.c_extends
+            in
+            (* We also have to take care of the type of constants that
+             * are rewritten from Foo to MemberOf<EnumName, Foo>
+             *)
+            let c_consts =
+              List.map
+                ~f:(fun cc ->
+                  let cc_type =
+                    Option.map
+                      ~f:(fun h ->
+                        match snd h with
+                        | Happly ((_, name), [_; h])
+                          when String.equal name SN.Classes.cMemberOf ->
+                          h
+                        | _ -> h)
+                      cc.cc_type
+                  in
+                  { cc with cc_type })
+                class_.c_consts
+            in
+            { class_ with c_extends; c_consts }
+          else
+            (* For enums, we could remove everything as they don't extends
+             * other classes, but let's filter anyway, just to be resilient
+             * to future evolutions
+             *)
+            let c_extends =
+              List.filter_map
+                ~f:(fun h ->
+                  if is_generated_builtin_enum h then
+                    (* don't take this occurrence into account *)
+                    None
+                  else
+                    Some h)
+                class_.c_extends
+            in
+            { class_ with c_extends }
+        | _ -> class_
+      in
+      let acc = self#plus acc (super#on_class_ env class_) in
+      class_name := None;
+      acc
 
     method! on_fun_ env fun_ =
       let acc = process_fun_id ~is_declaration:true fun_.Aast.f_name in
-      self#plus acc (super#on_fun_ env fun_)
+      self#plus acc (super#on_fun_ env { fun_ with Aast.f_unsafe_ctxs = None })
 
     method! on_typedef env typedef =
       let acc = process_class_id ~is_declaration:true typedef.Aast.t_name in
@@ -318,14 +511,14 @@ let visitor =
       let acc = process_global_const id in
       self#plus acc (super#on_Id env id)
 
-    method! on_Obj_get env obj member ognf =
-      match snd member with
+    method! on_Obj_get env obj ((_, _, expr_) as member) ognf in_parens =
+      match expr_ with
       | Aast.Id _ ->
         (* Don't visit this Id, since we would record it as a gconst access. *)
         let obja = self#on_expr env obj in
         let ognfa = self#on_og_null_flavor env ognf in
         self#plus obja ognfa
-      | _ -> super#on_Obj_get env obj member ognf
+      | _ -> super#on_Obj_get env obj member ognf in_parens
 
     method! on_SFclass_const env cid mid =
       let ( + ) = Result_set.union in
@@ -335,7 +528,7 @@ let visitor =
 
     method! on_method_ env m =
       method_name := Some (m.Aast.m_name, m.Aast.m_static);
-      let acc = super#on_method_ env m in
+      let acc = super#on_method_ env { m with Aast.m_unsafe_ctxs = None } in
       method_name := None;
       acc
 
@@ -344,7 +537,8 @@ let visitor =
       self#plus acc (super#on_user_attribute env ua)
   end
 
-let all_symbols ctx tast = visitor#go ctx tast |> Result_set.elements
+let all_symbols ctx tast =
+  Errors.ignore_ (fun () -> visitor#go ctx tast |> Result_set.elements)
 
 let all_symbols_ctx
     ~(ctx : Provider_context.t) ~(entry : Provider_context.entry) :

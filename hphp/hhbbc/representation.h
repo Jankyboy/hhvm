@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HHBBC_REPRESENTATION_H_
-#define incl_HHBBC_REPRESENTATION_H_
+#pragma once
 
 #include <list>
 #include <memory>
@@ -32,6 +31,7 @@
 #include "hphp/util/sha1.h"
 
 #include "hphp/runtime/base/user-attributes.h"
+#include "hphp/runtime/vm/coeffects.h"
 #include "hphp/runtime/vm/constant.h"
 #include "hphp/runtime/vm/func.h"
 #include "hphp/runtime/vm/preclass.h"
@@ -189,10 +189,10 @@ struct Param {
 
   /*
    * The type of the arguments for builtin functions, or for HNI
-   * functions with a native implementation.  folly::none for
+   * functions with a native implementation.  std::nullopt for
    * non-builtins.
    */
-  folly::Optional<DataType> builtinType;
+  Optional<DataType> builtinType;
 
   /*
    * Whether this parameter is passed as inout.
@@ -223,9 +223,9 @@ struct Local {
 struct NativeInfo {
   /*
    * Return type from the C++ implementation function, as an optional DataType;
-   * folly::none stands for a Variant return.
+   * std::nullopt stands for a Variant return.
    */
-  folly::Optional<DataType> returnType;
+  Optional<DataType> returnType;
 };
 
 using BlockVec = CompactVector<copy_ptr<Block>>;
@@ -318,6 +318,11 @@ struct Func : FuncBase {
   IterId numIters;
 
   /*
+   * The number of closures used within this function.
+   */
+  ClosureId numClosures;
+
+  /*
    * Entry point to the function when the number of passed args is
    * equal to the number of parameters.
    */
@@ -372,13 +377,13 @@ struct Func : FuncBase {
    */
   bool isReified : 1;
 
-  bool isRxDisabled: 1;
-
   bool noContextSensitiveAnalysis: 1;
 
   bool hasInOutArgs : 1;
 
   bool sampleDynamicCalls : 1;
+
+  bool hasCreateCl : 1; // Function has CreateCl opcode
 
   /*
    * Type parameter upper bounds. May be enforced and used for optimizations.
@@ -398,6 +403,12 @@ struct Func : FuncBase {
    * User attribute list.
    */
   UserAttributeMap userAttributes;
+
+  /*
+   * Lists of all static coeffect names and coeffect rules
+   */
+  CompactVector<LowStringPtr> staticCoeffects;
+  CompactVector<CoeffectRule> coeffectRules;
 };
 
 //////////////////////////////////////////////////////////////////////
@@ -438,9 +449,8 @@ struct Const {
    * The value will be KindOfUninit if the class constant is defined
    * using an 86cinit method.
    *
-   * The lack of a value represents an abstract class constant.
    */
-  folly::Optional<TypedValue> val;
+  Optional<TypedValue> val;
 
   /*
    * We pass through eval'able php code and a string type constraint,
@@ -449,7 +459,11 @@ struct Const {
   LSString phpCode;
   LSString typeConstraint;
 
-  bool isTypeconst  : 1;
+  std::vector<LowStringPtr> coeffects;
+
+  ConstModifiers::Kind kind;
+  bool isAbstract   : 1;
+  bool isFromTrait  : 1;
   bool isNoOverride : 1;
 };
 
@@ -491,12 +505,6 @@ struct Class : ClassBase {
   Unit* unit;
 
   /*
-   * Hoistability of this class.  See the description in class.h
-   * formation on hoistability.
-   */
-  PreClass::Hoistable hoistability;
-
-  /*
    * Name of the parent class.
    */
   LSString parentName;
@@ -516,6 +524,11 @@ struct Class : ClassBase {
    * Names of inherited interfaces.
    */
   CompactVector<LowStringPtr> interfaceNames;
+
+  /*
+   * Names of included enums.
+   */
+  CompactVector<LowStringPtr> includedEnumNames;
 
   /*
    * Names of used traits, number of declared (i.e., non-trait, non-inherited)
@@ -581,7 +594,7 @@ struct TypeAlias {
   AnnotType type;
   bool nullable;  // null is allowed; for ?Foo aliases
   UserAttributeMap userAttrs;
-  Array typeStructure{ArrayData::CreateDArray(ARRPROV_HERE())};
+  Array typeStructure{ArrayData::CreateDict()};
 };
 
 //////////////////////////////////////////////////////////////////////
@@ -674,5 +687,3 @@ bool check(const Program&);
 //////////////////////////////////////////////////////////////////////
 
 }}}
-
-#endif

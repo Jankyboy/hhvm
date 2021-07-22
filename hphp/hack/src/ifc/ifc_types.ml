@@ -11,6 +11,13 @@ module LMap = Local_id.Map
 module Scope = Ifc_scope
 module Type = Typing_defs
 
+type ifc_error_ty =
+  | LiftError of string
+  | FlowInference of string
+[@@deriving show]
+
+exception IFCError of ifc_error_ty
+
 (* Most types should live here. *)
 
 type purpose = string [@@deriving ord, eq, show]
@@ -26,6 +33,10 @@ module PosSet = Set.Make (Pos)
    a name. The scope in a Pvar is used to store inline the
    creation point of a purpose variable. *)
 type policy =
+  (* Bottom policy; public *)
+  | Pbot of (PosSet.t[@equal (fun _ _ -> true)] [@compare (fun _ _ -> 0)])
+  (* Top policy; private *)
+  | Ptop of (PosSet.t[@equal (fun _ _ -> true)] [@compare (fun _ _ -> 0)])
   (* Bound variable; represented with a de Bruijn index *)
   | Pbound_var of int
   (* Free variable; relative to a scope *)
@@ -33,20 +44,18 @@ type policy =
   (* A policy allowing use for a single purpose *)
   | Ppurpose of
       (PosSet.t[@equal (fun _ _ -> true)] [@compare (fun _ _ -> 0)]) * purpose
-  (* Bottom policy; public *)
-  | Pbot of (PosSet.t[@equal (fun _ _ -> true)] [@compare (fun _ _ -> 0)])
-  (* Top policy; private *)
-  | Ptop of (PosSet.t[@equal (fun _ _ -> true)] [@compare (fun _ _ -> 0)])
 [@@deriving eq, ord]
 
-let pos_of = function
-  | Ppurpose (pos, _)
-  | Ptop pos
-  | Pbot pos ->
-    pos
+let pbot = Pbot PosSet.empty
+
+let pos_set_of_policy = function
+  | Ppurpose (poss, _)
+  | Ptop poss
+  | Pbot poss ->
+    poss
   | _ -> PosSet.empty
 
-let set_pos pos = function
+let set_pos_set_of_policy pos = function
   | Ppurpose (_, name) -> Ppurpose (pos, name)
   | Ptop _ -> Ptop pos
   | Pbot _ -> Pbot pos
@@ -64,15 +73,56 @@ type class_ = {
   c_lump: policy;
 }
 
+type array_kind =
+  | Avec
+  | Adict
+  | Akeyset
+[@@deriving eq]
+
 (* Types with policies *)
 type ptype =
+  | Tnull of policy
   | Tprim of policy
+  | Tnonnull of policy * policy (* self(covariant), lump(invariant) *)
   | Tgeneric of policy
   | Ttuple of ptype list
   | Tunion of ptype list
   | Tinter of ptype list
   | Tclass of class_
   | Tfun of fun_
+  | Tcow_array of cow_array
+  | Tshape of shape
+  | Tdynamic of policy
+
+(* Copy-on-write indexed collection used for Hack containers i.e. vec, dict,
+   keyset, varray, and darray *)
+and cow_array = {
+  a_kind: array_kind;
+  a_key: ptype;
+  a_value: ptype;
+  a_length: policy;
+}
+
+and shape = {
+  sh_kind: shape_kind;
+  sh_fields: shape_field_type Typing_defs.TShapeMap.t;
+}
+
+and shape_kind =
+  (* An open shape has a "magic" field of type mixed that holds the policy of
+     all the unnamed data *)
+  | Open_shape of ptype
+  | Closed_shape
+
+and shape_field_type = {
+  (* The policy of the field is essentially the PC at the time that it is
+     assigned. We need to keep track of this separately because for optional
+     fields, we may still learn information based on whether or not the value is
+     present. *)
+  sft_policy: policy;
+  sft_optional: bool;
+  sft_ty: ptype;
+}
 
 and fun_ = {
   (* The PC guards a function's effects *)
@@ -83,6 +133,12 @@ and fun_ = {
   f_ret: ptype;
   f_exn: ptype;
 }
+
+type callable_name =
+  | Method of string * string (* Classname, method name *)
+  | StaticMethod of string * string (* Classname, static meth name *)
+  (* toplevel function *)
+  | Function of string
 
 type fun_proto = {
   fp_name: string;
@@ -105,6 +161,23 @@ type prop =
      we do not have a flow type at hand *)
   | Chole of (Pos.t * fun_proto)
 
+let is_open = function
+  | Open_shape _ -> true
+  | Closed_shape -> false
+
+let unique_pos_of_prop =
+  let is_real pos = not @@ Pos.equal pos Pos.none in
+  function
+  | Cflow (posset, _, _) ->
+    begin
+      match PosSet.elements posset with
+      | [pos] when is_real pos -> Some pos
+      | _ -> None
+    end
+  | Ccond ((pos, _, _), _, _) when is_real pos -> Some pos
+  | Chole (pos, _) when not @@ is_real pos -> Some pos
+  | _ -> None
+
 type fun_scheme = Fscheme of Scope.t * fun_proto * prop
 
 module Flow = struct
@@ -126,9 +199,7 @@ module Policy = struct
   let compare = compare_policy
 end
 
-module PCSet = Set.Make (Policy)
-
-type program_counter = PCSet.t
+module PSet = Set.Make (Policy)
 
 module Var = struct
   type t = string * Ifc_scope.t
@@ -138,27 +209,16 @@ end
 
 module VarSet = Set.Make (Var)
 
-type var_set = VarSet.t
-
-type local_env = {
-  le_vars: ptype LMap.t;
-  (* Policy tracking local effects, these effects
-     are not observable outside the current function.
-     Assignments to local variables fall into this
-     category. *)
-  le_pc: program_counter;
-}
-
-(* The environment is mutable data that
-   has to be threaded through *)
-type env = {
-  (* Constraints accumulator. *)
-  e_acc: prop list;
-  (* Maps storing the type of local variables; one
-     per continuation, for flow-sensitive typing.  *)
-  e_cont: local_env KMap.t;
-  (* Callable on which the current function depends. *)
-  e_deps: SSet.t;
+(* A cont represents the typing environment for one
+   outcome (fallthrough, break, throw, ...) of a
+   statement *)
+type cont = {
+  k_vars: ptype LMap.t;
+  (* Policy tracking the dependencies of the current
+     outcome. NB: only dependencies *local* to the
+     function are tracked here (i.e., the function's
+     pc policy is not included) *)
+  k_pc: PSet.t;
 }
 
 type policied_property = {
@@ -182,7 +242,7 @@ type magic_decl = {
 }
 
 type fun_decl_kind =
-  | FDGovernedBy of policy option
+  | FDPolicied of policy option
   | FDInferFlows
 
 type arg_kind =
@@ -198,8 +258,6 @@ type fun_decl = {
 type decl_env = {
   (* policy decls for classes indexed by class name *)
   de_class: class_decl SMap.t;
-  (* policy decls for functions indexed by function name *)
-  de_fun: fun_decl SMap.t;
 }
 
 (* Mode of operation.
@@ -248,6 +306,8 @@ type 'ptype renv_ = {
   re_gpc: policy;
   (* Exception thrown from the callable *)
   re_exn: 'ptype;
+  (* Decl provider context for accessing the decl heap *)
+  re_ctx: Provider_context.t;
 }
 
 type proto_renv = unit renv_
@@ -278,5 +338,6 @@ type adjustment =
   | Aweaken
 
 type call_type =
-  | Cglobal of string
+  | Cglobal of (callable_name * Typing_defs.locl_ty)
+  | Cconstructor of callable_name
   | Clocal of fun_

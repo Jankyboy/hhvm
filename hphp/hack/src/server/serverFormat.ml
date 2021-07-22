@@ -23,7 +23,8 @@ let call_external_formatter
         while true do
           lines := Timeout.input_line ~timeout ic :: !lines
         done
-      with End_of_file -> ()
+      with
+      | End_of_file -> ()
     end;
     match Timeout.close_process_in ic with
     | Unix.WEXITED 0 -> Ok (List.rev !lines)
@@ -58,17 +59,11 @@ let go_hackfmt ?filename_for_logging ~content args =
     | None -> args
   in
   Hh_logger.log "%s" (String.concat ~sep:" " args);
-  let dirname = Filename.dirname Sys.argv.(0) in
+  let paths = [Path.to_string (Path.make BuildOptions.default_hackfmt_path)] in
   let paths =
-    List.map
-      ~f:(fun x -> Path.make x |> Path.to_string)
-      [
-        (* if running from build tree *)
-        dirname ^ "/hackfmt";
-        dirname ^ "/../hackfmt/hackfmt";
-        (* look for system installation *)
-        BuildOptions.default_hackfmt_path;
-      ]
+    match Sys.getenv_opt "HACKFMT_TEST_PATH" with
+    | Some p -> [p] @ paths
+    | None -> paths
   in
   let path = List.find ~f:Sys.file_exists paths in
   match path with
@@ -153,22 +148,22 @@ let go_ide
     |> convert_to_ide_result ~range
   | Position position ->
     (* `get_offset` returns a zero-based index, and `--at-char` takes a
- zero-based index. *)
+       zero-based index. *)
     let fc_position = Ide_api_types.ide_pos_to_fc position in
     let offset = get_offset content fc_position in
     let args = ["--at-char"; string_of_int offset] in
     let args = args @ formatting_options_to_args options in
     go_hackfmt ~filename_for_logging ~content args >>= fun lines ->
     (* `hackfmt --at-char` returns the range that was formatted, as well as the
- contents of that range. For example, it might return
+       contents of that range. For example, it might return
 
-     10 12
-     }
+           10 12
+           }
 
- signifying that we should replace the character under the cursor with the
- following content, starting at index 10. We need to extract the range
- from the first line and forward it to the client so that it knows where
- to apply the edit. *)
+       signifying that we should replace the character under the cursor with the
+       following content, starting at index 10. We need to extract the range
+       from the first line and forward it to the client so that it knows where
+       to apply the edit. *)
     begin
       match lines with
       | range_line :: lines -> Ok (range_line, lines)
@@ -176,8 +171,8 @@ let go_ide
     end
     >>= fun (range_line, lines) ->
     (* Extract the offsets in the first line that form the range.
- NOTE: `Str.string_match` sets global state to be consumed immediately
- afterwards by `Str.matched_group`. *)
+       NOTE: `Str.string_match` sets global state to be consumed immediately
+       afterwards by `Str.matched_group`. *)
     let does_range_match = Str.string_match range_regexp range_line 0 in
     if not does_range_match then
       Error "Range not found on first line of --at-char output"

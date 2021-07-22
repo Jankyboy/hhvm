@@ -8,6 +8,13 @@
  */
 
 #include "hh_shared.h"
+/* For some reason this header file is not on path in OSS builds.
+ * But we only lose the ability to trim the OCaml heap after a GC
+ */
+#if __has_include("malloc.h")
+  #define MALLOC_TRIM
+  #include <malloc.h>
+#endif
 
 /*****************************************************************************/
 /* File Implementing the shared memory system for Hack.
@@ -114,6 +121,7 @@
 #include <lz4.h>
 #include <sys/time.h>
 #include <time.h>
+#include <zstd.h>
 
 #ifndef NO_SQLITE3
 #include <sqlite3.h>
@@ -491,6 +499,8 @@ static size_t* log_level = NULL;
 
 static double* sample_rate = NULL;
 
+static size_t* compression = NULL;
+
 static size_t* workers_should_exit = NULL;
 
 static size_t* allow_removes = NULL;
@@ -634,14 +644,14 @@ void memfd_init(char *shm_dir, size_t shared_mem_size, uint64_t minimum_avail) {
 static int memfd = -1;
 
 static void raise_failed_anonymous_memfd_init(void) {
-  static value *exn = NULL;
+  static const value *exn = NULL;
   if (!exn) exn = caml_named_value("failed_anonymous_memfd_init");
   caml_raise_constant(*exn);
 }
 
 static void raise_less_than_minimum_available(uint64_t avail) {
   value arg;
-  static value *exn = NULL;
+  static const value *exn = NULL;
   if (!exn) exn = caml_named_value("less_than_minimum_available");
   arg = Val_long(avail);
   caml_raise_with_arg(*exn, arg);
@@ -789,7 +799,7 @@ static char *memfd_map(size_t shared_mem_size) {
 
 static void raise_out_of_shared_memory(void)
 {
-  static value *exn = NULL;
+  static const value *exn = NULL;
   if (!exn) exn = caml_named_value("out_of_shared_memory");
   caml_raise_constant(*exn);
 }
@@ -889,23 +899,26 @@ static void define_globals(char * shared_mem_init) {
   sample_rate = (double*)(mem + 6*CACHE_LINE_SIZE);
 
   assert (CACHE_LINE_SIZE >= sizeof(size_t));
-  workers_should_exit = (size_t*)(mem + 7*CACHE_LINE_SIZE);
+  compression = (size_t*)(mem + 7*CACHE_LINE_SIZE);
 
   assert (CACHE_LINE_SIZE >= sizeof(size_t));
-  wasted_heap_size = (size_t*)(mem + 8*CACHE_LINE_SIZE);
+  workers_should_exit = (size_t*)(mem + 8*CACHE_LINE_SIZE);
 
   assert (CACHE_LINE_SIZE >= sizeof(size_t));
-  allow_removes = (size_t*)(mem + 9*CACHE_LINE_SIZE);
+  wasted_heap_size = (size_t*)(mem + 9*CACHE_LINE_SIZE);
 
   assert (CACHE_LINE_SIZE >= sizeof(size_t));
-  allow_dependency_table_reads = (size_t*)(mem + 10*CACHE_LINE_SIZE);
+  allow_removes = (size_t*)(mem + 10*CACHE_LINE_SIZE);
 
   assert (CACHE_LINE_SIZE >= sizeof(size_t));
-  hcounter_filled = (size_t*)(mem + 11*CACHE_LINE_SIZE);
+  allow_dependency_table_reads = (size_t*)(mem + 11*CACHE_LINE_SIZE);
+
+  assert (CACHE_LINE_SIZE >= sizeof(size_t));
+  hcounter_filled = (size_t*)(mem + 12*CACHE_LINE_SIZE);
 
   mem += page_size;
   // Just checking that the page is large enough.
-  assert(page_size > 12*CACHE_LINE_SIZE + (int)sizeof(int));
+  assert(page_size > 13*CACHE_LINE_SIZE + (int)sizeof(int));
 
   assert (CACHE_LINE_SIZE >= sizeof(local_t));
   locals = mem;
@@ -959,7 +972,8 @@ static size_t get_shared_mem_size(void) {
 
 static void init_shared_globals(
   size_t config_log_level,
-  double config_sample_rate
+  double config_sample_rate,
+  size_t config_compression
 ) {
   // Initial size is zero for global storage is zero
   global_storage[0] = 0;
@@ -971,6 +985,7 @@ static void init_shared_globals(
   *counter = ALIGN(early_counter + 1, COUNTER_RANGE);
   *log_level = config_log_level;
   *sample_rate = config_sample_rate;
+  *compression = config_compression;
   *workers_should_exit = 0;
   *wasted_heap_size = 0;
   *allow_removes = 1;
@@ -1074,7 +1089,9 @@ CAMLprim value hh_shared_init(
 
   init_shared_globals(
     Long_val(Field(config_val, 6)),
-    Double_val(Field(config_val, 7)));
+    Double_val(Field(config_val, 7)),
+    Long_val(Field(config_val, 8))
+  );
   // Checking that we did the maths correctly.
   assert(*heap + heap_size == shared_mem + shared_mem_size);
 
@@ -1139,6 +1156,14 @@ value hh_get_handle(void) {
   Store_field(connector, 5, Val_long(num_workers));
 
   CAMLreturn(connector);
+}
+
+/* Master is 0, workers start at 1 */
+value hh_get_worker_id() {
+  CAMLparam0();
+  CAMLlocal1(result);
+  result = Val_long(worker_id);
+  CAMLreturn(result);
 }
 
 /*****************************************************************************/
@@ -1254,7 +1279,7 @@ void check_should_exit(void) {
       "to initialize shared memory before accessing it?"
     );
   } else if (*workers_should_exit) {
-    static value *exn = NULL;
+    static const value *exn = NULL;
     if (!exn) exn = caml_named_value("worker_should_exit");
     caml_raise_constant(*exn);
   }
@@ -1322,7 +1347,7 @@ static void raise_dep_table_full(void) {
     dep_size
   );
 
-  static value *exn = NULL;
+  static const value *exn = NULL;
   if (!exn) exn = caml_named_value("dep_table_full");
   caml_raise_constant(*exn);
 }
@@ -1698,8 +1723,15 @@ CAMLprim value hh_collect(void) {
   return Val_unit;
 }
 
+CAMLprim value hh_malloc_trim(void) {
+#ifdef MALLOC_TRIM
+  malloc_trim(0);
+#endif
+  return Val_unit;
+}
+
 static void raise_heap_full(void) {
-  static value *exn = NULL;
+  static const value *exn = NULL;
   if (!exn) exn = caml_named_value("heap_full");
   caml_raise_constant(*exn);
 }
@@ -1754,13 +1786,25 @@ value hh_serialize_raw(value data) {
   // We limit the size of elements we will allocate to our heap to ~2GB
   assert(size < 0x80000000);
 
-  size_t max_compression_size = LZ4_compressBound(size);
-  char* compressed_data = malloc(max_compression_size);
-  size_t compressed_size = LZ4_compress_default(
-    data_value,
-    compressed_data,
-    size,
-    max_compression_size);
+  size_t max_compression_size = 0;
+  char* compressed_data = NULL;
+  size_t compressed_size = 0;
+
+  if (*compression) {
+    max_compression_size = ZSTD_compressBound(size);
+    compressed_data = malloc(max_compression_size);
+
+    compressed_size = ZSTD_compress(compressed_data, max_compression_size, data_value, size, *compression);
+  }
+  else {
+    max_compression_size = LZ4_compressBound(size);
+    compressed_data = malloc(max_compression_size);
+    compressed_size = LZ4_compress_default(
+      data_value,
+      compressed_data,
+      size,
+      max_compression_size);
+  }
 
   if (compressed_size != 0 && compressed_size < size) {
     uncompressed_size = size;
@@ -1791,6 +1835,7 @@ value hh_serialize_raw(value data) {
   if (kind == KIND_SERIALIZED) {
     free(data_value);
   }
+
   CAMLreturn(result);
 }
 
@@ -1806,7 +1851,7 @@ static heap_entry_t* hh_store_ocaml(
   /*out*/size_t *orig_size,
   /*out*/size_t *total_size
 ) {
-  char* value = NULL;
+  char* data_value = NULL;
   size_t size = 0;
   size_t uncompressed_size = 0;
   storage_kind kind = 0;
@@ -1814,16 +1859,16 @@ static heap_entry_t* hh_store_ocaml(
   // If the data is an Ocaml string it is more efficient to copy its contents
   // directly in our heap instead of serializing it.
   if (Is_block(data) && Tag_val(data) == String_tag) {
-    value = String_val(data);
+    data_value = String_val(data);
     size = caml_string_length(data);
     kind = KIND_STRING;
   } else {
     intnat serialized_size;
     // We are responsible for freeing the memory allocated by this function
-    // After copying value into our object heap we need to make sure to free
-    // value
+    // After copying data_value into our object heap we need to make sure to free
+    // data_value
     caml_output_value_to_malloc(
-      data, Val_int(0)/*flags*/, &value, &serialized_size);
+      data, Val_int(0)/*flags*/, &data_value, &serialized_size);
 
     assert(serialized_size >= 0);
     size = (size_t) serialized_size;
@@ -1834,13 +1879,25 @@ static heap_entry_t* hh_store_ocaml(
   assert(size < 0x80000000);
   *orig_size = size;
 
-  size_t max_compression_size = LZ4_compressBound(size);
-  char* compressed_data = malloc(max_compression_size);
-  size_t compressed_size = LZ4_compress_default(
-    value,
-    compressed_data,
-    size,
-    max_compression_size);
+  size_t max_compression_size = 0;
+  char* compressed_data = NULL;
+  size_t compressed_size = 0;
+
+  if (*compression) {
+    max_compression_size = ZSTD_compressBound(size);
+    compressed_data = malloc(max_compression_size);
+
+    compressed_size = ZSTD_compress(compressed_data, max_compression_size, data_value, size, *compression);
+  }
+  else {
+    max_compression_size = LZ4_compressBound(size);
+    compressed_data = malloc(max_compression_size);
+    compressed_size = LZ4_compress_default(
+      data_value,
+      compressed_data,
+      size,
+      max_compression_size);
+  }
 
   if (compressed_size != 0 && compressed_size < size) {
     uncompressed_size = size;
@@ -1860,14 +1917,16 @@ static heap_entry_t* hh_store_ocaml(
 
   heap_entry_t* addr = hh_alloc(header, total_size);
   memcpy(&addr->data,
-         uncompressed_size ? compressed_data : value,
+         uncompressed_size ? compressed_data : data_value,
          size);
 
   free(compressed_data);
   // We temporarily allocate memory using malloc to serialize the Ocaml object.
   // When we have finished copying the serialized data into our heap we need
   // to free the memory we allocated to avoid a leak.
-  if (kind == KIND_SERIALIZED) free(value);
+  if (kind == KIND_SERIALIZED) {
+    free(data_value);
+  }
 
   return addr;
 }
@@ -1898,7 +1957,7 @@ CAMLprim value get_hash_ocaml(value key) {
 static value write_at(unsigned int slot, value data) {
   CAMLparam1(data);
   CAMLlocal1(result);
-  result = caml_alloc_tuple(2);
+  result = caml_alloc_tuple(3);
   // Try to write in a value to indicate that the data is being written.
   if(
      __sync_bool_compare_and_swap(
@@ -1925,7 +1984,7 @@ static value write_at(unsigned int slot, value data) {
 }
 
 static void raise_hash_table_full(void) {
-  static value *exn = NULL;
+  static const value *exn = NULL;
   if (!exn) exn = caml_named_value("hash_table_full");
   caml_raise_constant(*exn);
 }
@@ -1935,7 +1994,7 @@ static void raise_hash_table_full(void) {
  * check the perf before modifying.
  *
  * Returns the number of bytes allocated into the shared heap, or a negative
- * number if nothing no new memory was allocated.
+ * number if no new memory was allocated.
  */
 /*****************************************************************************/
 value hh_add(value key, value data) {
@@ -1948,6 +2007,7 @@ value hh_add(value key, value data) {
     uint64_t slot_hash = hashtbl[slot].hash;
 
     if(slot_hash == hash) {
+      // overwrite previous value for this hash
       CAMLreturn(write_at(slot, data));
     }
 
@@ -2202,11 +2262,17 @@ CAMLprim value hh_deserialize(heap_entry_t *elt) {
   char *data = elt->data;
   if (uncompressed_size_exp) {
     data = malloc(uncompressed_size_exp);
-    size_t uncompressed_size = LZ4_decompress_safe(
+  size_t uncompressed_size = 0;
+  if (*compression) {
+    uncompressed_size = ZSTD_decompress(data, uncompressed_size_exp, src, size);
+  }
+  else {
+    uncompressed_size = LZ4_decompress_safe(
       src,
       data,
       size,
       uncompressed_size_exp);
+  }
     assert(uncompressed_size == uncompressed_size_exp);
     size = uncompressed_size;
   }
@@ -2265,7 +2331,6 @@ CAMLprim value hh_get_raw(value key) {
 /*****************************************************************************/
 CAMLprim value hh_deserialize_raw(value heap_entry) {
   CAMLparam1(heap_entry);
-  check_should_exit();
   CAMLlocal1(result);
 
   heap_entry_t* entry = (heap_entry_t*)Bytes_val(heap_entry);
@@ -2370,6 +2435,7 @@ size_t hh_save_dep_table_blob_helper(
 
   // Allocate space for all the values
   FILE* dep_table_blob_file = fopen(out_filename, "wb+");
+  assert(dep_table_blob_file != NULL);
 
   // TODO: T38685427 - write MAGIC_CONSTANT
   // TODO: write the format version
@@ -2617,7 +2683,7 @@ static void assert_sql_with_line(
     result,
     db == NULL ? "" : sqlite3_errmsg(db),
     db == NULL ? "" : "\n");
-  static value *exn = NULL;
+  static const value *exn = NULL;
   if (!exn) {
     exn = caml_named_value("sql_assertion_failure");
   }

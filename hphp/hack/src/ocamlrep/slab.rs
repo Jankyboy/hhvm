@@ -16,8 +16,10 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt::{self, Debug};
-use std::mem::{self, MaybeUninit};
+use std::mem;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+use bytes::buf::UninitSlice;
 
 use crate::block::NO_SCAN_TAG;
 use crate::{
@@ -69,7 +71,9 @@ type Slab<'a> = [OpaqueValue<'a>];
 trait SlabTrait {
     fn from_bytes(bytes: &[u8]) -> &Self;
     fn from_bytes_mut(bytes: &mut [u8]) -> &mut Self;
-    fn from_uninit_bytes_mut(bytes: &mut [MaybeUninit<u8>]) -> &mut Self;
+    // SAFETY: the caller must guarantee that this slab will not be used to read from unitialized
+    // memory.
+    unsafe fn from_uninit_slice_mut(bytes: &mut UninitSlice) -> &mut Self;
 
     // metadata accessors
     fn base(&self) -> usize;
@@ -85,39 +89,38 @@ trait SlabTrait {
     fn needs_rebase(&self) -> bool;
     fn value(&self) -> Option<Value>;
     unsafe fn rebase_to(&mut self, new_base: usize);
+    fn check_initialized(&self) -> Result<(), SlabIntegrityError>;
     fn check_integrity(&self) -> Result<(), SlabIntegrityError>;
 }
 
 // When embedding a Slab in a byte string, we need to include leading padding
 // bytes so that the Slab is word-aligned.
 #[inline]
-fn leading_padding(bytes: &[impl Byte]) -> usize {
-    let misalignment = bytes.as_ptr() as usize % WORD_SIZE;
+fn leading_padding(ptr: *const u8, len: usize) -> usize {
+    let misalignment = ptr as usize % WORD_SIZE;
     let padding = (WORD_SIZE - misalignment) % WORD_SIZE;
-    std::cmp::min(padding, bytes.len())
+    std::cmp::min(padding, len)
 }
-
-trait Byte {}
-impl Byte for u8 {}
-impl Byte for MaybeUninit<u8> {}
 
 impl<'a> SlabTrait for Slab<'a> {
     fn from_bytes(bytes: &[u8]) -> &Self {
-        let padding = leading_padding(bytes);
+        let padding = leading_padding(bytes.as_ptr(), bytes.len());
         let ptr = bytes[padding..].as_ptr() as *const OpaqueValue<'a>;
         unsafe { std::slice::from_raw_parts(ptr, bytes.len() / WORD_SIZE) }
     }
 
     fn from_bytes_mut(bytes: &mut [u8]) -> &mut Self {
-        let padding = leading_padding(bytes);
+        let padding = leading_padding(bytes.as_ptr(), bytes.len());
         let ptr = bytes[padding..].as_mut_ptr() as *mut OpaqueValue<'a>;
         unsafe { std::slice::from_raw_parts_mut(ptr, bytes.len() / WORD_SIZE) }
     }
 
-    fn from_uninit_bytes_mut(bytes: &mut [MaybeUninit<u8>]) -> &mut Self {
-        let padding = leading_padding(bytes);
+    unsafe fn from_uninit_slice_mut(bytes: &mut UninitSlice) -> &mut Self {
+        // SAFETY: leading_padding does not read from the pointer (this points at unitialized
+        // memory and should not be read from).
+        let padding = leading_padding(bytes.as_mut_ptr(), bytes.len());
         let ptr = bytes[padding..].as_mut_ptr() as *mut OpaqueValue<'a>;
-        unsafe { std::slice::from_raw_parts_mut(ptr, bytes.len() / WORD_SIZE) }
+        std::slice::from_raw_parts_mut(ptr, bytes.len() / WORD_SIZE)
     }
 
     fn base(&self) -> usize {
@@ -177,29 +180,11 @@ impl<'a> SlabTrait for Slab<'a> {
     /// (i.e., `self.check_integrity()` would return `Err`).
     unsafe fn rebase_to(&mut self, new_base: usize) {
         let diff = new_base as isize - self.base() as isize;
-        let ptr = self.as_mut_ptr();
-        let end = ptr.add(self.len());
-        let mut ptr = ptr.add(SLAB_METADATA_WORDS);
-        while ptr < end {
-            let header = (*ptr).as_header();
-            let size = header.size();
-            if header.tag() >= NO_SCAN_TAG {
-                // Skip binary blocks--they can't contain pointers
-                ptr = ptr.add(size + 1);
-            } else {
-                // Skip header, then rebase pointer fields
-                ptr = ptr.add(1);
-                assert!(ptr.add(size) <= end);
-                for _ in 0..size {
-                    (*ptr).add_ptr_offset(diff);
-                    ptr = ptr.add(1);
-                }
-            }
-        }
+        rebase_slab_value(&mut self[SLAB_METADATA_WORDS..], diff);
         self.set_base(new_base);
     }
 
-    fn check_integrity(&self) -> Result<(), SlabIntegrityError> {
+    fn check_initialized(&self) -> Result<(), SlabIntegrityError> {
         use SlabIntegrityError::*;
         let len = self.len();
 
@@ -223,6 +208,18 @@ impl<'a> SlabTrait for Slab<'a> {
         if base % WORD_SIZE != 0 {
             return Err(InvalidBasePointer(base));
         }
+
+        Ok(())
+    }
+
+    fn check_integrity(&self) -> Result<(), SlabIntegrityError> {
+        use SlabIntegrityError::*;
+
+        self.check_initialized()?;
+
+        let len = self.len();
+        let base = self.base();
+        let root_offset = self.root_value_offset();
 
         // The set of offsets to valid blocks, according to the header data.
         let mut value_offsets = HashSet::new();
@@ -269,6 +266,31 @@ impl<'a> SlabTrait for Slab<'a> {
         }
 
         Ok(())
+    }
+}
+
+/// # Safety
+///
+/// `slab_without_metadata` must be a valid slab (i.e., if the metadata words
+/// were included, `slab.check_integrity()` would return `Ok(())`).
+unsafe fn rebase_slab_value(slab_without_metadata: &mut [OpaqueValue<'_>], diff: isize) {
+    let mut ptr = slab_without_metadata.as_mut_ptr();
+    let end = ptr.add(slab_without_metadata.len());
+    while ptr < end {
+        let header = (*ptr).as_header();
+        let size = header.size();
+        if header.tag() >= NO_SCAN_TAG {
+            // Skip binary blocks--they can't contain pointers
+            ptr = ptr.add(size + 1);
+        } else {
+            // Skip header, then rebase pointer fields
+            ptr = ptr.add(1);
+            assert!(ptr.add(size) <= end);
+            for _ in 0..size {
+                (*ptr).add_ptr_offset(diff);
+                ptr = ptr.add(1);
+            }
+        }
     }
 }
 
@@ -457,15 +479,6 @@ pub fn to_slab<T: ToOcamlRep>(value: &T) -> Option<OwnedSlab> {
 /// Copy the slab stored in `src` into `dest`, then fix up the slab's internal
 /// pointers in `dest`.
 ///
-/// Pointers in `dest` will be rebased with respect to `dest_addr`. This is so
-/// that a process which copies a slab into shared memory may rebase the slab
-/// for reading in another process, which maps that shared memory segment at a
-/// different address. `dest_addr` should be the address of the first byte in
-/// `dest` in that reader process.
-///
-/// When copying a slab for reading within the same process, use the value
-/// `dest.as_ptr() as usize` for `dest_addr`.
-///
 /// Padding bytes in `dest` (bytes before the first or after the last aligned
 /// word) will not be modified.
 ///
@@ -474,19 +487,20 @@ pub fn to_slab<T: ToOcamlRep>(value: &T) -> Option<OwnedSlab> {
 /// # Panics
 ///
 /// This function will panic if `src` and `dest` have different lengths.
-pub fn copy_slab(
-    src: &[u8],
-    dest: &mut [MaybeUninit<u8>],
-    dest_addr: usize,
-) -> Result<(), SlabIntegrityError> {
-    let new_base = dest_addr + leading_padding(dest);
+pub fn copy_slab(src: &[u8], dest: &mut UninitSlice) -> Result<(), SlabIntegrityError> {
+    let dest_addr = dest.as_mut_ptr() as usize;
+
+    // SAFETY: leading_padding does not write from the pointer
+    let new_base = dest_addr + leading_padding(dest.as_mut_ptr(), dest.len());
 
     let src_slab = Slab::from_bytes(src);
-    let dest_slab = Slab::from_uninit_bytes_mut(dest);
 
-    if !src_slab.is_initialized() {
-        return Err(SlabIntegrityError::NotInitialized);
-    }
+    // SAFETY: UninitSlice expects us to not write unitialized Bytes, or use this to read. This
+    // code actually does read, but only after having initialized the memory by copying into the
+    // UninitSlice.
+    let dest_slab = unsafe { Slab::from_uninit_slice_mut(dest) };
+
+    src_slab.check_initialized()?;
 
     // memcpy `src_slab` into `dest_slab`. Panic if they differ in length.
     dest_slab.copy_from_slice(src_slab);
@@ -500,8 +514,60 @@ pub fn copy_slab(
     Ok(())
 }
 
+/// Copy the slab stored in `src` into `dest`, then fix up the slab's internal
+/// pointers in `dest`. Return a `Value` referencing the slab root value in
+/// `dest`.
+///
+/// Returns `Err` if `src` does not contain a valid slab.
+///
+/// # Panics
+///
+/// This function will panic unless `dest` has length
+/// `src.value_size_in_words()`.
+pub fn copy_and_rebase_value<'a>(src: SlabReader<'_>, dest: &'a mut [usize]) -> Value<'a> {
+    let src_slab = Slab::from_bytes(src.0);
+
+    // Safety: OpaqueValue has the same size and alignment as usize
+    let dest_slab = unsafe {
+        std::slice::from_raw_parts_mut(dest.as_mut_ptr() as *mut OpaqueValue<'a>, dest.len())
+    };
+
+    // memcpy `src_slab` into `dest_slab`. Panic if they differ in length.
+    dest_slab.copy_from_slice(&src_slab[SLAB_METADATA_WORDS..]);
+
+    // Safety: we checked that `src_slab` is a valid slab, and slabs remain
+    // valid after a memcpy (i.e., slabs needing a rebase are still valid).
+    unsafe {
+        let diff = dest_slab.as_ptr() as isize
+            - src_slab.base() as isize
+            - (SLAB_METADATA_WORDS * WORD_SIZE) as isize;
+        rebase_slab_value(dest_slab, diff);
+    }
+
+    // Safety: We just rebased dest_slab to its current address, so its root
+    // value is a valid Value. We didn't copy the metadata, so there's no
+    // root_value_offset for us to read--we need to use the one in `src_slab`.
+    // The Value will mutably borrow `dest`, so it won't be possible for the
+    // caller to mutate `dest`'s contents while our Value exists.
+    unsafe {
+        Value::from_bits(
+            dest_slab
+                .as_ptr()
+                .add(src_slab.root_value_offset() - SLAB_METADATA_WORDS) as usize,
+        )
+    }
+}
+
 /// A contiguous memory region containing a tree of OCaml values.
-pub struct OwnedSlab(Box<Slab<'static>>);
+pub struct OwnedSlab(
+    // This 'static lifetime is a lie. Slab's lifetime parameter represents the
+    // lifetime of the OpaqueValues inside it. Since these values are expected
+    // only to reference other values within the same slab, the lifetime of the
+    // values is the same as the lifetime of the backing memory for the slab.
+    // When handing out references to values inside this slab, we must take care
+    // that they borrow `self`, so that they don't outlive this backing memory.
+    Box<Slab<'static>>,
+);
 
 impl OwnedSlab {
     pub fn from_value(value: Value<'_>) -> Option<Self> {
@@ -527,6 +593,47 @@ impl OwnedSlab {
         unsafe { std::slice::from_raw_parts(ptr, self.size_in_bytes()) }
     }
 
+    pub fn as_slice(&self) -> &[usize] {
+        unsafe { std::slice::from_raw_parts(self.0.as_ptr().cast(), self.0.len()) }
+    }
+
+    pub fn as_reader(&self) -> SlabReader<'_> {
+        // SAFETY: `self.0` is a valid Slab, so it's safe to interpret its words
+        // as a slab using a SlabReader.
+        unsafe { SlabReader::from_words(self.as_slice()).unwrap() }
+    }
+
+    /// Convert the given vector into an OwnedSlab.
+    ///
+    /// # Safety
+    ///
+    /// The caller must only invoke this function on a vector of usizes which
+    /// was initialized by slab APIs (e.g., one cloned from a slice returned by
+    /// `OwnedSlab::as_slice` or `SlabReader::as_slice`).
+    pub unsafe fn from_vec(words: Vec<usize>) -> Result<Self, SlabIntegrityError> {
+        let slab =
+            std::mem::transmute::<Box<[usize]>, Box<Slab<'static>>>(words.into_boxed_slice());
+        Self::from_slab(slab)
+    }
+
+    /// Copy the given slice into a newly allocated OwnedSlab.
+    ///
+    /// # Safety
+    ///
+    /// The caller must only invoke this function on slices which were
+    /// initialized by slab APIs (e.g., `OwnedSlab::as_slice`,
+    /// `SlabReader::as_slice`).
+    pub unsafe fn from_slice(slice: &[usize]) -> Result<Self, SlabIntegrityError> {
+        let slab = std::mem::transmute::<Box<[usize]>, Box<Slab<'static>>>(slice.into());
+        Self::from_slab(slab)
+    }
+
+    unsafe fn from_slab(mut slab: Box<Slab<'static>>) -> Result<Self, SlabIntegrityError> {
+        slab.check_initialized()?;
+        slab.rebase_to(slab.current_address());
+        Ok(Self(slab))
+    }
+
     pub fn leak(self) -> Value<'static> {
         // The contents of our boxed slice cannot be moved, so we should never
         // need to rebase.
@@ -541,6 +648,7 @@ impl Debug for OwnedSlab {
 }
 
 /// A contiguous memory region containing a tree of OCaml values.
+#[derive(Copy, Clone)]
 pub struct SlabReader<'a>(&'a [u8]);
 
 impl<'a> SlabReader<'a> {
@@ -552,10 +660,49 @@ impl<'a> SlabReader<'a> {
     /// initialized by slab APIs (e.g., `OwnedSlab::as_bytes`, `copy_slab`).
     pub unsafe fn from_bytes(bytes: &'a [u8]) -> Result<Self, SlabIntegrityError> {
         let slab = Slab::from_bytes(bytes);
-        if !slab.is_initialized() {
-            return Err(SlabIntegrityError::NotInitialized);
-        }
+        slab.check_initialized()?;
         Ok(SlabReader(bytes))
+    }
+
+    /// Return a SlabReader for the given slice.
+    ///
+    /// # Safety
+    ///
+    /// The caller must only invoke this function on slices which were
+    /// initialized by slab APIs (e.g., `OwnedSlab::as_slice`).
+    pub unsafe fn from_words(words: &'a [usize]) -> Result<Self, SlabIntegrityError> {
+        let slab =
+            std::slice::from_raw_parts(words.as_ptr() as *const OpaqueValue<'a>, words.len());
+        slab.check_initialized()?;
+        Ok(SlabReader(std::slice::from_raw_parts(
+            words.as_ptr() as *const u8,
+            words.len() * WORD_SIZE,
+        )))
+    }
+
+    pub fn size_in_words(&self) -> usize {
+        Slab::from_bytes(self.0).len()
+    }
+
+    pub fn size_in_bytes(&self) -> usize {
+        self.size_in_words() * WORD_SIZE
+    }
+
+    pub fn value_size_in_words(&self) -> usize {
+        Slab::from_bytes(self.0).len() - SLAB_METADATA_WORDS
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        let ptr = Slab::from_bytes(self.0).as_ptr() as *const u8;
+        unsafe { std::slice::from_raw_parts(ptr, self.size_in_bytes()) }
+    }
+
+    pub fn as_slice(&self) -> &[usize] {
+        let slab = Slab::from_bytes(self.0);
+        // SAFETY: `usize` has the same size and alignment as `OpaqueValue`. The
+        // returned slice borrows `self`, so the associated memory will not be
+        // mutated while the slice exists.
+        unsafe { std::slice::from_raw_parts(slab.as_ptr() as *const usize, slab.len()) }
     }
 
     pub fn value(&self) -> Option<Value> {
@@ -563,7 +710,8 @@ impl<'a> SlabReader<'a> {
     }
 
     pub fn value_offset_in_bytes(&self) -> usize {
-        leading_padding(self.0) + Slab::from_bytes(self.0).root_value_offset() * WORD_SIZE
+        leading_padding(self.0.as_ptr(), self.0.len())
+            + Slab::from_bytes(self.0).root_value_offset() * WORD_SIZE
     }
 }
 
@@ -574,11 +722,11 @@ impl Debug for SlabReader<'_> {
 }
 
 #[cfg(test)]
-mod test_integrity_check {
+mod test {
     use super::*;
-    use SlabIntegrityError::*;
+    use crate::FromOcamlRep;
 
-    const MIN_SIZE_IN_BYTES: usize = (SLAB_METADATA_WORDS + 2) * WORD_SIZE;
+    pub const MIN_SIZE_IN_BYTES: usize = (SLAB_METADATA_WORDS + 2) * WORD_SIZE;
 
     // Some test cases use a slab containing the tuple (42, "a").
     // When rebased to 0x00, the slab we write for this value has this layout:
@@ -594,11 +742,15 @@ mod test_integrity_check {
     // | 0x30    | Header { size: 1, tag: 252 }, | STRING_TAG = 252           |
     // | 0x38    | 0x0600000000000061,           | "a" (0x06 = padding byte)  |
 
-    const TUPLE_42_A_SIZE_IN_WORDS: usize = SLAB_METADATA_WORDS + 5;
-    const TUPLE_42_A_SIZE_IN_BYTES: usize = TUPLE_42_A_SIZE_IN_WORDS * WORD_SIZE;
+    pub const TUPLE_42_A_SIZE_IN_WORDS: usize = SLAB_METADATA_WORDS + 5;
+    pub const TUPLE_42_A_SIZE_IN_BYTES: usize = TUPLE_42_A_SIZE_IN_WORDS * WORD_SIZE;
 
-    fn write_tuple_42_a(slab: &mut Slab) {
-        let tuple_slab = to_slab(&(42, "a".to_string())).unwrap();
+    pub fn alloc_tuple_42_a() -> OwnedSlab {
+        to_slab(&(42, "a".to_string())).unwrap()
+    }
+
+    pub fn write_tuple_42_a(slab: &mut Slab) {
+        let tuple_slab = alloc_tuple_42_a();
         // Copy everything except the last word, which is an empty padding word
         // which provides space for the slab to be realigned when embedded in a
         // byte slice.
@@ -607,6 +759,55 @@ mod test_integrity_check {
             slab.rebase_to(slab.current_address())
         };
     }
+
+    #[test]
+    fn copy_and_rebase_val() {
+        let mut tuple_slab = vec![0usize; TUPLE_42_A_SIZE_IN_WORDS];
+        let mut tuple_val = vec![0usize; TUPLE_42_A_SIZE_IN_WORDS - SLAB_METADATA_WORDS];
+        let value = unsafe {
+            write_tuple_42_a(std::slice::from_raw_parts_mut(
+                tuple_slab.as_mut_ptr() as *mut _,
+                tuple_slab.len(),
+            ));
+            let tuple_slab = SlabReader::from_words(tuple_slab.as_slice()).unwrap();
+            copy_and_rebase_value(tuple_slab, tuple_val.as_mut_slice())
+        };
+        assert_eq!(
+            <(isize, String)>::from_ocamlrep(value),
+            Ok((42, "a".to_string()))
+        );
+    }
+
+    #[test]
+    fn to_and_from_slice() {
+        let tuple_slab = alloc_tuple_42_a();
+        let tuple_reader = tuple_slab.as_reader();
+        let mut bytes = vec![0u8; tuple_reader.size_in_bytes() + WORD_SIZE];
+        // Iterate over all possible alignments for our byte slice, embed the
+        // slab in the slice (with appropriate padding), and attempt to convert
+        // it to a list of usizes and back to an OwnedSlab.
+        for offset in 0..WORD_SIZE {
+            let bytes = &mut bytes[offset..offset + tuple_reader.size_in_bytes()];
+            let slice =
+                unsafe { UninitSlice::from_raw_parts_mut(bytes.as_ptr() as *mut _, bytes.len()) };
+            copy_slab(tuple_reader.as_bytes(), slice).unwrap();
+            unsafe {
+                let reader = SlabReader::from_bytes(bytes).unwrap();
+                let owned_slab = OwnedSlab::from_slice(reader.as_slice()).unwrap();
+                assert_eq!(
+                    <(isize, String)>::from_ocamlrep(owned_slab.value()),
+                    Ok((42, "a".to_string()))
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod test_integrity_check {
+    use super::test::*;
+    use super::*;
+    use SlabIntegrityError::*;
 
     #[test]
     fn bad_size() {

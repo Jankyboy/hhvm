@@ -1,5 +1,4 @@
-#ifndef incl_HPHP_EXT_COLLECTIONS_MAP_H
-#define incl_HPHP_EXT_COLLECTIONS_MAP_H
+#pragma once
 
 #include "hphp/runtime/ext/collections/ext_collections.h"
 #include "hphp/runtime/ext/collections/hash-collection.h"
@@ -68,6 +67,7 @@ public:
   void set(int64_t k, const Variant& v) { set(k, *v.asTypedValue()); }
   void set(StringData* k, const Variant& v) { set(k, *v.asTypedValue()); }
   void set(TypedValue k, TypedValue v) {
+    k = tvClassToString(k);
     if (k.m_type == KindOfInt64) {
       set(k.m_data.num, v);
     } else if (isStringType(k.m_type)) {
@@ -102,13 +102,14 @@ public:
   template <bool throwOnMiss>
   static TypedValue* OffsetAt(ObjectData* obj, const TypedValue* key) {
     auto map = static_cast<BaseMap*>(obj);
-    if (key->m_type == KindOfInt64) {
-      return throwOnMiss ? map->at(key->m_data.num)
-                         : map->get(key->m_data.num);
+    auto const ktv = tvClassToString(*key);
+    if (ktv.m_type == KindOfInt64) {
+      return throwOnMiss ? map->at(ktv.m_data.num)
+                         : map->get(ktv.m_data.num);
     }
-    if (isStringType(key->m_type)) {
-      return throwOnMiss ? map->at(key->m_data.pstr)
-                         : map->get(key->m_data.pstr);
+    if (isStringType(ktv.m_type)) {
+      return throwOnMiss ? map->at(ktv.m_data.pstr)
+                         : map->get(ktv.m_data.pstr);
     }
     throwBadKeyType();
     return nullptr;
@@ -125,30 +126,33 @@ public:
 
 protected:
   Variant php_at(const Variant& key) const {
-    if (key.isInteger()) {
-      return tvAsCVarRef(atImpl<true>(key.toInt64()));
+    auto const ktv = tvClassToString(*key.asTypedValue());
+    if (type(ktv) == KindOfInt64) {
+      return tvAsCVarRef(atImpl<true>(ktv.m_data.num));
     }
-    if (key.isString()) {
-      return tvAsCVarRef(atImpl<true>(key.getStringData()));
+    if (isStringType(type(ktv))) {
+      return tvAsCVarRef(atImpl<true>(ktv.m_data.pstr));
     }
     throwBadKeyType();
   }
   bool php_containsKey(const Variant& key) const {
-    DataType t = key.getType();
+    auto const ktv = tvClassToString(*key.asTypedValue());
+    DataType t = type(ktv);
     if (t == KindOfInt64) {
-      return contains(key.toInt64());
+      return contains(ktv.m_data.num);
     }
     if (isStringType(t)) {
-      return contains(key.getStringData());
+      return contains(ktv.m_data.pstr);
     }
     BaseMap::throwBadKeyType();
   }
   Variant php_get(const Variant& key) const {
     TypedValue *tv;
-    if (key.isInteger()) {
-      tv = atImpl<false>(key.toInt64());
-    } else if (key.isString()) {
-      tv = atImpl<false>(key.getStringData());
+    auto const ktv = tvClassToString(*key.asTypedValue());
+    if (type(ktv) == KindOfInt64) {
+      tv = atImpl<false>(ktv.m_data.num);
+    } else if (isStringType(type(ktv))) {
+      tv = atImpl<false>(ktv.m_data.pstr);
     } else {
       throwBadKeyType();
     }
@@ -202,6 +206,7 @@ protected:
   void setRaw(StringData* k, const Variant& v) { setRaw(k, *v.asTypedValue()); }
 
   void setRaw(TypedValue k, TypedValue v) {
+    k = tvClassToString(k);
     if (k.m_type == KindOfInt64) {
       setRaw(k.m_data.num, v);
     } else if (isStringType(k.m_type)) {
@@ -212,80 +217,6 @@ protected:
   }
   void setRaw(const Variant& k, const Variant& v) {
     setRaw(*k.asTypedValue(), *v.asTypedValue());
-  }
-
-  template<class TMap>
-  typename std::enable_if<
-    std::is_base_of<BaseMap, TMap>::value, Object>::type
-  php_differenceByKey(const Variant& it);
-
-  template<class TMap>
-  typename std::enable_if<
-    std::is_base_of<BaseMap, TMap>::value, Object>::type
-  php_zip(const Variant& iterable);
-
-  template<class TMap>
-  typename std::enable_if<
-    std::is_base_of<BaseMap, TMap>::value, Object>::type
-  php_take(const Variant& n);
-
-  template<class TMap>
-  typename std::enable_if<
-    std::is_base_of<BaseMap, TMap>::value, Object>::type
-  php_skip(const Variant& n);
-
-  template<class TMap>
-  typename std::enable_if<
-    std::is_base_of<BaseMap, TMap>::value, Object>::type
-  php_slice(const Variant& start, const Variant& len);
-
-  template<class TVector>
-  typename std::enable_if<
-    std::is_base_of<BaseVector, TVector>::value, Object>::type
-  php_concat(const Variant& iterable);
-
-  template<class TMap>
-  static typename std::enable_if<
-    std::is_base_of<BaseMap, TMap>::value, Object>::type
-  FromItems(const Class*, const Variant& iterable);
-
-  template<class TMap>
-  static typename std::enable_if<
-    std::is_base_of<BaseMap, TMap>::value, Object>::type
-  FromArray(const Class*, const Variant& arr);
-
-  template<class TVector>
-  Object php_values() {
-    auto target = req::make<TVector>();
-    int64_t sz = m_size;
-    target->reserve(sz);
-    assertx(target->canMutateBuffer());
-    target->setSize(sz);
-    int64_t out = 0;
-    auto* eLimit = elmLimit();
-    for (auto* e = firstElm(); e != eLimit; e = nextElm(e, eLimit), ++out) {
-      tvDup(e->data, target->dataAt(out));
-    }
-    return Object{std::move(target)};
-  }
-
-  template<class TVector>
-  Object php_keys() {
-    auto vec = req::make<TVector>();
-    vec->reserve(m_size);
-    assertx(vec->canMutateBuffer());
-    auto* e = firstElm();
-    auto* eLimit = elmLimit();
-    int64_t j = 0;
-    for (; e != eLimit; e = nextElm(e, eLimit), vec->incSize(), ++j) {
-      if (e->hasIntKey()) {
-        tvCopy(make_tv<KindOfInt64>(e->ikey), vec->dataAt(j));
-      } else {
-        assertx(e->hasStrKey());
-        tvDup(make_tv<KindOfString>(e->skey), vec->dataAt(j));
-      }
-    }
-    return Object{std::move(vec)};
   }
 
 private:
@@ -342,11 +273,12 @@ struct c_Map : BaseMap {
     return Object{this};
   }
   Object php_removeKey(const Variant& key) {
-    DataType t = key.getType();
+    auto const ktv = tvClassToString(*key.asTypedValue());
+    DataType t = type(ktv);
     if (t == KindOfInt64) {
-      remove(key.toInt64());
+      remove(ktv.m_data.num);
     } else if (isStringType(t)) {
-      remove(key.getStringData());
+      remove(ktv.m_data.pstr);
     } else {
       throwBadKeyType();
     }
@@ -407,7 +339,7 @@ struct MapIterator {
   ~MapIterator() {}
 
   static Object newInstance() {
-    static Class* cls = Unit::lookupClass(s_MapIterator.get());
+    static Class* cls = Class::lookup(s_MapIterator.get());
     assertx(cls);
     return Object{cls};
   }
@@ -454,4 +386,3 @@ struct MapIterator {
 
 /////////////////////////////////////////////////////////////////////////////
 }}
-#endif

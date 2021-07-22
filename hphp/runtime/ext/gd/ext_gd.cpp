@@ -137,59 +137,64 @@ struct ImageMemoryAlloc final : RequestEventHandler {
 , int ln
 #endif
   ) {
-    assertx(m_mallocSize < (size_t)RuntimeOption::ImageMemoryMaxBytes);
-    if (m_mallocSize + size < (size_t)RuntimeOption::ImageMemoryMaxBytes) {
-#ifdef IM_MEMORY_CHECK
-      void *ptr = local_malloc(sizeof(ln) + sizeof(size) + size);
-      if (!ptr) return nullptr;
-      memcpy(ptr, &ln, sizeof(ln));
-      memcpy((char*)ptr + sizeof(ln), &size, sizeof(size));
-      m_mallocSize += size;
-      m_alloced.insert(ptr);
-      return ((char *)ptr + sizeof(ln) + sizeof(size));
-#else
-      void *ptr = local_malloc(sizeof(size) + size);
-      if (!ptr) return nullptr;
-      memcpy(ptr, &size, sizeof(size));
-      m_mallocSize += size;
-      return ((char *)ptr + sizeof(size));
-#endif
+    assertx(m_mallocSize <= (size_t)RuntimeOption::ImageMemoryMaxBytes);
+    if (size > (size_t)RuntimeOption::ImageMemoryMaxBytes ||
+        m_mallocSize + size > (size_t)RuntimeOption::ImageMemoryMaxBytes) {
+      return nullptr;
     }
-    return nullptr;
+
+#ifdef IM_MEMORY_CHECK
+    void *ptr = local_malloc(sizeof(ln) + sizeof(size) + size);
+    if (!ptr) return nullptr;
+    memcpy(ptr, &ln, sizeof(ln));
+    memcpy((char*)ptr + sizeof(ln), &size, sizeof(size));
+    m_mallocSize += size;
+    m_alloced.insert(ptr);
+    return ((char *)ptr + sizeof(ln) + sizeof(size));
+#else
+    void *ptr = local_malloc(sizeof(size) + size);
+    if (!ptr) return nullptr;
+    memcpy(ptr, &size, sizeof(size));
+    m_mallocSize += size;
+    return ((char *)ptr + sizeof(size));
+#endif
   }
   void *imCalloc(size_t nmemb, size_t size
 #ifdef IM_MEMORY_CHECK
 , int ln
 #endif
   ) {
-    assertx(m_mallocSize < (size_t)RuntimeOption::ImageMemoryMaxBytes);
+    assertx(m_mallocSize <= (size_t)RuntimeOption::ImageMemoryMaxBytes);
     size_t bytes = nmemb * size;
-    if (m_mallocSize + bytes < (size_t)RuntimeOption::ImageMemoryMaxBytes) {
-#ifdef IM_MEMORY_CHECK
-      void *ptr = local_malloc(sizeof(ln) + sizeof(size) + bytes);
-      if (!ptr) return nullptr;
-      memset(ptr, 0, sizeof(ln) + sizeof(size) + bytes);
-      memcpy(ptr, &ln, sizeof(ln));
-      memcpy((char*)ptr + sizeof(ln), &bytes, sizeof(bytes));
-      m_mallocSize += bytes;
-      m_alloced.insert(ptr);
-      return ((char *)ptr + sizeof(ln) + sizeof(size));
-#else
-      void *ptr = local_malloc(sizeof(size) + bytes);
-      if (!ptr) return nullptr;
-      memcpy(ptr, &bytes, sizeof(bytes));
-      memset((char *)ptr + sizeof(size), 0, bytes);
-      m_mallocSize += bytes;
-      return ((char *)ptr + sizeof(size));
-#endif
+    if (bytes > (size_t)RuntimeOption::ImageMemoryMaxBytes ||
+        m_mallocSize + bytes > (size_t)RuntimeOption::ImageMemoryMaxBytes) {
+      return nullptr;
     }
-    return nullptr;
+
+#ifdef IM_MEMORY_CHECK
+    void *ptr = local_malloc(sizeof(ln) + sizeof(size) + bytes);
+    if (!ptr) return nullptr;
+    memset(ptr, 0, sizeof(ln) + sizeof(size) + bytes);
+    memcpy(ptr, &ln, sizeof(ln));
+    memcpy((char*)ptr + sizeof(ln), &bytes, sizeof(bytes));
+    m_mallocSize += bytes;
+    m_alloced.insert(ptr);
+    return ((char *)ptr + sizeof(ln) + sizeof(size));
+#else
+    void *ptr = local_malloc(sizeof(size) + bytes);
+    if (!ptr) return nullptr;
+    memcpy(ptr, &bytes, sizeof(bytes));
+    memset((char *)ptr + sizeof(size), 0, bytes);
+    m_mallocSize += bytes;
+    return ((char *)ptr + sizeof(size));
+#endif
   }
   void imFree(void *ptr
 #ifdef IM_MEMORY_CHECK
 , int ln
 #endif
   ) {
+    assertx(ptr);
     size_t size;
     void *sizePtr = (char *)ptr - sizeof(size);
     memcpy(&size, sizePtr, sizeof(size));
@@ -198,10 +203,10 @@ struct ImageMemoryAlloc final : RequestEventHandler {
     void *lnPtr = (char *)sizePtr - sizeof(ln);
     int count = m_alloced.erase((char*)sizePtr - sizeof(ln));
     assertx(count == 1); // double free on failure
-    assertx(m_mallocSize < (size_t)RuntimeOption::ImageMemoryMaxBytes);
+    assertx(m_mallocSize <= (size_t)RuntimeOption::ImageMemoryMaxBytes);
     local_free(lnPtr);
 #else
-    assertx(m_mallocSize < (size_t)RuntimeOption::ImageMemoryMaxBytes);
+    assertx(m_mallocSize <= (size_t)RuntimeOption::ImageMemoryMaxBytes);
     local_free(sizePtr);
 #endif
   }
@@ -212,7 +217,7 @@ struct ImageMemoryAlloc final : RequestEventHandler {
 , int ln
 #endif
   ) {
-    assertx(m_mallocSize < (size_t)RuntimeOption::ImageMemoryMaxBytes);
+    assertx(m_mallocSize <= (size_t)RuntimeOption::ImageMemoryMaxBytes);
 
 #ifdef IM_MEMORY_CHECK
     if (!ptr) return imMalloc(size, ln);
@@ -230,12 +235,13 @@ struct ImageMemoryAlloc final : RequestEventHandler {
     void *sizePtr = (char *)ptr - sizeof(size);
     size_t oldSize = 0;
     if (ptr) memcpy(&oldSize, sizePtr, sizeof(oldSize));
-    int diff = size - oldSize;
+    ssize_t diff = size - oldSize;
     void *tmp;
 
 #ifdef IM_MEMORY_CHECK
     void *lnPtr = (char *)sizePtr - sizeof(ln);
-    if (m_mallocSize + diff > (size_t)RuntimeOption::ImageMemoryMaxBytes ||
+    if (size > (size_t)RuntimeOption::ImageMemoryMaxBytes ||
+        m_mallocSize + diff > (size_t)RuntimeOption::ImageMemoryMaxBytes ||
         !(tmp = local_realloc(lnPtr, sizeof(ln) + sizeof(size) + size))) {
       int count = m_alloced.erase(ptr);
       assertx(count == 1); // double free on failure
@@ -252,7 +258,8 @@ struct ImageMemoryAlloc final : RequestEventHandler {
     }
     return ((char *)tmp + sizeof(ln) + sizeof(size));
 #else
-    if (m_mallocSize + diff > (size_t)RuntimeOption::ImageMemoryMaxBytes ||
+    if (size > (size_t)RuntimeOption::ImageMemoryMaxBytes ||
+        m_mallocSize + diff > (size_t)RuntimeOption::ImageMemoryMaxBytes ||
         !(tmp = local_realloc(sizePtr, sizeof(size) + size))) {
       local_free(sizePtr);
       return nullptr;
@@ -1662,7 +1669,7 @@ Variant getImageSize(const req::ptr<File>& stream, Array& imageinfo) {
   int itype = 0;
   struct gfxinfo *result = nullptr;
 
-  imageinfo = Array::CreateDArray();
+  imageinfo = Array::CreateDict();
   itype = php_getimagetype(stream);
   switch( itype) {
   case IMAGE_FILETYPE_GIF:
@@ -1716,9 +1723,9 @@ Variant getImageSize(const req::ptr<File>& stream, Array& imageinfo) {
   }
 
   if (result) {
-    DArrayInit ret(7);
-    ret.set(0, (int64_t)result->width);
-    ret.set(1, (int64_t)result->height);
+    DictInit ret(7);
+    ret.set((int64_t)0, (int64_t)result->width);
+    ret.set((int64_t)1, (int64_t)result->height);
     ret.set(2, itype);
     char *temp;
     php_vspprintf(&temp, 0, "width=\"%d\" height=\"%d\"",
@@ -2761,7 +2768,7 @@ static Variant php_imagettftext_common(int mode, int extended,
       Variant key = iter.first();
       if (!key.isString()) continue;
       Variant item = iter.second();
-      if (equal(key, s_linespacing)) {
+      if (equal(key, s_linespacing.get())) {
         strex.flags |= gdFTEX_LINESPACE;
         strex.linespacing = item.toDouble();
       }
@@ -2801,7 +2808,7 @@ static Variant php_imagettftext_common(int mode, int extended,
   }
 
   /* return array with the text's bounding box */
-  return make_varray(
+  return make_vec_array(
     brect[0],
     brect[1],
     brect[2],
@@ -2832,7 +2839,7 @@ const StaticString
   s_JIS_mapped_Japanese_Font_Support("JIS-mapped Japanese Font Support");
 
 Array HHVM_FUNCTION(gd_info) {
-  Array ret = Array::CreateDArray();
+  Array ret = Array::CreateDict();
 
   ret.set(s_GD_Version, PHP_GD_VERSION_STRING);
 
@@ -3157,7 +3164,7 @@ Variant HHVM_FUNCTION(imageaffinematrixconcat,
   double dm1[6];
   double dm2[6];
   double dmr[6];
-  Array ret = Array::CreateDArray();
+  Array ret = Array::CreateDict();
 
   if (nelem1 != 6 || nelem2 != 6) {
     raise_warning("imageaffinematrixconcat(): Affine array must "
@@ -3198,7 +3205,7 @@ Variant HHVM_FUNCTION(imageaffinematrixconcat,
 Variant HHVM_FUNCTION(imageaffinematrixget,
                       int64_t type,
                       const Variant& options /* = Array() */) {
-  Array ret = Array::CreateDArray();
+  Array ret = Array::CreateDict();
   double affine[6];
   int res = GD_FALSE, i;
 
@@ -3788,7 +3795,7 @@ Variant HHVM_FUNCTION(imagecolorsforindex, const Resource& image,
   if (!im) return false;
   if (index >= 0 &&
       (gdImageTrueColor(im) || index < gdImageColorsTotal(im))) {
-    return make_darray(
+    return make_dict_array(
       s_red,  gdImageRed(im,index),
       s_green, gdImageGreen(im,index),
       s_blue, gdImageBlue(im,index),
@@ -4594,7 +4601,7 @@ Variant HHVM_FUNCTION(iptcparse, const String& iptcblock) {
 
     String skey((const char *)key, CopyString);
     if (!ret.exists(skey)) {
-      ret.set(skey, Array::CreateVArray());
+      ret.set(skey, Array::CreateVec());
     }
     auto const lval = ret.lval(skey);
     forceToArray(lval).append(
@@ -7210,6 +7217,8 @@ static int exif_process_IFD_in_TIFF(image_info_type *ImageInfo,
                 if (!ImageInfo->Thumbnail.data) {
                   ImageInfo->Thumbnail.data =
                     (char *)IM_MALLOC(ImageInfo->Thumbnail.size);
+                  CHECK_ALLOC_R(ImageInfo->Thumbnail.data,
+                                ImageInfo->Thumbnail.size, 0);
                   ImageInfo->infile->seek(ImageInfo->Thumbnail.offset,
                                           SEEK_SET);
                   String str =
@@ -7647,6 +7656,7 @@ static int exif_scan_thumbnail(image_info_type *ImageInfo) {
     if (c == 0xFF)
       return 0;
     marker = c;
+    if (ImageInfo->Thumbnail.size - 2 < pos) return 0;
     length = php_jpg_get16(data+pos);
     if (length > ImageInfo->Thumbnail.size || pos >= ImageInfo->Thumbnail.size - length) {
       return 0;
@@ -7943,10 +7953,10 @@ Variant HHVM_FUNCTION(exif_read_data,
                      "%dmm", (int)ImageInfo.CCDWidth);
   }
   if (ImageInfo.ExposureTime>0) {
-    if (ImageInfo.ExposureTime <= 0.5) {
-      exif_iif_add_fmt(&ImageInfo, SECTION_COMPUTED, "ExposureTime",
-                       "%0.3F s (1/%d)", ImageInfo.ExposureTime,
-                       (int)(0.5 + 1/ImageInfo.ExposureTime));
+    float recip_exposure_time = 0.5f + 1.0f/ImageInfo.ExposureTime;
+    if (ImageInfo.ExposureTime <= 0.5 && recip_exposure_time < INT_MAX) {
+      exif_iif_add_fmt(&ImageInfo, SECTION_COMPUTED, "ExposureTime", "%0.3F s (1/%d)",
+                       ImageInfo.ExposureTime, (int) recip_exposure_time);
     } else {
       exif_iif_add_fmt(&ImageInfo, SECTION_COMPUTED, "ExposureTime",
                        "%0.3F s", ImageInfo.ExposureTime);

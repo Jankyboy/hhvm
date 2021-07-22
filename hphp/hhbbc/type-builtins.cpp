@@ -77,54 +77,44 @@ bool is_collection_method_returning_this(const php::Class* cls,
 }
 
 Type native_function_return_type(const php::Func* f) {
-  assert(f->nativeInfo);
+  assertx(f->nativeInfo);
 
   // Infer the type from the HNI declaration
   auto t = [&]{
     auto const hni = f->nativeInfo->returnType;
     return hni ? from_DataType(*hni) : TInitCell;
   }();
-  if (t.subtypeOf(BArr)) {
-    if (f->retTypeConstraint.isVArray()) {
-      assertx(!RuntimeOption::EvalHackArrDVArrs);
-      t = TVArr;
-    } else if (f->retTypeConstraint.isDArray()) {
-      assertx(!RuntimeOption::EvalHackArrDVArrs);
-      t = TDArr;
-    }
-  }
 
   // Non-simple types (ones that are represented by pointers) can always
   // possibly be null.
-  if (t.subtypeOfAny(TStr, TArr, TVec, TDict,
-                     TKeyset, TObj, TRes)) {
-    t |= TInitNull;
+  if (t.subtypeOf(BStr | BArrLike | BObj | BRes)) {
+    t = opt(std::move(t));
   } else {
     // Otherwise it should be a simple type or possibly everything.
-    assert(t == TInitCell || t.subtypeOfAny(TBool, TInt, TDbl, TNull));
+    assertx(t == TInitCell || t.subtypeOf(BBool | BInt | BDbl | BNull));
   }
 
-  return remove_uninit(t);
-}
+  t = remove_uninit(std::move(t));
+  if (!f->hasInOutArgs) return t;
 
-Type native_function_out_type(const php::Func* f, uint32_t index) {
-  assertx(f->nativeInfo);
-  assertx(f->hasInOutArgs);
+  std::vector<Type> types;
+  types.emplace_back(std::move(t));
 
-  for (auto& p : f->params) {
+  for (auto const& p : f->params) {
     if (!p.inout) continue;
-
-    if (index-- == 0) {
-      auto dt = Native::builtinOutType(p.typeConstraint, p.userAttributes);
-      if (!dt) return TInitCell;
-      auto t = from_DataType(*dt);
-      return p.typeConstraint.isNullable()
-        ? union_of(std::move(t), TInitNull)
-        : t;
+    auto const dt =
+      Native::builtinOutType(p.typeConstraint, p.userAttributes);
+    if (!dt) {
+      types.emplace_back(TInitCell);
+      continue;
     }
+    auto t = from_DataType(*dt);
+    if (p.typeConstraint.isNullable()) t = opt(std::move(t));
+    types.emplace_back(remove_uninit(std::move(t)));
   }
+  std::reverse(types.begin()+1, types.end());
 
-  return TBottom;
+  return vec(std::move(types));
 }
 
 }}

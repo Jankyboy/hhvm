@@ -21,21 +21,6 @@
 namespace HPHP { namespace jit {
 
 ///////////////////////////////////////////////////////////////////////////////
-// TransContext.
-
-inline TransContext::TransContext(
-  const TransIDSet& ids, TransKind kind, TransFlags flags,
-  SrcKey sk, FPInvOffset spOff, int optIndex, const RegionDesc* region)
-  : transIDs(ids)
-  , optIndex(optIndex)
-  , kind(kind)
-  , flags(flags)
-  , initSpOffset(spOff)
-  , initSrcKey(sk)
-  , region(region)
-{}
-
-///////////////////////////////////////////////////////////////////////////////
 // Control flow information.
 
 inline ControlFlowInfo opcodeControlFlowInfo(const Op op, bool inlining) {
@@ -59,7 +44,6 @@ inline ControlFlowInfo opcodeControlFlowInfo(const Op op, bool inlining) {
     case Op::IterNext:  // Ditto
     case Op::LIterNext: // Ditto
     case Op::Throw:
-    case Op::Eval:
     case Op::NativeImpl:
     case Op::BreakTraceHint:
     case Op::MemoGet:
@@ -79,11 +63,6 @@ inline ControlFlowInfo opcodeControlFlowInfo(const Op op, bool inlining) {
     case Op::FCallObjMethodD:
     case Op::ContEnter:
     case Op::ContRaise:
-    case Op::Incl:
-    case Op::InclOnce:
-    case Op::Req:
-    case Op::ReqOnce:
-    case Op::ReqDoc:
       return ControlFlowInfo::ChangesPC;
     default:
       return ControlFlowInfo::None;

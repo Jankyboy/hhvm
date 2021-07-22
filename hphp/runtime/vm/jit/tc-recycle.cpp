@@ -36,9 +36,6 @@
 #include "hphp/util/rds-local.h"
 #include "hphp/util/trace.h"
 
-#include "hphp/ppc64-asm/asm-ppc64.h"
-#include "hphp/ppc64-asm/decoded-instr-ppc64.h"
-
 #include "hphp/vixl/a64/instructions-a64.h"
 
 #include <condition_variable>
@@ -138,13 +135,13 @@ void enqueueJob(Job j) {
   s_qcv.notify_all();
 }
 
-folly::Optional<Job> dequeueJob() {
+Optional<Job> dequeueJob() {
   std::unique_lock<std::mutex> l{s_qlock};
   s_qcv.wait(l, [] {
     return !s_running.load(std::memory_order_acquire) || !s_jobq.empty();
   });
 
-  if (!s_running.load(std::memory_order_relaxed)) return folly::none;
+  if (!s_running.load(std::memory_order_relaxed)) return std::nullopt;
   assertx(!s_jobq.empty());
   auto ret = s_jobq.front();
   s_jobq.pop();
@@ -170,7 +167,7 @@ void clearProfCaller(TCA toSmash, ProfTransRec* rec) {
  * Erase any metadata referencing a call at address start and return the
  * SmashedCall record if the call referenced a ProfTransRec.
  */
-folly::Optional<SmashedCall> eraseSmashedCall(TCA start) {
+Optional<SmashedCall> eraseSmashedCall(TCA start) {
   auto dataLock = lockData();
   auto it = s_smashedCalls.find(start);
   if (it != s_smashedCalls.end()) {
@@ -181,7 +178,7 @@ folly::Optional<SmashedCall> eraseSmashedCall(TCA start) {
     s_smashedCalls.erase(it);
     if (scall.rec) return scall;
   }
-  return folly::none;
+  return std::nullopt;
 }
 
 /*
@@ -207,14 +204,6 @@ void clearTCMaps(TCA start, TCA end) {
         isCall = instr->Mask(UnconditionalBranchMask) == BL ||
           instr->Mask(UnconditionalBranchToRegisterMask) == BLR;
         instSz = vixl::kInstructionSize;
-        break;
-      }
-      case Arch::PPC64: {
-        ppc64_asm::DecodedInstruction di(start);
-        isBranch = di.isBranch();
-        isNop = di.isNop();
-        isCall = di.isCall();
-        instSz = di.size();
         break;
       }
       case Arch::X64: {
@@ -342,38 +331,27 @@ void reclaimTranslationSync(TransLoc loc, const SrcRec* freedSr = nullptr) {
 }
 
 /*
- * Reclaim all translations associated with a SrcRec including the anchor
- * translation.
+ * Reclaim all translations associated with a SrcRec.
  */
 void reclaimSrcRecSync(const SrcRec* rec) {
   auto srLock = rec->readlock();
-  ITRACE(1, "Reclaiming SrcRec addr={} anchor={}\n", (void*)rec,
-         rec->getFallbackTranslation());
+  ITRACE(1, "Reclaiming SrcRec addr={}\n", (void*)rec);
 
   Trace::Indent _i;
-
-  auto anchor = rec->getFallbackTranslation();
 
   for (auto& loc : rec->translations()) {
     reclaimTranslationSync(loc, rec);
   }
-
-  // Grabbing the code lock here without releasing the SrcRec lock would be a
-  // rank violation
-  srLock.unlock();
-  auto codeLock = lockCode();
-  code().blockFor(anchor).free(anchor, svcreq::stub_size());
-  clearRange(anchor, svcreq::stub_size(), "Dead SrcRec Anchor");
 }
 
 void reclaimTranslation(TransLoc loc) { enqueueJob(loc); }
 void reclaimSrcRec(const SrcRec* sr) { enqueueJob(sr); }
 
-folly::Optional<FuncInfo> eraseFuncInfo(FuncId fid) {
+Optional<FuncInfo> eraseFuncInfo(FuncId fid) {
   auto dataLock = lockData();
 
   auto it = s_funcTCData.find(fid);
-  if (it == s_funcTCData.end()) return folly::none;
+  if (it == s_funcTCData.end()) return std::nullopt;
 
   auto data = std::move(it->second);
   s_funcTCData.erase(it);

@@ -119,7 +119,8 @@ let match_substring_at s offset ss =
         if s.[i + offset] <> ss.[i] then raise Exit
       done;
       true
-    with Exit -> false
+    with
+    | Exit -> false
   else
     false
 
@@ -326,7 +327,10 @@ let string_of_file filename =
   let ic = open_in filename in
   let buf = Buffer.create 5096 in
   let rec loop () =
-    match (try Some (input_line ic) with _ -> None) with
+    match
+      try Some (input_line ic) with
+      | _ -> None
+    with
     | None -> Buffer.contents buf
     | Some l ->
       Buffer.add_string buf l;
@@ -387,7 +391,7 @@ module Make_streamer (Out : Output_stream_intf) = struct
     | [] -> ()
     | elt :: elts ->
       concat_elt buf elt;
-      List.iter elts (fun e ->
+      List.iter elts ~f:(fun e ->
           Out.add_string buf sep;
           concat_elt buf e));
     Out.add_string buf rb
@@ -433,10 +437,10 @@ module Make_streamer (Out : Output_stream_intf) = struct
     | JSON_Bool b ->
       Out.add_string
         buf
-        ( if b then
+        (if b then
           "true"
         else
-          "false" )
+          "false")
     | JSON_Null -> Out.add_string buf "null"
 
   and add_assoc ~sort_keys (buf : Out.t) (k, v) =
@@ -466,7 +470,7 @@ and json_to_multiline ?(sort_keys = false) json =
     else
       match json with
       | JSON_Array l ->
-        let nl = List.map l (loop (indent ^ "  ")) in
+        let nl = List.map l ~f:(loop (indent ^ "  ")) in
         "[\n"
         ^ indent
         ^ "  "
@@ -483,7 +487,7 @@ and json_to_multiline ?(sort_keys = false) json =
             l
         in
         let nl =
-          List.map l (fun (k, v) ->
+          List.map l ~f:(fun (k, v) ->
               indent
               ^ "  "
               ^ json_to_string ~sort_keys (JSON_String k)
@@ -529,10 +533,10 @@ let rec json_to_multiline_output oc (json : json) : unit =
   | JSON_Bool b ->
     output_string
       oc
-      ( if b then
+      (if b then
         "true"
       else
-        "false" )
+        "false")
   | JSON_Null -> output_string oc "null"
 
 let output_json_endline ~pretty (oc : out_channel) (json : json) =
@@ -559,18 +563,32 @@ let json_of_file ?strict filename =
 let int_ n = JSON_Number (string_of_int n)
 
 let float_ n =
-  let s = string_of_float n in
-  (* ocaml strings can end in '.', which isn't allowed in json *)
-  let len = String.length s in
-  let s =
-    if s.[len - 1] = '.' then
-      String.sub s 0 (len - 1)
-    else
-      s
-  in
-  JSON_Number s
+  if Float.is_infinite n || Float.is_nan n then
+    (* nan/infinite isn't a valid value in json and will result in something unparseable;
+       null is the best we can do. *)
+    JSON_Null
+  else
+    let s = string_of_float n in
+    (* ocaml strings can end in '.', which isn't allowed in json *)
+    let len = String.length s in
+    let s =
+      if s.[len - 1] = '.' then
+        String.sub s 0 (len - 1)
+      else
+        s
+    in
+    JSON_Number s
 
 let string_ s = JSON_String s
+
+let bool_ flag = JSON_Bool flag
+
+let opt_ (to_json : 'a -> json) (x : 'a option) : json =
+  match x with
+  | None -> JSON_Null
+  | Some x -> to_json x
+
+let array_ (f : 'a -> json) (xs : 'a list) : json = JSON_Array (List.map ~f xs)
 
 let get_object_exn = function
   | JSON_Object o -> o
@@ -722,7 +740,8 @@ module Access = struct
       match candidate with
       | None -> Error (Missing_key_error (k, keytrace))
       | Some obj -> Ok (obj, k :: keytrace)
-    with Assert_failure _ -> Error (Not_an_object keytrace)
+    with
+    | Assert_failure _ -> Error (Not_an_object keytrace)
 
   let make_object_json v = JSON_Object (get_object_exn v)
 
@@ -759,7 +778,8 @@ let ( <=@ ) : int -> int option -> bool =
 
 let json_truncate
     ?(max_string_length : int option)
-    ?(max_child_count : int option)
+    ?(max_object_child_count : int option)
+    ?(max_array_elt_count : int option)
     ?(max_depth : int option)
     ?(max_total_count : int option)
     ?(has_changed : bool ref option)
@@ -770,20 +790,23 @@ let json_truncate
     | None -> ()
     | Some r -> r := true
   in
-  let rec truncate_children ~child_count children ~f =
-    match children with
-    | [] -> []
-    | _ when !total_count >=@ max_total_count ->
-      mark_changed ();
-      []
-    | _ when child_count >=@ max_child_count ->
-      mark_changed ();
-      []
-    | c :: rest ->
-      incr total_count;
-      let c' = f c in
-      (* because of mutable variable, it's important to do this first *)
-      c' :: truncate_children (child_count + 1) rest f
+  let truncate_children children max_child_count ~f =
+    let rec truncate_children child_count children =
+      match children with
+      | [] -> []
+      | _ when !total_count >=@ max_total_count ->
+        mark_changed ();
+        []
+      | _ when child_count >=@ max_child_count ->
+        mark_changed ();
+        []
+      | c :: rest ->
+        incr total_count;
+        let c' = f c in
+        (* because of mutable variable, it's important to do this first *)
+        c' :: truncate_children (child_count + 1) rest
+    in
+    truncate_children 0 children
   in
   let rec truncate ~(depth : int) (json : json) : json =
     match json with
@@ -794,19 +817,19 @@ let json_truncate
     | JSON_Null ->
       json
     | JSON_Object props ->
-      let f (k, v) = (k, truncate (depth + 1) v) in
+      let f (k, v) = (k, truncate ~depth:(depth + 1) v) in
       if depth >=@ max_depth then (
         mark_changed ();
         JSON_Object []
       ) else
-        JSON_Object (truncate_children ~child_count:0 props ~f)
+        JSON_Object (truncate_children props max_object_child_count ~f)
     | JSON_Array values ->
-      let f v = truncate (depth + 1) v in
+      let f v = truncate ~depth:(depth + 1) v in
       if depth >=@ max_depth then (
         mark_changed ();
         JSON_Array []
       ) else
-        JSON_Array (truncate_children ~child_count:0 values ~f)
+        JSON_Array (truncate_children values max_array_elt_count ~f)
     | JSON_String s ->
       begin
         match max_string_length with
@@ -839,7 +862,8 @@ let json_truncate_string
     let truncated_json =
       json_truncate
         ?max_string_length
-        ?max_child_count
+        ?max_object_child_count:max_child_count
+        ?max_array_elt_count:max_child_count
         ?max_depth
         ?max_total_count
         ~has_changed

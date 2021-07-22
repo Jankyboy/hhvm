@@ -6,7 +6,7 @@ class Obj {
 }
 
 class X {
-  public arraylike $arr;
+  public AnyArray $arr;
   public int $id;
 
   public function f() {
@@ -40,6 +40,6 @@ function f() {
 <<__EntryPoint>>
 function main_uninit_leak() {
   f();
-  var_dump(hh\objprof_get_data());
+  var_dump(HH\objprof_get_data());
   echo "done\n";
 }

@@ -48,7 +48,7 @@ icu::TimeZone* IntlTimeZone::ParseArg(const Variant& arg,
   } else if (arg.isObject()) {
     auto objarg = arg.toObject();
     auto cls = objarg->getVMClass();
-    auto IntlTimeZone_Class = Unit::lookupClass(s_IntlTimeZone.get());
+    auto IntlTimeZone_Class = Class::lookup(s_IntlTimeZone.get());
     if (IntlTimeZone_Class &&
         ((cls == IntlTimeZone_Class) || cls->classof(IntlTimeZone_Class))) {
       return IntlTimeZone::Get(objarg.get())->timezone()->clone();
@@ -290,6 +290,15 @@ static Variant HHVM_STATIC_METHOD(IntlTimeZone, getTZDataVersion) {
 }
 
 static bool HHVM_METHOD(IntlTimeZone, hasSameRules, const Object& otherTimeZone) {
+  if (!otherTimeZone.instanceof(s_IntlTimeZone)) {
+    SystemLib::throwInvalidArgumentExceptionObject(
+      folly::sformat(
+        "Invalid argument. Expected {}, received {}",
+        s_IntlTimeZone,
+        otherTimeZone->getClassName().c_str()
+      )
+    );
+  }
   TZ_GET(obj1, this_, false);
   TZ_GET(obj2, otherTimeZone.get(), false);
   return obj1->timezone()->hasSameRules(*obj2->timezone());
@@ -319,7 +328,7 @@ static Variant HHVM_STATIC_METHOD(IntlTimeZone, createTimeZoneIDEnumeration,
 
   int32_t *pofs = nullptr;
   int32_t   ofs = 0;
-  if (offset.isInitialized()) {
+  if (!offset.isNull()) {
     ofs = offset.toInt64();
     pofs = &ofs;
   }

@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HHBBC_BC_H_
-#define incl_HHBBC_BC_H_
+#pragma once
 
 #include <vector>
 #include <utility>
@@ -80,30 +79,36 @@ inline bool operator!=(NamedLocal a, NamedLocal b) {
 struct MKey {
   MKey()
     : mcode{MW}
+    , rop{ReadOnlyOp::Any}
     , int64{0}
   {}
 
-  MKey(MemberCode mcode, NamedLocal local)
+  MKey(MemberCode mcode, NamedLocal local, ReadOnlyOp rop)
     : mcode{mcode}
+    , rop{rop}
     , local{local}
   {}
 
-  MKey(MemberCode mcode, int32_t idx)
+  MKey(MemberCode mcode, int32_t idx, ReadOnlyOp rop)
     : mcode{mcode}
+    , rop{rop}
     , idx{idx}
   {}
 
-  MKey(MemberCode mcode, int64_t int64)
+  MKey(MemberCode mcode, int64_t int64, ReadOnlyOp rop)
     : mcode{mcode}
+    , rop{rop}
     , int64{int64}
   {}
 
-  MKey(MemberCode mcode, SString litstr)
+  MKey(MemberCode mcode, SString litstr, ReadOnlyOp rop)
     : mcode{mcode}
+    , rop{rop}
     , litstr{litstr}
   {}
 
   MemberCode mcode;
+  ReadOnlyOp rop;
   union {
     SString litstr;
     int64_t int64;
@@ -113,7 +118,7 @@ struct MKey {
 };
 
 inline bool operator==(MKey a, MKey b) {
-  return a.mcode == b.mcode && a.int64 == b.int64;
+  return a.mcode == b.mcode && a.int64 == b.int64 && a.rop == b.rop;
 }
 
 inline bool operator!=(MKey a, MKey b) {
@@ -135,157 +140,6 @@ inline bool operator==(const LocalRange& a, const LocalRange& b) {
 inline bool operator!=(const LocalRange& a, const LocalRange& b) {
   return !(a == b);
 }
-
-struct FCallArgsShort {
-  using Flags = FCallArgsBase::Flags;
-  static constexpr int kValidFlag = (1u << 15);
-  static constexpr int kEnforceInOut = (1u << 14);
-  static constexpr int kInoutMask = (1u << 14) - 1;
-
-  BlockId       asyncEagerTarget;
-  Flags         flags;
-  uint8_t       numArgs : 4;
-  uint8_t       numRets : 4;
-  uint16_t      inoutArgsAndFlags;
-  static FCallArgsShort create(
-      Flags flags, uint32_t numArgs, uint32_t numRets,
-      const std::unique_ptr<uint8_t[]>& inoutArgs,
-      BlockId asyncEagerTarget, LSString context) {
-    if (numArgs >= 16 ||
-        numRets >= 16 ||
-        (inoutArgs && numArgs > 8 && inoutArgs[1] > (kInoutMask >> 8)) ||
-        context) {
-      return FCallArgsShort{};
-    }
-    FCallArgsShort fca{};
-    fca.asyncEagerTarget = asyncEagerTarget;
-    fca.flags = flags;
-    fca.numArgs = numArgs;
-    fca.numRets = numRets;
-    if (inoutArgs) {
-      fca.inoutArgsAndFlags = inoutArgs[0];
-      if (numArgs > 8) {
-        fca.inoutArgsAndFlags |= inoutArgs[1] << 8;
-      }
-      fca.inoutArgsAndFlags |= kEnforceInOut;
-    }
-    fca.inoutArgsAndFlags |= kValidFlag;
-    return fca;
-  }
-  bool valid() const { return inoutArgsAndFlags & kValidFlag; }
-  bool enforceInOut() const {
-    return inoutArgsAndFlags & kEnforceInOut;
-  }
-  bool isInOut(uint32_t i) const {
-    assertx(enforceInOut());
-    assertx(i < numArgs);
-    return inoutArgsAndFlags & kInoutMask & (1 << i);
-  }
-  FCallArgsShort withoutGenerics() const {
-    auto fca = *this;
-    fca.flags = static_cast<Flags>(fca.flags & ~Flags::HasGenerics);
-    return fca;
-  }
-  FCallArgsShort withoutLockWhileUnwinding() const {
-    auto fca = *this;
-    fca.flags = static_cast<Flags>(fca.flags & ~Flags::LockWhileUnwinding);
-    return fca;
-  }
-  FCallArgsShort withoutRepack() const {
-    auto fca = *this;
-    fca.flags = static_cast<Flags>(fca.flags | Flags::SkipRepack);
-    return fca;
-  }
-  FCallArgsShort withoutInOut() const {
-    auto fca = *this;
-    fca.inoutArgsAndFlags &= ~(kInoutMask | kEnforceInOut);
-    return fca;
-  }
-  FCallArgsShort withoutAsyncEagerTarget() const {
-    auto fca = *this;
-    fca.asyncEagerTarget = NoBlockId;
-    return fca;
-  }
-
-  template<typename F>
-  void applyIO(F f) const {
-    uint8_t br[2];
-    br[0] = inoutArgsAndFlags;
-    br[1] = (inoutArgsAndFlags & kInoutMask) >> 8;
-    f(numArgs > 8 ? 2 : 1, br);
-  }
-
-  friend bool operator==(const FCallArgsShort& a, const FCallArgsShort& b) {
-    return
-      a.flags == b.flags && a.numArgs == b.numArgs && a.numRets == b.numRets &&
-      a.inoutArgsAndFlags == b.inoutArgsAndFlags &&
-      a.asyncEagerTarget == b.asyncEagerTarget;
-  }
-  size_t hash() const {
-    uint64_t hash = HPHP::hash_int64_pair(numArgs, numRets);
-    hash = HPHP::hash_int64_pair(hash, flags);
-    if (enforceInOut()) {
-      applyIO(
-        [&] (int numBytes, const uint8_t* br) {
-          auto const s = reinterpret_cast<const char*>(br);
-          auto const hash_br = hash_string_cs(s, numBytes);
-          hash = HPHP::hash_int64_pair(hash, hash_br);
-        }
-      );
-    }
-    hash = HPHP::hash_int64_pair(hash, asyncEagerTarget);
-    return static_cast<size_t>(hash);
-  }
-  bool hasUnpack() const {
-    return flags & Flags::HasUnpack;
-  }
-  bool hasGenerics() const {
-    return flags & Flags::HasGenerics;
-  }
-  bool lockWhileUnwinding() const {
-    return flags & Flags::LockWhileUnwinding;
-  }
-  bool skipRepack() const {
-    return flags & Flags::SkipRepack;
-  }
-  uint32_t numInputs() const {
-    return
-      numArgs +
-      (hasUnpack() ? 1 : 0) +
-      (hasGenerics() ? 1 : 0);
-  }
-  const uint8_t* inoutArgs() const {
-    return enforceInOut() ?
-      reinterpret_cast<const uint8_t*>(&inoutArgsAndFlags) :
-      nullptr;
-  }
-
-  template<int nin>
-  uint32_t numPop() const {
-    return nin + numInputs() + 2 + numRets;
-  }
-  template<int nin, int nobj>
-  Flavor popFlavor(uint32_t i) const {
-    assert(i < this->template numPop<nin>());
-    if (i < nin) return Flavor::C;
-    i -= nin;
-    if (hasGenerics()) {
-      if (i == 0) return Flavor::C;
-      i--;
-    }
-    if (hasUnpack()) {
-      if (i == 0) return Flavor::C;
-      i--;
-    }
-    if (i < numArgs) return Flavor::C;
-    i -= numArgs;
-    if (i == 2 && nobj) return Flavor::C;
-    return Flavor::U;
-  }
-  FCallArgsBase base() const {
-    return FCallArgsBase{flags, numArgs, numRets};
-  }
-};
 
 struct FCallArgsLong : FCallArgsBase {
   explicit FCallArgsLong(uint32_t numArgs)
@@ -377,11 +231,11 @@ struct FCallArgsLong : FCallArgsBase {
   }
   template<int nin>
   uint32_t numPop() const {
-    return nin + numInputs() + 2 + numRets;
+    return nin + numInputs() + 1 + numRets;
   }
   template<int nin, int nobj>
   Flavor popFlavor(uint32_t i) const {
-    assert(i < this->template numPop<nin>());
+    assertx(i < this->template numPop<nin>());
     if (i < nin) return Flavor::C;
     i -= nin;
     if (hasGenerics()) {
@@ -394,7 +248,7 @@ struct FCallArgsLong : FCallArgsBase {
     }
     if (i < numArgs) return Flavor::C;
     i -= numArgs;
-    if (i == 2 && nobj) return Flavor::C;
+    if (i == 1 && nobj) return Flavor::C;
     return Flavor::U;
   }
   FCallArgsBase base() const { return *this; }
@@ -410,30 +264,17 @@ struct FCallArgs {
     : FCallArgs(Flags::None, numArgs, 1, nullptr, NoBlockId, nullptr) {}
   FCallArgs(Flags flags, uint32_t numArgs, uint32_t numRets,
             std::unique_ptr<uint8_t[]> inoutArgs, BlockId asyncEagerTarget,
-            LSString context)
-      : s{FCallArgsShort::create(flags, numArgs, numRets, inoutArgs,
-                                 asyncEagerTarget, context)} {
-    if (!s.valid()) {
-      assertx(!l);
-      l.emplace(flags, numArgs, numRets, std::move(inoutArgs), asyncEagerTarget,
-                context);
-    }
+            LSString context) {
+    raw = 0;
+    l.emplace(flags, numArgs, numRets, std::move(inoutArgs), asyncEagerTarget,
+              context);
   }
-  FCallArgs(const FCallArgsShort& o) : s{o} {}
   FCallArgs(const FCallArgsLong& o) : l{o} {}
   FCallArgs(const FCallArgs& o) : l{} {
-    if (o.s.valid()) {
-      s = o.s;
-    } else {
-      l = o.l;
-    }
+    l = o.l;
   }
   FCallArgs(FCallArgs&& o) : l{} {
-    if (o.s.valid()) {
-      s = std::move(o.s);
-    } else {
-      l = std::move(o.l);
-    }
+    l = std::move(o.l);
   }
   FCallArgs& operator=(const FCallArgs& o) {
     if (raw != o.raw) {
@@ -443,119 +284,103 @@ struct FCallArgs {
     return *this;
   }
   FCallArgs& operator=(FCallArgs&& o) {
-    assertx(IMPLIES(!s.valid(), raw != o.raw));
+    assertx(raw != o.raw);
     this->~FCallArgs();
     new (this) FCallArgs{std::move(o)};
     return *this;
   }
   ~FCallArgs() {
-    if (!s.valid()) l.~copy_ptr();
+    l.~copy_ptr();
   }
 
   bool enforceInOut() const {
-    return s.valid() ? s.enforceInOut() : l->enforceInOut();
+    return l->enforceInOut();
   }
   bool isInOut(uint32_t i) const {
     assertx(enforceInOut());
-    return s.valid() ? s.isInOut(i) : l->isInOut(i);
+    return l->isInOut(i);
   }
 
   FCallArgs withoutGenerics() const {
-    if (s.valid()) return s.withoutGenerics();
     return l->withoutGenerics();
   }
 
   FCallArgs withoutInOut() const {
-    if (s.valid()) return s.withoutInOut();
     return l->withoutInOut();
   }
   FCallArgs withoutLockWhileUnwinding() const {
-    if (s.valid()) return s.withoutLockWhileUnwinding();
     return l->withoutLockWhileUnwinding();
   }
   FCallArgs withoutAsyncEagerTarget() const {
-    if (s.valid()) return s.withoutAsyncEagerTarget();
     return l->withoutAsyncEagerTarget();
   }
   FCallArgs withoutRepack() const {
-    if (s.valid()) return s.withoutRepack();
     return l->withoutRepack();
   }
 
   FCallArgsBase base() const {
-    return s.valid() ? s.base() : l->base();
+    return l->base();
   }
 
   friend bool operator==(const FCallArgs& a, const FCallArgs& b) {
-    if (a.s.valid()) {
-      if (!b.s.valid()) return false;
-      return a.s == b.s;
-    }
-    if (b.s.valid()) return false;
     if (a.l.get() == b.l.get()) return true;
     return *a.l == *b.l;
   }
 
   size_t hash() const {
-    return s.valid() ? s.hash() : l->hash();
+    return l->hash();
   }
 
   uint32_t numArgs() const {
-    return s.valid() ? s.numArgs : l->numArgs;
+    return l->numArgs;
   }
 
   uint32_t numRets() const {
-    return s.valid() ? s.numRets : l->numRets;
+    return l->numRets;
   }
 
   const uint8_t* inoutArgs() const {
-    return s.valid() ? s.inoutArgs() : l->inoutArgs.get();
+    return l->inoutArgs.get();
   }
   template<typename F>
   void applyIO(F f) const {
     assertx(enforceInOut());
-    if (s.valid()) {
-      s.applyIO(f);
-    } else {
-      l->applyIO(f);
-    }
+    l->applyIO(f);
   }
 
   BlockId asyncEagerTarget() const {
-    return s.valid() ? s.asyncEagerTarget : l->asyncEagerTarget;
+    return l->asyncEagerTarget;
   }
   BlockId& asyncEagerTarget() {
-    return s.valid() ? s.asyncEagerTarget : l.mutate()->asyncEagerTarget;
+    return l.mutate()->asyncEagerTarget;
   }
   bool hasUnpack() const {
-    return s.valid() ? s.hasUnpack() : l->hasUnpack();
+    return l->hasUnpack();
   }
   bool hasGenerics() const {
-    return s.valid() ? s.hasGenerics() : l->hasGenerics();
+    return l->hasGenerics();
   }
   bool lockWhileUnwinding() const {
-    return s.valid() ? s.lockWhileUnwinding() : l->lockWhileUnwinding();
+    return l->lockWhileUnwinding();
   }
   uint32_t numInputs() const {
-    return s.valid() ? s.numInputs() : l->numInputs();
+    return l->numInputs();
   }
   bool skipRepack() const {
-    return s.valid() ? s.skipRepack() : l->skipRepack();
+    return l->skipRepack();
   }
   template<int nin>
   uint32_t numPop() const {
-    return s.valid() ? s.template numPop<nin>() : l->template numPop<nin>();
+    return l->template numPop<nin>();
   }
   template<int nin, int nobj>
   Flavor popFlavor(uint32_t i) const {
-    return s.valid() ?
-      s.template popFlavor<nin,nobj>(i) : l->template popFlavor<nin,nobj>(i);
+    return l->template popFlavor<nin,nobj>(i);
   }
-  LSString context() const { return s.valid() ? nullptr : l->context; }
+  LSString context() const { return l->context; }
 private:
   union {
     copy_ptr<FCallArgsLong> l;
-    FCallArgsShort          s;
     uint64_t                raw;
   };
 };
@@ -593,7 +418,8 @@ struct hasher_impl {
   static size_t hash(RepoAuthType rat) { return rat.hash(); }
 
   static size_t hash(MKey mkey) {
-    return HPHP::hash_int64_pair(mkey.mcode, mkey.int64);
+    auto hash = HPHP::hash_int64_pair(mkey.mcode, mkey.int64);
+    return HPHP::hash_int64_pair(hash, (uint64_t)mkey.rop);
   }
 
   template<class T>
@@ -973,34 +799,21 @@ namespace imm {
 
 #define POP_CMANY   uint32_t numPop() const { return arg1; }  \
                     Flavor popFlavor(uint32_t i) const {      \
-                      assert(i < numPop());                   \
+                      assertx(i < numPop());                  \
                       return Flavor::C;                       \
                     }
 
 #define POP_SMANY   uint32_t numPop() const { return keys.size(); }  \
                     Flavor popFlavor(uint32_t i) const {      \
-                      assert(i < numPop());                   \
+                      assertx(i < numPop());                  \
                       return Flavor::C;                       \
                     }
 
 #define POP_CUMANY  uint32_t numPop() const { return arg1; }  \
                     Flavor popFlavor(uint32_t i) const {      \
-                      assert(i < numPop());                   \
+                      assertx(i < numPop());                  \
                       return Flavor::CU;                      \
                     }
-
-#define POP_CMANY_U3                                              \
-                    uint32_t numPop() const { return arg1 + 3; }  \
-                    Flavor popFlavor(uint32_t i) const {          \
-                      assert(i < numPop());                       \
-                      return i < arg1 ? Flavor::C : Flavor::U;    \
-                    }
-
-#define POP_CALLNATIVE uint32_t numPop() const { return arg1 + arg3; }  \
-                       Flavor popFlavor(uint32_t i) const {             \
-                         assert(i < numPop());                          \
-                         return i < arg1 ? Flavor::CU : Flavor::U;     \
-                       }
 
 #define POP_FCALL(nin, nobj)                                                   \
                     uint32_t numPop() const {                                  \
@@ -1018,7 +831,6 @@ namespace imm {
 
 #define PUSH_CMANY        uint32_t numPush() const { return arg1; }
 #define PUSH_FCALL        uint32_t numPush() const { return fca.numRets(); }
-#define PUSH_CALLNATIVE   uint32_t numPush() const { return arg3 + 1; }
 
 #define O(opcode, imms, inputs, outputs, flags) \
   struct opcode {                               \
@@ -1073,7 +885,6 @@ OPCODES
 #undef PUSH_TWO
 #undef PUSH_CMANY
 #undef PUSH_FCALL
-#undef PUSH_CALLNATIVE
 
 #undef POP_UV
 #undef POP_CV
@@ -1089,8 +900,6 @@ OPCODES
 #undef POP_CMANY
 #undef POP_SMANY
 #undef POP_CUMANY
-#undef POP_CMANY_U3
-#undef POP_CALLNATIVE
 #undef POP_FCALL
 
 #undef IMM_TY_MA
@@ -1433,5 +1242,3 @@ auto visit(const Bytecode& b, Visit v) {
 }
 
 }
-
-#endif

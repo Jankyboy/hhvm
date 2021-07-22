@@ -17,7 +17,7 @@
 #include "hphp/runtime/vm/jit/tc-record.h"
 
 #include "hphp/runtime/vm/jit/tc-internal.h"
-#include "hphp/runtime/vm/jit/tc-relocate.h"
+#include "hphp/runtime/vm/jit/tc-region.h"
 
 #include "hphp/runtime/base/init-fini-node.h"
 #include "hphp/runtime/server/http-server.h"
@@ -49,26 +49,20 @@ TRACE_SET_MOD(mcg);
 namespace HPHP { namespace jit { namespace tc {
 
 void recordGdbTranslation(SrcKey sk, const CodeBlock& cb,
-                          const TCA start, const TCA end, bool exit,
-                          bool inPrologue) {
+                          const TCA start, const TCA end) {
   assertx(cb.contains(start, end));
   if (start != end) {
     assertOwnsCodeLock();
     if (!RuntimeOption::EvalJitNoGdb) {
       Debug::DebugInfo::Get()->recordTracelet(
         Debug::TCRange(start, end, &cb == &code().cold()),
-        sk.func(),
-        sk.pc(),
-        exit, inPrologue
+        sk
       );
     }
     if (RuntimeOption::EvalPerfPidMap) {
       Debug::DebugInfo::Get()->recordPerfMap(
         Debug::TCRange(start, end, &cb == &code().cold()),
-        sk,
-        sk.func(),
-        exit,
-        inPrologue
+        sk
       );
     }
   }
@@ -149,7 +143,17 @@ void reportJitMaturity() {
   // When we jit from serialized profile data, aprof is empty. In order to make
   // jit maturity somewhat comparable between the two cases, we pretend to have
   // some profiling code.
-  auto const profSize = std::max(code().prof().used(), hotSize);
+  //
+  // If we've restarted to reload profiling data before RTA, aprof
+  // will be empty. Since hotSize and mainSize will also be zero in
+  // this case, our maturity will sit at 0. To avoid this, we've
+  // recorded the size of aprof before we restarted in the profiling
+  // data. Use that to simulate the size of aprof (this will be zero
+  // if we haven't restarted).
+  auto const profSize = std::max(
+    code().prof().used() + (isJitSerializing() ? ProfData::prevProfSize() : 0),
+    hotSize
+  );
   auto const mainSize = code().main().used();
 
   auto const fullSize = RuntimeOption::EvalJitMatureSize;
@@ -199,7 +203,7 @@ static void logFrame(const Vunit& unit, const size_t frame) {
   auto impl_classes = MAP(f->implCls() ? f->implCls()->name()->data() : "");
   auto base_classes = MAP(f->baseCls() ? f->baseCls()->name()->data() : "");
   auto ctx_classes = MAP(f->cls() ? f->cls()->name()->data() : "");
-  auto files = MAP(f->unit()->filepath()->data());
+  auto files = MAP(f->unit()->origFilepath()->data());
 
 #undef MAP
 
@@ -290,14 +294,13 @@ void logFrames(const Vunit& unit) {
   }
 }
 
-void logTranslation(const TransEnv& env, const TransRange& range) {
-  auto nanos = HPHP::Timer::GetThreadCPUTimeNanos() - env.unit->startNanos();
-  auto& cols = *env.unit->logEntry();
-  auto& context = env.unit->context();
-  auto kind = show(context.kind);
+void logTranslation(const Translator* trans, const TransRange& range) {
+  auto nanos = HPHP::Timer::GetThreadCPUTimeNanos() - trans->unit->startNanos();
+  auto& cols = *trans->unit->logEntry();
+  auto kind = show(trans->kind);
   cols.setStr("trans_kind", !debug ? kind : kind + "_debug");
-  if (context.initSrcKey.valid()) {
-    auto const func = context.initSrcKey.func();
+  if (trans->sk.valid()) {
+    auto const func = trans->sk.func();
     cols.setStr("func", func->fullName()->data());
     switch (RuntimeOption::EvalJitSerdesMode) {
     case JitSerdesMode::Off:
@@ -309,39 +312,41 @@ void logTranslation(const TransEnv& env, const TransRange& range) {
     case JitSerdesMode::DeserializeOrGenerate:
     case JitSerdesMode::DeserializeAndDelete:
     case JitSerdesMode::DeserializeAndExit:
-      cols.setInt("func_id", func->getFuncId());
+      cols.setInt("func_id", func->getFuncId().toInt());
       break;
     }
   }
-  if (context.kind == TransKind::Optimize) {
-    cols.setInt("opt_index", context.optIndex);
+  if (trans->kind == TransKind::Optimize) {
+    auto const regionTrans = dynamic_cast<const RegionTranslator*>(trans);
+    assertx(regionTrans);
+    cols.setInt("opt_index", regionTrans->optIndex);
   }
   cols.setInt("jit_sample_rate", RuntimeOption::EvalJitSampleRate);
   // timing info
   cols.setInt("jit_micros", nanos / 1000);
   // hhir stats
-  cols.setInt("max_tmps", env.unit->numTmps());
-  cols.setInt("max_blocks", env.unit->numBlocks());
-  cols.setInt("max_insts", env.unit->numInsts());
-  auto hhir_blocks = rpoSortCfg(*env.unit);
+  cols.setInt("max_tmps", trans->unit->numTmps());
+  cols.setInt("max_blocks", trans->unit->numBlocks());
+  cols.setInt("max_insts", trans->unit->numInsts());
+  auto hhir_blocks = rpoSortCfg(*trans->unit);
   cols.setInt("num_blocks", hhir_blocks.size());
   size_t num_insts = 0;
   for (auto b : hhir_blocks) num_insts += b->instrs().size();
   cols.setInt("num_insts", num_insts);
   // vasm stats
-  if (env.vunit) {
-    cols.setInt("max_vreg", env.vunit->next_vr);
-    cols.setInt("max_vblocks", env.vunit->blocks.size());
-    cols.setInt("max_vcalls", env.vunit->vcallArgs.size());
+  if (trans->vunit) {
+    cols.setInt("max_vreg", trans->vunit->next_vr);
+    cols.setInt("max_vblocks", trans->vunit->blocks.size());
+    cols.setInt("max_vcalls", trans->vunit->vcallArgs.size());
     size_t max_vinstr = 0;
-    for (auto& blk : env.vunit->blocks) max_vinstr += blk.code.size();
+    for (auto& blk : trans->vunit->blocks) max_vinstr += blk.code.size();
     cols.setInt("max_vinstr", max_vinstr);
-    cols.setInt("num_vconst", env.vunit->constToReg.size());
-    auto vblocks = sortBlocks(*env.vunit);
+    cols.setInt("num_vconst", trans->vunit->constToReg.size());
+    auto vblocks = sortBlocks(*trans->vunit);
     size_t num_vinstr[kNumAreas] = {0, 0, 0};
     size_t num_vblocks[kNumAreas] = {0, 0, 0};
     for (auto b : vblocks) {
-      const auto& block = env.vunit->blocks[b];
+      const auto& block = trans->vunit->blocks[b];
       num_vinstr[(int)block.area_idx] += block.code.size();
       num_vblocks[(int)block.area_idx]++;
     }
@@ -353,7 +358,7 @@ void logTranslation(const TransEnv& env, const TransRange& range) {
     cols.setInt("num_vblocks_frozen", num_vblocks[(int)AreaIndex::Frozen]);
 
     if (RuntimeOption::EvalJitLogAllInlineRegions.empty()) {
-      logFrames(*env.vunit);
+      logFrames(*trans->vunit);
     }
   }
   // x64 stats

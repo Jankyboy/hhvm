@@ -2,7 +2,9 @@
 (* Spec: http://www.jsonrpc.org/specification *)
 (* Practical readbable guide: https://github.com/Microsoft/language-server-protocol/blob/master/protocol.md#base-protocol-json-structures *)
 
-open Hh_core
+open Hh_prelude
+module Queue = Stdlib.Queue
+module Printexc = Stdlib.Printexc
 
 type writer = Hh_json.json -> unit
 
@@ -80,7 +82,8 @@ let internal_run_daemon' (oc : queue_message Daemon.out_channel) : unit =
             let timestamped_json = internal_read_message reader in
             Queue.push timestamped_json messages_to_send;
             true
-          with e ->
+          with
+          | e ->
             let message = Printexc.to_string e in
             let stack = Printexc.get_backtrace () in
             let edata = { Marshal_tools.message; stack } in
@@ -111,8 +114,8 @@ let internal_run_daemon' (oc : queue_message Daemon.out_channel) : unit =
 let internal_run_daemon
     (_dummy_param : unit) (_ic, (oc : queue_message Daemon.out_channel)) =
   Printexc.record_backtrace true;
-  try internal_run_daemon' oc
-  with e ->
+  try internal_run_daemon' oc with
+  | e ->
     (* An exception that's gotten here is not simply a parse error, but
        something else, so we should terminate the daemon at this point. *)
     let message = Printexc.to_string e in
@@ -123,10 +126,11 @@ let internal_run_daemon
          out_fd
          (Fatal_exception { Marshal_tools.message; stack })
        |> ignore
-     with _ ->
-       (* There may be a broken pipe, for example. We should just give up on
+     with
+    | _ ->
+      (* There may be a broken pipe, for example. We should just give up on
          reporting the error. *)
-       ())
+      ())
 
 let internal_entry_point : (unit, unit, queue_message) Daemon.entry =
   Daemon.register_entry_point "Jsonrpc" internal_run_daemon
@@ -140,8 +144,8 @@ let make_queue () : queue =
     Daemon.spawn
       ~channel_mode:`pipe
       (* We don't technically need to inherit stdout or stderr, but this might be
-       useful in the event that we throw an unexpected exception in the daemon.
-       It's also useful for print-statement debugging of the daemon. *)
+         useful in the event that we throw an unexpected exception in the daemon.
+         It's also useful for print-statement debugging of the daemon. *)
       (Unix.stdin, Unix.stdout, Unix.stderr)
       internal_entry_point
       ()
@@ -161,7 +165,8 @@ let read_single_message_into_queue_wait (message_queue : queue) :
           (Lwt_unix.of_unix_file_descr message_queue.daemon_in_fd)
       in
       Lwt.return message
-    with End_of_file as e ->
+    with
+    | (End_of_file | Unix.Unix_error (Unix.EBADF, _, _)) as e ->
       (* This is different from when the client hangs up. It handles the case
          that the daemon process exited: for example, if it was killed. *)
       let message = Printexc.to_string e in
@@ -179,16 +184,16 @@ let rec read_messages_into_queue_no_wait (message_queue : queue) : unit Lwt.t =
     if is_readable then
       (* We're expecting this not to block because we just checked
          to make sure that there's something there. *)
-        let%lwt message = read_single_message_into_queue_wait message_queue in
-        (* Now read any more messages that might be queued up. Only try to read more
+      let%lwt message = read_single_message_into_queue_wait message_queue in
+      (* Now read any more messages that might be queued up. Only try to read more
          messages if the daemon is still available to read from. Otherwise, we may
          infinite loop as a result of `Unix.select` returning that a file
          descriptor is available to read on. *)
-        match message with
-        | Fatal_exception _ -> Lwt.return_unit
-        | _ ->
-          let%lwt () = read_messages_into_queue_no_wait message_queue in
-          Lwt.return_unit
+      match message with
+      | Fatal_exception _ -> Lwt.return_unit
+      | _ ->
+        let%lwt () = read_messages_into_queue_no_wait message_queue in
+        Lwt.return_unit
     else
       Lwt.return_unit
   in

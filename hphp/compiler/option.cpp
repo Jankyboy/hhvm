@@ -63,12 +63,9 @@ std::map<std::string,std::string,stdltistr> Option::AutoloadFuncMap;
 std::map<std::string,std::string> Option::AutoloadConstMap;
 std::string Option::AutoloadRoot;
 
-std::vector<std::string> Option::APCProfile;
-
 bool Option::GenerateTextHHBC = false;
 bool Option::GenerateHhasHHBC = false;
 bool Option::GenerateBinaryHHBC = false;
-std::string Option::RepoCentralPath;
 
 std::string Option::IdPrefix = "$$";
 
@@ -145,7 +142,7 @@ void Option::Load(const IniSetting::Map& ini, Hdf &config) {
       VariableUnserializer uns{
         value.data(), value.size(),
         VariableUnserializer::Type::Internal,
-        false, empty_array()
+        false, empty_dict_array()
       };
       try {
         auto v = uns.unserialize();
@@ -161,10 +158,6 @@ void Option::Load(const IniSetting::Map& ini, Hdf &config) {
 
   {
     // Repo
-    {
-      // Repo Central
-      Config::Bind(RepoCentralPath, ini, config, "Repo.Central.Path");
-    }
     Config::Bind(RuntimeOption::RepoDebugInfo,
                  ini, config, "Repo.DebugInfo",
                  RuntimeOption::RepoDebugInfo);
@@ -183,38 +176,16 @@ void Option::Load(const IniSetting::Map& ini, Hdf &config) {
  Config::Bind(RuntimeOption::EvalCheckPropTypeHints, ini, config,
                "CheckPropTypeHints", RuntimeOption::EvalCheckPropTypeHints);
 
-  Config::Bind(APCProfile, ini, config, "APCProfile");
-
   Config::Bind(RuntimeOption::EnableHipHopSyntax,
                ini, config, "EnableHipHopSyntax",
                RuntimeOption::EnableHipHopSyntax);
   Config::Bind(RuntimeOption::EvalJitEnableRenameFunction,
                ini, config, "JitEnableRenameFunction",
                RuntimeOption::EvalJitEnableRenameFunction);
-  Config::Bind(RuntimeOption::EvalArrayProvenance,
-               ini, config, "ArrayProvenance",
-               RuntimeOption::EvalArrayProvenance);
   Config::Bind(EnableShortTags, ini, config, "EnableShortTags", true);
-
-#define BIND_HAC_OPTION(Name, Def)                      \
-  Config::Bind(RuntimeOption::EvalHackArrCompat##Name,  \
-               ini, config, "HackArrCompat" #Name,      \
-               RuntimeOption::EvalHackArrCompat##Def);
-
-#define BIND_HAC_OPTION_SELF(Name)  BIND_HAC_OPTION(Name, Name)
-
-  BIND_HAC_OPTION_SELF(Notices)
-  BIND_HAC_OPTION(CheckCompare, Notices)
-  BIND_HAC_OPTION_SELF(SerializeNotices)
-  BIND_HAC_OPTION_SELF(CompactSerializeNotices)
-
-#undef BIND_HAC_OPTION_SELF
-#undef BIND_HAC_OPTION
-
-  Config::Bind(RuntimeOption::EvalHackArrDVArrs,
-               ini, config, "HackArrDVArrs",
-               RuntimeOption::EvalHackArrDVArrs);
-
+  Config::Bind(RuntimeOption::EvalHackArrCompatSerializeNotices,
+               ini, config, "HackArrCompatSerializeNotices",
+               RuntimeOption::EvalHackArrCompatSerializeNotices);
   Config::Bind(RuntimeOption::EvalForbidDynamicCallsToFunc,
                ini, config, "ForbidDynamicCallsToFunc",
                RuntimeOption::EvalForbidDynamicCallsToFunc);
@@ -248,9 +219,6 @@ void Option::Load(const IniSetting::Map& ini, Hdf &config) {
     Config::Bind(RuntimeOption::StrictArrayFillKeys, ini, config,
                  "Hack.Lang.StrictArrayFillKeys",
                  RuntimeOption::StrictArrayFillKeys);
-    Config::Bind(RuntimeOption::EnableFirstClassFunctionPointers, ini, config,
-                 "Hack.Lang.EnableFirstClassFunctionPointers",
-                 RuntimeOption::EnableFirstClassFunctionPointers);
   }
 
   Config::Bind(RuntimeOption::EnableXHP, ini, config, "EnableXHP",
@@ -275,6 +243,10 @@ void Option::Load(const IniSetting::Map& ini, Hdf &config) {
 
   // Temporary, during file-cache migration.
   Config::Bind(FileCache::UseNewCache, ini, config, "UseNewCache", false);
+
+  Config::Bind(RuntimeOption::EvalNoticeOnCoerceForBitOp, ini, config,
+               "NoticeOnCoerceForBitOp",
+               RuntimeOption::EvalNoticeOnCoerceForBitOp);
 }
 
 void Option::Load() {

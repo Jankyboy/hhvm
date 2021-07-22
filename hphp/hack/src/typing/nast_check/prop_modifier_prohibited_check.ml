@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2018, Facebook, Inc.
+ * Copyright () 2018, Facebook, Inc.
  * All rights reserved.
  *
  * This source code is licensed under the MIT license found in the
@@ -27,7 +27,18 @@ let error_if_nonstatic_prop_with_lsb cv =
     let lsb_pos =
       Naming_attributes.mem_pos SN.UserAttributes.uaLSB cv.cv_user_attributes
     in
-    Option.iter lsb_pos Errors.nonstatic_property_with_lsb
+    Option.iter lsb_pos ~f:Errors.nonstatic_property_with_lsb
+
+let unnecessary_lsb c cv =
+  let attr = SN.UserAttributes.uaLSB in
+  match Naming_attributes.mem_pos attr cv.cv_user_attributes with
+  | None -> ()
+  | Some pos ->
+    let (pos_class, name_class) = c.c_name in
+    let name_class = Utils.strip_ns name_class in
+    let reason = (pos_class, sprintf "the class `%s` is final" name_class) in
+    let suggestion = None in
+    Errors.unnecessary_attribute pos ~attr ~reason ~suggestion
 
 let handler =
   object
@@ -39,5 +50,6 @@ let handler =
         error_if_nonstatic_prop_with_lsb cv;
         ()
       in
-      List.iter cv.c_vars check_vars
+      List.iter cv.c_vars ~f:check_vars;
+      if cv.c_final then List.iter cv.c_vars ~f:(unnecessary_lsb cv)
   end

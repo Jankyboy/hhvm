@@ -16,10 +16,20 @@
 
 #include "hphp/runtime/vm/fixed-string-map.h"
 
+#include "hphp/runtime/base/execution-context.h"
+#include "hphp/runtime/base/struct-log-util.h"
+
+#include "hphp/runtime/vm/jit/tc.h"
+
+
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
-namespace FSM { const StringData* null_key; }
+namespace FSM {
+
+const StringData* null_key;
+
+} // FSM
 
 ///////////////////////////////////////////////////////////////////////////////
 }

@@ -52,7 +52,6 @@
 #include "hphp/runtime/ext/std/ext_std_function.h"
 #include "hphp/runtime/ext/string/ext_string.h"
 #include "hphp/runtime/server/cli-server.h"
-#include "hphp/runtime/vm/repo.h"
 
 #ifndef _WIN32
 # define MAYBE_WIFEXITED(var) if (WIFEXITED(var)) { var = WEXITSTATUS(var); }
@@ -279,7 +278,7 @@ String HHVM_FUNCTION(exec,
     count--; // remove explode()'s last empty line
   }
 
-  VArrayInit pai(count);
+  VecInit pai(count);
   for (int i = 0; i < count; i++) {
     pai.append(HHVM_FN(rtrim)(lines[i].toString(), "\f\n\r\t\x0b\x00 "));
   }
@@ -683,7 +682,7 @@ static Variant post_proc_open(const String& cmd, Array& pipes,
 
   // need to set pipes to a new empty array, ignoring whatever it was
   // previously set to
-  pipes = Array::CreateDArray();
+  pipes = Array::CreateDict();
 
   for (auto& item : items) {
     Resource f = item.dupParent();
@@ -1026,7 +1025,7 @@ Array HHVM_FUNCTION(proc_get_status,
   }
 #endif
 
-  return make_darray(
+  return make_dict_array(
     s_command,  proc->command,
     s_pid, (int)proc->child,
     s_running,  running,

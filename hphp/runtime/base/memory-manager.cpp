@@ -112,8 +112,6 @@ MemoryManager::MemoryManager() {
   resetAllStats();
   setMemoryLimit(std::numeric_limits<int64_t>::max());
   resetGC(); // so each thread has unique req_num at startup
-  // make the circular-lists empty.
-  m_strings.next = m_strings.prev = &m_strings;
   m_bypassSlabAlloc = RuntimeOption::DisableSmallAllocator;
   m_req_start_micros = HPHP::Timer::GetThreadCPUTimeNanos() / 1000;
   IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_ALL, "zend.enable_gc",
@@ -123,7 +121,7 @@ MemoryManager::MemoryManager() {
 MemoryManager::~MemoryManager() {
   FTRACE(1, "heap-id {} ~MM\n", tl_heap_id);
   // TODO(T20916887): Enable this for one-bit refcounting.
-  if (debug && !one_bit_refcount) {
+  if (debug) {
     // Check that every object in the heap is free.
     forEachHeapObject([&](HeapObject* h, size_t) {
         assert_flog(h->kind() == HeaderKind::Free,
@@ -151,6 +149,7 @@ void MemoryManager::traceStats(const char* event) {
     FTRACE(1, "total {} reset alloc-dealloc {} cur alloc-dealloc {}\n",
            m_stats.totalAlloc, m_resetAllocated - m_resetDeallocated,
            *m_allocated - *m_deallocated);
+    FTRACE(1, "freed on another thread {}\n", m_freedOnOtherThread);
   } else {
     FTRACE(1, "usage: {} capacity: {} peak usage: {} peak capacity: {}\n",
            m_stats.usage(), m_stats.capacity(),
@@ -186,6 +185,7 @@ void MemoryManager::resetAllStats() {
   if (s_statsEnabled) {
     m_resetDeallocated = *m_deallocated;
     m_resetAllocated = *m_allocated;
+    m_freedOnOtherThread = 0;
   }
   traceStats("resetAllStats post");
 }
@@ -205,15 +205,18 @@ void MemoryManager::resetExternalStats() {
   m_enableStatsSync = s_statsEnabled; // false if !use_jemalloc
   if (s_statsEnabled) {
     m_resetDeallocated = *m_deallocated;
-    m_resetAllocated = *m_allocated - m_stats.malloc_cap;
     // By subtracting malloc_cap here, the next call to refreshStatsImpl()
     // will correctly include m_stats.malloc_cap in extUsage and totalAlloc.
+    m_resetAllocated = *m_allocated - m_stats.malloc_cap;
+    // takeCreditForFreeOnOtherThread should not have been used yet
+    assertx(m_freedOnOtherThread == 0);
   }
   traceStats("resetExternalStats post");
 }
 
 void MemoryManager::refreshStatsHelperExceeded() {
   setSurpriseFlag(MemExceededFlag);
+  RID().setRequestOOMFlag();
   m_couldOOM = false;
   if (RuntimeOption::LogNativeStackOnOOM) {
     log_native_stack("Exceeded memory limit");
@@ -258,13 +261,14 @@ void MemoryManager::refreshStatsImpl(MemoryUsageStats& stats) {
     // Since these deltas potentially include memory allocated from another
     // thread but deallocated on this one, it is possible for these numbers to
     // go negative.
-    auto curUsage = curAllocated - curDeallocated;
+    auto curUsage = curAllocated - curDeallocated - m_freedOnOtherThread;
     auto resetUsage = m_resetAllocated - m_resetDeallocated;
 
     FTRACE(1, "heap-id {} Before stats sync: ", tl_heap_id);
     FTRACE(1, "reset alloc-dealloc {} cur alloc-dealloc: {} alloc-change: {} ",
       resetUsage, curUsage, curAllocated - m_resetAllocated);
-    FTRACE(1, "dealloc-change: {} ", curDeallocated - m_resetDeallocated);
+    FTRACE(1, "dealloc-change: {} ",
+      curDeallocated - m_resetDeallocated + m_freedOnOtherThread);
     FTRACE(1, "mm usage {} extUsage {} totalAlloc {} capacity {}\n",
       stats.mmUsage(), stats.extUsage, stats.totalAlloc, stats.capacity());
 
@@ -301,7 +305,7 @@ void MemoryManager::refreshStats() {
   m_lastUsage = usage;
   if (usage > m_usageLimit && m_couldOOM) {
     refreshStatsHelperExceeded();
-  } else if (usage > m_memThresholdCallbackPeakUsage) {
+  } else if (usage >= 0 && usage > m_memThresholdCallbackPeakUsage) {
     m_memThresholdCallbackPeakUsage = SIZE_MAX;
     setSurpriseFlag(MemThresholdFlag);
   }
@@ -359,9 +363,6 @@ void MemoryManager::sweep() {
 
 void MemoryManager::resetAllocator() {
   assertx(m_natives.empty() && m_sweepables.empty() && tl_sweeping);
-  // decref apc strings referenced by this request
-  DEBUG_ONLY auto nstrings = StringData::sweepAll();
-  FTRACE(1, "heap-id {} resetAllocator: strings {}\n", tl_heap_id, nstrings);
 
   // free the heap
   m_heap.reset();
@@ -432,8 +433,7 @@ void MemoryManager::flush() {
  */
 
 constexpr const std::array<char*,NumHeaderKinds> header_names = {{
-  "MixedArray", "BespokeDArray", "PackedArray", "BespokeVArray",
-  "Dict", "BespokeDict", "Vec", "BespokeVec", "Keyset", "BespokeKeyset",
+  "Vec", "BespokeVec", "Dict", "BespokeDict", "Keyset", "BespokeKeyset",
   "String", "Resource", "ClsMeth", "RClsMeth", "Record", "RFunc",
   "Object", "NativeObject", "WaitHandle", "AsyncFuncWH", "AwaitAllWH",
   "Closure", "Vector", "Map", "Set", "Pair", "ImmVector", "ImmMap", "ImmSet",
@@ -502,7 +502,7 @@ void MemoryManager::endQuarantine(FreelistArray&& list) {
 void MemoryManager::checkHeap(const char* phase) {
   size_t bytes=0;
   std::vector<HeapObject*> hdrs;
-  PtrMap<HeapObject*> free_blocks, apc_arrays, apc_strings;
+  PtrMap<HeapObject*> free_blocks;
   size_t counts[NumHeaderKinds];
   for (unsigned i=0; i < NumHeaderKinds; i++) counts[i] = 0;
   forEachHeapObject([&](HeapObject* h, size_t alloc_size) {
@@ -514,17 +514,11 @@ void MemoryManager::checkHeap(const char* phase) {
       case HeaderKind::Free:
         free_blocks.insert(h, alloc_size);
         break;
-      case HeaderKind::String:
-        if (static_cast<StringData*>(h)->isProxy()) {
-          apc_strings.insert(h, alloc_size);
-        }
-        break;
-      case HeaderKind::Packed:
-      case HeaderKind::Mixed:
       case HeaderKind::Vec:
       case HeaderKind::Dict:
       case HeaderKind::Keyset:
       case HeaderKind::Object:
+      case HeaderKind::String:
       case HeaderKind::NativeObject:
       case HeaderKind::WaitHandle:
       case HeaderKind::AsyncFuncWH:
@@ -548,8 +542,6 @@ void MemoryManager::checkHeap(const char* phase) {
       case HeaderKind::SmallMalloc:
       case HeaderKind::BigMalloc:
       case HeaderKind::Record:
-      case HeaderKind::BespokeVArray:
-      case HeaderKind::BespokeDArray:
       case HeaderKind::BespokeVec:
       case HeaderKind::BespokeDict:
       case HeaderKind::BespokeKeyset:
@@ -572,18 +564,6 @@ void MemoryManager::checkHeap(const char* phase) {
     }
   }
   assertx(num_free_blocks == free_blocks.size());
-
-  // check the apc string list
-  size_t num_apc_strings = 0;
-  apc_strings.prepare();
-  for (StringDataNode *next, *n = m_strings.next; n != &m_strings; n = next) {
-    next = n->next;
-    UNUSED auto const s = StringData::node2str(n);
-    assertx(s->isProxy());
-    assertx(apc_strings.isStart(s));
-    ++num_apc_strings;
-  }
-  assertx(num_apc_strings == apc_strings.size());
 
   // heap check is done. If we are not exiting, check pointers using HeapGraph
   if (Trace::moduleEnabled(Trace::heapreport)) {
@@ -1027,6 +1007,7 @@ Sweepable::Sweepable() {
 
 void MemoryManager::resetCouldOOM(bool state) {
   clearSurpriseFlag(MemExceededFlag);
+  RID().clearRequestOOMFlag();
   m_couldOOM = state;
 }
 

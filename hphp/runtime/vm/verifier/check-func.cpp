@@ -20,12 +20,14 @@
 #include "hphp/runtime/vm/verifier/util.h"
 #include "hphp/runtime/vm/verifier/pretty.h"
 
+#include "hphp/runtime/base/coeffects-config.h"
 #include "hphp/runtime/base/mixed-array.h"
 #include "hphp/runtime/base/repo-auth-type-codec.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/type-structure-helpers.h"
+#include "hphp/runtime/vm/coeffects.h"
 #include "hphp/runtime/vm/native.h"
-#include "hphp/runtime/vm/rx.h"
+#include "hphp/runtime/vm/preclass-emitter.h"
 
 #include <folly/Range.h>
 
@@ -50,13 +52,14 @@ struct State {
   bool* iters{};      // defined/not-defined state of each iter var.
   int stklen{0};       // length of evaluation stack.
   bool mbr_live{false};    // liveness of member base register
-  folly::Optional<MOpMode> mbr_mode; // mode of member base register
+  Optional<MOpMode> mbr_mode; // mode of member base register
   boost::dynamic_bitset<> silences; // set of silenced local variables
   bool guaranteedThis; // whether $this is guaranteed to be non-null
   // immediately following BaseL or BaseH in a minstr sequence, when the base
   // was known to be Rx mutable
   bool mbrMustContainMutableLocalOrThis;
   bool afterDim; // has there been a Dim in the current minstr seqence
+  bool afterCheckROCOW; // has there been an instruction with CheckROCOW
 };
 
 /**
@@ -72,6 +75,7 @@ struct FuncChecker {
   bool checkOffsets();
   bool checkFlow();
   bool checkDef();
+  bool checkInfo();
 
  private:
   struct unknown_length : std::runtime_error {
@@ -102,13 +106,16 @@ struct FuncChecker {
   bool checkInputs(State* cur, PC, Block* b);
   bool checkOutputs(State* cur, PC, Block* b);
   bool checkRxOp(State* cur, PC, Op, bool);
+  bool checkReadOnlyOp(State* cur, PC, Op);
   bool checkSig(PC pc, int len, const FlavorDesc* args, const FlavorDesc* sig);
   bool checkTerminal(State* cur, Op op, Block* b);
   bool checkIter(State* cur, PC pc);
   bool checkLocal(PC pc, int val);
+  bool checkArray(PC pc, Id id);
   bool checkString(PC pc, Id id);
   bool checkExnEdge(State cur, Op op, Block* b);
   bool checkItersDead(const State& cur, Op op, Block* b, const char* info);
+  bool readOnlyImmNotSupported(ReadOnlyOp rop, Op op);
   void reportStkUnderflow(Block*, const State& cur, PC);
   void reportStkOverflow(Block*, const State& cur, PC);
   void reportStkMismatch(Block* b, Block* target, const State& cur);
@@ -121,8 +128,8 @@ struct FuncChecker {
   void copyState(State* to, const State* from);
   void initState(State* s);
   const FlavorDesc* sig(PC pc);
-  Offset offset(PC pc) const { return pc - unit()->bc(); }
-  PC at(Offset off) const { return unit()->bc() + off; }
+  Offset offset(PC pc) const { return pc - m_func->bc(); }
+  PC at(Offset off) const { return m_func->bc() + off; }
   int maxStack() const { return m_func->maxStackCells; }
   int numIters() const { return m_func->numIterators(); }
   int numLocals() const { return m_func->numLocals(); }
@@ -155,6 +162,8 @@ struct FuncChecker {
   ErrorMode m_errmode;
   FlavorDesc* m_tmp_sig;
   Id m_last_rpo_id; // rpo_id of the last block visited
+  bool m_verify_pure;
+  bool m_verify_rx;
 };
 
 const StaticString s_invoke("__invoke");
@@ -210,7 +219,8 @@ bool checkFunc(const FuncEmitter* func, ErrorMode mode) {
     }
   }
   FuncChecker v(func, mode);
-  return v.checkDef() &&
+  return v.checkInfo() &&
+         v.checkDef() &&
          v.checkOffsets() &&
          v.checkFlow();
 }
@@ -263,8 +273,19 @@ bool mayTakeExnEdges(Op op) {
 FuncChecker::FuncChecker(const FuncEmitter* f, ErrorMode mode)
 : m_func(f)
 , m_graph(0)
-, m_instrs(m_arena, f->past - f->base + 1)
+, m_instrs(m_arena, f->bcPos() + 1)
 , m_errmode(mode) {
+  auto& coeffects = f->staticCoeffects;
+  auto const isPureBody =
+    std::any_of(coeffects.begin(), coeffects.end(), CoeffectsConfig::isPure);
+  auto const isRxBody =
+    std::any_of(coeffects.begin(), coeffects.end(), CoeffectsConfig::isAnyRx);
+  m_verify_rx = (RuntimeOption::EvalRxVerifyBody > 0) &&
+                isRxBody &&
+                // defer this to next check
+                !isPureBody;
+  m_verify_pure = (RuntimeOption::EvalPureVerifyBody > 0) &&
+                  isPureBody;
 }
 
 FuncChecker::~FuncChecker() {
@@ -286,6 +307,44 @@ Offset findSection(SectionMap& sections, Offset off) {
   SectionMap::iterator i = sections.upper_bound(off);
   --i;
   return i->first;
+}
+
+const StaticString s_reified("__Reified");
+const StaticString s_reified_var("0ReifiedGenerics");
+const StaticString s_coeffects_var("0Coeffects");
+
+bool FuncChecker::checkInfo() {
+  if (numLocals() > std::numeric_limits<uint16_t>::max()) {
+    error("too many locals: %d", numLocals());
+    return false;
+  }
+  if (numIters() > std::numeric_limits<uint16_t>::max()) {
+    error("too many iterators: %d", numIters());
+    return false;
+  }
+
+  auto const it = m_func->userAttributes.find(s_reified.get());
+  auto const hasReifiedGenerics = it != m_func->userAttributes.end();
+
+  if (hasReifiedGenerics) {
+    auto const localId = m_func->lookupVarId(s_reified_var.get());
+    if (localId != m_func->params.size()) {
+      ferror("functions with reified generics must have the first non parameter"
+             " local to be reified generics local");
+      return false;
+    }
+  }
+  if (!m_func->coeffectRules.empty() &&
+      !(m_func->coeffectRules.size() == 1 &&
+        m_func->coeffectRules[0].isGeneratorThis())) {
+    auto const localId = m_func->lookupVarId(s_coeffects_var.get());
+    if (localId != m_func->params.size() + (hasReifiedGenerics ? 1 : 0)) {
+      ferror("functions with coeffect rules must have the first non parameter"
+             " local (also after reified generics local) to be coeffects local");
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -312,10 +371,10 @@ bool FuncChecker::checkDef() {
  */
 bool FuncChecker::checkOffsets() {
   bool ok = true;
-  assertx(unit()->bcPos() >= 0);
-  Offset base = m_func->base;
-  Offset past = m_func->past;
-  checkRegion("func", base, past, "unit", 0, unit()->bcPos(), false);
+  assertx(m_func->bcPos() >= 0);
+  Offset base = 0;
+  Offset past = m_func->bcPos();
+  checkRegion("func", base, past, "unit", 0, past, false);
   // Get instruction boundaries and check branches within primary body
   ok &= checkPrimaryBody(base, past);
   // DV entry points must be in the primary function body
@@ -337,7 +396,7 @@ bool FuncChecker::checkPrimaryBody(Offset base, Offset past) {
   bool ok = true;
   typedef std::list<PC> BranchList;
   BranchList branches;
-  PC bc = unit()->bc();
+  PC bc = m_func->bc();
   // Find instruction boundaries and branch instructions.
   for (InstrRange i(at(base), at(past)); !i.empty();) {
     auto pc = i.popFront();
@@ -347,7 +406,7 @@ bool FuncChecker::checkPrimaryBody(Offset base, Offset past) {
              opcodeToName(op), offset(pc));
       return false;
     }
-    m_instrs.set(offset(pc) - m_func->base);
+    m_instrs.set(offset(pc));
     if (!instrJumpTargets(bc, offset(pc)).empty()) {
       if (op == OpSwitch && getImm(pc, 0).u_IVA == int(SwitchKind::Bounded)) {
         int64_t switchBase = getImm(pc, 1).u_I64A;
@@ -415,11 +474,19 @@ bool FuncChecker::checkLocal(PC pc, int k) {
 }
 
 bool FuncChecker::checkString(PC /*pc*/, Id id) {
-  if (!isUnitLitstrId(id)) {
+  if (!isUnitId(id)) {
     return LitstrTable::get().contains(id);
   }
-  auto unitID = decodeUnitLitstrId(id);
+  auto unitID = decodeUnitId(id);
   return unitID < unit()->numLitstrs();
+}
+
+bool FuncChecker::checkArray(PC /*pc*/, Id id) {
+  if (!isUnitId(id)) {
+    return LitarrayTable::get().contains(id);
+  }
+  auto unitID = decodeUnitId(id);
+  return unitID < unit()->numArrays();
 }
 
 bool FuncChecker::checkImmVec(PC& pc, size_t elemSize) {
@@ -507,7 +574,7 @@ bool FuncChecker::checkImmSA(PC& pc, PC const /*instr*/) {
 
 bool FuncChecker::checkImmAA(PC& pc, PC const /*instr*/) {
   auto const id = decodeId(&pc);
-  if (id < 0 || id >= (Id)unit()->numArrays()) {
+  if (!checkArray(pc, id)) {
     error("invalid array id %d\n", id);
     return false;
   }
@@ -522,7 +589,7 @@ bool FuncChecker::checkImmRATA(PC& pc, PC const /*instr*/) {
 
 bool FuncChecker::checkImmBA(PC& pc, PC const instr) {
   // we check branch offsets in checkPrimaryBody(). ignore here.
-  assertx(!instrJumpTargets(unit()->bc(), offset(instr)).empty());
+  assertx(!instrJumpTargets(m_func->bc(), offset(instr)).empty());
   pc += sizeof(Offset);
   return true;
 }
@@ -553,7 +620,7 @@ bool FuncChecker::checkImmOAImpl(PC& pc, PC const /*instr*/) {
   return true;
 }
 
-bool FuncChecker::checkImmKA(PC& pc, PC const /*instr*/) {
+bool FuncChecker::checkImmKA(PC& pc, PC const instr) {
   static_assert(
       std::is_unsigned<typename std::underlying_type<MemberCode>::type>::value,
       "MemberCode is expected to be unsigned.");
@@ -564,6 +631,7 @@ bool FuncChecker::checkImmKA(PC& pc, PC const /*instr*/) {
     return false;
   }
 
+  ReadOnlyOp rop = ReadOnlyOp::Any;
   auto ok = true;
   switch (mcode) {
     case MW:
@@ -572,18 +640,48 @@ bool FuncChecker::checkImmKA(PC& pc, PC const /*instr*/) {
       decode_iva(pc);
       auto const loc = decode_iva(pc);
       ok &= checkLocal(pc, loc);
+      rop = decode_oa<ReadOnlyOp>(pc);
       break;
     }
     case MEC: case MPC:
       decode_iva(pc);
+      rop = decode_oa<ReadOnlyOp>(pc);
       break;
     case MEI:
       pc += sizeof(int64_t);
+      rop = decode_oa<ReadOnlyOp>(pc);
       break;
     case MET: case MPT: case MQT:
       auto const id = decode_raw<Id>(pc);
       ok &= checkString(pc, id);
+      rop = decode_oa<ReadOnlyOp>(pc);
       break;
+  }
+
+  auto const op = peek_op(instr);
+  switch (op) {
+    case Op::Dim:
+      if (rop == ReadOnlyOp::ReadOnly) return readOnlyImmNotSupported(rop, op);
+      break;
+    case Op::QueryM:
+      if (rop != ReadOnlyOp::Mutable && rop != ReadOnlyOp::Any) {
+        return readOnlyImmNotSupported(rop, op);
+      }
+      break;
+    case Op::SetM:
+      if (rop != ReadOnlyOp::ReadOnly && rop != ReadOnlyOp::Any) {
+        return readOnlyImmNotSupported(rop, op);
+      }
+      break;
+    case Op::SetRangeM:
+    case Op::IncDecM:
+    case Op::SetOpM:
+    case Op::UnsetM:
+      if (rop != ReadOnlyOp::Any) return readOnlyImmNotSupported(rop, op);
+      break;
+    default:
+      always_assert(false);
+      return false;
   }
 
   return ok;
@@ -705,8 +803,6 @@ const FlavorDesc* FuncChecker::sig(PC pc) {
   static const FlavorDesc inputSigs[][kMaxHhbcImms] = {
   #define NOV { },
   #define CUMANY { },
-  #define CMANY_U3 { },
-  #define CALLNATIVE { },
   #define FCALL(nin, nobj) { nobj ? CV : UV },
   #define CMANY { },
   #define SMANY { },
@@ -724,8 +820,6 @@ const FlavorDesc* FuncChecker::sig(PC pc) {
   #undef MFINAL
   #undef C_MFINAL
   #undef CUMANY
-  #undef CMANY_U3
-  #undef CALLNATIVE
   #undef FCALL
   #undef CMANY
   #undef SMANY
@@ -764,7 +858,6 @@ const FlavorDesc* FuncChecker::sig(PC pc) {
     for (int i = 0; i < fca.numRets - 1; ++i) m_tmp_sig[idx++] = UV;
     m_tmp_sig[idx++] = inputSigs[size_t(peek_op(pc))][0];
     m_tmp_sig[idx++] = UV;
-    m_tmp_sig[idx++] = UV;
     for (int i = 0; i < fca.numArgs; ++i) m_tmp_sig[idx++] = CV;
     if (fca.hasUnpack()) m_tmp_sig[idx++] = CV;
     if (fca.hasGenerics()) m_tmp_sig[idx++] = CV;
@@ -772,29 +865,14 @@ const FlavorDesc* FuncChecker::sig(PC pc) {
     while (idx < numPops) m_tmp_sig[idx++] = CV;
     return m_tmp_sig;
   }
-  case Op::FCallBuiltin: { //TWO(IVA, SA), CALLNATIVE,  CALLNATIVE
-    auto const nargs = getImm(pc, 0).u_IVA;
-    auto const nout  = getImm(pc, 2).u_IVA;
-    assertx(instrNumPops(pc) == nargs + nout);
-    for (int i = 0; i < nout; ++i) {
-      m_tmp_sig[i] = UV;
-    }
-    for (int i = nout; i < nargs + nout; i++) {
-      m_tmp_sig[i] = CUV;
-    }
-    return m_tmp_sig;
-  }
   case Op::CreateCl:  // TWO(IVA,SA),  CUMANY,   ONE(CV)
-  case Op::PopFrame:  // ONE(IVA),     CMANY_U3, CMANY
     for (int i = 0, n = instrNumPops(pc); i < n; ++i) {
       m_tmp_sig[i] = CUV;
     }
     return m_tmp_sig;
-  case Op::NewStructDArray: // ONE(VSA),     SMANY,   ONE(CV)
   case Op::NewStructDict:   // ONE(VSA),     SMANY,   ONE(CV)
   case Op::NewVec:          // ONE(IVA),     CMANY,   ONE(CV)
   case Op::NewKeysetArray:  // ONE(IVA),     CMANY,   ONE(CV)
-  case Op::NewVArray:       // ONE(IVA),     CMANY,   ONE(CV)
   case Op::NewRecord:       // TWO(SA,VSA),  SMANY,   ONE(CV)
   case Op::ConcatN:         // ONE(IVA),     CMANY,   ONE(CV)
   case Op::CombineAndResolveTypeStruct:
@@ -836,6 +914,8 @@ bool FuncChecker::checkMemberKey(State* cur, PC pc, Op op) {
   }
 
   uint32_t iva = 0;
+  ReadOnlyOp rop = ReadOnlyOp::Any;
+
   switch (mcode) {
     case MET: case MPT: case MQT: {
       auto const id = decode_raw<Id>(pc);
@@ -844,18 +924,30 @@ bool FuncChecker::checkMemberKey(State* cur, PC pc, Op op) {
               opcodeToName(op));
         return false;
       }
+      rop = decode_oa<ReadOnlyOp>(pc);
       break;
     }
 
-    case MEC: case MPC: iva = decode_iva(pc); break;
-    case MEL: case MPL: decode_iva(pc); decode_iva(pc); break;
-    case MEI:                               decode_raw<int64_t>(pc); break;
-    case MW:                                break;
+    case MEC: case MPC:
+      iva = decode_iva(pc);
+      rop = decode_oa<ReadOnlyOp>(pc);
+      break;
+    case MEL: case MPL:
+      decode_iva(pc);
+      decode_iva(pc);
+      rop = decode_oa<ReadOnlyOp>(pc);
+      break;
+    case MEI:
+      decode_raw<int64_t>(pc);
+      rop = decode_oa<ReadOnlyOp>(pc);
+      break;
+    case MW:
+      break;
   }
 
   if ((mcode == MemberCode::MEC || mcode == MemberCode::MPC) &&
       iva + 1 > cur->stklen) {
-    MemberKey key{mcode, static_cast<int32_t>(iva)};
+    MemberKey key{mcode, static_cast<int32_t>(iva), rop};
     error("Member Key %s in op %s has stack offset greater than stack"
           " depth %d\n", show(key).c_str(), opcodeToName(op), cur->stklen);
     return false;
@@ -883,7 +975,7 @@ bool FuncChecker::checkInputs(State* cur, PC pc, Block* b) {
   }
 
   if (cur->mbr_live && isMemberOp(op)) {
-    folly::Optional<MOpMode> op_mode;
+    Optional<MOpMode> op_mode;
     auto new_pc = pc;
     if (op == Op::QueryM) {
       decode_op(new_pc);
@@ -1052,7 +1144,7 @@ std::set<int> localIds(Op op, PC pc) {
 
 const StaticString
   s_implicit_context_set("HH\\ImplicitContext::set"),
-  s_implicit_context_genSet("HH\\ImplicitContext::genSet");
+  s_implicit_context_setAsync("HH\\ImplicitContext::setAsync");
 
 bool FuncChecker::checkOp(State* cur, PC pc, Op op, Block* b, PC prev_pc) {
   switch (op) {
@@ -1143,26 +1235,16 @@ bool FuncChecker::checkOp(State* cur, PC pc, Op op, Block* b, PC prev_pc) {
       }
       break;
     }
-    case Op::Array: {
-      auto const id = getImm(pc, 0).u_AA;
-      if (id < 0 || id >= unit()->numArrays()) {
-        ferror("Array references array data that is not an Array\n");
-        return false;
-      }
-      auto const dt = unit()->lookupArray(id)->toDataType();
-      if (!isArrayType(dt)) {
-        ferror("Array references array data that is a {}\n", dt);
-        return false;
-      }
-      break;
-    }
     #define O(name) \
     case Op::name: { \
       auto const id = getImm(pc, 0).u_AA; \
-      if (id < 0 || id >= unit()->numArrays()) { \
+      if (!checkArray(pc, id)) { \
         ferror("{} references array data that is not a \n", \
                 #name, #name); \
         return false; \
+      } \
+      if (!LitarrayTable::canRead()) { \
+        break; \
       } \
       auto const dt = unit()->lookupArray(id)->toDataType(); \
       if (dt != KindOf##name) { \
@@ -1181,7 +1263,7 @@ bool FuncChecker::checkOp(State* cur, PC pc, Op op, Block* b, PC prev_pc) {
         m_func && m_func->pce() ? "::" : "",
         m_func ? m_func->name->data() : "");
       if (name != s_implicit_context_set.get()->toCppString() &&
-          name != s_implicit_context_genSet.get()->toCppString() &&
+          name != s_implicit_context_setAsync.get()->toCppString() &&
           !m_func->isMemoizeWrapper) {
         ferror("GetMemoKeyL can only appear within memoize wrappers and"
                " implicit context setters\n");
@@ -1315,7 +1397,6 @@ bool FuncChecker::checkOp(State* cur, PC pc, Op op, Block* b, PC prev_pc) {
       cur->silences.clear();
       break;
 
-    case Op::NewVArray:
     case Op::NewVec:
     case Op::NewKeysetArray: {
       auto new_pc = pc;
@@ -1346,11 +1427,14 @@ bool FuncChecker::checkOp(State* cur, PC pc, Op op, Block* b, PC prev_pc) {
       auto const fca = getImm(pc, 0).u_FCA;
       if (prev_pc && fca.hasGenerics()) {
         auto const prev_op = peek_op(prev_pc);
-        if (prev_op == Op::Array || prev_op == Op::Vec) {
+        if (prev_op == Op::Vec) {
           auto const id = getImm(prev_pc, 0).u_AA;
-          if (id < 0 || id >= unit()->numArrays()) {
+          if (!checkArray(prev_pc, id)) {
             ferror("Generics passed to {} don't exist\n", opcodeToName(op));
             return false;
+          }
+          if (!LitarrayTable::canRead()) {
+            break;
           }
           auto const arr = unit()->lookupArray(id);
           if (doesTypeStructureContainTUnresolved(arr)) {
@@ -1360,6 +1444,24 @@ bool FuncChecker::checkOp(State* cur, PC pc, Op op, Block* b, PC prev_pc) {
             return false;
           }
         }
+      }
+      break;
+    }
+    case Op::SetS: {
+      auto new_pc = pc;
+      decode_op(new_pc);
+      auto const rop = decode_oa<ReadOnlyOp>(new_pc);
+      if (rop != ReadOnlyOp::ReadOnly && rop != ReadOnlyOp::Any) {
+        return readOnlyImmNotSupported(rop, op);
+      }
+      break;
+    }
+    case Op::CGetS: {
+      auto new_pc = pc;
+      decode_op(new_pc);
+      auto const rop = decode_oa<ReadOnlyOp>(new_pc);
+      if (rop != ReadOnlyOp::Mutable && rop != ReadOnlyOp::Any) {
+        return readOnlyImmNotSupported(rop, op);
       }
       break;
     }
@@ -1387,7 +1489,6 @@ bool FuncChecker::checkOutputs(State* cur, PC pc, Block* b) {
   #define NOV { },
   #define CMANY { },
   #define FCALL { },
-  #define CALLNATIVE { },
   #define ONE(a) { a },
   #define TWO(a,b) { a, b },
   #define THREE(a,b,c) { a, b, c },
@@ -1413,9 +1514,7 @@ bool FuncChecker::checkOutputs(State* cur, PC pc, Block* b) {
   if (cur->stklen + pushes > maxStack()) reportStkOverflow(b, *cur, pc);
   FlavorDesc *outs = &cur->stk[cur->stklen];
   cur->stklen += pushes;
-  if (op == OpPopFrame) {
-    for (int i = 0; i < pushes; ++i) outs[i] = outs[i + 3];
-  } else if (isFCall(op) || op == OpFCallBuiltin) {
+  if (isFCall(op)) {
     for (int i = 0; i < pushes; ++i) {
       outs[i] = CV;
     }
@@ -1442,6 +1541,80 @@ bool FuncChecker::checkOutputs(State* cur, PC pc, Block* b) {
   return ok;
 }
 
+bool FuncChecker::readOnlyImmNotSupported(ReadOnlyOp rop, Op op) {
+  ferror("{} immediate not supported on {}.\n",
+    subopToName(rop), opcodeToName(op));
+  return false;
+}
+
+bool FuncChecker::checkReadOnlyOp(State* cur, PC pc, Op op) {
+  auto const isPropFlavor = [&](MemberCode mcode) {
+    switch (mcode) {
+      case MEL: case MEC: case MET: case MEI: case MW:
+        return false;
+      case MPL: case MPC: case MPT: case MQT:
+        return true;
+    }
+    not_reached();
+  };
+
+  auto new_pc = pc;
+  if (isMemberBaseOp(op)) {
+    if (op == Op::BaseSC) {
+      decode_op(new_pc);
+      decode_iva(new_pc);
+      decode_iva(new_pc);
+      decode_oa<MOpMode>(new_pc);
+      auto const rop = decode_oa<ReadOnlyOp>(new_pc);
+      if (rop == ReadOnlyOp::ReadOnly) return readOnlyImmNotSupported(rop, op);
+      cur->afterCheckROCOW = decode_oa<ReadOnlyOp>(new_pc) == ReadOnlyOp::CheckROCOW;
+      return true;
+    } else {
+      cur->afterCheckROCOW = false;
+      return true;
+    }
+  } else if (isMemberDimOp(op)) {
+    decode_op(new_pc);
+    decode_oa<MOpMode>(new_pc);
+    auto const mcode = decode_raw<MemberCode>(new_pc);
+    switch (mcode) {
+      case MW:
+        return true;
+      case MEL: case MPL: {
+        decode_iva(new_pc);
+        decode_iva(new_pc);
+        break;
+      }
+      case MEC: case MPC: {
+        decode_iva(new_pc);
+        break;
+      }
+      case MEI: {
+        new_pc += sizeof(int64_t);
+        break;
+      }
+      case MET: case MPT: case MQT:
+        decode_raw<Id>(new_pc);
+        break;
+    }
+    auto const is_prop_flavor = isPropFlavor(mcode);
+    if (is_prop_flavor && cur->afterCheckROCOW) {
+      ferror("CheckROCOW must only appear on the last prop access.\n");
+      return false;
+    }
+    if (decode_oa<ReadOnlyOp>(new_pc) == ReadOnlyOp::CheckROCOW) {
+      if (!is_prop_flavor) {
+        ferror("Only property-flavored member keys may be marked CheckROCOW.\n");
+        return false;
+      } else {
+        cur->afterCheckROCOW = true;
+      }
+    }
+  }
+  return true;
+}
+
+
 bool FuncChecker::checkRxOp(State* cur, PC pc, Op op, bool pure) {
   const auto type = pure ? "Pure" : "Rx";
   const auto is_enforcement_below_failure = pure
@@ -1467,18 +1640,14 @@ bool FuncChecker::checkRxOp(State* cur, PC pc, Op op, bool pure) {
     case Op::Int:
     case Op::Double:
     case Op::String:
-    case Op::Array:
     case Op::Dict:
     case Op::Keyset:
     case Op::Vec:
     case Op::NewDictArray:
     case Op::NewRecord:
-    case Op::NewStructDArray:
     case Op::NewStructDict:
     case Op::NewVec:
     case Op::NewKeysetArray:
-    case Op::NewVArray:
-    case Op::NewDArray:
     case Op::AddElemC:
     case Op::AddNewElemC:
     case Op::NewCol:
@@ -1491,6 +1660,7 @@ bool FuncChecker::checkRxOp(State* cur, PC pc, Op op, bool pure) {
     case Op::CnsE:
     case Op::ClsCns:
     case Op::ClsCnsD:
+    case Op::ClsCnsL:
     case Op::File:
     case Op::Dir:
     case Op::Method:
@@ -1509,7 +1679,6 @@ bool FuncChecker::checkRxOp(State* cur, PC pc, Op op, bool pure) {
     case Op::Div:
     case Op::Mod:
     case Op::Pow:
-    case Op::Xor:
     case Op::Not:
     case Op::Same:
     case Op::NSame:
@@ -1536,8 +1705,6 @@ bool FuncChecker::checkRxOp(State* cur, PC pc, Op op, bool pure) {
     case Op::CastDict:
     case Op::CastKeyset:
     case Op::CastVec:
-    case Op::CastVArray:
-    case Op::CastDArray:
     case Op::DblAsBits:
     case Op::RaiseClassStringConversionWarning:
 
@@ -1568,7 +1735,6 @@ bool FuncChecker::checkRxOp(State* cur, PC pc, Op op, bool pure) {
     case Op::PopC:
     case Op::PopU:
     case Op::PopU2:
-    case Op::PopFrame:
     case Op::PopL:
     case Op::CGetL:
     case Op::CGetQuietL:
@@ -1584,13 +1750,14 @@ bool FuncChecker::checkRxOp(State* cur, PC pc, Op op, bool pure) {
     case Op::AKExists:
     case Op::Idx:
     case Op::ArrayIdx:
+    case Op::ArrayMarkLegacy:
+    case Op::ArrayUnmarkLegacy:
       return true;
 
     // this
     case Op::This:
     case Op::BareThis:
     case Op::CheckThis:
-    case Op::InitThisLoc:
       return true;
 
     // classes and related
@@ -1600,6 +1767,7 @@ bool FuncChecker::checkRxOp(State* cur, PC pc, Op op, bool pure) {
     case Op::ClassGetC:
     case Op::ClassGetTS:
     case Op::ClassName:
+    case Op::LazyClassFromClass:
     case Op::OODeclExists:
       return true;
 
@@ -1629,7 +1797,7 @@ bool FuncChecker::checkRxOp(State* cur, PC pc, Op op, bool pure) {
       return true;
 
     // function calling and object construction
-    case Op::FCallBuiltin:
+    case Op::Clone:
     case Op::FCallClsMethod:
     case Op::FCallClsMethodD:
     case Op::FCallClsMethodS:
@@ -1828,7 +1996,6 @@ bool FuncChecker::checkRxOp(State* cur, PC pc, Op op, bool pure) {
     // unsafe: misc
     case Op::CheckProp:
     case Op::InitProp:
-    case Op::Clone: // only unsafe because of __clone, we may revisit this
     case Op::Exit:
     case Op::Eval:
     case Op::Print:
@@ -1897,6 +2064,7 @@ void FuncChecker::initState(State* s) {
   s->guaranteedThis = m_func->pce() && !(m_func->attrs & AttrStatic);
   s->mbrMustContainMutableLocalOrThis = false;
   s->afterDim = false;
+  s->afterCheckROCOW = false;
 }
 
 void FuncChecker::copyState(State* to, const State* from) {
@@ -1911,6 +2079,7 @@ void FuncChecker::copyState(State* to, const State* from) {
   to->guaranteedThis = from->guaranteedThis;
   to->mbrMustContainMutableLocalOrThis = from->mbrMustContainMutableLocalOrThis;
   to->afterDim = from->afterDim;
+  to->afterCheckROCOW = from->afterCheckROCOW;
 }
 
 bool FuncChecker::checkExnEdge(State cur, Op op, Block* b) {
@@ -1935,13 +2104,6 @@ bool FuncChecker::checkExnEdge(State cur, Op op, Block* b) {
 
 bool FuncChecker::checkBlock(State& cur, Block* b) {
   bool ok = true;
-  auto const verify_rx = (RuntimeOption::EvalRxVerifyBody > 0) &&
-                         funcAttrIsAnyRx(m_func->attrs) &&
-                         // defer this to next check
-                         !funcAttrIsPure(m_func->attrs) &&
-                         !m_func->isRxDisabled;
-  auto const verify_pure = (RuntimeOption::EvalPureVerifyBody > 0) &&
-                            funcAttrIsPure(m_func->attrs);
   if (m_errmode == kVerbose) {
     std::cout << blockToString(b, m_graph, m_func) << std::endl;
   }
@@ -1962,8 +2124,9 @@ bool FuncChecker::checkBlock(State& cur, Block* b) {
     if (flags & TF) ok &= checkTerminal(&cur, op, b);
     if (isIter(pc)) ok &= checkIter(&cur, pc);
     ok &= checkOutputs(&cur, pc, b);
-    if (verify_rx) ok &= checkRxOp(&cur, pc, op, false);
-    if (verify_pure) ok &= checkRxOp(&cur, pc, op, true);
+    ok &= checkReadOnlyOp(&cur, pc, op);
+    if (m_verify_rx) ok &= checkRxOp(&cur, pc, op, false);
+    if (m_verify_pure) ok &= checkRxOp(&cur, pc, op, true);
     prev_pc = pc;
   }
   ok &= checkSuccEdges(b, &cur);
@@ -2045,7 +2208,7 @@ bool FuncChecker::checkSuccEdges(Block* b, State* cur) {
 
   for (int i = 0; i < succs; i++) {
     auto const t = b->succs[i];
-    if (t && offset(t->start) == m_func->base) {
+    if (t && offset(t->start) == 0) {
       boost::dynamic_bitset<> visited(m_graph->block_count);
       if (Block::reachable(t, b, visited)) {
         error("%s: Control flow cycles from the entry-block "
@@ -2179,7 +2342,7 @@ bool FuncChecker::checkOffset(const char* name, Offset off,
            name, off, regionName, base, past);
     return false;
   }
-  if (check_instrs && !m_instrs.get(off - m_func->base)) {
+  if (check_instrs && !m_instrs.get(off)) {
     error("label %s %d is not on a valid instruction boundary\n",
            name, off);
     return false;
@@ -2205,8 +2368,8 @@ bool FuncChecker::checkRegion(const char* name, Offset b, Offset p,
            name, b, p, regionName, base, past);
     return false;
   } else if (check_instrs &&
-             (!m_instrs.get(b - m_func->base) ||
-              (p < past && !m_instrs.get(p - m_func->base)))) {
+             (!m_instrs.get(b) ||
+              (p < past && !m_instrs.get(p)))) {
     error("region %s %d:%d boundaries are inbetween instructions\n",
            name, b, p);
     return false;

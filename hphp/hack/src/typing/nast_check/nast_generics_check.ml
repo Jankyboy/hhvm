@@ -104,7 +104,7 @@ and check_tparams ~nested (seen : tparam_info) tparams =
       seen
     else
       (* Using a dummy value for the higher-kindedness, we don't care once
-       it's out of scope *)
+         it's out of scope *)
       SMap.add name (pos, false, false) seen
   in
 
@@ -137,7 +137,7 @@ let check_where_constraints (seen : tparam_info) cstrs =
         | _ -> super#on_hint env (pos, h)
     end
   in
-  List.iter cstrs (fun (h1, _, h2) ->
+  List.iter cstrs ~f:(fun (h1, _, h2) ->
       visitor#on_hint () h1;
       visitor#on_hint () h2)
 

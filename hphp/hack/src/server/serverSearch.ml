@@ -8,8 +8,6 @@
  *)
 
 open Hh_prelude
-open Hh_core
-module SS = SearchUtils
 module SUtils = SearchUtils
 
 let result_to_json res =
@@ -62,7 +60,7 @@ let go ctx query_text ~(kind_filter : string) (sienv : SearchUtils.si_env) :
             method_query
         | None ->
           (* When we can't find a class with a name similar to the given one,
-           just return no search results. *)
+             just return no search results. *)
           []
       end
     | _ ->
@@ -76,7 +74,7 @@ let go ctx query_text ~(kind_filter : string) (sienv : SearchUtils.si_env) :
       in
       AutocompleteService.add_position_to_results ctx temp_results
   in
-  SymbolIndex.log_symbol_index_search
+  SymbolIndexCore.log_symbol_index_search
     ~sienv
     ~start_time
     ~query_text

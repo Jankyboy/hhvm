@@ -7,9 +7,10 @@
  *
  *)
 
-open Core_kernel
+open Hh_prelude
 
 val make :
+  longlived_workers:bool ->
   nbr_procs:int ->
   Gc.control ->
   SharedMem.handle ->

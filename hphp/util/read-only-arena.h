@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_READ_ONLY_ARENA_H_
-#define incl_HPHP_READ_ONLY_ARENA_H_
+#pragma once
 
 #include "hphp/util/address-range.h"
 #include "hphp/util/slab-manager.h"
@@ -153,7 +152,7 @@ struct ReadOnlyArena : TaggedSlabList {
   void* addChunk(size_t size) {
     ReadOnlyChunk* chunk = nullptr;
     if (m_pool) {
-      if (auto const tPtr = m_pool->try_local_pop()) {
+      if (auto const tPtr = m_pool->try_shared_pop()) {
         chunk = ReadOnlyChunk::fromTPtr(tPtr);
         if (auto ret = chunk->tryAlloc(size, Alignment)) {
           // Add the partial chunk to local list.
@@ -207,4 +206,3 @@ private:
 //////////////////////////////////////////////////////////////////////
 
 }
-#endif

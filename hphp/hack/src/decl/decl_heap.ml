@@ -59,7 +59,7 @@ module Typedef = struct
 end
 
 module GConst = struct
-  type t = decl_ty * Errors.t
+  type t = const_decl
 
   let prefix = Prefix.make ()
 
@@ -68,9 +68,26 @@ end
 
 module Funs =
   SharedMem.WithCache (SharedMem.ProfiledImmediate) (StringKey) (Fun) (Capacity)
-module Classes =
-  SharedMem.WithCache (SharedMem.ProfiledImmediate) (StringKey) (Class)
-    (Capacity)
+
+module Classes = struct
+  include
+    SharedMem.WithCache (SharedMem.ProfiledImmediate) (StringKey) (Class)
+      (Capacity)
+
+  let add class_name decl =
+    if Provider_backend.(get () = Analysis) then
+      let stack = Printexc.get_callstack 10 in
+      let () =
+        Format.eprintf
+          "Decl_heap: adding %s\n%s\n%!"
+          class_name
+          (Printexc.raw_backtrace_to_string stack)
+      in
+      failwith "bad decl"
+    else
+      add class_name decl
+end
+
 module RecordDefs =
   SharedMem.WithCache (SharedMem.ProfiledImmediate) (StringKey) (RecordDef)
     (Capacity)

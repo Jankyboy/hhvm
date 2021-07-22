@@ -45,8 +45,6 @@
 
 #include "hphp/util/trace.h"
 
-#include <folly/Optional.h>
-
 namespace HPHP { namespace jit { namespace irlower {
 
 TRACE_SET_MOD(irlower);
@@ -126,7 +124,7 @@ void cgCheckStackOverflow(IRLS& env, const IRInstruction* inst) {
 
   unlikelyIfThen(v, vcold(env), CC_L, sf, [&] (Vout& v) {
     cgCallHelper(v, env, CallSpec::direct(throw_stack_overflow), kVoidDest,
-                 SyncOptions::SyncStublogue, argGroup(env, inst));
+                 SyncOptions::Sync, argGroup(env, inst));
   });
 }
 
@@ -135,8 +133,8 @@ void cgCheckSurpriseFlagsEnter(IRLS& env, const IRInstruction* inst) {
   auto const extra = inst->extra<CheckSurpriseFlagsEnter>();
   auto const func = extra->func;
 
-  auto const off = func->getEntryForNumArgs(extra->argc) - func->base();
-  auto const fixup = Fixup(off, func->numSlotsInFrame());
+  auto const off = func->getEntryForNumArgs(extra->argc);
+  auto const fixup = Fixup::direct(off, SBInvOffset{0});
 
   auto const catchBlock = label(env, inst->taken());
   emitCheckSurpriseFlagsEnter(vmain(env), vcold(env), fp, fixup, catchBlock);
@@ -147,8 +145,8 @@ void cgCheckSurpriseAndStack(IRLS& env, const IRInstruction* inst) {
   auto const extra = inst->extra<CheckSurpriseAndStack>();
   auto const func = extra->func;
 
-  auto const off = func->getEntryForNumArgs(extra->argc) - func->base();
-  auto const fixup = Fixup(off, func->numSlotsInFrame());
+  auto const off = func->getEntryForNumArgs(extra->argc);
+  auto const fixup = Fixup::direct(off, SBInvOffset{0});
   auto& v = vmain(env);
 
   auto const sf = v.makeReg();

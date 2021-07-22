@@ -283,7 +283,7 @@ Array HHVM_FUNCTION(mcrypt_list_algorithms,
   if (count == 0) {
     raise_warning("No algorithms found in module dir");
   }
-  VArrayInit ret(count);
+  VecInit ret(count);
   for (int i = 0; i < count; i++) {
     ret.append(String(modules[i], CopyString));
   }
@@ -300,7 +300,7 @@ Array HHVM_FUNCTION(mcrypt_list_modes,
   if (count == 0) {
     raise_warning("No modes found in module dir");
   }
-  VArrayInit ret(count);
+  VecInit ret(count);
   for (int i = 0; i < count; i++) {
     ret.append(String(modules[i], CopyString));
   }
@@ -332,7 +332,7 @@ Array HHVM_FUNCTION(mcrypt_module_get_supported_key_sizes,
   int *key_sizes = mcrypt_module_get_algo_supported_key_sizes
     ((char*)algorithm.data(), (char*)dir.data(), &count);
 
-  VArrayInit ret(count);
+  VecInit ret(count);
   for (int i = 0; i < count; i++) {
     ret.append(key_sizes[i]);
   }
@@ -589,7 +589,7 @@ Variant HHVM_FUNCTION(mcrypt_enc_get_supported_key_sizes, const Resource& td) {
   int *key_sizes =
     mcrypt_enc_get_supported_key_sizes(pm->m_td, &count);
 
-  Array ret = Array::CreateVArray();
+  Array ret = Array::CreateVec();
   for (int i = 0; i < count; i++) {
     ret.append(key_sizes[i]);
   }
@@ -656,7 +656,7 @@ Variant HHVM_FUNCTION(mcrypt_generic_init, const Resource& td,
 
   int key_size;
   if (key.size() > max_key_size) {
-    raise_warning("Key size too large; supplied length: %d, max: %d",
+    raise_warning("Key size too large; supplied length: %ld, max: %d",
                     key.size(), max_key_size);
     key_size = max_key_size;
   } else {
@@ -665,10 +665,10 @@ Variant HHVM_FUNCTION(mcrypt_generic_init, const Resource& td,
   memcpy(key_s, key.data(), key.size());
 
   if (iv.size() != iv_size) {
-    raise_warning("Iv size incorrect; supplied length: %d, needed: %d",
+    raise_warning("Iv size incorrect; supplied length: %ld, needed: %d",
                     iv.size(), iv_size);
   }
-  memcpy(iv_s, iv.data(), std::min(iv_size, iv.size()));
+  memcpy(iv_s, iv.data(), std::min<int64_t>(iv_size, iv.size()));
 
   mcrypt_generic_deinit(pm->m_td);
   int result = mcrypt_generic_init(pm->m_td, key_s, key_size, iv_s);

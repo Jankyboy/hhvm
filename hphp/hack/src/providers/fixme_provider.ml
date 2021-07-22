@@ -64,6 +64,7 @@ module DISALLOWED_FIXMES =
 
 let get_fixmes filename =
   match Provider_backend.get () with
+  | Provider_backend.Analysis
   | Provider_backend.Shared_memory ->
     (match HH_FIXMES.get filename with
     | None -> DECL_HH_FIXMES.get filename
@@ -76,48 +77,64 @@ let get_fixmes filename =
 
 let get_hh_fixmes filename =
   match Provider_backend.get () with
-  | Provider_backend.Shared_memory -> HH_FIXMES.get filename
+  | Provider_backend.Analysis
+  | Provider_backend.Shared_memory ->
+    HH_FIXMES.get filename
   | Provider_backend.Local_memory { Provider_backend.fixmes; _ }
   | Provider_backend.Decl_service { fixmes; _ } ->
     Fixme_store.get fixmes.hh_fixmes filename
 
 let get_decl_hh_fixmes filename =
   match Provider_backend.get () with
-  | Provider_backend.Shared_memory -> DECL_HH_FIXMES.get filename
+  | Provider_backend.Analysis
+  | Provider_backend.Shared_memory ->
+    DECL_HH_FIXMES.get filename
   | Provider_backend.Local_memory { Provider_backend.fixmes; _ }
   | Provider_backend.Decl_service { fixmes; _ } ->
     Fixme_store.get fixmes.decl_hh_fixmes filename
 
 let get_disallowed_fixmes filename =
   match Provider_backend.get () with
-  | Provider_backend.Shared_memory -> DISALLOWED_FIXMES.get filename
+  | Provider_backend.Analysis
+  | Provider_backend.Shared_memory ->
+    DISALLOWED_FIXMES.get filename
   | Provider_backend.Local_memory { Provider_backend.fixmes; _ }
   | Provider_backend.Decl_service { fixmes; _ } ->
     Fixme_store.get fixmes.disallowed_fixmes filename
 
 let provide_hh_fixmes filename fixme_map =
-  match Provider_backend.get () with
-  | Provider_backend.Shared_memory -> HH_FIXMES.add filename fixme_map
-  | Provider_backend.Local_memory { Provider_backend.fixmes; _ }
-  | Provider_backend.Decl_service { fixmes; _ } ->
-    Fixme_store.add fixmes.hh_fixmes filename fixme_map
+  if not (IMap.is_empty fixme_map) then
+    match Provider_backend.get () with
+    | Provider_backend.Analysis
+    | Provider_backend.Shared_memory ->
+      HH_FIXMES.add filename fixme_map
+    | Provider_backend.Local_memory { Provider_backend.fixmes; _ }
+    | Provider_backend.Decl_service { fixmes; _ } ->
+      Fixme_store.add fixmes.hh_fixmes filename fixme_map
 
 let provide_decl_hh_fixmes filename fixme_map =
-  match Provider_backend.get () with
-  | Provider_backend.Shared_memory -> DECL_HH_FIXMES.add filename fixme_map
-  | Provider_backend.Local_memory { Provider_backend.fixmes; _ }
-  | Provider_backend.Decl_service { fixmes; _ } ->
-    Fixme_store.add fixmes.decl_hh_fixmes filename fixme_map
+  if not (IMap.is_empty fixme_map) then
+    match Provider_backend.get () with
+    | Provider_backend.Analysis
+    | Provider_backend.Shared_memory ->
+      DECL_HH_FIXMES.add filename fixme_map
+    | Provider_backend.Local_memory { Provider_backend.fixmes; _ }
+    | Provider_backend.Decl_service { fixmes; _ } ->
+      Fixme_store.add fixmes.decl_hh_fixmes filename fixme_map
 
 let provide_disallowed_fixmes filename fixme_map =
-  match Provider_backend.get () with
-  | Provider_backend.Shared_memory -> DISALLOWED_FIXMES.add filename fixme_map
-  | Provider_backend.Local_memory { Provider_backend.fixmes; _ }
-  | Provider_backend.Decl_service { fixmes; _ } ->
-    Fixme_store.add fixmes.disallowed_fixmes filename fixme_map
+  if not (IMap.is_empty fixme_map) then
+    match Provider_backend.get () with
+    | Provider_backend.Analysis
+    | Provider_backend.Shared_memory ->
+      DISALLOWED_FIXMES.add filename fixme_map
+    | Provider_backend.Local_memory { Provider_backend.fixmes; _ }
+    | Provider_backend.Decl_service { fixmes; _ } ->
+      Fixme_store.add fixmes.disallowed_fixmes filename fixme_map
 
 let remove_batch paths =
   match Provider_backend.get () with
+  | Provider_backend.Analysis
   | Provider_backend.Shared_memory ->
     HH_FIXMES.remove_batch paths;
     DECL_HH_FIXMES.remove_batch paths;
@@ -172,8 +189,8 @@ let add_applied_fixme applied_fixmes err_code fn err_line =
   in
   Relative_path.Map.add
     applied_fixmes
-    fn
-    (add_applied_fixme_file file_value err_code err_line)
+    ~key:fn
+    ~data:(add_applied_fixme_file file_value err_code err_line)
 
 let get_unused_fixmes_for codes applied_fixme_map fn acc =
   match get_fixmes fn with
@@ -184,8 +201,8 @@ let get_unused_fixmes_for codes applied_fixme_map fn acc =
         IMap.fold
           (fun code fixme_pos acc ->
             if
-              ( List.mem codes code ~equal:( = )
-              || (List.is_empty codes && code < 5000) )
+              (List.mem codes code ~equal:( = )
+              || (List.is_empty codes && code < 5000))
               && not (fixme_was_applied applied_fixme_map fn line code)
             then
               fixme_pos :: acc
@@ -234,7 +251,9 @@ let is_disallowed pos code =
   let (line, _, _) = Pos.info_pos pos in
   let fixme_map_opt =
     match Provider_backend.get () with
-    | Provider_backend.Shared_memory -> DISALLOWED_FIXMES.get filename
+    | Provider_backend.Analysis
+    | Provider_backend.Shared_memory ->
+      DISALLOWED_FIXMES.get filename
     | Provider_backend.Local_memory { Provider_backend.fixmes; _ } ->
       Fixme_store.get fixmes.disallowed_fixmes filename
     | Provider_backend.Decl_service _ -> None

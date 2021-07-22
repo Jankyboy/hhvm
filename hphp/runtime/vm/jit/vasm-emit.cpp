@@ -20,6 +20,7 @@
 #include "hphp/runtime/vm/jit/asm-info.h"
 #include "hphp/runtime/vm/jit/cg-meta.h"
 #include "hphp/runtime/vm/jit/ir-unit.h"
+#include "hphp/runtime/vm/jit/outlined-sequence-selector.h"
 #include "hphp/runtime/vm/jit/print.h"
 #include "hphp/runtime/vm/jit/relocation.h"
 #include "hphp/runtime/vm/jit/tc.h"
@@ -114,15 +115,12 @@ void emit(Vunit& vunit, Vtext& vtext, CGMeta& meta, AsmInfo* ai) {
     case Arch::ARM:
       emitARM(vunit, vtext, meta, ai);
       break;
-    case Arch::PPC64:
-      emitPPC64(vunit, vtext, meta, ai);
-      break;
   }
 }
 
 }
 
-void emitVunit(Vunit& vunit, const IRUnit& unit,
+void emitVunit(Vunit& vunit, const IRUnit* unit,
                CodeCache::View code, CGMeta& meta, Annotations* annotations) {
   Timer _t(Timer::vasm_emit);
 
@@ -141,7 +139,8 @@ void emitVunit(Vunit& vunit, const IRUnit& unit,
   CodeBlock& cold = code.isLocal() ? code.cold() : coldLocal;
   CodeBlock* frozen = &code.frozen();
 
-  auto const do_relocate = !RuntimeOption::EvalEnableReusableTC &&
+  assertx(IMPLIES(RuntimeOption::EvalEnableReusableTC, code.isLocal()));
+  auto const do_relocate =
     RuntimeOption::EvalJitRelocationSize &&
     cold_in.canEmit(RuntimeOption::EvalJitRelocationSize * 3) &&
     !code.isLocal();
@@ -155,7 +154,6 @@ void emitVunit(Vunit& vunit, const IRUnit& unit,
       switch (arch()) {
         case Arch::X64:
           return 1;
-        case Arch::PPC64:
         case Arch::ARM:
           return 4;
       }
@@ -187,8 +185,11 @@ void emitVunit(Vunit& vunit, const IRUnit& unit,
   DEBUG_ONLY auto cold_start = cold_in.frontier();
   auto frozen_start = frozen->frontier();
 
-  folly::Optional<AsmInfo> optAI;
-  if (dumpIREnabled(unit.context().kind)) optAI.emplace(unit);
+  Optional<AsmInfo> optAI;
+  if (unit && (RuntimeOption::EvalJitBuildOutliningHashes ||
+               dumpIREnabled(unit->context().kind))) {
+    optAI.emplace(*unit);
+  }
   auto ai = optAI.get_pointer();
 
   Vtext vtext{main, cold, *frozen, code.data()};
@@ -205,7 +206,7 @@ void emitVunit(Vunit& vunit, const IRUnit& unit,
   assertx(code.isLocal() || main_in.frontier() == main_start);
 
   if (do_relocate) {
-    tc::relocateTranslation(&unit,
+    tc::relocateTranslation(unit,
                             main, main_in, main_start,
                             cold, cold_in, cold_start,
                             *frozen, frozen_start, ai, meta);
@@ -223,8 +224,11 @@ void emitVunit(Vunit& vunit, const IRUnit& unit,
       ai->frozenInstRanges.offset =
         frozen->toDestAddress(frozen->frontier()) - frozen->frontier();
     }
-    printUnit(kCodeGenLevel, unit, " after code gen ",
+    printUnit(kCodeGenLevel, *unit, " after code gen ",
              ai, nullptr, annotations);
+    if (RuntimeOption::EvalJitBuildOutliningHashes) {
+      recordIR(*unit, ai);
+    }
   }
 }
 

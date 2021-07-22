@@ -76,10 +76,10 @@ bool CmdGlobal::onServer(DebuggerProxy &proxy) {
   m_globals = CmdVariable::GetGlobalVariables();
   if (m_version == 2) {
     // Remove the values before sending to client.
-    ArrayInit ret(m_globals->size(), ArrayInit::Map{});
+    DictInit ret(m_globals->size());
     Variant v;
     for (ArrayIter iter(m_globals); iter; ++iter) {
-      ret.add(iter.first().toString(), v);
+      ret.set(iter.first().toString(), v);
     }
     m_globals = ret.toArray();
   }

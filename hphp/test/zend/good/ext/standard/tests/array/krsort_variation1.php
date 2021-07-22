@@ -15,9 +15,6 @@
 <<__EntryPoint>> function main(): void {
 echo "*** Testing krsort() : usage variations ***\n";
 
-// get an unset variable
-$unset_var = 10;
-unset ($unset_var);
 
 // resource variable
 $fp = fopen(__FILE__, "r");
@@ -56,7 +53,7 @@ $unexpected_values = varray [
         'string',
 
         // object data
-/*19*/  new stdclass(),
+/*19*/  new stdClass(),
 
         // resource variable
 /*22*/  $fp

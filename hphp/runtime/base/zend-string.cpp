@@ -33,12 +33,15 @@
 #endif
 
 #include "hphp/util/bstring.h"
-#include "hphp/runtime/base/exceptions.h"
-#include "hphp/runtime/base/string-buffer.h"
-#include "hphp/runtime/base/runtime-error.h"
-#include "hphp/runtime/base/string-util.h"
 #include "hphp/runtime/base/builtin-functions.h"
+#include "hphp/runtime/base/exceptions.h"
+#include "hphp/runtime/base/memory-manager.h"
+#include "hphp/runtime/base/request-info.h"
+#include "hphp/runtime/base/runtime-error.h"
+#include "hphp/runtime/base/string-buffer.h"
+#include "hphp/runtime/base/string-util.h"
 
+#include <folly/lang/CString.h>
 #include <folly/portability/String.h>
 
 #define PHP_QPRINT_MAXL 75
@@ -192,9 +195,9 @@ int string_rfind(const char *input, int len, char ch, int pos,
   const void *ptr;
   if (case_sensitive) {
     if (pos >= 0) {
-      ptr = memrchr(input + pos, ch, len - pos);
+      ptr = folly::memrchr(input + pos, ch, len - pos);
     } else {
-      ptr = memrchr(input, ch, len + pos + 1);
+      ptr = folly::memrchr(input, ch, len + pos + 1);
     }
   } else {
     if (pos >= 0) {
@@ -1197,9 +1200,9 @@ const short base64_reverse_table[256] = {
   -2, -2, -2, -2, -2, -2, -2, -2, -2, -2, -2, -2, -2, -2, -2, -2
 };
 
-folly::Optional<int> maxEncodedSize(int length) {
+Optional<int> maxEncodedSize(int length) {
   if ((length + 2) < 0 || ((length + 2) / 3) >= (1 << (sizeof(int) * 8 - 2))) {
-    return folly::none;
+    return std::nullopt;
   }
   return ((length + 2) / 3) * 4;
 }
@@ -1619,10 +1622,25 @@ String string_number_format(double d, int dec,
   if (dec < 0) dec = 0;
   d = php_math_round(d, dec);
 
+  if (dec >= StringData::MaxSize) raiseStringLengthExceededError(dec);
+
+  // snprintf can allocate a large amount memory if you specify a
+  // large value for dec. Also, the generated string can be large as
+  // well. Check against the memory limit before allocating.
+  auto const checkAlloc = [&] (size_t extra) {
+    // Empirically, snprintf memory usage seems to be slightly more
+    // than 4 bytes per decimal point. Be conservative and assume 8.
+    auto const size = 8 * (size_t)dec + extra;
+    if (size <= kMaxSmallSize) return;
+    if (tl_heap->preAllocOOM(size)) check_non_safepoint_surprise();
+  };
+
   // departure from PHP: we got rid of dependencies on spprintf() here.
   // This actually means 63 bytes for characters + 1 byte for '\0'
+
   String tmpstr(63, ReserveString);
   tmpbuf = tmpstr.mutableData();
+  checkAlloc(0);
   tmplen = snprintf(tmpbuf, 64, "%.*F", dec, d);
   // From the man page of snprintf, the return value is:
   // The number of characters that would have been written if n had been
@@ -1634,6 +1652,7 @@ String string_number_format(double d, int dec,
   }
   if (tmplen >= 64) {
     // Uncommon, asked for more than 64 chars worth of precision
+    checkAlloc(tmplen + kStringOverhead);
     tmpstr = String(tmplen, ReserveString);
     tmpbuf = tmpstr.mutableData();
     tmplen = snprintf(tmpbuf, tmplen + 1, "%.*F", dec, d);

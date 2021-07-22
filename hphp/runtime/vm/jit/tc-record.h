@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_TC_RECORD_H_
-#define incl_HPHP_JIT_TC_RECORD_H_
+#pragma once
 
 #include "hphp/runtime/vm/jit/srcdb.h"
 #include "hphp/runtime/vm/jit/tc.h"
@@ -42,8 +41,7 @@ namespace tc {
  * Record translation for gdb debugging of the tc.
  */
 void recordGdbTranslation(SrcKey sk, const CodeBlock& cb,
-                          const TCA start, const TCA end, bool exit,
-                          bool inPrologue);
+                          const TCA start, const TCA end);
 
 /*
  * Record BC instruction ranges in the tc for the perf map.
@@ -65,7 +63,7 @@ void updateCodeSizeCounters();
 /*
  * Log statistics about a translation to scribe via StructuredLog.
  */
-void logTranslation(const TransEnv& env, const TransRange& range);
+void logTranslation(const Translator* trans, const TransRange& range);
 
 /*
  * Log inlined frames in unit via StructuredLog.
@@ -106,4 +104,3 @@ std::string warmupStatusString();
 
 }}}
 
-#endif

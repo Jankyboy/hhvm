@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_JIT_IRGEN_INTERNAL_H_
-#define incl_HPHP_JIT_IRGEN_INTERNAL_H_
+#pragma once
 
 #include "hphp/runtime/vm/jit/irgen.h"
 
@@ -31,9 +30,9 @@
 #include "hphp/runtime/vm/jit/ssa-tmp.h"
 #include "hphp/runtime/vm/jit/stack-offsets.h"
 #include "hphp/runtime/vm/jit/type.h"
+#include "hphp/runtime/vm/coeffects.h"
 #include "hphp/runtime/vm/func.h"
 #include "hphp/runtime/vm/resumable.h"
-#include "hphp/runtime/vm/rx.h"
 #include "hphp/runtime/vm/srckey.h"
 
 namespace HPHP { namespace jit { namespace irgen {
@@ -84,10 +83,28 @@ inline Offset nextBcOff(const IRGS& env) {
   return nextSrcKey(env).offset();
 }
 
-inline RxLevel curRxLevel(const IRGS& env) {
-  // Pessimize enforcements for conditional reactivity, as it is not tracked yet
-  if (curFunc(env)->isRxConditional()) return RxLevel::None;
-  return curFunc(env)->rxLevel();
+inline SSATmp* curRequiredCoeffects(IRGS& env) {
+  auto const func = curFunc(env);
+  assertx(func);
+  if (!func->hasCoeffectsLocal()) {
+    assertx(!func->hasCoeffectRules());
+    return cns(env, func->requiredCoeffects().value());
+  }
+  // Access 0Coeffects variable
+  // TODO: Figure out why TInt asserts here
+  auto const local =
+    gen(env, LdLoc, TCell, LocalId(func->coeffectsLocalId()), fp(env));
+  return gen(env, AssertType, TInt, local);
+}
+
+inline SSATmp* curCoeffects(IRGS& env) {
+  auto const coeffects = curRequiredCoeffects(env);
+  auto const mask = [&]() -> RuntimeCoeffects::storage_t {
+    auto const escapes = curFunc(env)->coeffectEscapes();
+    if (curSrcKey(env).op() != Op::FCallCtor) return escapes.value();
+    return escapes.value() | RuntimeCoeffects::write_this_props().value();
+  }();
+  return gen(env, OrInt, coeffects, cns(env, mask));
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -186,6 +203,14 @@ SSATmp* cond(IRGS& env, Branch branch, Next next, Taken taken) {
     return result;
   }
   return nullptr;
+}
+
+// Helper to allow for chaining of Branch/Next pairs
+template<class Branch1, class Next1, class Branch2, class Next2, class... Args>
+SSATmp* cond(IRGS& env, Branch1 b1, Next1 n1, Branch2 b2, Next2 n2,
+             Args&&... args) {
+  return cond(env, b1, n1,
+              [&]{ return cond(env, b2, n2, std::forward<Args>(args)...); });
 }
 
 template<class Branch, class Next, class Taken>
@@ -447,39 +472,35 @@ private:
 // Eval stack manipulation
 
 inline SSATmp* assertType(SSATmp* tmp, Type type) {
-  assertx(!tmp || tmp->isA(type));
+  assert_flog(!tmp || tmp->isA(type), "tmp = {} ; tmp.type = {}; type = {}",
+              *tmp, tmp->type(), type);
   return tmp;
 }
 
-inline FPInvOffset offsetFromFP(const IRGS& env, IRSPRelOffset irSPRel) {
+inline IRSPRelOffset offsetFromIRSP(const IRGS& env, SBInvOffset sbRel) {
   auto const irSPOff = env.irb->fs().irSPOff();
-  return irSPRel.to<FPInvOffset>(irSPOff);
-}
-
-inline IRSPRelOffset offsetFromIRSP(const IRGS& env, FPInvOffset fpRel) {
-  auto const irSPOff = env.irb->fs().irSPOff();
-  return fpRel.to<IRSPRelOffset>(irSPOff);
+  return sbRel.to<IRSPRelOffset>(irSPOff);
 }
 
 inline IRSPRelOffset offsetFromIRSP(const IRGS& env, BCSPRelOffset bcSPRel) {
-  auto const fpRel = bcSPRel.to<FPInvOffset>(env.irb->fs().bcSPOff());
-  return offsetFromIRSP(env, fpRel);
+  auto const sbRel = bcSPRel.to<SBInvOffset>(env.irb->fs().bcSPOff());
+  return offsetFromIRSP(env, sbRel);
 }
 
-inline BCSPRelOffset offsetFromBCSP(const IRGS& env, FPInvOffset fpRel) {
+inline BCSPRelOffset offsetFromBCSP(const IRGS& env, SBInvOffset sbRel) {
   auto const bcSPOff = env.irb->fs().bcSPOff();
-  return fpRel.to<BCSPRelOffset>(bcSPOff);
+  return sbRel.to<BCSPRelOffset>(bcSPOff);
 }
 
 inline BCSPRelOffset offsetFromBCSP(const IRGS& env, IRSPRelOffset irSPRel) {
-  auto const fpRel = irSPRel.to<FPInvOffset>(env.irb->fs().irSPOff());
-  return offsetFromBCSP(env, fpRel);
+  auto const sbRel = irSPRel.to<SBInvOffset>(env.irb->fs().irSPOff());
+  return offsetFromBCSP(env, sbRel);
 }
 
 /*
  * Offset of the bytecode stack pointer.
  */
-inline FPInvOffset spOffBCFromFP(const IRGS& env) {
+inline SBInvOffset spOffBCFromStackBase(const IRGS& env) {
   return env.irb->fs().bcSPOff();
 }
 inline IRSPRelOffset spOffBCFromIRSP(const IRGS& env) {
@@ -489,10 +510,11 @@ inline IRSPRelOffset spOffBCFromIRSP(const IRGS& env) {
 /*
  * Offset of empty evaluation stack.
  */
-inline FPInvOffset spOffEmpty(const IRGS& env) {
-  return FPInvOffset{
-    resumeMode(env) == ResumeMode::None ? curFunc(env)->numSlotsInFrame() : 0
-  };
+inline SBInvOffset spOffEmpty(const IRGS& env) {
+  // Stublogue context operates on behalf of the caller and does not know
+  // the evaluation stack size.
+  assertx(!env.irb->fs().stublogue());
+  return SBInvOffset{0};
 }
 
 inline SSATmp* pop(IRGS& env, GuardConstraint gc = DataTypeSpecific) {
@@ -505,11 +527,15 @@ inline SSATmp* pop(IRGS& env, GuardConstraint gc = DataTypeSpecific) {
 }
 
 inline SSATmp* popC(IRGS& env, GuardConstraint gc = DataTypeSpecific) {
-  return assertType(pop(env, gc), TCell);
+  return assertType(pop(env, gc), TInitCell);
 }
 
 inline SSATmp* popCU(IRGS& env) { return assertType(pop(env), TCell); }
-inline SSATmp* popU(IRGS& env) { return assertType(pop(env), TUninit); }
+inline SSATmp* popU(IRGS& env) {
+  auto const offset = offsetFromIRSP(env, BCSPRelOffset{0});
+  gen(env, AssertStk, TUninit, IRSPRelOffsetData{offset}, sp(env));
+  return assertType(pop(env), TUninit);
+}
 
 inline void discard(IRGS& env, uint32_t n = 1) {
   env.irb->fs().decBCSPDepth(n);
@@ -519,7 +545,7 @@ inline void decRef(IRGS& env, SSATmp* tmp, int locId=-1) {
   gen(env, DecRef, DecRefData(locId), tmp);
 }
 
-inline void popDecRef(IRGS& env, GuardConstraint gc = DataTypeCountness) {
+inline void popDecRef(IRGS& env, GuardConstraint gc = DataTypeGeneric) {
   auto const val = pop(env, gc);
   decRef(env, val);
 }
@@ -532,8 +558,15 @@ inline SSATmp* push(IRGS& env, SSATmp* tmp) {
   return tmp;
 }
 
+inline void pushMany(IRGS& env, SSATmp* tmp, uint32_t count) {
+  if (count == 0) return;
+  env.irb->fs().incBCSPDepth(count);
+  auto const startOff = offsetFromIRSP(env, BCSPRelOffset{0});
+  gen(env, StStkRange, StackRange{startOff, count}, sp(env), tmp);
+}
+
 inline SSATmp* pushIncRef(IRGS& env, SSATmp* tmp,
-                          GuardConstraint gc = DataTypeCountness) {
+                          GuardConstraint gc = DataTypeGeneric) {
   env.irb->constrainValue(tmp, gc);
   gen(env, IncRef, tmp);
   return push(env, tmp);
@@ -558,27 +591,37 @@ inline SSATmp* top(IRGS& env, BCSPRelOffset index = BCSPRelOffset{0},
 
 inline SSATmp* topC(IRGS& env, BCSPRelOffset i = BCSPRelOffset{0},
                     GuardConstraint gc = DataTypeSpecific) {
-  return assertType(top(env, i, gc), TCell);
+  return assertType(top(env, i, gc), TInitCell);
+}
+
+/*
+ * Make the value of a given type magically appear on the stack.
+ */
+inline SSATmp* apparate(IRGS& env, Type type) {
+  env.irb->fs().incBCSPDepth();
+  auto const offset = offsetFromIRSP(env, BCSPRelOffset{0});
+  gen(env, AssertStk, type, IRSPRelOffsetData{offset}, sp(env));
+  return top(env, BCSPRelOffset{0}, DataTypeGeneric);
 }
 
 //////////////////////////////////////////////////////////////////////
 
-inline BCMarker makeMarker(IRGS& env, Offset bcOff) {
-  auto const stackOff = spOffBCFromFP(env);
-
-  FTRACE(2, "makeMarker: bc {} sp {} fn {}\n",
-         bcOff, stackOff.offset, curFunc(env)->fullName()->data());
+inline BCMarker makeMarker(IRGS& env, SrcKey sk) {
+  auto const stackOff = spOffBCFromStackBase(env);
+  FTRACE(2, "makeMarker: sk {} sp {}\n", showShort(sk), stackOff.offset);
 
   return BCMarker {
-    SrcKey(curSrcKey(env), bcOff),
+    sk,
     stackOff,
+    env.irb->fs().stublogue(),
     env.profTransIDs,
-    env.irb->fs().fp()
+    env.irb->fs().fp(),
+    env.irb->fs().sp()
   };
 }
 
 inline void updateMarker(IRGS& env) {
-  env.irb->setCurMarker(makeMarker(env, bcOff(env)));
+  env.irb->setCurMarker(makeMarker(env, curSrcKey(env)));
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -641,7 +684,7 @@ inline const Class* lookupUniqueClass(IRGS& env,
                                       bool trustUnit = false) {
   // TODO: Once top level code is entirely dead it should be safe to always
   // trust the unit.
-  return Unit::lookupUniqueClassInContext(
+  return Class::lookupUniqueInContext(
     name, curClass(env), trustUnit ? curUnit(env) : nullptr);
 }
 
@@ -675,23 +718,21 @@ inline SSATmp* ldCls(IRGS& env,
 
 inline SSATmp* ldLoc(IRGS& env,
                      uint32_t locId,
-                     Block* exit,
                      GuardConstraint gc) {
   env.irb->constrainLocal(locId, gc, "LdLoc");
   return gen(env, LdLoc, TCell, LocalId(locId), fp(env));
 }
 
 /*
- * This is a wrapper to ldLocInner that also emits the RaiseUninitLoc if the
+ * This is a wrapper to ldLocInner that also emits the ThrowUninitLoc if the
  * local is uninitialized. The catchBlock argument may be provided if the
  * caller requires the catch trace to be generated at a point earlier than when
  * it calls this function.
  */
 inline SSATmp* ldLocWarn(IRGS& env,
                          NamedLocal loc,
-                         Block* ldPMExit,
                          GuardConstraint gc) {
-  auto const locVal = ldLoc(env, loc.id, ldPMExit, gc);
+  auto const locVal = ldLoc(env, loc.id, gc);
 
   auto warnUninit = [&] {
     if (loc.name == kInvalidLocalName) {
@@ -701,12 +742,10 @@ inline SSATmp* ldLocWarn(IRGS& env,
     }
     auto const varName = curFunc(env)->localVarName(loc.name);
     if (varName != nullptr) {
-      gen(env, RaiseUninitLoc, cns(env, varName));
+      gen(env, ThrowUninitLoc, cns(env, varName));
     }
     return cns(env, TInitNull);
   };
-
-  env.irb->constrainLocal(loc.id, DataTypeCountnessInit, "ldLocWarn");
 
   if (locVal->type() <= TUninit) return warnUninit();
   if (!locVal->type().maybe(TUninit)) return locVal;
@@ -750,12 +789,10 @@ inline SSATmp* stLocRaw(IRGS& env, uint32_t id, SSATmp* fp, SSATmp* newVal) {
  */
 inline SSATmp* stLocImpl(IRGS& env,
                          uint32_t id,
-                         Block* ldPMExit,
                          SSATmp* newVal,
                          bool decRefOld,
                          bool incRefNew) {
-  auto const cat = decRefOld ? DataTypeCountness : DataTypeGeneric;
-  auto const oldLoc = ldLoc(env, id, ldPMExit, cat);
+  auto const oldLoc = ldLoc(env, id, DataTypeGeneric);
 
   stLocRaw(env, id, fp(env), newVal);
   if (incRefNew) gen(env, IncRef, newVal);
@@ -765,27 +802,24 @@ inline SSATmp* stLocImpl(IRGS& env,
 
 inline SSATmp* stLoc(IRGS& env,
                      uint32_t id,
-                     Block* ldPMExit,
                      SSATmp* newVal) {
   constexpr bool decRefOld = true;
   constexpr bool incRefNew = true;
-  return stLocImpl(env, id, ldPMExit, newVal, decRefOld, incRefNew);
+  return stLocImpl(env, id, newVal, decRefOld, incRefNew);
 }
 
 inline SSATmp* stLocNRC(IRGS& env,
                         uint32_t id,
-                        Block* ldPMExit,
                         SSATmp* newVal) {
   constexpr bool decRefOld = false;
   constexpr bool incRefNew = false;
-  return stLocImpl(env, id, ldPMExit, newVal, decRefOld, incRefNew);
+  return stLocImpl(env, id, newVal, decRefOld, incRefNew);
 }
 
 inline void stLocMove(IRGS& env,
                       uint32_t id,
-                      Block* ldPMExit,
                       SSATmp* newVal) {
-  auto const oldLoc = ldLoc(env, id, ldPMExit, DataTypeCountness);
+  auto const oldLoc = ldLoc(env, id, DataTypeGeneric);
 
   stLocRaw(env, id, fp(env), newVal);
   decRef(env, oldLoc);
@@ -793,20 +827,10 @@ inline void stLocMove(IRGS& env,
 
 inline SSATmp* pushStLoc(IRGS& env,
                          uint32_t id,
-                         Block* ldPMExit,
                          SSATmp* newVal) {
   constexpr bool decRefOld = true;
   constexpr bool incRefNew = true;
-  auto const ret = stLocImpl(
-    env,
-    id,
-    ldPMExit,
-    newVal,
-    decRefOld,
-    incRefNew
-  );
-
-  env.irb->constrainValue(ret, DataTypeCountness);
+  auto const ret = stLocImpl(env, id, newVal, decRefOld, incRefNew);
   return push(env, ret);
 }
 
@@ -828,7 +852,7 @@ inline SSATmp* ldStkAddr(IRGS& env, BCSPRelOffset relOffset) {
 
 inline void decRefLocalsInline(IRGS& env) {
   for (int id = curFunc(env)->numLocals() - 1; id >= 0; --id) {
-    auto const loc = ldLoc(env, id, nullptr, DataTypeGeneric);
+    auto const loc = ldLoc(env, id, DataTypeGeneric);
     decRef(env, loc, id);
   }
 }
@@ -871,8 +895,8 @@ Block* create_catch_block(
   auto const marker = env.irb->curMarker();
   auto const newMarker = [&] {
     if (offsetToAdjustSPForCall == 0) return marker;
-    auto const newSP = marker.spOff() - offsetToAdjustSPForCall;
-    return marker.adjustSP(newSP);
+    auto const newSPOff = marker.bcSPOff() - offsetToAdjustSPForCall;
+    return marker.adjustSPOff(newSPOff);
   }();
   env.irb->setCurMarker(newMarker);
   gen(env, EndCatch, data, fp(env), sp(env));
@@ -897,6 +921,28 @@ SSATmp* convertClsMethToVec(IRGS& env, SSATmp* clsMeth);
  * class type helpers.
  */
 SSATmp* convertClassKey(IRGS& env, SSATmp* key);
-}}}
 
-#endif
+/*
+ * Define fp(env) and sp(env).
+ */
+void defineFrameAndStack(IRGS& env, SBInvOffset bcSPOff);
+
+//////////////////////////////////////////////////////////////////////
+
+inline void profileRDSAccess(IRGS& env, rds::Handle handle) {
+  if (!rds::shouldProfileAccesses() || !isProfiling(env.context.kind)) return;
+  gen(env, MarkRDSAccess, RDSHandleData { handle });
+}
+
+//////////////////////////////////////////////////////////////////////
+
+/*
+ * Determines correct course of action based on notice_data and acts upon it.
+ */
+void handleConvNoticeLevel(
+  IRGS& env,
+  const ConvNoticeData& notice_data,
+  const char* const from,
+  const char* const to);
+
+}}}

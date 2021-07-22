@@ -11,7 +11,6 @@ open Hh_prelude
 open Ifc_types
 module Logic = Ifc_logic
 module Mapper = Ifc_mapper
-module Pp = Ifc_pretty
 module Utils = Ifc_utils
 module L = Logic.Infix
 
@@ -28,7 +27,7 @@ let call_constraint ~subtype ~pos ?(depth = 0) proto scheme =
   let pred (_, s) = Scope.equal s callee_scope in
   let make_constraint this_types =
     Some
-      ( [callee_constraint]
+      ([callee_constraint]
       |> subtype ~pos (Tfun callee_proto.fp_type) (Tfun proto.fp_type)
       |> (match this_types with
          | Some (t1, t2) -> subtype ~pos t1 t2
@@ -36,7 +35,7 @@ let call_constraint ~subtype ~pos ?(depth = 0) proto scheme =
       |> Logic.conjoin
       (* the assertion on scopes in close_one below ensures that
          we quantify only the callee policy variables *)
-      |> Logic.quantify ~pred ~quant:Qexists ~depth )
+      |> Logic.quantify ~pred ~quant:Qexists ~depth)
   in
   match (proto.fp_this, callee_proto.fp_this) with
   | (Some this1, Some this2) -> make_constraint (Some (this1, this2))

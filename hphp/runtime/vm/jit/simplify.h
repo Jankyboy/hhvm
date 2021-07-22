@@ -14,10 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_SIMPLIFY_H_
-#define incl_HPHP_JIT_SIMPLIFY_H_
-
-#include <folly/Optional.h>
+#pragma once
 
 #include "hphp/runtime/vm/jit/bc-marker.h"
 #include "hphp/runtime/vm/jit/containers.h"
@@ -90,5 +87,3 @@ void simplifyPass(IRUnit&);
 //////////////////////////////////////////////////////////////////////
 
 }}
-
-#endif

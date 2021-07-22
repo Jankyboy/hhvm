@@ -106,6 +106,10 @@ void genBlock(IRLS& env, Vout& v, Vout& vc, Block& block) {
   }
 }
 
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
 void optimize(Vunit& unit, CodeKind kind, bool regAlloc) {
   auto const abi = jit::abi(kind);
   switch (arch()) {
@@ -115,15 +119,8 @@ void optimize(Vunit& unit, CodeKind kind, bool regAlloc) {
     case Arch::ARM:
       optimizeARM(unit, abi, regAlloc);
       break;
-    case Arch::PPC64:
-      optimizePPC64(unit, abi, regAlloc);
-      break;
   }
 }
-
-}
-
-///////////////////////////////////////////////////////////////////////////////
 
 std::unique_ptr<Vunit> lowerUnit(const IRUnit& unit,
                                  CodeKind kind,
@@ -179,6 +176,7 @@ std::unique_ptr<Vunit> lowerUnit(const IRUnit& unit,
       block->hint() == Block::Hint::Unused ? vasm.frozen() : vasm.cold();
 
     if (block == unit.entry() && kind == CodeKind::Trace) {
+      v.setOrigin(&block->instrs().front());
       v << recordbasenativesp{};
     }
     genBlock(env, v, vcold, *block);
@@ -188,8 +186,6 @@ std::unique_ptr<Vunit> lowerUnit(const IRUnit& unit,
     assertx(vasm.cold().empty() || vasm.cold().closed());
     assertx(vasm.frozen().empty() || vasm.frozen().closed());
   }
-
-  fixBlockWeights(*vunit);
 
   // This pass requires on some invariants about rvmfp() from HHIR, so we do it
   // here rather than in optimize() as those optimizations may be called for non

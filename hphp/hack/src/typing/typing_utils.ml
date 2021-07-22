@@ -14,7 +14,6 @@ open Typing_env_types
 module SN = Naming_special_names
 module Reason = Typing_reason
 module Env = Typing_env
-module ShapeMap = Aast.ShapeMap
 module TySet = Typing_set
 module Cls = Decl_provider.Class
 module MakeType = Typing_make_type
@@ -33,21 +32,57 @@ let (expand_typedef_ref : expand_typedef ref) =
 
 let expand_typedef x = !expand_typedef_ref x
 
-type sub_type = env -> locl_ty -> locl_ty -> Errors.typing_error_callback -> env
+type sub_type =
+  env ->
+  ?coerce:Typing_logic.coercion_direction option ->
+  ?is_coeffect:bool ->
+  locl_ty ->
+  locl_ty ->
+  Errors.error_from_reasons_callback ->
+  env
 
 let (sub_type_ref : sub_type ref) = ref (not_implemented "sub_type")
 
 let sub_type x = !sub_type_ref x
 
+type sub_type_res =
+  env ->
+  ?coerce:Typing_logic.coercion_direction option ->
+  locl_ty ->
+  locl_ty ->
+  Errors.error_from_reasons_callback ->
+  (env, env) result
+
+let (sub_type_res_ref : sub_type_res ref) = ref (not_implemented "sub_type_res")
+
+let sub_type_res x = !sub_type_res_ref x
+
 type sub_type_i =
-  env -> internal_type -> internal_type -> Errors.typing_error_callback -> env
+  env ->
+  ?is_coeffect:bool ->
+  internal_type ->
+  internal_type ->
+  Errors.error_from_reasons_callback ->
+  env
 
 let (sub_type_i_ref : sub_type_i ref) = ref (not_implemented "sub_type_i")
 
-let sub_type_i x = !sub_type_i_ref x
+let sub_type_i ?(is_coeffect = false) x = !sub_type_i_ref ~is_coeffect x
+
+type sub_type_i_res =
+  env ->
+  internal_type ->
+  internal_type ->
+  Errors.error_from_reasons_callback ->
+  (env, env) result
+
+let (sub_type_i_res_ref : sub_type_i_res ref) =
+  ref (not_implemented "sub_type_i_res")
+
+let sub_type_i_res x = !sub_type_i_res_ref x
 
 type sub_type_with_dynamic_as_bottom =
-  env -> locl_ty -> locl_ty -> Errors.typing_error_callback -> env
+  env -> locl_ty -> locl_ty -> Errors.error_from_reasons_callback -> env
 
 let (sub_type_with_dynamic_as_bottom_ref : sub_type_with_dynamic_as_bottom ref)
     =
@@ -55,24 +90,56 @@ let (sub_type_with_dynamic_as_bottom_ref : sub_type_with_dynamic_as_bottom ref)
 
 let sub_type_with_dynamic_as_bottom x = !sub_type_with_dynamic_as_bottom_ref x
 
-type is_sub_type_type = env -> locl_ty -> locl_ty -> bool
+type sub_type_with_dynamic_as_bottom_res =
+  env ->
+  locl_ty ->
+  locl_ty ->
+  Errors.error_from_reasons_callback ->
+  (env, env) result
 
-type is_sub_type_i_type = env -> internal_type -> internal_type -> bool
+let (sub_type_with_dynamic_as_bottom_res_ref :
+      sub_type_with_dynamic_as_bottom_res ref) =
+  ref (not_implemented "sub_type_with_dynamic_as_bottom_res")
+
+let sub_type_with_dynamic_as_bottom_res x =
+  !sub_type_with_dynamic_as_bottom_res_ref x
+
+type is_sub_type_type = env -> locl_ty -> locl_ty -> bool
 
 let (is_sub_type_ref : is_sub_type_type ref) =
   ref (not_implemented "is_sub_type")
 
 let is_sub_type x = !is_sub_type_ref x
 
-let (is_sub_type_for_union_ref : is_sub_type_type ref) =
+let (is_sub_type_for_coercion_ref : is_sub_type_type ref) =
+  ref (not_implemented "is_sub_type_for_coercion")
+
+let (is_sub_type_for_union_ref :
+      (env ->
+      ?coerce:Typing_logic.coercion_direction option ->
+      locl_ty ->
+      locl_ty ->
+      bool)
+      ref) =
   ref (not_implemented "is_sub_type_for_union")
 
 let is_sub_type_for_union x = !is_sub_type_for_union_ref x
 
-let (is_sub_type_for_union_i_ref : is_sub_type_i_type ref) =
+let (is_sub_type_for_union_i_ref :
+      (env ->
+      ?coerce:Typing_logic.coercion_direction option ->
+      internal_type ->
+      internal_type ->
+      bool)
+      ref) =
   ref (not_implemented "is_sub_type_for_union_i")
 
 let is_sub_type_for_union_i x = !is_sub_type_for_union_i_ref x
+
+let (is_type_disjoint_ref : (env -> locl_ty -> locl_ty -> bool) ref) =
+  ref (not_implemented "is_type_disjoint")
+
+let is_type_disjoint x = !is_type_disjoint_ref x
 
 let (is_sub_type_ignore_generic_params_ref : is_sub_type_type ref) =
   ref (not_implemented "is_sub_type_ignore_generic_params")
@@ -81,7 +148,12 @@ let is_sub_type_ignore_generic_params x =
   !is_sub_type_ignore_generic_params_ref x
 
 type add_constraint =
-  Pos.Map.key -> env -> Ast_defs.constraint_kind -> locl_ty -> locl_ty -> env
+  env ->
+  Ast_defs.constraint_kind ->
+  locl_ty ->
+  locl_ty ->
+  Errors.error_from_reasons_callback ->
+  env
 
 let (add_constraint_ref : add_constraint ref) =
   ref (not_implemented "add_constraint")
@@ -92,11 +164,10 @@ type expand_typeconst =
   expand_env ->
   env ->
   ?ignore_errors:bool ->
-  ?as_tyvar_with_cnstr:bool ->
+  ?as_tyvar_with_cnstr:Pos.t option ->
   locl_ty ->
-  Aast.sid ->
-  root_pos:Pos.t ->
-  on_error:Errors.typing_error_callback ->
+  pos_id ->
+  root_pos:Pos_or_decl.t ->
   allow_abstract_tconst:bool ->
   env * locl_ty
 
@@ -105,21 +176,8 @@ let (expand_typeconst_ref : expand_typeconst ref) =
 
 let expand_typeconst x = !expand_typeconst_ref x
 
-type expand_pocket_universes =
-  env ->
-  Reason.t ->
-  locl_ty ->
-  Aast.sid ->
-  locl_ty ->
-  Aast.sid ->
-  env * locl_ty option
-
-let (expand_pocket_universes_ref : expand_pocket_universes ref) =
-  ref (not_implemented "expand_pocket_universes")
-
-let expand_pocket_universes x = !expand_pocket_universes_ref x
-
-type union = env -> locl_ty -> locl_ty -> env * locl_ty
+type union =
+  env -> ?approx_cancel_neg:bool -> locl_ty -> locl_ty -> env * locl_ty
 
 let (union_ref : union ref) = ref (not_implemented "union")
 
@@ -138,26 +196,32 @@ let (make_union_ref : make_union ref) = ref (not_implemented "make_union")
 let make_union env = !make_union_ref env
 
 type union_i =
-  env -> Reason.t -> internal_type -> locl_ty -> env * internal_type
+  env ->
+  ?approx_cancel_neg:bool ->
+  Reason.t ->
+  internal_type ->
+  locl_ty ->
+  env * internal_type
 
 let (union_i_ref : union_i ref) = ref (not_implemented "union")
 
 let union_i x = !union_i_ref x
 
-type union_list = env -> Reason.t -> locl_ty list -> env * locl_ty
+type union_list =
+  env -> ?approx_cancel_neg:bool -> Reason.t -> locl_ty list -> env * locl_ty
 
 let (union_list_ref : union_list ref) = ref (not_implemented "union_list")
 
 let union_list x = !union_list_ref x
 
-type fold_union = env -> Reason.t -> locl_ty list -> env * locl_ty
+type fold_union =
+  env -> ?approx_cancel_neg:bool -> Reason.t -> locl_ty list -> env * locl_ty
 
 let (fold_union_ref : fold_union ref) = ref (not_implemented "fold_union")
 
-let fold_union x = !fold_union_ref x
-
 type simplify_unions =
   env ->
+  ?approx_cancel_neg:bool ->
   ?on_tyvar:(env -> Reason.t -> Ident.t -> env * locl_ty) ->
   locl_ty ->
   env * locl_ty
@@ -172,11 +236,11 @@ type approx =
   | ApproxDown
 [@@deriving eq]
 
-type non = env -> Reason.t -> locl_ty -> approx:approx -> env * locl_ty
+type negate_type = env -> Reason.t -> locl_ty -> approx:approx -> env * locl_ty
 
-let (non_ref : non ref) = ref (not_implemented "non")
+let (negate_type_ref : negate_type ref) = ref (not_implemented "negate_type")
 
-let non x = !non_ref x
+let negate_type x = !negate_type_ref x
 
 type simplify_intersections =
   env ->
@@ -189,18 +253,12 @@ let (simplify_intersections_ref : simplify_intersections ref) =
 
 let simplify_intersections x = !simplify_intersections_ref x
 
-type localize_with_self =
-  env ->
-  ?pos:Pos.t ->
-  ?quiet:bool ->
-  ?report_cycle:Pos.t * string ->
-  decl_ty ->
-  env * locl_ty
+type localize_no_subst = env -> ignore_errors:bool -> decl_ty -> env * locl_ty
 
-let (localize_with_self_ref : localize_with_self ref) =
-  ref (not_implemented "localize_with_self")
+let (localize_no_subst_ref : localize_no_subst ref) =
+  ref (not_implemented "localize_no_subst")
 
-let localize_with_self x = !localize_with_self_ref x
+let localize_no_subst x = !localize_no_subst_ref x
 
 type localize = ety_env:expand_env -> env -> decl_ty -> env * locl_ty
 
@@ -209,25 +267,9 @@ let (localize_ref : localize ref) =
 
 let localize x = !localize_ref x
 
-type env_with_self =
-  ?pos:Pos.t -> ?quiet:bool -> ?report_cycle:Pos.t * string -> env -> expand_env
-
-let env_with_self_ref : env_with_self ref =
-  ref (fun ?pos:_ ?quiet:_ ?report_cycle:_ -> not_implemented "env_with_self")
-
-let env_with_self ?pos ?quiet ?report_cycle x =
-  !env_with_self_ref ?pos ?quiet ?report_cycle x
-
-(* Convenience function for creating `this` types *)
-let this_of ty = Tdependent (DTthis, ty)
-
 (*****************************************************************************)
-(* Returns true if a type is optional *)
+(* Checking properties of types *)
 (*****************************************************************************)
-
-let is_option env ty =
-  let null = MakeType.null Reason.Rnone in
-  is_sub_type_for_union env null ty
 
 let is_mixed_i env ty =
   let mixed = LoclType (MakeType.mixed Reason.Rnone) in
@@ -240,6 +282,34 @@ let is_nothing_i env ty =
   is_sub_type_for_union_i env ty nothing
 
 let is_nothing env ty = is_nothing_i env (LoclType ty)
+
+let is_dynamic env ty =
+  let dynamic = MakeType.dynamic Reason.Rnone in
+  (is_sub_type_for_union ~coerce:None env dynamic ty && not (is_mixed env ty))
+  || is_sub_type_for_union ~coerce:None env ty dynamic
+     && not (is_nothing env ty)
+
+let rec is_any env ty =
+  let (env, ty) = Env.expand_type env ty in
+  match get_node ty with
+  | Tany _
+  | Terr ->
+    true
+  | Tunion tyl -> List.for_all tyl ~f:(is_any env)
+  | Tintersection tyl -> List.exists tyl ~f:(is_any env)
+  | _ -> false
+
+let is_tunion env ty =
+  let (_env, ty) = Env.expand_type env ty in
+  match get_node ty with
+  | Tunion _ -> true
+  | _ -> false
+
+let is_tintersection env ty =
+  let (_env, ty) = Env.expand_type env ty in
+  match get_node ty with
+  | Tintersection _ -> true
+  | _ -> false
 
 (** Simplify unions and intersections of constraint
 types which involve mixed or nothing. *)
@@ -310,31 +380,6 @@ let wrap_union_inter_ty_in_var env r ty =
   else
     (env, ty)
 
-(* Grab all supertypes of a given type, recursively *)
-let get_all_supertypes env ty =
-  let rec iter seen env acc tyl =
-    match tyl with
-    | [] -> (env, acc)
-    | ty :: tyl ->
-      let (env, ty) = Env.expand_type env ty in
-      (match get_node ty with
-      | Tnewtype (_, _, ty)
-      | Tdependent (_, ty) ->
-        iter seen env (TySet.add ty acc) tyl
-      | Tgeneric (n, targs) ->
-        if SSet.mem n seen then
-          iter seen env acc tyl
-        else
-          iter
-            (SSet.add n seen)
-            env
-            acc
-            (TySet.elements (Env.get_upper_bounds env n targs) @ tyl)
-      | _ -> iter seen env (TySet.add ty acc) tyl)
-  in
-  let (env, resl) = iter SSet.empty env TySet.empty [ty] in
-  (env, TySet.elements resl)
-
 (*****************************************************************************
  * Get the "as" constraints from an abstract type or generic parameter, or
  * return the type itself if there is no "as" constraint.
@@ -342,8 +387,9 @@ let get_all_supertypes env ty =
  * generic parameter, repeat the process until a type is reached that is not
  * a generic parameter. Don't loop on cycles.
  * (For example, function foo<Tu as Tv, Tv as Tu>(...))
+ * Also breaks apart intersections.
  *****************************************************************************)
-let get_concrete_supertypes env ty =
+let get_concrete_supertypes ~abstract_enum env ty =
   let rec iter seen env acc tyl =
     match tyl with
     | [] -> (env, acc)
@@ -352,7 +398,9 @@ let get_concrete_supertypes env ty =
       (match get_node ty with
       (* Enums with arraykey upper bound are treated as "abstract" *)
       | Tnewtype (cid, _, bound_ty)
-        when is_prim Aast.Tarraykey bound_ty && Env.is_enum env cid ->
+        when abstract_enum
+             && is_prim Aast.Tarraykey bound_ty
+             && Env.is_enum env cid ->
         iter seen env acc tyl
       (* Don't expand enums or newtype; just return the type itself *)
       | Tnewtype (_, _, ty)
@@ -367,105 +415,59 @@ let get_concrete_supertypes env ty =
             env
             acc
             (TySet.elements (Env.get_upper_bounds env n targs) @ tyl)
-      | Tunion tyl' ->
-        let tys = TySet.of_list tyl' in
-        begin
-          match TySet.elements tys with
-          | [ty] -> iter seen env acc (ty :: tyl)
-          | _ -> iter seen env (TySet.add ty acc) tyl
-        end
+      | Tintersection tyl' -> iter seen env acc (tyl' @ tyl)
       | _ -> iter seen env (TySet.add ty acc) tyl)
   in
   let (env, resl) = iter SSet.empty env TySet.empty [ty] in
   (env, TySet.elements resl)
 
-(* Try running function on each concrete supertype in turn. Return all
- * successful results
- *)
-let try_over_concrete_supertypes env ty f =
-  let (env, tyl) = get_concrete_supertypes env ty in
-  (* If there is just a single result then don't swallow errors *)
-  match tyl with
-  | [ty] -> [f env ty]
-  | _ ->
-    let rec iter_over_types env resl tyl =
-      match tyl with
-      | [] -> resl
-      | ty :: tyl ->
-        Errors.try_
-          (fun () -> iter_over_types env (f env ty :: resl) tyl)
-          (fun _ -> iter_over_types env resl tyl)
-    in
-    iter_over_types env [] tyl
-
 (** Run a function on an intersection represented by a list of types.
-Similarly to try_over_concrete_supertypes, we stay liberal with errors:
-discard the result of any run which has produced an error.
-If all runs have produced an error, gather all errors and results and add errors. *)
+    We stay liberal with errors:
+    discard the result of any run which has produced an error.
+    If all runs have produced an error, gather all errors and results and add errors. *)
 let run_on_intersection :
     'env -> f:('env -> locl_ty -> 'env * 'a) -> locl_ty list -> 'env * 'a list =
  fun env ~f tyl ->
   let (env, resl_errors) =
     List.map_env env tyl ~f:(fun env ty ->
-        Errors.try_with_result
-          (fun () ->
-            let (env, res) = f env ty in
-            (env, (res, None)))
-          (fun (_, (res, _)) err -> (env, (res, Some err))))
+        let (errors, (env, result)) = Errors.do_ @@ fun () -> f env ty in
+        (env, (result, errors)))
   in
   let valid_resl =
-    List.filter resl_errors ~f:(fun (_, err) -> Option.is_none err)
+    List.filter resl_errors ~f:(fun (_, err) -> Errors.is_empty err)
     |> List.map ~f:fst
   in
   let resl =
     if not (List.is_empty valid_resl) then
       valid_resl
     else (
-      List.iter resl_errors ~f:(fun (_, err) ->
-          Option.iter err ~f:Errors.add_error);
+      List.iter resl_errors ~f:(fun (_, err) -> Errors.merge_into_current err);
       List.map ~f:fst resl_errors
     )
   in
   (env, resl)
 
-(*****************************************************************************)
-(* Dynamicism  *)
-(*****************************************************************************)
-let is_dynamic env ty =
-  let dynamic = MakeType.dynamic Reason.Rnone in
-  (is_sub_type_for_union env dynamic ty && not (is_mixed env ty))
-  || (is_sub_type_for_union env ty dynamic && not (is_nothing env ty))
+(** As above but allow functions which also return subtyping/coercion error
+    information *)
+let run_on_intersection_res env ~f tyl =
+  let g env ty =
+    let (env, a, b) = f env ty in
+    (env, (a, b))
+  in
+  let (env, pairs) = run_on_intersection env ~f:g tyl in
+  let (res, errs) = List.unzip pairs in
+  (env, res, errs)
 
-(*****************************************************************************)
-(* Check if type is any or a variant thereof  *)
-(*****************************************************************************)
+let run_on_intersection_key_value_res env ~f tyl =
+  let g env ty =
+    let (env, a, b, c) = f env ty in
+    (env, (a, b, c))
+  in
+  let (env, triples) = run_on_intersection env ~f:g tyl in
+  let (res, key_errs, errs) = List.unzip3 triples in
+  (env, res, key_errs, errs)
 
-let rec is_any env ty =
-  let (env, ty) = Env.expand_type env ty in
-  match get_node ty with
-  | Tany _
-  | Terr ->
-    true
-  | Tunion tyl -> List.for_all tyl (is_any env)
-  | Tintersection tyl -> List.exists tyl (is_any env)
-  | _ -> false
-
-let is_tunion env ty =
-  let (_env, ty) = Env.expand_type env ty in
-  match get_node ty with
-  | Tunion _ -> true
-  | _ -> false
-
-let is_tintersection env ty =
-  let (_env, ty) = Env.expand_type env ty in
-  match get_node ty with
-  | Tintersection _ -> true
-  | _ -> false
-
-(*****************************************************************************)
 (* Gets the base type of an abstract type *)
-(*****************************************************************************)
-
 let rec get_base_type env ty =
   let (env, ty) = Env.expand_type env ty in
   match get_node ty with
@@ -473,7 +475,7 @@ let rec get_base_type env ty =
     ->
     ty
   (* If we have an expression dependent type and it only has one super
-    type, we can treat it similarly to AKdependent _, Some ty  *)
+     type, we can treat it similarly to AKdependent _, Some ty *)
   | Tgeneric (n, targs) when DependentKind.is_generic_dep_ty n ->
     begin
       match TySet.elements (Env.get_upper_bounds env n targs) with
@@ -493,7 +495,7 @@ let rec get_base_type env ty =
   | Tnewtype _
   | Tdependent _ ->
     begin
-      match get_concrete_supertypes env ty with
+      match get_concrete_supertypes ~abstract_enum:true env ty with
       (* If the type is exactly equal, we don't want to recurse *)
       | (_, ty2 :: _) when ty_equal ty ty2 -> ty
       | (_, ty :: _) -> get_base_type env ty
@@ -501,82 +503,32 @@ let rec get_base_type env ty =
     end
   | _ -> ty
 
-(*****************************************************************************)
-(* Given some class type or unresolved union of class types, return the
- * identifiers of all classes the type may represent.
- *
- * Intended for uses like constructing call graphs and finding references, where
- * we have the statically known class type of some runtime value or class ID and
- * we would like the name of that class. *)
-(*****************************************************************************)
-let get_class_ids env ty =
-  let rec aux seen acc ty =
-    match get_node ty with
-    | Tclass ((_, cid), _, _) -> cid :: acc
-    | Toption ty
-    | Tdependent (_, ty)
-    | Tnewtype (_, _, ty) ->
-      aux seen acc ty
-    | Tunion tys
-    | Tintersection tys ->
-      List.fold tys ~init:acc ~f:(aux seen)
-    | Tgeneric (name, targs) when not (List.mem ~equal:String.equal seen name)
-      ->
-      let seen = name :: seen in
-      let upper_bounds = Env.get_upper_bounds env name targs in
-      TySet.fold (fun ty acc -> aux seen acc ty) upper_bounds acc
-    | _ -> acc
-  in
-  List.rev (aux [] [] (Typing_expand.fully_expand env ty))
-
-(*****************************************************************************)
-(* Reactivity *)
-(*****************************************************************************)
-
-let reactivity_to_string env r =
-  let cond_reactive prefix t =
-    let str = Typing_print.full_decl (Env.get_ctx env) t in
-    prefix ^ " (condition type: " ^ str ^ ")"
-  in
-  let rec aux r =
-    match r with
-    | Pure None -> "pure"
-    | Pure (Some ty) -> cond_reactive "conditionally pure" ty
-    | Reactive None -> "reactive"
-    | Reactive (Some ty) -> cond_reactive "conditionally reactive" ty
-    | Shallow None -> "shallow reactive"
-    | Shallow (Some ty) -> cond_reactive "conditionally shallow reactive" ty
-    | Local None -> "local reactive"
-    | Local (Some ty) -> cond_reactive "conditionally local reactive" ty
-    | MaybeReactive n -> "maybe (" ^ aux n ^ ")"
-    | Nonreactive -> "normal"
-    | RxVar _ -> "maybe reactive"
-    | Cipp None -> "cipp"
-    | Cipp (Some s) -> "cipp(" ^ s ^ ")"
-    | CippLocal None -> "cipp_local"
-    | CippLocal (Some s) -> "cipp_local(" ^ s ^ ")"
-    | CippGlobal -> "cipp_global"
-  in
-  aux r
-
 let get_printable_shape_field_name = Env.get_shape_field_name
 
-let shape_field_name_ env field =
+let shape_field_name_ this field =
   Aast.(
     match field with
     | (p, Int name) -> Ok (Ast_defs.SFlit_int (p, name))
     | (p, String name) -> Ok (Ast_defs.SFlit_str (p, name))
-    | (p, PU_atom name) -> Ok (Ast_defs.SFlit_str (p, name))
-    | (_, Class_const ((_, CI x), y)) -> Ok (Ast_defs.SFclass_const (x, y))
-    | (_, Class_const ((_, CIself), y)) ->
-      let c_ty = get_node (Env.get_self env) in
-      (match c_ty with
-      | Tclass (sid, _, _) -> Ok (Ast_defs.SFclass_const (sid, y))
-      | _ -> Error `Expected_class)
+    | (_, Class_const ((_, _, CI x), y)) -> Ok (Ast_defs.SFclass_const (x, y))
+    | (_, Class_const ((_, _, CIself), y)) ->
+      (match force this with
+      | Some sid -> Ok (Ast_defs.SFclass_const (sid, y))
+      | None -> Error `Expected_class)
     | _ -> Error `Invalid_shape_field_name)
 
-let shape_field_name env (p, field) =
-  match shape_field_name_ env (p, field) with
+let shape_field_name : env -> Nast.expr -> Ast_defs.shape_field_name option =
+ fun env (_, p, field) ->
+  let this =
+    lazy
+      (match Env.get_self_ty env with
+      | None -> None
+      | Some c_ty ->
+        (match get_node c_ty with
+        | Tclass (sid, _, _) -> Some (Positioned.unsafe_to_raw_positioned sid)
+        | _ -> None))
+  in
+  match shape_field_name_ this (p, field) with
   | Ok x -> Some x
   | Error `Expected_class ->
     Errors.expected_class p;
@@ -586,25 +538,26 @@ let shape_field_name env (p, field) =
     None
 
 (*****************************************************************************)
-(* *)
+(* Class types *)
 (*****************************************************************************)
 
 let string_of_visibility = function
   | Vpublic -> "public"
   | Vprivate _ -> "private"
   | Vprotected _ -> "protected"
+  | Vinternal _ -> "internal"
 
 let unwrap_class_type ty =
   match deref ty with
   | (r, Tapply (name, tparaml)) -> (r, name, tparaml)
   | ( _,
       ( Terr | Tdynamic | Tany _ | Tmixed | Tnonnull
-      | Tarray (_, _)
       | Tdarray (_, _)
-      | Tvarray _ | Tvarray_or_darray _ | Tgeneric _ | Toption _ | Tlike _
-      | Tprim _ | Tfun _ | Ttuple _ | Tshape _ | Tunion _ | Tintersection _
+      | Tvarray _ | Tvarray_or_darray _ | Tvec_or_dict _ | Tgeneric _
+      | Toption _ | Tlike _ | Tprim _ | Tfun _ | Ttuple _ | Tshape _ | Tunion _
+      | Tintersection _
       | Taccess (_, _)
-      | Tthis | Tpu_access _ | Tvar _ ) ) ->
+      | Tthis | Tvar _ ) ) ->
     raise @@ Invalid_argument "unwrap_class_type got non-class"
 
 let try_unwrap_class_type x = Option.try_with (fun () -> unwrap_class_type x)
@@ -640,38 +593,27 @@ end
 (* Function parameters *)
 (*****************************************************************************)
 
-let default_fun_param ?(pos = Pos.none) ty : 'a fun_param =
+let default_fun_param ?(pos = Pos_or_decl.none) ty : 'a fun_param =
   {
     fp_pos = pos;
     fp_name = None;
-    fp_type = { et_type = ty; et_enforced = false };
+    fp_type = { et_type = ty; et_enforced = Unenforced };
     fp_flags =
       make_fp_flags
         ~mode:FPnormal
         ~accept_disposable:false
-        ~mutability:None
-        ~has_default:false;
-    fp_rx_annotation = None;
+        ~has_default:false
+        ~ifc_external:false
+        ~ifc_can_call:false
+        ~via_label:false
+        ~readonly:false;
   }
-
-let fun_mutable user_attributes =
-  let rec go = function
-    | [] -> None
-    | { Aast.ua_name = (_, n); _ } :: _
-      when String.equal n SN.UserAttributes.uaMutable ->
-      Some Param_borrowed_mutable
-    | { Aast.ua_name = (_, n); _ } :: _
-      when String.equal n SN.UserAttributes.uaMaybeMutable ->
-      Some Param_maybe_mutable
-    | _ :: tl -> go tl
-  in
-  go user_attributes
 
 let tany = Env.tany
 
 let mk_tany env p = mk (Reason.Rwitness p, tany env)
 
-let decl_tany = Env.decl_tany
+let mk_tany_ env p = mk (Reason.Rwitness_from_decl p, tany env)
 
 let terr env r =
   let dynamic_view_enabled =
@@ -682,115 +624,37 @@ let terr env r =
   else
     MakeType.err r
 
-(* Hacked version of Typing_subtype.try_intersect for collecting function types *)
-let add_function_type env fty logged =
-  let (untyped_ftys, ftys) = logged in
-  let rec try_intersect env ty tyl =
-    match tyl with
-    | [] -> [ty]
-    | ty' :: tyl' ->
-      if is_sub_type_for_union env ty ty' && not (HasTany.check ty) then
-        try_intersect env ty tyl'
-      else if is_sub_type_for_union env ty' ty && not (HasTany.check ty') then
-        try_intersect env ty' tyl'
-      else
-        ty' :: try_intersect env ty tyl'
+let collect_enum_class_upper_bounds env name =
+  let rec collect seen result name =
+    let upper_bounds = Env.get_upper_bounds env name [] in
+    Typing_set.fold
+      (fun lty (seen, result) ->
+        match get_node lty with
+        | Tclass ((_, name), _, _) when Env.is_enum_class env name ->
+          (seen, SSet.add name result)
+        | Tgeneric (name, _) when not (SSet.mem name seen) ->
+          collect (SSet.add name seen) result name
+        | _ -> (seen, result))
+      upper_bounds
+      (seen, result)
   in
-  if HasTany.check fty then
-    (try_intersect env fty untyped_ftys, ftys)
+  let (_, upper_bounds) = collect SSet.empty SSet.empty name in
+  upper_bounds
+
+let make_locl_subst_for_class_tparams classdef tyl =
+  if List.is_empty tyl then
+    SMap.empty
   else
-    (untyped_ftys, try_intersect env fty ftys)
+    Decl_subst.make_locl (Cls.tparams classdef) tyl
 
-let rec class_get_pu_ env cty name =
-  let (env, ety) = Env.expand_type env cty in
-  match get_node ety with
-  | Tany _
-  | Terr
-  | Tdynamic
-  | Tunion _ ->
-    (env, None)
-  | Tgeneric (tp, targs) ->
-    let upper_bounds = Env.get_upper_bounds env tp targs in
-    let (env, pus) =
-      Typing_set.fold
-        (fun bound (env, pus) ->
-          let (env, opt) = class_get_pu_ env bound name in
-          match opt with
-          | None -> (env, pus)
-          | Some res -> (env, res :: pus))
-        upper_bounds
-        (env, [])
-    in
-    (match pus with
-    | [pu] -> (env, Some pu)
-    | _ -> (env, None))
-  | Tvar _
-  | Tnonnull
-  | Tvarray _
-  | Tdarray _
-  | Tvarray_or_darray _
-  | Toption _
-  | Tprim _
-  | Tfun _
-  | Ttuple _
-  | Tobject
-  | Tshape _
-  | Tunapplied_alias _ ->
-    (env, None)
-  | Tintersection _ -> (env, None)
-  | Tpu_type_access _
-  | Tpu _ ->
-    (env, None)
-  | Tnewtype (_, _, ty)
-  | Tdependent (_, ty) ->
-    class_get_pu_ env ty name
-  | Tclass ((_, c), _, paraml) ->
-    let class_ = Env.get_class env c in
-    begin
-      match class_ with
-      | None -> (env, None)
-      | Some class_ ->
-        (match Env.get_pu_enum env class_ name with
-        | Some et ->
-          (env, Some (cty, Decl_subst.make_locl (Cls.tparams class_) paraml, et))
-        | None -> (env, None))
-    end
+let is_sub_class_refl env c_sub c_super =
+  String.equal c_sub c_super
+  ||
+  match Env.get_class env c_sub with
+  | None -> false
+  | Some cls_sub -> Cls.has_ancestor cls_sub c_super
 
-let class_get_pu ?from_class env ty name =
-  let open Option in
-  let (env, pu) = class_get_pu_ env ty name in
-  ( env,
-    pu >>= fun (this_ty, substs, et) ->
-    let ety_env =
-      {
-        type_expansions = [];
-        this_ty;
-        substs;
-        from_class;
-        quiet = false;
-        on_error = Errors.unify_error;
-      }
-    in
-    Some (ety_env, et) )
-
-let class_get_pu_member ?from_class env ty enum name =
-  let open Option in
-  let (env, enum) = class_get_pu ?from_class env ty enum in
-  ( env,
-    enum >>= fun (ety_env, pu) ->
-    SMap.find_opt name pu.tpu_members >>= fun member -> Some (ety_env, member)
-  )
-
-let class_get_pu_type ?from_class env ty enum name =
-  let open Option in
-  let (env, pu) = class_get_pu ?from_class env ty enum in
-  ( env,
-    pu >>= fun (ety_env, pu) ->
-    SMap.find_opt name pu.tpu_case_types >>= fun dty -> Some (ety_env, dty) )
-
-let class_get_pu_member_type ?from_class env ty enum member name =
-  let open Option in
-  let (env, member) = class_get_pu_member ?from_class env ty enum member in
-  ( env,
-    member >>= fun (ety_env, member) ->
-    SMap.find_opt name member.tpum_types >>= fun dty -> Some (ety_env, dty) )
+let class_has_no_params env c =
+  match Env.get_class env c with
+  | Some cls -> List.is_empty (Decl_provider.Class.tparams cls)
+  | None -> false

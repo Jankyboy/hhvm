@@ -42,7 +42,9 @@ namespace HH {
   \SplHeap::class,
   \HH\Rx\Traversable::class
 )>>
-interface Traversable<+Tv> {}
+interface Traversable<+Tv> {
+
+}
 
 /**
  * Represents an entity that can be iterated over using `foreach`, allowing
@@ -88,7 +90,10 @@ interface KeyedTraversable<+Tk, +Tv> extends Traversable<Tv> {}
  * @guide /hack/collections/interfaces
  */
 <<__Sealed(KeyedContainer::class)>>
-interface Container<+Tv> extends \HH\Rx\Traversable<Tv> {}
+interface Container<+Tv> extends \HH\Rx\Traversable<Tv> {
+
+
+}
 
 /**
  * Represents an entity that can be iterated over using `foreach`, allowing
@@ -114,8 +119,8 @@ interface Container<+Tv> extends \HH\Rx\Traversable<Tv> {}
  * @guide /hack/collections/interfaces
  * @guide /hack/collections/read-write
  */
-<<__Sealed(\ConstVector::class, \ConstMap::class, \ConstSet::class, dict::class, keyset::class, vec::class)>>
-interface KeyedContainer<+Tk as arraykey, +Tv> extends \HH\Rx\KeyedTraversable<Tk, Tv>, Container<Tv> {}
+<<__Sealed(\ConstVector::class, \ConstMap::class, \ConstSet::class, AnyArray::class)>>
+interface KeyedContainer<+Tk as arraykey, +Tv> extends Container<Tv>, \HH\Rx\KeyedTraversable<Tk, Tv> {}
 
 /**
  * For those entities that are `Traversable`, the `Iterator` interfaces provides
@@ -355,7 +360,7 @@ interface Iterable<+Tv> extends \IteratorAggregate<Tv> {
    *
    * @guide /hack/collections/examples
    */
-  public function map<Tu>((function(Tv): Tu) $fn): Iterable<Tu>;
+  public function map<Tu>((function(Tv)[_]: Tu) $fn)[ctx $fn]: Iterable<Tu>;
   /**
    * Returns an `Iterable` containing the values of the current `Iterable` that
    * meet a supplied condition.
@@ -371,7 +376,7 @@ interface Iterable<+Tv> extends \IteratorAggregate<Tv> {
    *
    * @guide /hack/collections/examples
    */
-  public function filter((function(Tv): bool) $fn): Iterable<Tv>;
+  public function filter((function(Tv)[_]: bool) $fn)[ctx $fn]: Iterable<Tv>;
   /**
    *  Returns an `Iterable` where each element is a `Pair` that combines the
    *  element of the current `Iterable` and the provided `Traversable`.
@@ -418,7 +423,7 @@ interface Iterable<+Tv> extends \IteratorAggregate<Tv> {
    * @return - An `Iterable` that is a proper subset of the current `Iterable`
    *           up until the callback returns `false`.
    */
-  public function takeWhile((function(Tv): bool) $fn): Iterable<Tv>;
+  public function takeWhile((function(Tv)[_]: bool) $fn)[ctx $fn]: Iterable<Tv>;
   /**
    * Returns an `Iterable` containing the values after the `n`-th element of the
    * current `Iterable`.
@@ -449,7 +454,7 @@ interface Iterable<+Tv> extends \IteratorAggregate<Tv> {
    * @return - An `Iterable` that is a proper subset of the current `Iterable`
    *           starting after the callback returns `true`.
    */
-  public function skipWhile((function(Tv): bool) $fn): Iterable<Tv>;
+  public function skipWhile((function(Tv)[_]: bool) $fn)[ctx $fn]: Iterable<Tv>;
   /**
    * Returns a subset of the current `Iterable` starting from a given key up
    * to, but not including, the element at the provided length from the
@@ -582,7 +587,7 @@ interface KeyedIterable<Tk, +Tv> extends KeyedTraversable<Tk, Tv>, Iterable<Tv> 
    *
    * @guide /hack/collections/examples
    */
-  public function map<Tu>((function(Tv): Tu) $fn): KeyedIterable<Tk, Tu>;
+  public function map<Tu>((function(Tv)[_]: Tu) $fn)[ctx $fn]: KeyedIterable<Tk, Tu>;
   /**
    * Returns a `KeyedIterable` containing the values after an operation has
    * been applied to each key and value in the current `KeyedIterable`.
@@ -598,7 +603,7 @@ interface KeyedIterable<Tk, +Tv> extends KeyedTraversable<Tk, Tv>, Iterable<Tv> 
    *           operation on the current `KeyedIterable`'s keys and values is
    *           applied.
    */
-  public function mapWithKey<Tu>((function(Tk, Tv): Tu) $fn):
+  public function mapWithKey<Tu>((function(Tk, Tv)[_]: Tu) $fn)[ctx $fn]:
     KeyedIterable<Tk, Tu>;
   /**
    * Returns a `KeyedIterable` containing the values of the current
@@ -615,7 +620,7 @@ interface KeyedIterable<Tk, +Tv> extends KeyedTraversable<Tk, Tv>, Iterable<Tv> 
    *
    * @guide /hack/collections/examples
    */
-  public function filter((function(Tv): bool) $fn): KeyedIterable<Tk, Tv>;
+  public function filter((function(Tv)[_]: bool) $fn)[ctx $fn]: KeyedIterable<Tk, Tv>;
   /**
    * Returns a `KeyedIterable` containing the values of the current
    * `KeyedIterable` that meet a supplied condition applied to its keys and
@@ -633,7 +638,7 @@ interface KeyedIterable<Tk, +Tv> extends KeyedTraversable<Tk, Tv>, Iterable<Tv> 
    *           `KeyedIterable`.
    *
    */
-  public function filterWithKey((function(Tk, Tv): bool) $fn):
+  public function filterWithKey((function(Tk, Tv)[_]: bool) $fn)[ctx $fn]:
     KeyedIterable<Tk, Tv>;
   /**
    *  Returns a `KeyedIterable` where each element is a `Pair` that combines the
@@ -682,7 +687,7 @@ interface KeyedIterable<Tk, +Tv> extends KeyedTraversable<Tk, Tv>, Iterable<Tv> 
    * @return - A `KeyedIterable` that is a proper subset of the current
    *           `KeyedIterable` up until the callback returns `false`.
    */
-  public function takeWhile((function(Tv): bool) $fn): KeyedIterable<Tk, Tv>;
+  public function takeWhile((function(Tv)[_]: bool) $fn)[ctx $fn]: KeyedIterable<Tk, Tv>;
   /**
    * Returns a `KeyedIterable` containing the values after the `n`-th element
    * of the current `KeyedIterable`.
@@ -714,7 +719,7 @@ interface KeyedIterable<Tk, +Tv> extends KeyedTraversable<Tk, Tv>, Iterable<Tv> 
    * @return - A `KeyedIterable` that is a proper subset of the current
    *           `KeyedIterable` starting after the callback returns `true`.
    */
-  public function skipWhile((function(Tv): bool) $fn): KeyedIterable<Tk, Tv>;
+  public function skipWhile((function(Tv)[_]: bool) $fn)[ctx $fn]: KeyedIterable<Tk, Tv>;
   /**
    * Returns a subset of the current `KeyedIterable` starting from a given key
    * up to, but not including, the element at the provided length from the
@@ -838,9 +843,13 @@ interface XHPChild {}
  * Stringish is a type that matches strings as well as string-convertible
  * objects: that is, objects that provide the __toString method
  */
-<<__HipHopSpecific>>
-interface Stringish extends XHPChild {
-  <<__Deprecated('Use `stringish_cast(<expression>)` instead.')>>
+<<__Sealed(StringishObject::class)>>
+interface Stringish extends XHPChild {}
+
+/**
+ * StringishObject represents values of Stringish that are specifically objects
+ */
+interface StringishObject extends Stringish {
   public function __toString(): string;
 }
 
@@ -855,8 +864,9 @@ namespace HH {
  * @guide /hack/attributes/introduction
  * @guide /hack/attributes/special
   */
-<<__HipHopSpecific>>
+
 interface IMemoizeParam {
+  abstract const ctx CMemoParam = [defaults];
    /**
    * Serialize this object to a string that can be used as a
    * dictionary key to differentiate instances of this class.
@@ -871,7 +881,7 @@ namespace {
 /**
   * Objects that implement IDisposable may be used in using statements
   */
-<<__HipHopSpecific>>
+
 interface IDisposable {
   /**
    * This method is invoked exactly once at the end of the scope of the
@@ -883,7 +893,7 @@ interface IDisposable {
 /**
   * Objects that implement IAsyncDisposable may be used in await using statements
   */
-<<__HipHopSpecific>>
+
 interface IAsyncDisposable {
   /**
    * This method is invoked exactly once at the end of the scope of the

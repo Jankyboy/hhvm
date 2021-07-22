@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_UTIL_ASM_X64_H_
-#define incl_HPHP_UTIL_ASM_X64_H_
+#pragma once
 
 #include <type_traits>
 #include <memory>
@@ -112,6 +111,7 @@ struct RegRIP {
 inline Reg8 rbyte(Reg32 r)     { return Reg8(int(r)); }
 inline Reg8 rbyte(Reg64 r)     { return Reg8(int(r)); }
 inline Reg16 r16(Reg8 r)       { return Reg16(int(r)); }
+inline Reg16 r16(Reg32 r)      { return Reg16(int(r)); }
 inline Reg32 r32(Reg8 r)       { return Reg32(int(r)); }
 inline Reg32 r32(Reg16 r)      { return Reg32(int(r)); }
 inline Reg32 r32(Reg32 r)      { return r; }
@@ -647,6 +647,7 @@ public:
 
   virtual void movq(Immed64 imm, Reg64 r)       = 0;
   virtual void loadzbl(MemoryRef m, Reg32 r)    = 0;
+  virtual void loadzwl(MemoryRef m, Reg32 r)    = 0;
   virtual void movzbl(Reg8 src, Reg32 dest)     = 0;
   virtual void movsbl(Reg8 src, Reg32 dest)     = 0;
   virtual void movzwl(Reg16 src, Reg32 dest)    = 0;
@@ -688,6 +689,7 @@ public:
 
   virtual void push(MemoryRef m)                = 0;
   virtual void pop (MemoryRef m)                = 0;
+  virtual void prefetch(MemoryRef m)            = 0;
   virtual void incq(MemoryRef m)                = 0;
   virtual void incl(MemoryRef m)                = 0;
   virtual void incw(MemoryRef m)                = 0;
@@ -1013,8 +1015,9 @@ struct Label {
   {}
 
   ~Label() {
-    if (!m_toPatch.empty()) {
-      assert(m_a && m_address && "Label had jumps but was never set");
+    // Label had jumps but was never set -- this can happen if we fill the TC.
+    if (!m_a || !m_address) {
+      return;
     }
     for (auto& ji : m_toPatch) {
       auto realSrc = ji.a->toDestAddress(ji.addr);
@@ -1270,5 +1273,3 @@ inline DecodedInstruction::BranchType& operator|=(
 #undef CCS
 
 }}}
-
-#endif

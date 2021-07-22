@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_MEMORY_MANAGER_DEFS_H
-#define incl_HPHP_MEMORY_MANAGER_DEFS_H
+#pragma once
 
 #include "hphp/runtime/base/bespoke-array.h"
 #include "hphp/runtime/base/mixed-array-defs.h"
@@ -258,14 +257,10 @@ inline size_t allocSize(const HeapObject* h) {
 
   // Ordering depends on header-kind.h.
   static constexpr uint16_t kind_sizes[] = {
-    0, /* Mixed */
-    0, /* BespokeDArray */
-    0, /* Packed */
-    0, /* BespokeVArray */
-    0, /* Dict */
-    0, /* BespokeDict */
     0, /* Vec */
     0, /* BespokeVec */
+    0, /* Dict */
+    0, /* BespokeDict */
     0, /* Keyset */
     0, /* BespokeKeyset */
     0, /* String */
@@ -315,10 +310,8 @@ inline size_t allocSize(const HeapObject* h) {
 #undef CHECKSIZE
 #define CHECKSIZE(knd)\
   static_assert(kind_sizes[(int)HeaderKind::knd] == 0, #knd);
-  CHECKSIZE(Packed)
-  CHECKSIZE(Mixed)
-  CHECKSIZE(Dict)
   CHECKSIZE(Vec)
+  CHECKSIZE(Dict)
   CHECKSIZE(Keyset)
   CHECKSIZE(String)
   CHECKSIZE(Resource)
@@ -349,13 +342,11 @@ inline size_t allocSize(const HeapObject* h) {
   // return a rounded-up size.
   size_t size = 0;
   switch (kind) {
-    case HeaderKind::Packed:
     case HeaderKind::Vec:
       // size = kSizeIndex2Size[h->aux16>>8]
       size = PackedArray::heapSize(static_cast<const ArrayData*>(h));
       assertx(size == MemoryManager::sizeClass(size));
       return size;
-    case HeaderKind::Mixed:
     case HeaderKind::Dict:
       // size = fn of h->m_scale
       size = static_cast<const MixedArray*>(h)->heapSize();
@@ -364,15 +355,13 @@ inline size_t allocSize(const HeapObject* h) {
       // size = fn of h->m_scale
       size = static_cast<const SetArray*>(h)->heapSize();
       break;
-    case HeaderKind::BespokeVArray:
-    case HeaderKind::BespokeDArray:
     case HeaderKind::BespokeVec:
     case HeaderKind::BespokeDict:
     case HeaderKind::BespokeKeyset:
       size = static_cast<const BespokeArray*>(h)->heapSize();
       break;
     case HeaderKind::String:
-      // size = isFlat ? isRefCounted ? table[aux16] : m_size+C : proxy_size;
+      // size = isRefCounted ? table[aux16] : m_size+C
       size = static_cast<const StringData*>(h)->heapSize();
       break;
     case HeaderKind::Resource:
@@ -612,19 +601,5 @@ template<class Fn> void MemoryManager::forEachObject(Fn fn) {
   }
 }
 
-template<class Fn> void MemoryManager::sweepApcStrings(Fn fn) {
-  auto& head = getStringList();
-  for (StringDataNode *next, *n = head.next; n != &head; n = next) {
-    next = n->next;
-    assertx(next && uintptr_t(next) != kSmallFreeWord);
-    assertx(next && uintptr_t(next) != kMallocFreeWord);
-    auto const s = StringData::node2str(n);
-    if (fn(s)) {
-      s->unProxy();
-    }
-  }
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 }
-#endif

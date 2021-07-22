@@ -425,7 +425,7 @@ void pdo_raise_impl_error(sp_PDOResource rsrc, PDOStatement* stmt,
   if (dbh->error_mode != PDO_ERRMODE_EXCEPTION) {
     raise_warning("%s", err.c_str());
   } else {
-    VArrayInit info(2);
+    VecInit info(2);
     info.append(String(*pdo_err, CopyString));
     info.append(0LL);
     throw_pdo_exception(info.toArray(), "%s",
@@ -458,7 +458,7 @@ void pdo_handle_error(sp_PDOResource rsrc, PDOStatement* stmt) {
   String supp;
   Array info;
   if (dbh->support(PDOConnection::MethodFetchErr)) {
-    info = make_varray(String(*pdo_err, CopyString));
+    info = make_vec_array(String(*pdo_err, CopyString));
     if (dbh->fetchErr(stmt, info)) {
       if (info.exists(1)) {
         native_code = info[1].toInt64();
@@ -510,7 +510,7 @@ static Object pdo_stmt_instantiate(sp_PDOResource dbh, const String& clsname,
                          "constructor arguments must be passed as an array");
     return Object();
   }
-  Class* cls = Unit::loadClass(name.get());
+  Class* cls = Class::load(name.get());
   if (!cls) {
     return Object();
   }
@@ -527,7 +527,7 @@ static void pdo_stmt_construct(sp_PDOStatement stmt, Object object,
   if (clsname.empty()) {
     return;
   }
-  Class* cls = Unit::loadClass(clsname.get());
+  Class* cls = Class::load(clsname.get());
   if (!cls) {
     return;
   }
@@ -562,7 +562,7 @@ static bool valid_statement_class(sp_PDOResource dbh, const Variant& opt,
     PDO_HANDLE_DBH_ERR(dbh);
     return false;
   }
-  HPHP::Class* cls = HPHP::Unit::loadClass(clsname.get());
+  HPHP::Class* cls = HPHP::Class::load(clsname.get());
   if (cls) {
     const HPHP::Func* method = cls->getDeclaredCtor();
     if (method && method->isPublic()) {
@@ -684,7 +684,7 @@ static bool do_fetch_class_prepare(sp_PDOStatement stmt) {
     stmt->fetch.clsname = "stdclass";
   }
   stmt->fetch.constructor = empty_string(); //NULL;
-  HPHP::Class* cls = HPHP::Unit::loadClass(clsname.get());
+  HPHP::Class* cls = HPHP::Class::load(clsname.get());
   if (cls) {
     const HPHP::Func* method = cls->getDeclaredCtor();
     if (method) {
@@ -1205,7 +1205,7 @@ bool HHVM_METHOD(PDO, setattribute, int64_t attribute,
   return false;
 }
 
-Variant HHVM_METHOD(PDO, getattribute, int64_t attribute) {
+Variant HHVM_METHOD(PDO, getAttribute, int64_t attribute) {
   auto data = Native::data<PDOData>(this_);
 
   assertx(data->m_dbh->conn()->driver);
@@ -1328,7 +1328,7 @@ static Array HHVM_METHOD(PDO, errorinfo) {
 
   assertx(data->m_dbh->conn()->driver);
 
-  Array ret = Array::CreateVArray();
+  Array ret = Array::CreateVec();
   if (data->m_dbh->query_stmt) {
     ret.append(String(data->m_dbh->query_stmt->error_code, CopyString));
   } else {
@@ -1750,7 +1750,7 @@ static bool do_fetch(sp_PDOStatement stmt,
   case PDO_FETCH_BOTH:
   case PDO_FETCH_NUM:
   case PDO_FETCH_NAMED:
-    ret = Array::CreateDArray();
+    ret = Array::CreateDict();
     break;
 
   case PDO_FETCH_KEY_PAIR:
@@ -1761,7 +1761,7 @@ static bool do_fetch(sp_PDOStatement stmt,
       return false;
     }
     if (!return_all) {
-      ret = Array::CreateDArray();
+      ret = Array::CreateDict();
     }
     break;
 
@@ -1908,11 +1908,11 @@ static bool do_fetch(sp_PDOStatement stmt,
       auto const name_key =
         ret.asArrRef().convertKey<IntishCast::Cast>(name);
       /* already have an item with this name? */
-      forceToDArray(ret);
+      forceToDict(ret);
       if (ret.asArrRef().exists(name_key)) {
         auto const curr_val = ret.asArrRef().lval(name_key);
         if (!isArrayLikeType(curr_val.type())) {
-          Array arr = Array::CreateVArray();
+          Array arr = Array::CreateVec();
           arr.append(curr_val.tv());
           arr.append(val);
           ret.toArray().set(name_key, make_array_like_tv(arr.get()));
@@ -1953,7 +1953,7 @@ static bool do_fetch(sp_PDOStatement stmt,
       break;
 
     case PDO_FETCH_FUNC:
-      forceToDArray(stmt->fetch.values).set(idx, val);
+      forceToDict(stmt->fetch.values).set(idx, val);
       break;
 
     default:
@@ -2508,10 +2508,6 @@ safe:
               case KindOfDict:
               case KindOfPersistentKeyset:
               case KindOfKeyset:
-              case KindOfPersistentDArray:
-              case KindOfDArray:
-              case KindOfPersistentVArray:
-              case KindOfVArray:
               case KindOfObject:
               case KindOfResource:
               case KindOfRFunc:
@@ -2908,7 +2904,7 @@ Variant HHVM_METHOD(PDOStatement, fetchall, int64_t how /* = 0 */,
     if ((how & PDO_FETCH_GROUP) || how == PDO_FETCH_KEY_PAIR ||
         (how == PDO_FETCH_USE_DEFAULT &&
          self->m_stmt->default_fetch_type == PDO_FETCH_KEY_PAIR)) {
-      return_value = Array::CreateDArray();
+      return_value = Array::CreateDict();
       return_all = &return_value;
     }
     if (!do_fetch(self->m_stmt, data, (PDOFetchType)(how | flags),
@@ -2930,7 +2926,7 @@ Variant HHVM_METHOD(PDOStatement, fetchall, int64_t how /* = 0 */,
         continue;
       }
     } else {
-      return_value = Array::CreateVArray();
+      return_value = Array::CreateVec();
       do {
         return_value.asArrRef().append(data);
         data.unset();
@@ -2950,7 +2946,7 @@ Variant HHVM_METHOD(PDOStatement, fetchall, int64_t how /* = 0 */,
 
     /* on no results, return an empty array */
     if (!return_value.isArray()) {
-      return_value = Array::CreateDArray();
+      return_value = Array::CreateDict();
     }
   }
   return return_value;
@@ -2982,7 +2978,7 @@ static Array HHVM_METHOD(PDOStatement, errorinfo) {
     return null_array;
   }
 
-  Array ret = Array::CreateVArray();
+  Array ret = Array::CreateVec();
   ret.append(String(data->m_stmt->error_code, CopyString));
 
   if (data->m_stmt->dbh->conn()->support(PDOConnection::MethodFetchErr)) {
@@ -3021,7 +3017,7 @@ static Variant HHVM_METHOD(PDOStatement, setattribute, int64_t attribute,
   return false;
 }
 
-static Variant HHVM_METHOD(PDOStatement, getattribute, int64_t attribute) {
+static Variant HHVM_METHOD(PDOStatement, getAttribute, int64_t attribute) {
   auto data = Native::data<PDOStatementData>(this_);
   if (data->m_stmt == nullptr) {
     return false;
@@ -3090,7 +3086,7 @@ static Variant HHVM_METHOD(PDOStatement, getcolumnmeta, int64_t column) {
   }
 
   setPDOErrorNone(data->m_stmt->error_code);
-  auto ret = Array::CreateDArray();
+  auto ret = Array::CreateDict();
   if (!data->m_stmt->getColumnMeta(column, ret)) {
     PDO_HANDLE_STMT_ERR(data->m_stmt);
     return false;
@@ -3302,7 +3298,7 @@ static struct PDOExtension final : Extension {
     HHVM_ME(PDO, intransaction);
     HHVM_ME(PDO, rollback);
     HHVM_ME(PDO, setattribute);
-    HHVM_ME(PDO, getattribute);
+    HHVM_ME(PDO, getAttribute);
     HHVM_ME(PDO, exec);
     HHVM_ME(PDO, lastinsertid);
     HHVM_ME(PDO, errorcode);
@@ -3324,7 +3320,7 @@ static struct PDOExtension final : Extension {
     HHVM_ME(PDOStatement, errorcode);
     HHVM_ME(PDOStatement, errorinfo);
     HHVM_ME(PDOStatement, setattribute);
-    HHVM_ME(PDOStatement, getattribute);
+    HHVM_ME(PDOStatement, getAttribute);
     HHVM_ME(PDOStatement, columncount);
     HHVM_ME(PDOStatement, getcolumnmeta);
     HHVM_ME(PDOStatement, setfetchmode);

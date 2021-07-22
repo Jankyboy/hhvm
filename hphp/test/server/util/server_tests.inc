@@ -104,7 +104,6 @@ function getServerCmd($serverPort, $adminPort, $debugPort, $home, $root,
   $includePathConfig = ' -vServer.IncludeSearchPaths.0='.$root;
   $adminPortConfig = $adminPort ? ' -vAdminServer.Port='.$adminPort : '';
   $debugPortConfig = $debugPort ? ' -vEval.Debugger.Port='.$debugPort : '';
-  $repoConfig = " -vRepo.Central.Path={$LOG_ROOT}_server{$test_run_id}_{$instance_id}.hhbc";
   $useJit = array_key_exists('HHVM_JIT', $_ENV) && $_ENV['HHVM_JIT'] == 1;
   $jitConfig = ' -vEval.Jit='.($useJit ? "true" : "false");
   // To emulate sandbox setup, let Sandbox.Home be '$home'
@@ -138,9 +137,11 @@ function getServerCmd($serverPort, $adminPort, $debugPort, $home, $root,
       $return_var = -1;
       tlog(exec($cmd, inout $output, inout $return_var));
     }
-    $repoConfig .=
-      " -vRepo.Local.Path=".ServerUtilServerTests::$repo_builds[$repoKey]."/hhvm.hhbc".
+    $repoConfig =
+      " -vRepo.Path=".ServerUtilServerTests::$repo_builds[$repoKey]."/hhvm.hhbc".
       " -vRepo.Authoritative=true";
+  } else {
+    $repoConfig = '';
   }
 
   $cmd = "exec env MALLOC_CONF=junk:true TESTID={$serverId} " .
@@ -152,7 +153,7 @@ function getServerCmd($serverPort, $adminPort, $debugPort, $home, $root,
     ' -vPidFile=' . escapeshellarg(__SystemLib\hphp_test_tmppath('www.pid')) .
     $portConfig . $srcRootConfig .
     $includePathConfig . $sandboxHomeConfig . $adminPortConfig .
-    $debugPortConfig . $repoConfig . $jitConfig . ' ' . $customArgs .
+    $debugPortConfig . $jitConfig . ' ' . $customArgs .
     " > {$LOG_ROOT}_test_server_stdout$test_run_id.log" .
     " 2> {$LOG_ROOT}_test_server_stderr$test_run_id.log";
 
@@ -211,7 +212,7 @@ function checkServerId($serverPort, $expectedIds) {
     tlog('a server for a different test responded');
     return false;
   }
-  tlog('Server replied: '.$r);
+  tlog('Server replied: '.(string)($r));
   return false;
 }
 
@@ -320,9 +321,13 @@ function http_request($host, $port, $path, $timeout = 1200, $curl_opts = '') {
 
   $LOG_ROOT = ServerUtilServerTests::$LOG_ROOT;
   $test_run_id = ServerUtilServerTests::test_run_id();
-  $cmd = "curl $post --trace-ascii {$LOG_ROOT}_curl$test_run_id.log ".
+  $post__str = (string)($post);
+  $LOG_ROOT__str = (string)($LOG_ROOT);
+  $test_run_id__str = (string)($test_run_id);
+  $headers__str = (string)($headers);
+  $cmd = "curl $post__str --trace-ascii {$LOG_ROOT__str}_curl$test_run_id__str.log ".
     "--silent $curl_opts --connect-timeout $timeout ".
-    "-H 'Host: $host_name' $headers --url \"$url\"";
+    "-H 'Host: $host_name' $headers__str --url \"$url\"";
   tlog("Requesting page with command: $cmd");
   $result = null;
   $return_var = -1;

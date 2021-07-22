@@ -14,20 +14,17 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_ARCH_H
-#define incl_HPHP_ARCH_H
+#pragma once
 
 #include "hphp/util/assertions.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
-enum class Arch { X64, ARM, PPC64, };
+enum class Arch { X64, ARM, };
 
 constexpr Arch arch() {
-#if defined(__powerpc64__)
-  return Arch::PPC64;
-#elif defined(__aarch64__)
+#if defined(__aarch64__)
   return Arch::ARM;
 #else
   return Arch::X64;
@@ -63,8 +60,6 @@ bool arch_any(Arch a, Tail&&... archs) {
         return x64::MSVC_GLUE(func, (__VA_ARGS__));                   \
       case Arch::ARM:                                                 \
         return arm::MSVC_GLUE(func, (__VA_ARGS__));                   \
-      case Arch::PPC64:                                               \
-        return ppc64::MSVC_GLUE(func, (__VA_ARGS__));                 \
     }                                                                 \
     not_reached();                                                    \
   }())
@@ -73,4 +68,3 @@ bool arch_any(Arch a, Tail&&... archs) {
 
 }
 
-#endif

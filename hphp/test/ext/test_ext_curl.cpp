@@ -169,7 +169,7 @@ bool TestExtCurl::test_curl_setopt_array() {
   Variant c = HHVM_FN(curl_init)();
   HHVM_FN(curl_setopt_array)
     (c.toResource(),
-     make_map_array(CURLOPT_URL, String(get_request_uri()),
+     make_dict_array(CURLOPT_URL, String(get_request_uri()),
                     CURLOPT_RETURNTRANSFER, true));
   Variant res = HHVM_FN(curl_exec)(c.toResource());
   VS(res, "OK");
@@ -221,11 +221,11 @@ bool TestExtCurl::test_curl_error() {
   HHVM_FN(curl_setopt)(c.toResource(), CURLOPT_RETURNTRANSFER, true);
   HHVM_FN(curl_exec)(c.toResource());
   Variant err = HHVM_FN(curl_error)(c.toResource());
-  VERIFY(equal(err, String("Couldn't resolve host 'www.thereisnosuchanurl'")) ||
+  VERIFY(equal(err, String("Couldn't resolve host 'www.thereisnosuchanurl'").get()) ||
          equal(err, String("Could not resolve host: www.thereisnosuchanurl"
-                " (Domain name not found)")) ||
+                " (Domain name not found)").get()) ||
          equal(err, String("Could not resolve: www.thereisnosuchanurl"
-                " (Domain name not found)")));
+                " (Domain name not found)").get()));
   return Count(true);
 }
 

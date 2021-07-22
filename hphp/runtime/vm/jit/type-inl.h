@@ -67,7 +67,6 @@ IRT_RUNTIME
 #undef IRT
 
 // Vanilla types that appear in irgen.
-static auto const TVanillaArr     = TArr.narrowToVanilla();
 static auto const TVanillaVec     = TVec.narrowToVanilla();
 static auto const TVanillaDict    = TDict.narrowToVanilla();
 static auto const TVanillaKeyset  = TKeyset.narrowToVanilla();
@@ -133,8 +132,6 @@ inline Type for_const(const StringData* sd) {
 }
 inline Type for_const(const ArrayData* ad) {
   assertx(ad->isStatic());
-  if (ad->isVArray()) return TStaticVArr;
-  if (ad->isDArray()) return TStaticDArr;
   if (ad->isVecType()) return TStaticVec;
   if (ad->isDictType()) return TStaticDict;
   if (ad->isKeysetType()) return TStaticKeyset;
@@ -248,7 +245,7 @@ inline bool Type::isKnownDataType() const {
 
   // Some unions correspond to single KindOfs.
   if (!isUnion()) return true;
-  return subtypeOfAny(TStr, TVArr, TDArr, TVec, TDict, TKeyset);
+  return subtypeOfAny(TStr, TVec, TDict, TKeyset);
 }
 
 inline bool Type::needsReg() const {
@@ -294,11 +291,18 @@ inline Type Type::cns(std::nullptr_t) {
   return TNullptr;
 }
 
-inline Type Type::cns(const TypedValue& tv) {
+inline Type Type::cns(TypedValue tv) {
+  if (auto const t = tryCns(tv)) return *t;
+  always_assert(false && "Invalid KindOf for constant TypedValue");
+}
+
+inline Optional<Type> Type::tryCns(TypedValue tv) {
+  assertx(tvIsPlausible(tv));
+
   if (tv.m_type == KindOfUninit) return TUninit;
   if (tv.m_type == KindOfNull)   return TInitNull;
 
-  auto ret = [&] {
+  auto ret = [&] () -> Optional<Type> {
     switch (tv.m_type) {
       case KindOfUninit:
       case KindOfNull:
@@ -315,32 +319,13 @@ inline Type Type::cns(const TypedValue& tv) {
 
       case KindOfPersistentVec:
       case KindOfVec:
-        assertx(val(tv).parr->isVecType());
-        return type_detail::for_const(tv.m_data.parr);
-
       case KindOfPersistentDict:
       case KindOfDict:
-        assertx(val(tv).parr->isDictType());
-        return type_detail::for_const(tv.m_data.parr);
-
       case KindOfPersistentKeyset:
       case KindOfKeyset:
-        assertx(val(tv).parr->isKeysetType());
         return type_detail::for_const(tv.m_data.parr);
-
-      case KindOfPersistentDArray:
-      case KindOfDArray:
-        assertx(val(tv).parr->isDArray());
-        return type_detail::for_const(tv.m_data.parr);
-
-      case KindOfPersistentVArray:
-      case KindOfVArray:
-        assertx(val(tv).parr->isVArray());
-        return type_detail::for_const(tv.m_data.parr);
-
       case KindOfLazyClass:
         return type_detail::for_const(tv.m_data.plazyclass);
-
       case KindOfObject:
       case KindOfResource:
       case KindOfRFunc:
@@ -350,12 +335,14 @@ inline Type Type::cns(const TypedValue& tv) {
       case KindOfClsMeth:
       case KindOfRClsMeth:
       case KindOfRecord:
-        always_assert(false && "Invalid KindOf for constant TypedValue");
+        return std::nullopt;
     }
     not_reached();
   }();
-  ret.m_hasConstVal = true;
-  ret.m_extra = tv.m_data.num;
+  if (ret) {
+    ret->m_hasConstVal = true;
+    ret->m_extra = tv.m_data.num;
+  }
   return ret;
 }
 
@@ -367,8 +354,8 @@ inline Type Type::dropConstVal() const {
   assertx(ptrKind() == Ptr::Elem || !isUnion());
   auto const result = Type(m_bits, ptrKind(), memKind());
 
-  if (*this <= TArrLike && arrLikeVal()->isVanilla()) {
-    return result.narrowToVanilla();
+  if (*this <= TArrLike) {
+    return Type(result, ArraySpec(ArrayLayout::FromArray(m_arrVal)));
   }
   return result;
 }
@@ -408,7 +395,6 @@ IMPLEMENT_CNS_VAL(TBool,       bool, bool)
 IMPLEMENT_CNS_VAL(TInt,        int,  int64_t)
 IMPLEMENT_CNS_VAL(TDbl,        dbl,  double)
 IMPLEMENT_CNS_VAL(TStaticStr,  str,  const StringData*)
-IMPLEMENT_CNS_VAL(TStaticArr,  arr,  const ArrayData*)
 IMPLEMENT_CNS_VAL(TStaticVec,  vec,  const ArrayData*)
 IMPLEMENT_CNS_VAL(TStaticDict, dict, const ArrayData*)
 IMPLEMENT_CNS_VAL(TStaticKeyset, keyset, const ArrayData*)
@@ -426,18 +412,6 @@ IMPLEMENT_CNS_VAL(TMemToCell,  ptr, const TypedValue*)
 ///////////////////////////////////////////////////////////////////////////////
 // Specialized type creation.
 
-inline Type Type::Array(const RepoAuthType::Array* rat) {
-  return Type(TArr, ArraySpec(rat));
-}
-
-inline Type Type::VArr(const RepoAuthType::Array* rat) {
-  return Type(TVArr, ArraySpec(rat));
-}
-
-inline Type Type::DArr(const RepoAuthType::Array* rat) {
-  return Type(TDArr, ArraySpec(rat));
-}
-
 inline Type Type::Vec(const RepoAuthType::Array* rat) {
   return Type(TVec, ArraySpec(rat));
 }
@@ -450,18 +424,6 @@ inline Type Type::Keyset(const RepoAuthType::Array* rat) {
   return Type(TKeyset, ArraySpec(rat));
 }
 
-inline Type Type::StaticArray(const RepoAuthType::Array* rat) {
-  return Type(TStaticArr, ArraySpec(rat));
-}
-
-inline Type Type::StaticVArr(const RepoAuthType::Array* rat) {
-  return Type(TStaticVArr, ArraySpec(rat));
-}
-
-inline Type Type::StaticDArr(const RepoAuthType::Array* rat) {
-  return Type(TStaticDArr, ArraySpec(rat));
-}
-
 inline Type Type::StaticVec(const RepoAuthType::Array* rat) {
   return Type(TStaticVec, ArraySpec(rat));
 }
@@ -472,18 +434,6 @@ inline Type Type::StaticDict(const RepoAuthType::Array* rat) {
 
 inline Type Type::StaticKeyset(const RepoAuthType::Array* rat) {
   return Type(TStaticKeyset, ArraySpec(rat));
-}
-
-inline Type Type::CountedArray(const RepoAuthType::Array* rat) {
-  return Type(TCountedArr, ArraySpec(rat));
-}
-
-inline Type Type::CountedVArr(const RepoAuthType::Array* rat) {
-  return Type(TCountedVArr, ArraySpec(rat));
-}
-
-inline Type Type::CountedDArr(const RepoAuthType::Array* rat) {
-  return Type(TCountedDArr, ArraySpec(rat));
 }
 
 inline Type Type::CountedVec(const RepoAuthType::Array* rat) {
@@ -564,12 +514,10 @@ inline ArraySpec Type::arrSpec() const {
   }
 
   // For constant pointers, we don't have an array-like val, so return Top.
-  // For constant non-vanilla array-likes, return Top until we have the ability
-  // to represent "bespoke" ArraySpecs. (We're punning array-like vals here.)
+  // Else, use the layout of the array val. (We pun array-like types here.)
   if (m_hasConstVal) {
     if (m_ptr != Ptr::NotPtr) return ArraySpec::Top();
-    if (m_arrVal->isVanilla()) return ArraySpec{ArraySpec::LayoutTag::Vanilla};
-    return ArraySpec{BespokeArray::asBespoke(m_arrVal)->layout()};
+    return ArraySpec(ArrayLayout::FromArray(m_arrVal));
   }
 
   assertx(m_arrSpec != ArraySpec::Bottom());

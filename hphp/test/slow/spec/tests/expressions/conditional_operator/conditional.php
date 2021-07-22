@@ -13,7 +13,7 @@ error_reporting(-1);
 // check for even integer values by inspecting the low-order bit
 
 for ($i = -5; $i <= 5; ++$i)
-    echo "$i is ".(($i & 1 == TRUE) ? "odd\n" : "even\n");
+    echo "$i is ".(($i & 1) === 1 ? "odd\n" : "even\n");
 
 // some simple examples
 
@@ -57,7 +57,7 @@ $i++ ? f($i) : f(++$i);
 $scalarValueList = varray[10, -100, 0, 1.234, 0.0, TRUE, FALSE, NULL, "123", 'xx', ""];
 foreach ($scalarValueList as $v)
 {
-    echo "\$v = $v, ";
+    echo "\$v = ".(string)$v.", ";
     $a = $v ? 100 : "Hello";
     var_dump($a);
 }

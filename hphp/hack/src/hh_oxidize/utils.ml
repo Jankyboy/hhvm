@@ -8,6 +8,7 @@
 
 open Core_kernel
 open Reordered_argument_collections
+module Unix = Caml_unix
 
 (** HACK: Raised when we encounter a construct in a type declaration which we
     have chosen not to handle (because it occurs in a type declaration which we
@@ -26,7 +27,8 @@ let with_log_indent f =
     let result = f () in
     log_indent := old_indent;
     result
-  with exn ->
+  with
+  | exn ->
     log_indent := old_indent;
     raise exn
 
@@ -37,8 +39,10 @@ let with_tempfile f =
   try
     f temp_file;
     Unix.unlink temp_file
-  with exn ->
-    (try Unix.unlink temp_file with _ -> ());
+  with
+  | exn ->
+    (try Unix.unlink temp_file with
+    | _ -> ());
     raise exn
 
 let rust_keywords =
@@ -103,8 +107,8 @@ let map_and_concat ?sep l ~f = List.map l ~f |> String.concat ?sep
 let common_prefix a b =
   let len = min (String.length a) (String.length b) in
   let rec aux i =
-    if i = len || a.[i] <> b.[i] then
-      String.sub a 0 i
+    if i = len || not (Char.equal a.[i] b.[i]) then
+      String.sub a ~pos:0 ~len:i
     else
       aux (i + 1)
   in
@@ -132,7 +136,7 @@ let split_on_uppercase str =
 
 let add_trailing_underscore original_name name =
   if
-    original_name.[String.length original_name - 1] = '_'
+    Char.equal original_name.[String.length original_name - 1] '_'
     || SSet.mem rust_keywords name
   then
     name ^ "_"

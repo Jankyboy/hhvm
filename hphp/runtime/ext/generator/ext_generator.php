@@ -6,36 +6,36 @@ final class Generator implements HH\KeyedIterator {
   private function __construct(): void {}
 
   <<__Native("OpCodeImpl")>>
-  public function current(): mixed;
+  public function current()[]: mixed;
 
   <<__Native("OpCodeImpl")>>
-  public function key(): mixed;
+  public function key()[]: mixed;
 
   <<__Native("OpCodeImpl")>>
-  public function next(): mixed;
+  public function next()[/* gen $this */]: mixed;
 
   <<__Native("OpCodeImpl")>>
-  private function throw(object $ex): mixed;
+  private function throw(object $ex)[/* gen $this */]: mixed;
 
   <<__Native("OpCodeImpl")>>
-  public function rewind(): mixed;
+  public function rewind()[/* gen $this */]: mixed;
 
   <<__Native("OpCodeImpl")>>
-  public function valid(): bool;
+  public function valid()[]: bool;
 
   <<__Native("OpCodeImpl")>>
-  public function send(mixed $v): mixed;
+  public function send(mixed $v)[/* gen $this */]: mixed;
 
   <<__Native("OpCodeImpl")>>
-  public function raise(mixed $v): mixed;
+  public function raise(mixed $v)[/* gen $this */]: mixed;
 
   <<__Native("OpCodeImpl")>>
-  public function getReturn(): mixed;
+  public function getReturn()[]: mixed;
 
   <<__Native>>
-  public function getOrigFuncName(): string;
+  public function getOrigFuncName()[]: string;
 
   <<__Native>>
-  public function getCalledClass(): string;
+  public function getCalledClass()[]: string;
 
 }

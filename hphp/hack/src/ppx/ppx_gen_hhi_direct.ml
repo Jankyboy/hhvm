@@ -7,4 +7,5 @@
  *
  *)
 
-let () = Ppx_gen_hhi.register ()
+(* Ppxlib based PPX, BUCK entry point*)
+let () = Ppxlib.Driver.standalone ()

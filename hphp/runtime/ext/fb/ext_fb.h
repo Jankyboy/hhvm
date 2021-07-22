@@ -15,8 +15,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EXT_FB_H_
-#define incl_HPHP_EXT_FB_H_
+#pragma once
 
 #include "hphp/runtime/ext/extension.h"
 
@@ -26,18 +25,18 @@ namespace HPHP {
 extern const int64_t k_FB_SERIALIZE_HACK_ARRAYS;
 extern const int64_t k_FB_SERIALIZE_HACK_ARRAYS_AND_KEYSETS;
 extern const int64_t k_FB_SERIALIZE_VARRAY_DARRAY;
+extern const int64_t k_FB_SERIALIZE_POST_HACK_ARRAY_MIGRATION;
 
 Variant HHVM_FUNCTION(fb_serialize, const Variant& thing, int64_t options = 0);
 Variant HHVM_FUNCTION(fb_unserialize,
                       const Variant& thing,
                       bool& success,
                       int64_t options = 0);
-Variant HHVM_FUNCTION(fb_compact_serialize, const Variant& thing);
+Variant HHVM_FUNCTION(
+    fb_compact_serialize, const Variant& thing, int64_t options = 0);
 Variant HHVM_FUNCTION(fb_compact_unserialize,
                       const Variant& thing, bool& success,
                       Variant& errcode);
-bool HHVM_FUNCTION(fb_intercept, const String& name, const Variant& handler,
-                   const Variant& data = uninit_variant);
 bool HHVM_FUNCTION(fb_intercept2, const String& name, const Variant& handler);
 bool HHVM_FUNCTION(fb_rename_function, const String& orig_func_name,
                           const String& new_func_name);
@@ -67,7 +66,7 @@ Variant fb_unserialize(const char* str,
                        int len,
                        bool& success,
                        int64_t options);
-String fb_compact_serialize(const Variant& thing);
+String fb_compact_serialize(const Variant& thing, int64_t options);
 Variant fb_compact_unserialize(const char* str, int len,
                                bool& success,
                                Variant& errcode);
@@ -75,4 +74,3 @@ Variant fb_compact_unserialize(const char* str, int len,
 ///////////////////////////////////////////////////////////////////////////////
 }
 
-#endif // incl_HPHP_EXT_FB_H_

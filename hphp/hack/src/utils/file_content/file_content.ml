@@ -6,7 +6,7 @@
  * LICENSE file in the "hack" directory of this source tree.
  *
  *)
-open Hh_core
+open Hh_prelude
 
 type position = {
   line: int;
@@ -37,7 +37,7 @@ type text_edit = {
  * the synchronized state forever.
  *)
 let get_char_length c =
-  let c = Char.code c in
+  let c = Char.to_int c in
   if c lsr 7 = 0b0 then
     1
   else if c lsr 5 = 0b110 then
@@ -107,10 +107,10 @@ let offset_to_position (content : string) (offset : int) : position =
     else
       let c = get_char content index in
       let clen = get_char_length c in
-      if c = '\n' then
-        helper (line + 1) 1 (index + clen)
+      if Char.equal c '\n' then
+        helper ~line:(line + 1) ~column:1 ~index:(index + clen)
       else
-        helper line (column + 1) (index + clen)
+        helper ~line ~column:(column + 1) ~index:(index + clen)
   in
   if offset > String.length content then
     raise (Failure (Printf.sprintf "Invalid offset: %d" offset))
@@ -142,11 +142,11 @@ let print_edit b edit =
 
 let edit_file content (edits : text_edit list) :
     (string, string * Utils.callstack) result =
-  try Ok (List.fold ~init:content ~f:apply_edit edits)
-  with e ->
+  try Ok (List.fold ~init:content ~f:apply_edit edits) with
+  | e ->
     let stack = Printexc.get_backtrace () in
     let b = Buffer.create 1024 in
-    Printf.bprintf b "Invalid edit: %s\n" (Printexc.to_string e);
+    Printf.bprintf b "Invalid edit: %s\n" (Stdlib.Printexc.to_string e);
     Printf.bprintf b "Original content:\n%s\n" content;
     Printf.bprintf b "Edits:\n";
     List.iter edits ~f:(print_edit b);

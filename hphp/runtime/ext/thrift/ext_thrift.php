@@ -12,11 +12,13 @@ function thrift_protocol_write_binary(object $transportobj,
 <<__Native>>
 function thrift_protocol_read_binary(object $transportobj,
                                      string $obj_typename,
-                                     bool $strict_read): object;
+                                     bool $strict_read,
+                                     int $options = 0): object;
 
 <<__Native>>
 function thrift_protocol_read_binary_struct(object $transportobj,
-                                            string $obj_typename): mixed;
+                                            string $obj_typename,
+                                            int $options = 0): mixed;
 
 <<__Native>>
 function thrift_protocol_set_compact_version(int $version): int;
@@ -31,11 +33,18 @@ function thrift_protocol_write_compact(object $transportobj,
 
 <<__Native>>
 function thrift_protocol_read_compact(object $transportobj,
-                                      string $obj_typename): mixed;
+                                      string $obj_typename,
+                                      int $options = 0): mixed;
 
 <<__Native>>
 function thrift_protocol_read_compact_struct(object $transportobj,
-                                             string $obj_typename): object;
+                                             string $obj_typename,
+                                             int $options = 0): object;
+
+<<__NativeData("InteractionId")>>
+class InteractionId {
+  private function __construct(): void {}
+}
 
 <<__NativeData("RpcOptions")>>
 final class RpcOptions {
@@ -58,6 +67,21 @@ final class RpcOptions {
 
   <<__Native>>
   public function setWriteHeader(string $key, string $value): RpcOptions;
+
+  <<__Native>>
+  public function setHeader(string $key, string $value): RpcOptions;
+
+  <<__Native>>
+  public function setLoggingContext(string $logging_metadata): RpcOptions;
+
+  <<__Native>>
+  public function setOverallTimeout(int $overall_timeout): RpcOptions;
+
+  <<__Native>>
+  public function setProcessingTimeout(int $processing_timeout): RpcOptions;
+
+  <<__Native>>
+  public function setInteractionId(InteractionId $interaction_id): RpcOptions;
 
   <<__Native>>
   public function __toString(): string;

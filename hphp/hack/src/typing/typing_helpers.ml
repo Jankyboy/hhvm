@@ -17,39 +17,9 @@ open Common
 open Typing_defs
 open Typing_env_types
 open Aast
-module TFTerm = Typing_func_terminality
-module TUtils = Typing_utils
-module Reason = Typing_reason
-module Inst = Decl_instantiate
-module Type = Typing_ops
 module Env = Typing_env
-module Inf = Typing_inference_env
-module LEnv = Typing_lenv
-module Async = Typing_async
-module SubType = Typing_subtype
-module Union = Typing_union
-module Inter = Typing_intersection
 module SN = Naming_special_names
-module TVis = Typing_visibility
-module Phase = Typing_phase
-module TOG = Typing_object_get
-module Subst = Decl_subst
-module ExprDepTy = Typing_dependent_type.ExprDepTy
-module TCO = TypecheckerOptions
-module EnvFromDef = Typing_env_from_def
-module C = Typing_continuations
-module CMap = C.Map
-module Try = Typing_try
-module TR = Typing_reactivity
-module FL = FeatureLogging
 module MakeType = Typing_make_type
-module Cls = Decl_provider.Class
-module Partial = Partial_provider
-module Fake = Typing_fake_members
-module TySet = Typing_set
-module TPEnv = Type_parameter_env
-
-exception InvalidPocketUniverse
 
 module ExpectedTy : sig
   [@@@warning "-32"]
@@ -65,9 +35,17 @@ module ExpectedTy : sig
 
   val make : Pos.t -> Typing_reason.ureason -> locl_ty -> t
 
-  (* We will allow coercion to this expected type, if et_enforced=true *)
+  (* We will allow coercion to this expected type, if et_enforced=Enforced *)
   val make_and_allow_coercion :
     Pos.t -> Typing_reason.ureason -> locl_possibly_enforced_ty -> t
+
+  (* If type is an unsolved type variable, don't create an expected type *)
+  val make_and_allow_coercion_opt :
+    Typing_env_types.env ->
+    Pos.t ->
+    Typing_reason.ureason ->
+    locl_possibly_enforced_ty ->
+    t option
 end = struct
   (* Some mutually recursive inference functions in typing.ml pass around an ~expected argument that
    * enables bidirectional type checking. This module abstracts away that type so that it can be
@@ -76,9 +54,15 @@ end = struct
     pos: Pos.t;
     reason: Typing_reason.ureason;
     ty: locl_possibly_enforced_ty;
-        [@printer Pp_type.pp_possibly_enforced_ty Pp_type.pp_locl]
   }
   [@@deriving show]
+
+  let make_and_allow_coercion_opt env pos reason ty =
+    let (_env, ety) = Env.expand_type env ty.et_type in
+    if is_tyvar ety then
+      None
+    else
+      Some { pos; reason; ty }
 
   let make_and_allow_coercion pos reason ty = { pos; reason; ty }
 
@@ -89,7 +73,7 @@ end
 (* Return a map describing all the fields in this record, including
    inherited fields, and whether they have a default value. *)
 let all_record_fields (env : env) (rd : Decl_provider.record_def_decl) :
-    (Aast.sid * Typing_defs.record_field_req) SMap.t =
+    (Typing_defs.pos_id * Typing_defs.record_field_req) SMap.t =
   let record_fields rd =
     List.fold
       rd.rdt_fields
@@ -121,23 +105,13 @@ let add_decl_errors = function
 (* Handling function/method arguments *)
 (*****************************************************************************)
 let param_has_attribute param attr =
-  List.exists param.param_user_attributes (fun { ua_name; _ } ->
+  List.exists param.param_user_attributes ~f:(fun { ua_name; _ } ->
       String.equal attr (snd ua_name))
 
 let has_accept_disposable_attribute param =
   param_has_attribute param SN.UserAttributes.uaAcceptDisposable
 
-let get_param_mutability param =
-  if param_has_attribute param SN.UserAttributes.uaMutable then
-    Some Param_borrowed_mutable
-  else if param_has_attribute param SN.UserAttributes.uaMaybeMutable then
-    Some Param_maybe_mutable
-  else if param_has_attribute param SN.UserAttributes.uaOwnedMutable then
-    Some Param_owned_mutable
-  else
-    None
-
-let with_timeout env fun_name ~(do_ : env -> 'b) : 'b option =
+let with_timeout env fun_name (do_ : env -> 'b) : 'b option =
   let timeout = (Env.get_tcopt env).GlobalOptions.tco_timeout in
   if Int.equal timeout 0 then
     Some (do_ env)
@@ -166,7 +140,7 @@ let set_tyvars_variance_in_callable env return_ty param_tys variadic_param_ty =
   let env =
     match variadic_param_ty with
     | FVvariadicArg vparam ->
-      let (_p, ty) = vparam.param_annotation in
+      let ty = vparam.param_annotation in
       set_variance env ty ~flip:true
     | FVellipsis _
     | FVnonVariadic ->

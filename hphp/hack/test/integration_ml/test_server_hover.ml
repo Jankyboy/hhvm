@@ -8,7 +8,7 @@
  *
  *)
 
-open Hh_core
+open Hh_prelude
 open HoverService
 module Test = Integration_test_base
 
@@ -418,7 +418,7 @@ function one_linebreak_is_okay(): void {}
 
 /** A function with an HH_FIXME. */
 /* HH_FIXME[4030] Missing return type hint. */
-function hh_fixme() {}
+function needs_fixing() {}
 //       ^112:10
 "
 
@@ -598,9 +598,9 @@ the other stars.";
     ( ("docblock.php", 112, 10),
       [
         {
-          snippet = "hh_fixme";
+          snippet = "needs_fixing";
           addendum = ["A function with an HH_FIXME."];
-          pos = pos_at (112, 10) (112, 17);
+          pos = pos_at (112, 10) (112, 21);
         };
       ] );
   ]
@@ -620,7 +620,7 @@ let special_cases_cases =
         {
           snippet =
             "function HH\\idx<Tk as arraykey, Tv>(
-  ?KeyedContainer<int, ?int> $collection,
+  ?KeyedContainer<int, int> $collection,
   ?int $index
 ): ?int";
           addendum =
@@ -653,21 +653,9 @@ function bounded_generic_fun<T as Base>(T $x): void {
 let bounded_generic_fun_cases =
   [
     ( ("bounded_generic_fun.php", 5, 3),
-      [
-        {
-          snippet = "T\nwhere T as Base";
-          addendum = [];
-          pos = pos_at (5, 3) (5, 4);
-        };
-      ] );
+      [{ snippet = "T as Base"; addendum = []; pos = pos_at (5, 3) (5, 4) }] );
     ( ("bounded_generic_fun.php", 7, 7),
-      [
-        {
-          snippet = "T\nwhere T as Base";
-          addendum = [];
-          pos = pos_at (7, 7) (7, 8);
-        };
-      ] );
+      [{ snippet = "T as Base"; addendum = []; pos = pos_at (7, 7) (7, 8) }] );
     ( ("bounded_generic_fun.php", 9, 5),
       [
         {
@@ -677,13 +665,8 @@ let bounded_generic_fun_cases =
         };
       ] );
     ( ("bounded_generic_fun.php", 12, 3),
-      [
-        {
-          snippet = "T\nwhere T as Base";
-          addendum = [];
-          pos = pos_at (12, 3) (12, 4);
-        };
-      ] );
+      [{ snippet = "T as Base"; addendum = []; pos = pos_at (12, 3) (12, 4) }]
+    );
   ]
 
 let doc_block_fallback =
@@ -848,7 +831,7 @@ let doc_block_fallback_cases =
         };
       ] );
     (* When falling back, if any class/trait ancestors have a doc block don't show
-     any doc blocks from interface ancestors. *)
+       any doc blocks from interface ancestors. *)
     ( ("doc_block_fallback.php", 13, 7),
       [
         {
@@ -1066,7 +1049,7 @@ let test () =
         in
         let expected = list_to_string expectedHover in
         let actual = list_to_string hover in
-        if expected <> actual then
+        if not (String.equal expected actual) then
           Some (expected, actual)
         else
           None)
@@ -1077,4 +1060,4 @@ let test () =
     let display_case (expected, actual) =
       Printf.sprintf "Expected:\n%s\nGot:\n%s" expected actual
     in
-    Test.fail @@ String.concat "\n\n" (List.map ~f:display_case cases)
+    Test.fail @@ String.concat ~sep:"\n\n" (List.map ~f:display_case cases)

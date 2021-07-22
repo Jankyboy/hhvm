@@ -84,7 +84,7 @@ struct FormatVisitor {
     else str << folly::format("0x{:08x}", s.q());
   }
 
-  void imm(FPInvOffset off) { str << sep() << off.offset; }
+  void imm(SBInvOffset off) { str << sep() << off.offset; }
   void imm(ConditionCode cc) { str << sep() << cc_names[cc]; }
   void imm(vixl::Condition cc) { str << sep() << vixl_ccs[cc]; }
   void imm(TCA addr) {
@@ -119,7 +119,7 @@ struct FormatVisitor {
   void imm(RingBufferType t) { str << sep() << ringbufferName(t); }
   void imm(SrcKey k) { str << sep() << showShort(k); }
   void imm(Fixup fix) {
-    str << sep() << "pc:" << fix.pcOffset << " sp:" << fix.spOffset;
+    str << sep() << fix.show();
   }
   void imm(Stats::StatCounter c) { str << sep() << Stats::g_counterNames[c]; }
   void imm(Vlabel b) { str << sep() << "B" << size_t(b); }
@@ -131,8 +131,6 @@ struct FormatVisitor {
     } else {
       str << "nullptr";
     }
-  }
-  void imm(TransFlags f) {
   }
   void imm(DestType dt) {
     str << sep() << destTypeName(dt);
@@ -295,27 +293,6 @@ std::string show(Vptr p) {
         if (p.scale != 1) folly::toAppend(" * ", p.scale, &str);
       }
       str += ']';
-      return str;
-    }
-    case Arch::PPC64: {
-      auto prefix = false;
-      if (p.disp) {
-        folly::format(&str, "{}{:#x}",
-                      p.disp < 0 ? "-" : "+",
-                      std::abs(p.disp));
-        prefix = true;
-      }
-
-      if (p.base.isValid()) {
-        folly::toAppend(prefix ? "(" : "", show(p.base), &str);
-        if (prefix == true) {
-          folly::toAppend(")", &str);
-        }
-        prefix = true;
-      }
-      if (p.index.isValid()) {
-        folly::toAppend(prefix ? "," : "", show(p.index), &str);
-      }
       return str;
     }
   }

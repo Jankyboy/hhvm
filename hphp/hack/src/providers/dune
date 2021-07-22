@@ -41,8 +41,12 @@
   (name decl_service_client)
   (modules decl_service_client)
   (libraries
+    collections
     core_kernel
     decl_ipc_ffi_externs
+    decl_parser_options
+    direct_decl_parser
+    heap_shared_mem
     marshal_tools
     naming_types
     relative_path
@@ -83,10 +87,14 @@
   (modules
     decl_provider)
   (libraries
+    counters
+    decl_counters
     decl_class
     decl_service_client
+    direct_decl_utils
     provider_backend
     shallow_classes_provider
+    shallow_decl_defs
     linearization_provider
     typing_heap)
   (preprocess (pps ppx_deriving.std)))
@@ -148,6 +156,7 @@
   (modules shallow_classes_provider)
   (libraries
     decl_service_client
+    direct_decl_utils
     provider_backend
     provider_context
     shallow_classes_heap)
@@ -165,9 +174,12 @@
   (name tast_provider)
   (modules tast_provider)
   (libraries
+    decl_counters
+    decl_provider
     provider_utils
     tast
-    typing)
+    typing
+    typing_service_api)
   (preprocess (pps ppx_deriving.std)))
 
 (library
@@ -177,4 +189,32 @@
     naming_sqlite
     provider_backend
     provider_context)
+  (preprocess (pps ppx_deriving.std)))
+
+(library
+  (name direct_decl_utils)
+  (modules direct_decl_utils)
+  (libraries
+    annotated_ast
+    ast_provider
+    collections
+    decl_defs
+    decl_store
+    decl_parser_options
+    direct_decl_parser
+    errors
+    file_provider
+    full_fidelity
+    heap_shared_mem
+    naming
+    naming_provider
+    nast
+    parser
+    parser_options
+    provider_backend
+    provider_context
+    relative_path
+    shallow_classes_heap
+    shallow_decl_defs
+    typechecker_options)
   (preprocess (pps ppx_deriving.std)))

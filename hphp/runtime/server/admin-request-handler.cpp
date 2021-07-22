@@ -16,9 +16,9 @@
 
 #include "hphp/runtime/server/admin-request-handler.h"
 
-#include "hphp/runtime/base/apc-file-storage.h"
 #include "hphp/runtime/base/apc-stats.h"
 #include "hphp/runtime/base/datetime.h"
+#include "hphp/runtime/base/file-util.h"
 #include "hphp/runtime/base/hhprof.h"
 #include "hphp/runtime/base/http-client.h"
 #include "hphp/runtime/base/ini-setting.h"
@@ -43,7 +43,6 @@
 #include "hphp/runtime/vm/jit/tc-record.h"
 #include "hphp/runtime/vm/jit/tc.h"
 #include "hphp/runtime/vm/named-entity.h"
-#include "hphp/runtime/vm/repo.h"
 #include "hphp/runtime/vm/treadmill.h"
 #include "hphp/runtime/vm/type-profile.h"
 
@@ -76,6 +75,8 @@
 #endif
 
 #include <folly/Conv.h>
+#include <folly/File.h>
+#include <folly/FileUtil.h>
 #include <folly/Random.h>
 #include <folly/portability/Unistd.h>
 
@@ -254,6 +255,34 @@ void AdminRequestHandler::teardownRequest(Transport* transport) noexcept {
   WarnIfNotOK(transport);
 }
 
+namespace {
+
+// When this struct is destroyed, it will close the file.
+struct DumpFile {
+  std::string path;
+  folly::File file;
+};
+
+Optional<DumpFile> dump_file(const char* name) {
+  auto const path = folly::sformat("{}/{}", RO::AdminDumpPath, name);
+
+  // mkdir -p the directory prefix of `path`
+  if (FileUtil::mkdir(path) != 0) return std::nullopt;
+
+  // If remove fails because of a permissions issue, then we won't be
+  // able to open the file for exclusive write below.
+  remove(path.c_str());
+
+  // Create the file, failing if it already exists. Doing so ensures
+  // that we have write access to the file and that no other user does.
+  auto const fd = open(path.c_str(), O_CREAT|O_EXCL|O_RDWR, 0666);
+  if (fd < 0) return std::nullopt;
+
+  return DumpFile{path, folly::File(fd, /*owns=*/true)};
+}
+
+}
+
 void AdminRequestHandler::handleRequest(Transport *transport) {
   transport->addHeader("Content-Type", "text/plain");
   std::string cmd = transport->getCommand();
@@ -329,7 +358,6 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
         "/hugepage:        show stats about hugepage usage\n"
         "/jit-des-info:    show information about deserialized profile data\n"
 
-        "/const-ss:        get const_map_size\n"
         "/static-strings:  get number of static strings\n"
         "/static-strings-rds: ... that correspond to defined constants\n"
         "/dump-static-strings: dump static strings to /tmp/static_strings\n"
@@ -343,7 +371,6 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
         "/dump-apc-info:   show basic APC stats\n"
         "/dump-apc-meta:   dump meta information for all objects in APC to\n"
         "                  /tmp/apc_dump_meta\n"
-        "/advise-out-apc:  forcibly madvise out APC prime data\n"
         "/random-apc:      dump the key and size of a random APC entry\n"
         "    count         number of entries to return\n"
         "/treadmill:       dump treadmill information\n"
@@ -695,7 +722,7 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
       break;
     }
     if (strncmp(cmd.c_str(), "jit-des-info", 13) == 0) {
-      if (!jit::ProfData::wasDeserialized()) {
+      if (isJitSerializing() || !jit::ProfData::wasDeserialized()) {
         transport->sendString("", 200);
         break;
       }
@@ -705,19 +732,17 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
       transport->sendString(msg, 200);
     }
 
-    if (strncmp(cmd.c_str(), "const-ss", 8) == 0 &&
-        handleConstSizeRequest(cmd, transport)) {
-      break;
-    }
     if (strncmp(cmd.c_str(), "static-strings", 14) == 0 &&
         handleStaticStringsRequest(cmd, transport)) {
       break;
     }
     if (strncmp(cmd.c_str(), "dump-static-strings", 19) == 0) {
-      auto filename = transport->getParam("file");
-      if (filename == "") filename = "/tmp/static_strings";
-      handleDumpStaticStringsRequest(cmd, filename);
-      transport->sendString("OK\n");
+      if (auto file = dump_file("static_strings")) {
+        handleDumpStaticStringsRequest(file->file);
+        transport->sendString(folly::sformat("dumped to {}\n", file->path));
+      } else {
+        transport->sendString("Unable to mkdir or file already exists.\n");
+      }
       break;
     }
     if (strncmp(cmd.c_str(), "random-static-strings", 21) == 0) {
@@ -746,10 +771,12 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
     }
 
     if (cmd == "dump-pcre-cache") {
-      auto filename = transport->getParam("file");
-      if (filename == "") filename = "/tmp/pcre_cache";
-      pcre_dump_cache(filename);
-      transport->sendString("OK\n");
+      if (auto file = dump_file("pcre_cache")) {
+        pcre_dump_cache(file->file);
+        transport->sendString(folly::sformat("dumped to {}\n", file->path));
+      } else {
+        transport->sendString("Unable to mkdir or file already exists.\n");
+      }
       break;
     }
 
@@ -761,16 +788,6 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
 
     if (cmd == "warmup-status") {
       transport->sendString(jit::tc::warmupStatusString());
-      break;
-    }
-
-    if (cmd == "advise-out-apc") {
-      if (!apcExtension::Enable) {
-        transport->sendString("No APC\n");
-        break;
-      }
-      apc_advise_out();
-      transport->sendString("Done\n");
       break;
     }
 
@@ -862,18 +879,8 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
       size_t allocated = call_mallctl("stats.allocated");
       size_t active = call_mallctl("stats.active");
       size_t mapped = call_mallctl("stats.mapped");
+      auto const low_mapped = alloc::getLowMapped();
 
-#if USE_JEMALLOC_EXTENT_HOOKS
-      size_t low_mapped = 0;
-      // The low range [1G, 4G) is divided into two ranges, and shared by 3
-      // arenas.
-      low_mapped += alloc::getRange(alloc::AddrRangeClass::VeryLow).used();
-      low_mapped += alloc::getRange(alloc::AddrRangeClass::Low).used();
-#else
-      size_t low_mapped = call_mallctl(
-          folly::sformat("stats.arenas.{}.mapped",
-                         low_arena).c_str());
-#endif
       std::ostringstream stats;
       stats << "<jemalloc-stats>" << endl;
       stats << "  <allocated>" << allocated << "</allocated>" << endl;
@@ -1055,14 +1062,14 @@ bool AdminRequestHandler::handleCheckRequest(const std::string &cmd,
        first = false;
     };
     appendStat("hhbc-roarena-capac", hhbc_arena_capacity());
-    appendStat("hhbc-size", g_hhbc_size->getSum());
+    appendStat("hhbc-size", g_hhbc_size->getValue());
     appendStat("rds", rds::usedBytes());
     appendStat("rds-local", rds::usedLocalBytes());
     appendStat("rds-persistent", rds::usedPersistentBytes());
     appendStat("catch-traces", jit::numCatchTraces());
     appendStat("fixups", jit::FixupMap::size());
     appendStat("units", numLoadedUnits());
-    appendStat("funcs", Func::nextFuncId());
+    appendStat("funcs", Func::maxFuncIdNum());
     appendStat("named-entities", NamedEntity::tableSize());
     for (auto& pair : NamedEntity::tableStats()) {
       appendStat(folly::sformat("named-entities-{}", pair.first), pair.second);
@@ -1086,7 +1093,7 @@ bool AdminRequestHandler::handleCheckRequest(const std::string &cmd,
 
     if (RuntimeOption::EvalEnableReusableTC) {
       auto const memInfos = jit::tc::getTCMemoryUsage();
-      for (auto const info : memInfos) {
+      for (auto const& info : memInfos) {
         appendStat(folly::format("tc-{}-allocs", info.name).str(), info.allocs);
         appendStat(folly::format("tc-{}-frees", info.name).str(), info.frees);
         appendStat(folly::format("tc-{}-free-size", info.name).str(),
@@ -1331,22 +1338,6 @@ bool AdminRequestHandler::handleCPUProfilerRequest(const std::string &cmd,
 }
 #endif
 
-bool AdminRequestHandler::handleConstSizeRequest(const std::string &cmd,
-                                                 Transport *transport) {
-  if (!apcExtension::EnableConstLoad && cmd == "const-ss") {
-    transport->sendString("Not Enabled\n");
-    return true;
-  }
-  if (cmd == "const-ss") {
-    std::ostringstream result;
-    size_t size = get_const_map_size();
-    result << "{ \"hphp.const_map.size\":" << size << "}\n";
-    transport->sendString(result.str());
-    return true;
-  }
-  return false;
-}
-
 bool AdminRequestHandler::handleStaticStringsRequest(const std::string& cmd,
                                                      Transport* transport) {
   if (cmd == "static-strings") {
@@ -1368,13 +1359,11 @@ std::string formatStaticString(StringData* str) {
       "----\n{} bytes\n{}\n", str->size(), str->toCppString());
 }
 
-bool AdminRequestHandler::handleDumpStaticStringsRequest(
-  const std::string& /*cmd*/, const std::string& filename) {
+bool AdminRequestHandler::handleDumpStaticStringsRequest(folly::File& file) {
   auto const& list = lookupDefinedStaticStrings();
-  std::ofstream out(filename.c_str());
-  SCOPE_EXIT { out.close(); };
   for (auto item : list) {
-    out << formatStaticString(item);
+    auto const line = formatStaticString(item);
+    folly::writeFull(file.fd(), line.data(), line.size());
     if (RuntimeOption::EvalPerfDataMap) {
       auto const len = std::min<size_t>(item->size(), 255);
       std::string str(item->data(), len);

@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_ARRAY_H_
-#define incl_HPHP_ARRAY_H_
+#pragma once
 
 #include "hphp/runtime/base/array-data.h"
 #include "hphp/runtime/base/datatype.h"
@@ -30,10 +29,6 @@
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
-
-// Forward declare to avoid including tv-conversions.h and creating a cycle.
-template <IntishCast IC = IntishCast::None>
-ArrayData* tvCastToArrayLikeData(TypedValue tv);
 
 struct ArrayIter;
 struct VariableUnserializer;
@@ -75,38 +70,16 @@ private:
 
 public:
   /*
-   * Create an empty array.
+   * Create an empty array of a given type.
    */
-  static Array Create() {
-    return Array(ArrayData::Create(), NoIncRef{});
-  }
-
-  /*
-   * There are existing callsites that we intentionally want to create a
-   * "traditional" PHP array with no specialization. Array::CreatePHPArray()
-   * are calls that have been audited and determined that the callsite should
-   * never be converted.
-   */
-  static constexpr auto CreatePHPArray = &Create;
-
   static Array CreateVec() {
     return Array(ArrayData::CreateVec(), NoIncRef{});
   }
-
   static Array CreateDict() {
     return Array(ArrayData::CreateDict(), NoIncRef{});
   }
-
   static Array CreateKeyset() {
     return Array(ArrayData::CreateKeyset(), NoIncRef{});
-  }
-
-  static Array CreateVArray() {
-    return Array(ArrayData::CreateVArray(), NoIncRef{});
-  }
-
-  static Array CreateDArray() {
-    return Array(ArrayData::CreateDArray(), NoIncRef{});
   }
 
   /////////////////////////////////////////////////////////////////////////////
@@ -192,16 +165,10 @@ public:
    * Like the underlying ArrayData::copy operation, the returned Array may
    * point to the same underlying array as the original, or a new one.
    */
-  Array copy() const { COPY_BODY(copy(), Array{}) }
   Array toVec() const { COPY_BODY(toVec(true), CreateVec()) }
   Array toDict() const { COPY_BODY(toDict(true), CreateDict()) }
   Array toKeyset() const { COPY_BODY(toKeyset(true), CreateKeyset()) }
-  Array toPHPArray() const { COPY_BODY(toPHPArray(true), Array{}) }
-  Array toPHPArrayIntishCast() const {
-    COPY_BODY(toPHPArrayIntishCast(true), Array{})
-  }
-  Array toVArray() const { COPY_BODY(toVArray(true), CreateVArray()) }
-  Array toDArray() const { COPY_BODY(toDArray(true), CreateDArray()) }
+  Array toDictIntishCast() const { COPY_BODY(toDictIntishCast(true), Array{}) }
 
   #undef COPY_BODY
 
@@ -225,13 +192,6 @@ public:
   bool isVec() const { return m_arr && m_arr->isVecType(); }
   bool isDict() const { return m_arr && m_arr->isDictType(); }
   bool isKeyset() const { return m_arr && m_arr->isKeysetType(); }
-  bool isHackArray() const { return m_arr && m_arr->isHackArrayType(); }
-  bool isPHPArray() const { return !m_arr || m_arr->isPHPArrayType(); }
-  bool isVArray() const { return m_arr && m_arr->isVArray(); }
-  bool isDArray() const { return m_arr && m_arr->isDArray(); }
-  bool isHAMSafeVArray() const { return m_arr && m_arr->isHAMSafeVArray(); }
-  bool isHAMSafeDArray() const { return m_arr && m_arr->isHAMSafeDArray(); }
-  bool isHAMSafeDVArray() const { return m_arr && m_arr->isHAMSafeDVArray(); }
 
   /////////////////////////////////////////////////////////////////////////////
 
@@ -267,18 +227,6 @@ public:
   Array& operator+=(ArrayData* data) = delete;
   Array& operator+=(const Array& v) = delete;
   Array& operator+=(const Variant& v) = delete;
-
-  /*
-   * Implementation of array_merge().
-   *
-   * This is different from operator+(), where existing keys' values are NOT
-   * modified.  This function will actually override with new values.
-   *
-   * When merging a packed array with another packed array, new elements are
-   * always appended, and this is also different from operator+() where
-   * existing numeric indices are not modified.
-   */
-  Array& merge(const Array& arr);
 
   /*
    * Comparison function for array operations.
@@ -418,11 +366,8 @@ public:
    *
    * This is ArrayData::lval, with COW and escalation handled internally.
    *
-   * lvalForce() has the legacy lval() behavior---if the key is not present,
-   * it writes null, then returns the lval.
    */
   FOR_EACH_KEY_TYPE(lval, tv_lval, )
-  FOR_EACH_KEY_TYPE(lvalForce, tv_lval, )
 
 #undef D
 #undef I
@@ -485,23 +430,20 @@ public:
 #undef C
 
   /*
-   * Append or prepend an element, with semantics like set().
+   * Append an element, with semantics like set().
    */
   void append(TypedValue v);
   void append(const Variant& v);
-  void prepend(TypedValue v);
-  void prepend(const Variant& v);
 
   /*
    * Remove all elements.
    */
-  void clear() { operator=(Create()); }
+  void clear() { operator=(CreateDict()); }
 
   /*
-   * Stack/queue-like functions.
+   * Stack-like function - the inverse of append().
    */
   Variant pop();
-  Variant dequeue();
 
 #undef FOR_EACH_KEY_TYPE
 
@@ -510,14 +452,12 @@ public:
 private:
   Array(ArrayData* ad, NoIncRef) : m_arr(ad, NoIncRef{}) {}
 
-  Array& mergeImpl(ArrayData* data);
   Array diffImpl(const Array& array, bool by_key, bool by_value, bool match,
                  PFUNC_CMP key_cmp_function, const void* key_data,
                  PFUNC_CMP value_cmp_function, const void* value_data) const;
 
   template<typename T> TypedValue lookupImpl(const T& key, Flags) const;
   template<typename T> tv_lval lvalImpl(const T& key, Flags);
-  template<typename T> tv_lval lvalForceImpl(const T& key, Flags);
 
   template<typename T> bool existsImpl(const T& key) const;
   template<typename T> void removeImpl(const T& key);
@@ -588,18 +528,6 @@ private:
 
 ///////////////////////////////////////////////////////////////////////////////
 
-ALWAYS_INLINE Array empty_array() {
-  return Array::attach(ArrayData::Create());
-}
-
-ALWAYS_INLINE Array empty_varray() {
-  return Array::attach(ArrayData::CreateVArray());
-}
-
-ALWAYS_INLINE Array empty_darray() {
-  return Array::attach(ArrayData::CreateDArray());
-}
-
 ALWAYS_INLINE Array empty_vec_array() {
   return Array::attach(ArrayData::CreateVec());
 }
@@ -634,15 +562,5 @@ ALWAYS_INLINE const Array& asCArrRef(tv_rval tv) {
   return *reinterpret_cast<const Array*>(&val(tv).parr);
 }
 
-template <IntishCast IC = IntishCast::None>
-ALWAYS_INLINE Array toArray(tv_rval rval) {
-  if (isArrayLikeType(type(rval))) {
-    return Array{assert_not_null(val(rval).parr)};
-  }
-  return Array::attach(tvCastToArrayLikeData<IC>(*rval));
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif

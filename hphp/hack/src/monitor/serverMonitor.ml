@@ -27,73 +27,95 @@ open ServerMonitorUtils
 let log s ~tracker =
   Hh_logger.log ("[%s] " ^^ s) (Connection_tracker.log_id tracker)
 
+(** If you try to Unix.close the same FD twice, you get EBADF the second time.
+Ocaml doesn't have a linear type system, so it's too hard to be crisp about
+when we hand off responsibility for closing the FD. Therefore: we call this
+method to ensure an FD is closed, and we just silently gobble up the EBADF
+if someone else already closed it. *)
+let ensure_fd_closed (fd : Unix.file_descr) : unit =
+  try Unix.close fd with
+  | Unix.Unix_error (Unix.EBADF, _, _) -> ()
+
+(** This module is to help using Unix "sendmsg" to handoff the client FD
+to the server. It's not entirely clear whether it's safe for us in the
+monitor to close the FD immediately after calling sendmsg, or whether
+we must wait until the server has actually received the FD upon recvmsg.
+
+We got reports from MacOs users that if the monitor closed the FD before
+the server had finished recvmsg, then the kernel thinks it was the last open
+descriptor for the pipe, and actually closes it; the server subsequently
+does recvmsg and reads on the FD and gets an EOF (even though it can write
+on the FD and succeed instead of getting EPIPE); the server subsequently
+closes its FD and a subsequent "select" by the client blocks forever.
+
+Therefore, instead, the monitor waits to close the FD until after the server has read it.
+
+We detect that the server has read it by having the server write the highest
+handoff number it has received to a "server_receipt_to_monitor_file", and the
+monitor polls this file to determine which handoff FD can be closed. It might
+be that the server receives two FD handoffs in quick succession, and the monitor
+only polls the file after the second, so the monitor treats the file as a
+"high water mark" and knows that it can close the specified FD plus all earlier ones.
+
+We did this protocol with a file because there aren't alternatives. If we tried
+instead to have the server send receipt over the monitor/server pipe, then it
+would deadlock if the monitor was also trying to handoff a subsequent FD.
+If we tried instead to have the server send receipt over the client/server pipe,
+then both monitor and client would be racing to see who receives that receipt first. *)
 module Sent_fds_collector = struct
-  (*
-   This module exists to fix an issue with libancillary (passing a file descriptor
-   to another process with sendmsg over Unix Domain Sockets) and certain operating
-   systems. It allows us to delay closing of a File Descriptor inside the Monitor
-   until it is safe to do so.
+  (** [sequence_number] is a monotonically increasing integer to identify which
+  handoff message has been sent from monitor to server. The first sequence
+  number is number 1. *)
+  let sequence_number : int ref = ref 0
 
-   Normally:
-     Monitor sends client FD to Server process, and immediately closes the FD.
-     This is fine even if the Server is busy and hasn't "recv_fd" the FD yet
-     because this doesn't really "close" the file. The kernel still considers
-     it to be open by the receiving process. If the server closes the FD
-     then reads on the client will get an EOF. If the client closes the FD
-     then reads on the server will get an EOF.
+  let get_and_increment_sequence_number () : int =
+    sequence_number := !sequence_number + 1;
+    !sequence_number
 
-   Mac OS X:
-     EOF isn't showing up correctly on file descriptors passed between
-     processes.
-     When the Monitor closes the FD after sending it to the Server (and
-     before the Server receives it), the kernel thinks it is the last open
-     descriptor on the file and actually closes it. After the server
-     receieves the FD, it gets an EOF when reading from it (which it shouldn't
-     because the client is still there; aside: oddly enough, writing to it
-     succeeds instead of getting EPIPE). The server then closes that FD after
-     reading the EOF. Normally (as noted above) the client would read an
-     EOF after this. But (this is the bug) this EOF never shows up and the
-     client blocks forever on "select" instead.
+  type handed_off_fd_to_close = {
+    tracker: Connection_tracker.t;
+    fd: Unix.file_descr;
+    m2s_sequence_number: int;
+        (** A unique number incremented for each client socket handoff from monitor to server.
+            Useful to correlate monitor and server logs. *)
+  }
 
-   To get around this problem, we want to close the FD in the monitor only
-   after the server has received it. Unfortunately, we don't actually
-   have a way to reliably detect that it has been received. So we just delay
-   closing by 2 seconds.
+  let handed_off_fds_to_close : handed_off_fd_to_close list ref = ref []
 
-   Note: It's not safe to detect the receiving by reading the
-   Hello message from the server (since it could/would be consumed
-   here instead of by the Client) nor by "select" (by a race condition
-   with the client, the select might miss the Hello, and could prevent
-   an EOF from being read by the server).
-   *)
+  let cleanup_fd ~tracker ~m2s_sequence_number fd =
+    handed_off_fds_to_close :=
+      { tracker; fd; m2s_sequence_number } :: !handed_off_fds_to_close
 
-  module Fd_scheduler = Scheduler.Make (struct
-    type t = (* Unix.time *) float
-  end)
+  let collect_fds ~sequence_receipt_high_water_mark =
+    (* WARNING! Don't use the (slow) HackEventLogger here, in the inner loop non-failure path. *)
 
-  let cleanup_fd fd =
-    if Sys_utils.is_apple_os () then
-      (* Close it 2 seconds later. *)
-      let trigger = Unix.gettimeofday () +. 2.0 in
-      Fd_scheduler.wait_for_fun
-        ~once:true
-        ~priority:1
-        (fun time -> Float.(time >= trigger))
-        (fun x ->
-          let () = Printf.eprintf "Closing client fd\n" in
-          let () = Unix.close fd in
-          x)
-    else
-      Unix.close fd
+    (* Note: this code is a filter with a side-effect. The side-effect is to
+       close FDs that have received their read-receipts. The filter will retain
+       the FDs that haven't yet received their read-receipts. *)
+    handed_off_fds_to_close :=
+      List.filter
+        !handed_off_fds_to_close
+        ~f:(fun { tracker; m2s_sequence_number; fd } ->
+          if m2s_sequence_number > sequence_receipt_high_water_mark then
+            true
+          else begin
+            log
+              "closing client socket from handoff #%d upon receipt of #%d"
+              ~tracker
+              m2s_sequence_number
+              sequence_receipt_high_water_mark;
+            ensure_fd_closed fd;
+            false
+          end);
+    ()
 
-  let collect_garbage () =
-    if Sys_utils.is_apple_os () then
-      ignore (Fd_scheduler.wait_and_run_ready (Unix.gettimeofday ()))
-    else
-      ()
+  (** This must be called in all paths where the server has died, so that the client can
+  properly see an EOF on its FD. *)
+  let collect_all_fds () =
+    collect_fds ~sequence_receipt_high_water_mark:Int.max_value
 end
 
-exception Malformed_build_id
+exception Malformed_build_id of string
 
 exception Send_fd_failure of int
 
@@ -123,15 +145,15 @@ struct
       Queue.t;
     (* Whether to ignore hh version mismatches *)
     ignore_hh_version: bool;
-    (* What server is doing now *)
-    server_progress: string;
-    (* Why what it is doing now might not be going as well as it could *)
-    server_progress_warning: string option;
   }
 
   type t = env * ServerMonitorUtils.monitor_config * Unix.file_descr
 
-  let fd_to_int (x : Unix.file_descr) : int = Obj.magic x
+  (** Use this as the only way to change server.
+  It closes all outstanding FDs. That's needed so clients know that they can give up. *)
+  let set_server env new_server =
+    Sent_fds_collector.collect_all_fds ();
+    { env with server = new_server }
 
   let msg_to_channel fd msg =
     (* This FD will be passed to a server process, so avoid using Ocaml's
@@ -142,7 +164,7 @@ struct
     Marshal_tools.to_fd_with_preamble fd msg |> ignore
 
   let setup_handler_for_signals handler signals =
-    List.iter signals (fun signal ->
+    List.iter signals ~f:(fun signal ->
         Sys_utils.set_signal signal (Sys.Signal_handle handler))
 
   let setup_autokill_server_on_exit process =
@@ -155,24 +177,23 @@ struct
           Exit.exit Exit_status.Interrupted
         end
         [Sys.sigint; Sys.sigquit; Sys.sigterm; Sys.sighup]
-    with _ -> Hh_logger.log "Failed to set signal handler"
+    with
+    | _ -> Hh_logger.log "Failed to set signal handler"
 
   let sleep_and_check socket =
+    (* WARNING! Don't use the (slow) HackEventLogger here, in the inner loop non-failure path. *)
     let (ready_socket_l, _, _) = Unix.select [socket] [] [] 1.0 in
     not (List.is_empty ready_socket_l)
 
-  let start_server ?target_saved_state ~informant_managed options exit_status =
+  let start_server ~informant_managed options exit_status =
     let server_process =
-      SC.start_server
-        ?target_saved_state
-        ~prior_exit_status:exit_status
-        ~informant_managed
-        options
+      SC.start_server ~prior_exit_status:exit_status ~informant_managed options
     in
     setup_autokill_server_on_exit server_process;
     Alive server_process
 
-  let maybe_start_first_server options informant =
+  let maybe_start_first_server options informant : ServerProcess.server_process
+      =
     if Informant.should_start_first_server informant then (
       Hh_logger.log "Starting first server";
       HackEventLogger.starting_first_server ();
@@ -182,12 +203,14 @@ struct
         None
     ) else (
       Hh_logger.log
-        ( "Not starting first server. "
-        ^^ "Starting will be triggered by informant later." );
+        ("Not starting first server. "
+        ^^ "Starting will be triggered by informant later.");
       Not_yet_started
     )
 
-  let kill_server_with_check = function
+  let kill_server_with_check (server : server_process) : unit =
+    Sent_fds_collector.collect_all_fds ();
+    match server with
     | Alive server -> SC.kill_server server
     | _ -> ()
 
@@ -195,11 +218,6 @@ struct
     match server with
     | Alive server -> SC.wait_for_server_exit server kill_signal_time
     | _ -> ()
-
-  let kill_server_and_wait_for_exit env =
-    kill_server_with_check env.server;
-    let kill_signal_time = Unix.gettimeofday () in
-    wait_for_server_exit_with_check env.server kill_signal_time
 
   (* Reads current hhconfig contents from disk and returns true if the
    * version specified in there matches our currently running version. *)
@@ -219,35 +237,47 @@ struct
     0 = Config_file.compare_versions env.current_version new_version
 
   (* Actually starts a new server. *)
-  let start_new_server ?target_saved_state env exit_status =
+  let start_new_server env exit_status =
     let informant_managed = Informant.is_managing env.informant in
     let new_server =
-      start_server
-        ?target_saved_state
-        ~informant_managed
-        env.server_start_options
-        exit_status
+      start_server ~informant_managed env.server_start_options exit_status
     in
-    { env with server = new_server; retries = env.retries + 1 }
+    let env = set_server env new_server in
+    { env with retries = env.retries + 1 }
 
   (* Kill the server (if it's running) and restart it - maybe. Obeying the rules
    * of state transitions. See docs on the ServerProcess.server_process ADT for
    * state transitions. *)
-  let kill_and_maybe_restart_server ?target_saved_state env exit_status =
-    (* Ideally, all restarts should be triggered by Changed_merge_base notification
-     * which generate target mini state. There are other kind of restarts too, mostly
-     * related to server crashing - if we just restart and keep going, we risk
+  let kill_and_maybe_restart_server env exit_status =
+    (* We're going to collect all FDs right here and now. This will be done again below,
+       in [kill_server_with_check], but Informant.reinit might take too long or might throw. *)
+    Sent_fds_collector.collect_all_fds ();
+    (* Iff we just restart and keep going, we risk
      * Changed_merge_base eventually arriving and restarting the already started server
      * for no reason. Re-issuing merge base query here should bring the Monitor and Server
      * understanding of current revision to be the same *)
-    if Option.is_none target_saved_state then Informant.reinit env.informant;
-    kill_server_and_wait_for_exit env;
+    kill_server_with_check env.server;
+    let kill_signal_time = Unix.gettimeofday () in
+    wait_for_server_exit_with_check env.server kill_signal_time;
+
     let version_matches = is_config_version_matching env in
+    if SC.is_saved_state_precomputed env.server_start_options then begin
+      let reason =
+        "Not restarting server as requested, server was launched using a "
+        ^ "precomputed saved-state. Exiting monitor"
+      in
+      Hh_logger.log "%s" reason;
+      HackEventLogger.refuse_to_restart_server
+        ~reason
+        ~server_state:(ServerProcess.show_server_process env.server)
+        ~version_matches;
+      Exit.exit Exit_status.Not_restarting_server_with_precomputed_saved_state
+    end;
     match (env.server, version_matches) with
     | (Died_config_changed, _) ->
       (* Now we can start a new instance safely.
        * See diagram on ServerProcess.server_process docs. *)
-      start_new_server ?target_saved_state env exit_status
+      start_new_server env exit_status
     | (Not_yet_started, false)
     | (Alive _, false)
     | (Died_unexpectedly _, false) ->
@@ -255,97 +285,112 @@ struct
        * See diagram on ServerProcess.server_process docs. *)
       Hh_logger.log
         "Avoiding starting a new server because version in config no longer matches.";
-      { env with server = Died_config_changed }
+      set_server env Died_config_changed
     | (Not_yet_started, true)
     | (Alive _, true)
     | (Died_unexpectedly _, true) ->
       (* Start new server instance because config matches.
        * See diagram on ServerProcess.server_process docs. *)
-      start_new_server ?target_saved_state env exit_status
+      start_new_server env exit_status
 
   let read_version fd =
-    let client_build_id : string = Marshal_tools.from_fd_with_preamble fd in
+    (* WARNING! Don't use the (slow) HackEventLogger here, in the inner loop non-failure path. *)
+    let s : string = Marshal_tools.from_fd_with_preamble fd in
     let newline_byte = Bytes.create 1 in
     let _ = Unix.read fd newline_byte 0 1 in
-    if not (String.equal (Bytes.to_string newline_byte) "\n") then (
-      Hh_logger.log "Did not find newline character after version";
-      raise Malformed_build_id
-    );
-    client_build_id
+    if not (String.equal (Bytes.to_string newline_byte) "\n") then
+      raise (Malformed_build_id "missing newline after version");
+    (* Newer clients send version in a json object.
+       Older clients sent just a client_version string *)
+    if String_utils.string_starts_with s "{" then
+      try Hh_json.json_of_string s with
+      | e -> raise (Malformed_build_id (Exn.to_string e))
+    else
+      Hh_json.JSON_Object [("client_version", Hh_json.JSON_String s)]
 
-  let rec handle_monitor_rpc env client_fd =
-    let cmd : MonitorRpc.command =
-      Marshal_tools.from_fd_with_preamble client_fd
+  let hand_off_client_connection ~tracker server_fd client_fd =
+    (* WARNING! Don't use the (slow) HackEventLogger here, in the inner loop non-failure path. *)
+    let m2s_sequence_number =
+      Sent_fds_collector.get_and_increment_sequence_number ()
     in
-    match cmd with
-    | MonitorRpc.HANDOFF_TO_SERVER (tracker, handoff_options) ->
-      let tracker =
-        Connection_tracker.(track tracker ~key:Monitor_received_handoff)
-      in
-      client_prehandoff
-        ~tracker
-        ~is_purgatory_client:false
-        env
-        handoff_options
-        client_fd
-    | MonitorRpc.SHUT_DOWN tracker ->
-      log "Got shutdown RPC. Shutting down." ~tracker;
-      let kill_signal_time = Unix.gettimeofday () in
-      kill_server_with_check env.server;
-      wait_for_server_exit_with_check env.server kill_signal_time;
-      Exit.exit Exit_status.No_error
-    | MonitorRpc.SERVER_PROGRESS _tracker ->
-      msg_to_channel client_fd (env.server_progress, env.server_progress_warning);
-      Unix.close client_fd;
-      env
-
-  and hand_off_client_connection ~tracker server_fd client_fd =
+    let msg = MonitorRpc.{ m2s_tracker = tracker; m2s_sequence_number } in
+    msg_to_channel server_fd msg;
+    log
+      "Handed off tracker to server (client socket handoff #%d)"
+      ~tracker
+      m2s_sequence_number;
     let status = Libancillary.ancil_send_fd server_fd client_fd in
     if status = 0 then begin
-      let tracker = Connection_tracker.(track tracker ~key:Monitor_sent_fd) in
-      msg_to_channel server_fd tracker;
-      Sent_fds_collector.cleanup_fd client_fd
+      log
+        "Handed off client socket to server (handoff #%d)"
+        ~tracker
+        m2s_sequence_number;
+      Sent_fds_collector.cleanup_fd ~tracker ~m2s_sequence_number client_fd
     end else begin
-      Hh_logger.log "Failed to handoff FD to server.";
+      log
+        "Failed to handoff client socket to server (handoff #%d)"
+        ~tracker
+        m2s_sequence_number;
       raise (Send_fd_failure status)
     end
 
-  (* Sends the client connection FD to the server process then closes the
-   * FD. *)
-  and hand_off_client_connection_with_retries
-      ~tracker server_fd retries client_fd =
-    let (_, ready_l, _) = Unix.select [] [server_fd] [] 0.5 in
-    if not (List.is_empty ready_l) then
-      try hand_off_client_connection ~tracker server_fd client_fd
-      with e ->
-        if retries > 0 then (
-          log "Retrying FD handoff" ~tracker;
-          hand_off_client_connection_with_retries
+  (** Sends the client connection FD to the server process then closes the FD.
+  Backpressure: We have a timeout of 30s here to wait for the server to accept
+  the handoff. That timeout will be exceeded if monitor->server pipe has filled
+  up from previous requests and the server's current work item is costly. In this
+  case we'll give up on the handoff, and hh_client will fail with Server_hung_up_should_retry,
+  and find_hh.sh will retry with exponential backoff.
+  During the 30s while we're blocked here, if there are lots of other clients trying
+  to connect to the monitor and the monitor's incoming queue is full, they'll time
+  out trying to open a connection to the monitor. Their response is to back off,
+  with exponentially longer timeouts they're willing to wait for the monitor to become
+  available. In this way the queue of clients is stored in the unix process list.
+  Why did we pick 30s? It's arbitrary. If we decreased then, if there are lots of clients,
+  they'll do more work while they needlessly cycle. If we increased up to infinite
+  then I worry that a failure for other reasons might look like a hang.
+  This 30s must be comfortably shorter than the 60s delay in ClientConnect.connect, since
+  if not then by the time we in the monitor timeout we'll find that every single item
+  in our incoming queue is already stale! *)
+  let hand_off_client_connection_wrapper ~tracker server_fd client_fd =
+    (* WARNING! Don't use the (slow) HackEventLogger here, in the inner loop non-failure path. *)
+    let timeout = 30.0 in
+    let to_finally_close = ref (Some client_fd) in
+    Utils.try_finally
+      ~f:(fun () ->
+        let (_, ready_l, _) = Unix.select [] [server_fd] [] timeout in
+        if List.is_empty ready_l then
+          log
             ~tracker
-            server_fd
-            (retries - 1)
-            client_fd
-        ) else (
-          log "No more retries. Ignoring request." ~tracker;
-          HackEventLogger.send_fd_failure e;
-          Unix.close client_fd
-        )
-    else if retries > 0 then (
-      log "server socket not yet ready. Retrying." ~tracker;
-      hand_off_client_connection_with_retries
-        ~tracker
-        server_fd
-        (retries - 1)
-        client_fd
-    ) else (
-      log
-        "server socket not yet ready. No more retries. Ignoring request."
-        ~tracker;
-      Unix.close client_fd
-    )
+            "Handoff FD timed out (%.1fs): server's current iteration is taking longer than that, and its incoming pipe is full"
+            timeout
+        else
+          try
+            hand_off_client_connection ~tracker server_fd client_fd;
+            to_finally_close := None
+          with
+          | Unix.Unix_error (Unix.EPIPE, _, _) ->
+            log
+              ~tracker
+              "Handoff FD failed: server has closed its end of pipe (EPIPE), maybe due to large rebase or incompatible .hhconfig change or crash"
+          | exn ->
+            let e = Exception.wrap exn in
+            log
+              ~tracker
+              "Handoff FD failed unexpectedly - %s"
+              (Exception.to_string e);
+            HackEventLogger.send_fd_failure e)
+      ~finally:(fun () ->
+        match !to_finally_close with
+        | None -> ()
+        | Some client_fd ->
+          log
+            ~tracker
+            "Sending Monitor_failed_to_handoff to client, and closing FD";
+          msg_to_channel client_fd ServerCommandTypes.Monitor_failed_to_handoff;
+          ensure_fd_closed client_fd)
 
   (* Does not return. *)
-  and client_out_of_date_ client_fd mismatch_info =
+  let client_out_of_date_ client_fd mismatch_info =
     msg_to_channel client_fd (Build_id_mismatch_ex mismatch_info);
     HackEventLogger.out_of_date ()
 
@@ -355,24 +400,25 @@ struct
    * the client can wait for socket closure as indication that both the monitor
    * and server have exited.
    *)
-  and client_out_of_date env client_fd mismatch_info =
+  let client_out_of_date env client_fd mismatch_info =
     Hh_logger.log "Client out of date. Killing server.";
     kill_server_with_check env.server;
     let kill_signal_time = Unix.gettimeofday () in
     (* If we detect out of date client, should always kill server and exit
      * monitor, even if messaging to channel or event logger fails. *)
-    (try client_out_of_date_ client_fd mismatch_info
-     with e ->
-       Hh_logger.log
-         "Handling client_out_of_date threw with: %s"
-         (Exn.to_string e));
+    (try client_out_of_date_ client_fd mismatch_info with
+    | e ->
+      Hh_logger.log
+        "Handling client_out_of_date threw with: %s"
+        (Exn.to_string e));
     wait_for_server_exit_with_check env.server kill_signal_time;
     Exit.exit Exit_status.Build_id_mismatch
 
-  (* Send (possibly empty) sequences of messages before handing off to
-   * server. *)
-  and client_prehandoff
+  (** Send (possibly empty) sequences of messages before handing off to
+      server. *)
+  let rec client_prehandoff
       ~tracker ~is_purgatory_client env handoff_options client_fd =
+    (* WARNING! Don't use the (slow) HackEventLogger here, in the inner loop non-failure path. *)
     let module PH = Prehandoff in
     match env.server with
     | Alive server ->
@@ -391,15 +437,13 @@ struct
         ~tracker
         handoff_options.MonitorRpc.pipe_name
         (t_ready -. !(server.last_request_handoff));
-      msg_to_channel client_fd (PH.Sentinel server.finale_file);
+      msg_to_channel client_fd (PH.Sentinel server.server_specific_files);
       let tracker =
         Connection_tracker.(track tracker ~key:Monitor_sent_ack_to_client)
       in
-      hand_off_client_connection_with_retries ~tracker server_fd 8 client_fd;
-      log "handed off client fd to server" ~tracker;
-      HackEventLogger.client_connection_sent ();
+      hand_off_client_connection_wrapper ~tracker server_fd client_fd;
       server.last_request_handoff := Unix.time ();
-      { env with server = Alive server }
+      env
     | Died_unexpectedly (status, was_oom) ->
       (* Server has died; notify the client *)
       msg_to_channel client_fd (PH.Server_died { PH.status; PH.was_oom });
@@ -424,8 +468,8 @@ struct
         | Died_config_changed
         | Not_yet_started ->
           Hh_logger.log
-            ( "Unreachable state. Server should be alive after trying a restart"
-            ^^ " from Died_config_changed state" );
+            ("Unreachable state. Server should be alive after trying a restart"
+            ^^ " from Died_config_changed state");
           failwith
             "Failed starting server transitioning off Died_config_changed state"
       ) else (
@@ -461,25 +505,70 @@ struct
         in
         env
 
-  and ack_and_handoff_client env client_fd =
+  let handle_monitor_rpc env client_fd =
+    (* WARNING! Don't use the (slow) HackEventLogger here, in the inner loop non-failure path. *)
+    let cmd : MonitorRpc.command =
+      Marshal_tools.from_fd_with_preamble client_fd
+    in
+    match cmd with
+    | MonitorRpc.HANDOFF_TO_SERVER (tracker, handoff_options) ->
+      let tracker =
+        Connection_tracker.(track tracker ~key:Monitor_received_handoff)
+      in
+      client_prehandoff
+        ~tracker
+        ~is_purgatory_client:false
+        env
+        handoff_options
+        client_fd
+    | MonitorRpc.SHUT_DOWN tracker ->
+      log "Got shutdown RPC. Shutting down." ~tracker;
+      let kill_signal_time = Unix.gettimeofday () in
+      kill_server_with_check env.server;
+      wait_for_server_exit_with_check env.server kill_signal_time;
+      Exit.exit Exit_status.No_error
+
+  let ack_and_handoff_client env client_fd =
+    (* WARNING! Don't use the (slow) HackEventLogger here, in the inner loop non-failure path. *)
     try
-      let client_version = read_version client_fd in
+      let start_time = Unix.gettimeofday () in
+      let json = read_version client_fd in
+      let client_version =
+        match Hh_json_helpers.Jget.string_opt (Some json) "client_version" with
+        | Some client_version -> client_version
+        | None -> raise (Malformed_build_id "Missing client_version")
+      in
+      let tracker_id =
+        Hh_json_helpers.Jget.string_opt (Some json) "tracker_id"
+        |> Option.value ~default:"t#?"
+      in
+      Hh_logger.log
+        "[%s] read_version: got version %s, started at %s"
+        tracker_id
+        (Hh_json.json_to_string json)
+        (start_time |> Utils.timestring);
       if
         (not env.ignore_hh_version)
         && not (String.equal client_version Build_id.build_revision)
-      then
+      then (
+        Hh_logger.log
+          "New client version is %s, while currently running server version is %s"
+          client_version
+          Build_id.build_revision;
         client_out_of_date env client_fd ServerMonitorUtils.current_build_info
-      else (
+      ) else (
+        Hh_logger.log "[%s] sending Connection_ok..." tracker_id;
         msg_to_channel client_fd Connection_ok;
         handle_monitor_rpc env client_fd
       )
-    with Malformed_build_id as e ->
-      let stack = Caml.Printexc.get_raw_backtrace () in
-      HackEventLogger.malformed_build_id ();
-      Hh_logger.log "Malformed Build ID";
-      Caml.Printexc.raise_with_backtrace e stack
+    with
+    | Malformed_build_id _ as exn ->
+      let e = Exception.wrap exn in
+      HackEventLogger.malformed_build_id e;
+      Hh_logger.log "Malformed Build ID - %s" (Exception.to_string e);
+      Exception.reraise e
 
-  and push_purgatory_clients env =
+  let push_purgatory_clients env =
     (* We create a queue and transfer all the purgatory clients to it before
      * processing to avoid repeatedly retrying the same client even after
      * an EBADF. Control flow is easier this way than trying to manage an
@@ -509,7 +598,8 @@ struct
     in
     env
 
-  and maybe_push_purgatory_clients env =
+  let maybe_push_purgatory_clients env =
+    (* WARNING! Don't use the (slow) HackEventLogger here, in the inner loop non-failure path. *)
     match (env.server, Queue.length env.purgatory_clients) with
     | (Alive _, 0) -> env
     | (Died_config_changed, _) ->
@@ -523,21 +613,6 @@ struct
     | (Died_unexpectedly _, _) ->
       env
 
-  let rec read_server_messages process env =
-    let msg =
-      ServerProgress.(make_pipe_from_server process.in_fd |> read_from_server)
-    in
-    match msg with
-    | None -> env
-    | Some msg ->
-      let env =
-        match msg with
-        | MonitorRpc.PROGRESS msg -> { env with server_progress = msg }
-        | MonitorRpc.PROGRESS_WARNING msg ->
-          { env with server_progress_warning = msg }
-      in
-      read_server_messages process env
-
   (* Kill command from client is handled by server server, so the monitor
    * needs to check liveness of the server process to know whether
    * to stop itself. *)
@@ -549,36 +624,48 @@ struct
         (match (pid, proc_stat) with
         | (0, _) ->
           (* "pid=0" means the pid we waited for (i.e. process) hasn't yet died/stopped *)
-          read_server_messages process env
+          env
+        | (_, Unix.WEXITED 0) ->
+          (* "pid<>0, WEXITED 0" means the process had a clean exit *)
+          set_server env (Died_unexpectedly (proc_stat, false))
         | (_, _) ->
-          (* "pid<>0" means the pid has died or received a stop signal *)
-          let oom_code = Exit_status.(exit_code Out_of_shared_memory) in
-          let was_oom =
+          (* this case is any kind of unexpected exit *)
+          let is_oom =
             match proc_stat with
-            | Unix.WEXITED code when code = oom_code -> true
+            | Unix.WEXITED code
+              when (code = Exit_status.(exit_code Out_of_shared_memory))
+                   || code = Exit_status.(exit_code Worker_oomed) ->
+              true
             | _ -> Sys_utils.check_dmesg_for_oom process.pid "hh_server"
           in
-          SC.on_server_exit monitor_config;
-          ServerProcessTools.check_exit_status proc_stat process monitor_config;
-          { env with server = Died_unexpectedly (proc_stat, was_oom) })
-      | Not_yet_started ->
-        {
-          env with
-          server_progress = "server is currently stopped";
-          server_progress_warning = None;
-        }
-      | Died_config_changed ->
-        {
-          env with
-          server_progress = "server stopped because its configuration changed";
-          server_progress_warning = None;
-        }
+          let (exit_kind, exit_code) = Exit_status.unpack proc_stat in
+          let time_taken = Unix.time () -. process.start_t in
+          ServerCommandTypesUtils.write_progress_file
+            ~server_progress_file:
+              process.server_specific_files
+                .ServerCommandTypes.server_progress_file
+            ~server_progress:
+              ServerCommandTypes.
+                {
+                  server_progress = "writing crash logs";
+                  server_warning = None;
+                  server_timestamp = Unix.gettimeofday ();
+                };
+          Hh_logger.log
+            "TYPECHECKER_EXIT exit_kind=%s exit_code=%d is_oom=%b"
+            exit_kind
+            exit_code
+            is_oom;
+          HackEventLogger.typechecker_exit
+            time_taken
+            proc_stat
+            (monitor_config.server_log_file, monitor_config.monitor_log_file)
+            ~is_oom;
+          set_server env (Died_unexpectedly (proc_stat, is_oom)))
+      | Not_yet_started
+      | Died_config_changed
       | Died_unexpectedly _ ->
-        {
-          env with
-          server_progress = "server stopped because of an error";
-          server_progress_warning = None;
-        }
+        env
     in
 
     let (exit_status, server_state) =
@@ -593,9 +680,8 @@ struct
     in
     (env, exit_status, server_state)
 
-  let server_not_started env = { env with server = Not_yet_started }
-
   let update_status env monitor_config =
+    (* WARNING! Don't use the (slow) HackEventLogger here, in the inner loop non-failure path. *)
     let (env, exit_status, server_state) = update_status_ env monitor_config in
     let informant_report = Informant.report env.informant server_state in
     let is_watchman_fresh_instance =
@@ -654,15 +740,15 @@ struct
     let max_sql_retries = 3 in
     match (informant_report, env.server) with
     | (Informant_sig.Move_along, Died_config_changed) -> env
-    | (Informant_sig.Restart_server _, Died_config_changed) ->
+    | (Informant_sig.Restart_server, Died_config_changed) ->
       Hh_logger.log "%s"
       @@ "Ignoring Informant directed restart - waiting for next client "
       ^ "connection to verify server version first";
       env
-    | (Informant_sig.Restart_server target_saved_state, _) ->
+    | (Informant_sig.Restart_server, _) ->
       Hh_logger.log "Informant directed server restart. Restarting server.";
       HackEventLogger.informant_induced_restart ();
-      kill_and_maybe_restart_server ?target_saved_state env exit_status
+      kill_and_maybe_restart_server env exit_status
     | (Informant_sig.Move_along, _) ->
       if
         (is_watchman_failed || is_watchman_fresh_instance)
@@ -672,30 +758,30 @@ struct
           "Watchman died. Restarting hh_server (attempt: %d)"
           (env.watchman_retries + 1);
         let env = { env with watchman_retries = env.watchman_retries + 1 } in
-        server_not_started env
+        set_server env Not_yet_started
       ) else if is_decl_heap_elems_bug then (
         Hh_logger.log "hh_server died due to Decl_heap_elems_bug. Restarting";
-        server_not_started env
+        set_server env Not_yet_started
       ) else if is_worker_error then (
         Hh_logger.log "hh_server died due to worker error. Restarting";
-        server_not_started env
+        set_server env Not_yet_started
       ) else if is_config_changed then (
         Hh_logger.log "hh_server died from hh config change. Restarting";
-        server_not_started env
+        set_server env Not_yet_started
       ) else if is_heap_stale then (
         Hh_logger.log
           "Several large rebases caused shared heap to be stale. Restarting";
-        server_not_started env
+        set_server env Not_yet_started
       ) else if is_big_rebase then (
         Hh_logger.log "Server exited because of big rebase. Restarting";
-        server_not_started env
+        set_server env Not_yet_started
       ) else if is_sql_assertion_failure && env.sql_retries < max_sql_retries
         then (
         Hh_logger.log
           "Sql failed. Restarting hh_server in fresh mode (attempt: %d)"
           (env.sql_retries + 1);
         let env = { env with sql_retries = env.sql_retries + 1 } in
-        server_not_started env
+        set_server env Not_yet_started
       ) else
         env
 
@@ -713,60 +799,74 @@ struct
       | Watchman.Watchman_restarted ->
         Exit.exit Exit_status.Watchman_fresh_instance
       | Exit_status.Exit_with _ as e -> raise e
-      | e ->
+      | exn ->
+        let e = Exception.wrap exn in
         let stack = Printexc.get_backtrace () in
         if consecutive_throws > 500 then (
           Hh_logger.log "Too many consecutive exceptions.";
           Hh_logger.log
             "Probably an uncaught exception rethrown each retry. Exiting. %s"
             stack;
-          HackEventLogger.uncaught_exception e;
+          HackEventLogger.monitor_giving_up_exception e;
           Exit.exit Exit_status.Uncaught_exception
         );
         Hh_logger.log
           "check_and_run_loop_ threw with exception: %s - %s"
-          (Exn.to_string e)
+          (Exception.to_string e)
           stack;
         (env, consecutive_throws + 1)
     in
     check_and_run_loop ~consecutive_throws env monitor_config socket
 
   and check_and_run_loop_ env monitor_config (socket : Unix.file_descr) =
+    (* WARNING! Don't use the (slow) HackEventLogger here, in the inner loop non-failure path. *)
+    (* That's because HackEventLogger for the monitor is synchronous and takes 50ms/call. *)
+    (* But the monitor's non-failure inner loop must handle hundres of clients per second *)
     let lock_file = monitor_config.lock_file in
     if not (Lock.grab lock_file) then (
       Hh_logger.log "Lost lock; terminating.\n%!";
       HackEventLogger.lock_stolen lock_file;
       Exit.exit Exit_status.Lock_stolen
     );
+    let sequence_receipt_high_water_mark =
+      match env.server with
+      | ServerProcess.Alive process_data ->
+        let pid = process_data.ServerProcess.pid in
+        MonitorRpc.read_server_receipt_to_monitor_file
+          ~server_receipt_to_monitor_file:
+            (ServerFiles.server_receipt_to_monitor_file pid)
+        |> Option.value ~default:0
+      | _ -> 0
+    in
     let env = maybe_push_purgatory_clients env in
-    let () = Sent_fds_collector.collect_garbage () in
+    (* The first sequence number we send is 1; hence, the default "0" will be a no-op *)
+    let () = Sent_fds_collector.collect_fds ~sequence_receipt_high_water_mark in
     let has_client = sleep_and_check socket in
     let env = update_status env monitor_config in
     if not has_client then
+      (* Note: this call merely reads from disk; it doesn't go via the slow HackEventLogger. *)
       let () = EventLogger.recheck_disk_files () in
       env
     else
       try
         let (fd, _) = Unix.accept socket in
-        try
-          HackEventLogger.accepted_client_fd (fd_to_int fd);
-          ack_and_handoff_client env fd
-        with
+        try ack_and_handoff_client env fd with
         | Exit_status.Exit_with _ as e -> raise e
-        | e ->
-          let e = Exception.wrap e in
-          HackEventLogger.ack_and_handoff_exception e;
+        | exn ->
+          let e = Exception.wrap exn in
           Hh_logger.log
-            "Handling client connection failed. Ignoring connection attempt.\n%s\n"
-            (Exception.to_string e |> Exception.clean_stack);
-          Unix.close fd;
+            "Ack_and_handoff failure; closing client FD: %s"
+            (Exception.get_ctor_string e);
+          ensure_fd_closed fd;
           env
       with
       | Exit_status.Exit_with _ as e -> raise e
-      | e ->
+      | exn ->
+        let e = Exception.wrap exn in
         HackEventLogger.accepting_on_socket_exception e;
         Hh_logger.log
-          "Accepting on socket failed. Ignoring client connection attempt.";
+          "ACCEPTING_ON_SOCKET_EXCEPTION; closing client FD. %s"
+          (Exception.to_string e |> Exception.clean_stack);
         env
 
   let check_and_run_loop_once (env, monitor_config, socket) =
@@ -784,7 +884,7 @@ struct
     (* If the client started the server, it opened an FD before forking, so it
      * can be notified when the monitor socket is ready. The FD number was
      * passed in program args. *)
-    Option.iter waiting_client (fun fd ->
+    Option.iter waiting_client ~f:(fun fd ->
         let oc = Unix.out_channel_of_descr fd in
         try
           Out_channel.output_string oc (ServerMonitorUtils.ready ^ "\n");
@@ -822,8 +922,6 @@ struct
         watchman_retries = 0;
         ignore_hh_version =
           Informant.should_ignore_hh_version informant_init_env;
-        server_progress_warning = None;
-        server_progress = "server status is unknown";
       }
     in
     (env, monitor_config, socket)

@@ -12,13 +12,26 @@ open ServerCommandTypes
 
 exception Client_went_away
 
-(* default pipe, priority pipe, force formant start only pipe *)
-type t = Unix.file_descr * Unix.file_descr * Unix.file_descr
+type t = {
+  default_in_fd: Unix.file_descr;
+      (** Default pipe. Used for non time sensitive commands and IDE connections. *)
+  priority_in_fd: Unix.file_descr;
+      (** Priority pipe.
+          There's a handler for events happening on this pipe which will interrupt the typing service.
+          In practice this is used for commands that can be served immediately. *)
+  force_dormant_start_only_in_fd: Unix.file_descr;
+      (** Force formant start only pipe, used to perform the --force-dormant-start command. *)
+}
 
 type priority =
   | Priority_high
   | Priority_default
   | Priority_dormant
+
+type persistent_client = {
+  fd: Unix.file_descr;
+  mutable tracker: Connection_tracker.t;
+}
 
 type client =
   | Non_persistent_client of {
@@ -27,17 +40,25 @@ type client =
       priority: priority;
       mutable tracker: Connection_tracker.t;
     }
-  | Persistent_client of {
-      fd: Unix.file_descr;
-      mutable tracker: Connection_tracker.t;
-    }
+      (** In practice this is hh_client. There can be multiple non-persistent clients. *)
+  | Persistent_client of persistent_client
+      (** In practice this is the IDE. There is only one persistent client. *)
+
+type handoff = {
+  client: client;
+  m2s_sequence_number: int;
+      (** A unique number incremented for each client socket handoff from monitor to server.
+          Useful to correlate monitor and server logs. *)
+}
 
 type select_outcome =
   | Select_persistent
-  | Select_new of client
+  | Select_new of handoff
   | Select_nothing
 
-let provider_from_file_descriptors x = x
+let provider_from_file_descriptors
+    (default_in_fd, priority_in_fd, force_dormant_start_only_in_fd) =
+  { default_in_fd; priority_in_fd; force_dormant_start_only_in_fd }
 
 let provider_for_test () = failwith "for use in tests only"
 
@@ -46,27 +67,45 @@ let accept_client
     (priority : priority)
     (parent_in_fd : Unix.file_descr)
     (t_sleep_and_check : float)
-    (t_monitor_fd_ready : float) : client =
-  let socket = Libancillary.ancil_recv_fd parent_in_fd in
-  let t_got_client_fd = Unix.gettimeofday () in
-  let tracker : Connection_tracker.t =
+    (t_monitor_fd_ready : float) : handoff =
+  let ({ MonitorRpc.m2s_tracker = tracker; m2s_sequence_number }
+        : MonitorRpc.monitor_to_server_handoff_msg) =
     Marshal_tools.from_fd_with_preamble parent_in_fd
   in
+  let t_got_tracker = Unix.gettimeofday () in
+  Hh_logger.log
+    "[%s] got tracker #%d handoff from monitor"
+    (Connection_tracker.log_id tracker)
+    m2s_sequence_number;
+  let socket = Libancillary.ancil_recv_fd parent_in_fd in
+  let t_got_client_fd = Unix.gettimeofday () in
+  MonitorRpc.write_server_receipt_to_monitor_file
+    ~server_receipt_to_monitor_file:
+      (ServerFiles.server_receipt_to_monitor_file (Unix.getpid ()))
+    ~sequence_number_high_water_mark:m2s_sequence_number;
+  Hh_logger.log
+    "[%s] got FD#%d handoff from monitor"
+    (Connection_tracker.log_id tracker)
+    m2s_sequence_number;
   let tracker =
     let open Connection_tracker in
     tracker
     |> track ~key:Server_sleep_and_check ~time:t_sleep_and_check
     |> track ~key:Server_monitor_fd_ready ~time:t_monitor_fd_ready
+    |> track ~key:Server_got_tracker ~time:t_got_tracker
     |> track ~key:Server_got_client_fd ~time:t_got_client_fd
-    |> track ~key:Server_got_tracker
   in
-  Non_persistent_client
-    {
-      ic = Timeout.in_channel_of_descr socket;
-      oc = Unix.out_channel_of_descr socket;
-      priority;
-      tracker;
-    }
+  {
+    client =
+      Non_persistent_client
+        {
+          ic = Timeout.in_channel_of_descr socket;
+          oc = Unix.out_channel_of_descr socket;
+          priority;
+          tracker;
+        };
+    m2s_sequence_number;
+  }
 
 let select ~idle_gc_slice fd_list timeout =
   let deadline = Unix.gettimeofday () +. timeout in
@@ -77,24 +116,27 @@ let select ~idle_gc_slice fd_list timeout =
     ready_fds
   | ready_fds -> ready_fds
 
-(* sleep_and_check: waits up to 0.1 seconds and returns what to read from. *)
+(** Waits up to 0.1 seconds and checks for new connection attempts.
+    Select what client to serve next and call
+    retrieve channels to client from monitor process. *)
 let sleep_and_check
-    ((default_in_fd, priority_in_fd, force_dormant_start_only) :
-      Unix.file_descr * Unix.file_descr * Unix.file_descr)
+    ({ default_in_fd; priority_in_fd; force_dormant_start_only_in_fd } : t)
     (persistent_client_opt : client option)
     ~(ide_idle : bool)
     ~(idle_gc_slice : int)
     (kind : [< `Any | `Force_dormant_start_only | `Priority ]) : select_outcome
     =
   let t_sleep_and_check = Unix.gettimeofday () in
-  let in_fds = [default_in_fd; priority_in_fd; force_dormant_start_only] in
-  let l =
+  let in_fds =
+    [default_in_fd; priority_in_fd; force_dormant_start_only_in_fd]
+  in
+  let fd_l =
     match (kind, persistent_client_opt) with
-    | (`Force_dormant_start_only, _) -> [force_dormant_start_only]
+    | (`Force_dormant_start_only, _) -> [force_dormant_start_only_in_fd]
     | (`Priority, _) -> [priority_in_fd]
     | (`Any, Some (Persistent_client { fd; _ })) ->
       (* If we are not sure that there are no more IDE commands, do not even
-       * look at non-persistent client to avoid race conditions.*)
+       * look at non-persistent client to avoid race conditions. *)
       if not ide_idle then
         [fd]
       else
@@ -106,7 +148,7 @@ let sleep_and_check
       assert false
     | (`Any, None) -> in_fds
   in
-  let ready_fd_l = select ~idle_gc_slice l 0.1 in
+  let ready_fd_l = select ~idle_gc_slice fd_l 0.1 in
   let t_monitor_fd_ready = Unix.gettimeofday () in
   (* Prioritize existing persistent client requests over command line ones *)
   let is_persistent fd =
@@ -131,20 +173,31 @@ let sleep_and_check
            default_in_fd
            t_sleep_and_check
            t_monitor_fd_ready)
-    else if List.mem ~equal:Poly.( = ) ready_fd_l force_dormant_start_only then
+    else if List.mem ~equal:Poly.( = ) ready_fd_l force_dormant_start_only_in_fd
+    then
       Select_new
         (accept_client
            Priority_dormant
-           force_dormant_start_only
+           force_dormant_start_only_in_fd
            t_sleep_and_check
            t_monitor_fd_ready)
     else if List.is_empty ready_fd_l then
       Select_nothing
     else
       failwith "sleep_and_check got impossible fd"
-  with e ->
+  with
+  | End_of_file as exn ->
+    let e = Exception.wrap exn in
     HackEventLogger.get_client_channels_exception e;
-    Hh_logger.log "Getting Client FDs failed. Ignoring.";
+    Hh_logger.log "GET_CLIENT_CHANNELS_EXCEPTION End_of_file. Terminating.";
+    Exit.exit Exit_status.Server_got_eof_from_monitor
+  | exn ->
+    let e = Exception.wrap exn in
+    HackEventLogger.get_client_channels_exception e;
+    Hh_logger.log
+      "GET_CLIENT_CHANNELS_EXCEPTION(%s). Ignoring."
+      (Exception.get_ctor_string e);
+    Unix.sleepf 0.5;
     Select_nothing
 
 let has_persistent_connection_request = function
@@ -153,7 +206,7 @@ let has_persistent_connection_request = function
     not (List.is_empty ready)
   | _ -> false
 
-let priority_fd (_, x, _) = Some x
+let priority_fd { priority_in_fd; _ } = Some priority_in_fd
 
 let get_client_fd = function
   | Persistent_client { fd; _ } -> Some fd
@@ -168,9 +221,13 @@ let track ~key ?time client =
 
 let say_hello oc =
   let fd = Unix.descr_of_out_channel oc in
-  Marshal_tools.to_fd_with_preamble fd ServerCommandTypes.Hello |> ignore
+  let (_ : int) =
+    Marshal_tools.to_fd_with_preamble fd ServerCommandTypes.Hello
+  in
+  ()
 
-let read_connection_type (ic : Timeout.in_channel) : connection_type =
+let read_connection_type_from_channel (ic : Timeout.in_channel) :
+    connection_type =
   Timeout.with_timeout
     ~timeout:1
     ~on_timeout:(fun _ -> raise Read_command_timeout)
@@ -178,9 +235,8 @@ let read_connection_type (ic : Timeout.in_channel) : connection_type =
       let connection_type : connection_type = Timeout.input_value ~timeout ic in
       connection_type)
 
+(* Warning 52 warns about using Sys_error. Here we have no alternative but to depend on Sys_error strings *)
 [@@@warning "-52"]
-
-(* we have no alternative but to depend on Sys_error strings *)
 
 let read_connection_type (client : client) : connection_type =
   match client with
@@ -191,7 +247,7 @@ let read_connection_type (client : client) : connection_type =
         client.tracker <-
           Connection_tracker.(track client.tracker ~key:Server_sent_hello);
         let connection_type : connection_type =
-          read_connection_type client.ic
+          read_connection_type_from_channel client.ic
         in
         client.tracker <-
           Connection_tracker.(
@@ -208,9 +264,8 @@ let read_connection_type (client : client) : connection_type =
      * (via make_persistent). *)
     assert false
 
+(* CARE! scope of warning suppression should be only read_connection_type *)
 [@@@warning "+52"]
-
-(* CARE! scope of suppression should be only read_connection_type *)
 
 let send_response_to_client client response =
   let (fd, tracker) =
@@ -236,7 +291,8 @@ let send_push_message_to_client client response =
          Marshal_tools.to_fd_with_preamble fd (ServerCommandTypes.Push response)
        in
        ()
-     with Unix.Unix_error (Unix.EPIPE, "write", "") -> raise Client_went_away)
+     with
+    | Unix.Unix_error (Unix.EPIPE, "write", "") -> raise Client_went_away)
 
 let read_client_msg ic =
   try
@@ -244,7 +300,8 @@ let read_client_msg ic =
       ~timeout:1
       ~on_timeout:(fun _ -> raise Read_command_timeout)
       ~do_:(fun timeout -> Timeout.input_value ~timeout ic)
-  with End_of_file -> raise Client_went_away
+  with
+  | End_of_file -> raise Client_went_away
 
 let client_has_message = function
   | Non_persistent_client _ -> true
@@ -270,12 +327,13 @@ let get_channels = function
      * never be hit *)
     assert false
 
-let make_persistent = function
+let make_persistent client =
+  match client with
   | Non_persistent_client { ic; tracker; _ } ->
     Persistent_client { fd = Timeout.descr_of_in_channel ic; tracker }
   | Persistent_client _ ->
     (* See comment on read_connection_type. Non_persistent_client can be
-     * turned into Persistent_client, but not the other way *)
+       * turned into Persistent_client, but not the other way *)
     assert false
 
 let is_persistent = function
@@ -302,8 +360,8 @@ let ping = function
   | Non_persistent_client { oc; _ } ->
     let fd = Unix.descr_of_out_channel oc in
     let (_ : int) =
-      try Marshal_tools.to_fd_with_preamble fd ServerCommandTypes.Ping
-      with _ -> raise Client_went_away
+      try Marshal_tools.to_fd_with_preamble fd ServerCommandTypes.Ping with
+      | _ -> raise Client_went_away
     in
     ()
   | Persistent_client _ -> ()

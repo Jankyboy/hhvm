@@ -7,18 +7,19 @@
  *
  *)
 
-open Hh_core
+open Hh_prelude
 
 let get_target symbol =
   SymbolOccurrence.(
     let module Types = ServerCommandTypes.Find_refs in
     FindRefsService.(
       match symbol.type_ with
-      | SymbolOccurrence.Class -> Some (IClass symbol.name)
+      | SymbolOccurrence.Class _ -> Some (IClass symbol.name)
       | SymbolOccurrence.Function -> Some (IFunction symbol.name)
       | SymbolOccurrence.Method (class_name, member_name) ->
         Some (IMember (Subclasses_of class_name, Types.Method member_name))
-      | SymbolOccurrence.Property (class_name, member_name) ->
+      | SymbolOccurrence.Property (class_name, member_name)
+      | SymbolOccurrence.XhpLiteralAttr (class_name, member_name) ->
         Some (IMember (Subclasses_of class_name, Types.Property member_name))
       | SymbolOccurrence.ClassConst (class_name, member_name) ->
         Some (IMember (Subclasses_of class_name, Types.Class_const member_name))
@@ -32,12 +33,15 @@ let highlight_symbol ctx entry line char symbol =
     match get_target symbol with
     | Some target ->
       let results = FindRefsService.find_refs_ctx ~ctx ~entry ~target in
-      List.rev (List.map results snd)
-    | None when symbol.SymbolOccurrence.type_ = SymbolOccurrence.LocalVar ->
+      List.rev (List.map results ~f:snd)
+    | None
+      when SymbolOccurrence.equal_kind
+             symbol.SymbolOccurrence.type_
+             SymbolOccurrence.LocalVar ->
       ServerFindLocals.go ~ctx ~entry ~line ~char
     | None -> []
   in
-  List.map res Ide_api_types.pos_to_range
+  List.map res ~f:Ide_api_types.pos_to_range
 
 let compare r1 r2 =
   Ide_api_types.(

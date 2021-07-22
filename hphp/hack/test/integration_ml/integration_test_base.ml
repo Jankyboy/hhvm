@@ -8,7 +8,7 @@
  *
  *)
 
-open Core_kernel
+open Hh_prelude
 open Integration_test_base_types
 open Reordered_argument_collections
 open ServerCommandTypes
@@ -17,7 +17,7 @@ open Coverage_level
 open Coverage_level_defs
 open Int.Replace_polymorphic_compare
 
-exception Integration_test_tailure
+exception Integration_test_failure
 
 let root = "/"
 
@@ -33,8 +33,6 @@ let global_opts =
   GlobalOptions.make
     ~po_disable_xhp_element_mangling:false
     ~po_deregister_php_stdlib:true
-    ~po_allow_goto:false
-    ~tco_unsafe_rx:false
     ()
 
 let server_config = ServerConfig.set_tc_options server_config global_opts
@@ -52,12 +50,13 @@ let real_hhi_files () = Hhi.get_raw_hhi_contents () |> Array.to_list
 let test_init_common ?(hhi_files = []) () =
   if !did_init then
     failwith
-      ( "Initializing the server twice in same process. There is no guarantee of global state "
+      ("Initializing the server twice in same process. There is no guarantee of global state "
       ^ "cleanup between them. Split your test in multiple separate tests, or run individual test "
-      ^ "cases in separate processes using Test.in_daemon." )
+      ^ "cases in separate processes using Test.in_daemon.")
   else
     did_init := true;
 
+  Unix.putenv "HH_TEST_MODE" "1";
   Printexc.record_backtrace true;
   EventLogger.init_fake ();
   Relative_path.set_path_prefix Relative_path.Root (Path.make root);
@@ -82,10 +81,11 @@ let setup_server ?custom_config ?(hhi_files = []) () =
   test_init_common () ~hhi_files;
 
   let init_id = Random_id.short_string () in
+  let deps_mode = Typing_deps_mode.SQLiteMode in
   let result =
     match custom_config with
-    | Some config -> ServerEnvBuild.make_env ~init_id config
-    | None -> ServerEnvBuild.make_env ~init_id !genv.ServerEnv.config
+    | Some config -> ServerEnvBuild.make_env ~init_id ~deps_mode config
+    | None -> ServerEnvBuild.make_env ~init_id ~deps_mode !genv.ServerEnv.config
   in
   let hhi_file_list =
     List.map hhi_files ~f:(fun (fn, _) ->
@@ -181,7 +181,7 @@ let run_loop_once :
         TestClientProvider.get_client_response Non_persistent;
       persistent_client_response =
         TestClientProvider.get_client_response Persistent;
-      push_message = TestClientProvider.get_push_message ();
+      push_messages = TestClientProvider.get_push_messages ();
     } )
 
 let prepend_root x = root ^ x
@@ -189,7 +189,7 @@ let prepend_root x = root ^ x
 let fail x =
   print_endline x;
   Caml.Printexc.(get_callstack 100 |> print_raw_backtrace stderr);
-  raise Integration_test_tailure
+  raise Integration_test_failure
 
 (******************************************************************************(
  * Utility functions to help format/throw errors for informative errors
@@ -289,13 +289,14 @@ let assertSingleError expected err_list =
     in
     fail msg
 
-let subscribe_diagnostic ?(id = 4) env =
+let subscribe_diagnostic ?(id = 4) ?error_limit env =
   let (env, _) =
     run_loop_once
       env
       {
         default_loop_input with
-        persistent_client_request = Some (Request (SUBSCRIBE_DIAGNOSTIC id));
+        persistent_client_request =
+          Some (Request (SUBSCRIBE_DIAGNOSTIC { id; error_limit }));
       }
   in
   fail_on_none
@@ -421,7 +422,7 @@ let status ?(ignore_ide = false) ?(max_errors = None) ?(remote = false) env =
              (ServerCommandTypes.STATUS { ignore_ide; max_errors; remote }));
     }
 
-let full_check env =
+let full_check_status env =
   (* the empty string isn't just a test placeholder - when a file is deleted
      or renamed, the content is set to the empty string internally *)
   run_loop_once
@@ -436,27 +437,27 @@ let start_initial_full_check env =
   | ServerEnv.Initial_typechecking _ -> ()
   | _ -> assert false);
 
-  let (env, loop_output) = full_check env in
+  let (env, loop_output) = full_check_status env in
   (match env.ServerEnv.prechecked_files with
   | ServerEnv.Prechecked_files_ready _ -> ()
   | _ -> assert false);
 
   let { total_rechecked_count; _ } = loop_output in
-  (* full_check adds a dummy file to trigger a recheck, so we subtract one here
+  (* full_check_status adds a dummy file to trigger a recheck, so we subtract one here
      and return the number of rechecked non-dummy files. *)
   assert (total_rechecked_count >= 1);
   (env, total_rechecked_count - 1)
 
 let assert_no_diagnostics loop_output =
-  match loop_output.push_message with
-  | Some (DIAGNOSTIC _) -> fail "Did not expect to receive push diagnostics."
-  | Some NEW_CLIENT_CONNECTED -> fail "Unexpected push message"
+  match loop_output.push_messages with
+  | DIAGNOSTIC _ :: _ -> fail "Did not expect to receive push diagnostics."
+  | NEW_CLIENT_CONNECTED :: _ -> fail "Unexpected push message"
   | _ -> ()
 
 let assert_has_diagnostics loop_output =
-  match loop_output.push_message with
-  | Some (DIAGNOSTIC _) -> ()
-  | Some (BUSY_STATUS s) ->
+  match loop_output.push_messages with
+  | DIAGNOSTIC _ :: _ -> ()
+  | BUSY_STATUS s :: _ ->
     let msg =
       match s with
       | Needs_local_typecheck -> "Needs_local_typecheck"
@@ -469,21 +470,27 @@ let assert_has_diagnostics loop_output =
       Printf.sprintf "Expected DIAGNOSTIC, but got BUSY_STATUS %s." msg
     in
     fail msg
-  | Some NEW_CLIENT_CONNECTED ->
+  | NEW_CLIENT_CONNECTED :: _ ->
     fail "Expected DIAGNOSTIC, but got NEW_CLIENT_CONNECTED."
-  | Some (FATAL_EXCEPTION e)
-  | Some (NONFATAL_EXCEPTION e) ->
+  | FATAL_EXCEPTION e :: _
+  | NONFATAL_EXCEPTION e :: _ ->
     let msg =
       Printf.sprintf
         "Expected DIAGNOSTIC, but got NON/FATAL_EXCEPTION:\n%s"
         e.Marshal_tools.message
     in
     fail msg
-  | None -> fail "Expected to receive push diagnostics."
+  | [] -> fail "Expected to receive push diagnostics."
 
 let errors_to_string buf x =
   List.iter x ~f:(fun error ->
       Printf.bprintf buf "%s\n" (Errors.to_string error))
+
+let print_telemetries env =
+  Printf.eprintf "\n==Telementries==\n";
+  List.iter
+    ServerEnv.(env.last_recheck_loop_stats.per_batch_telemetry)
+    ~f:(fun t -> Printf.eprintf "%s\n" (Telemetry.to_string ~pretty:true t))
 
 let assert_errors errors expected =
   let buf = Buffer.create 1024 in
@@ -596,9 +603,6 @@ let load_state
     ?(local_changes = [])
     ?(load_hhi_files = false)
     ?(use_precheked_files = ServerLocalConfig.(default.prechecked_files))
-    ?(disable_conservative_redecl =
-      ServerLocalConfig.(default.disable_conservative_redecl))
-    ?(predeclare_ide_deps = ServerLocalConfig.(default.predeclare_ide_deps))
     ?(load_decls_from_saved_state =
       ServerLocalConfig.(default.load_decls_from_saved_state))
     ?(enable_naming_table_fallback = false)
@@ -618,14 +622,12 @@ let load_state
           lazy_init = true;
           prechecked_files = use_precheked_files;
           predeclare_ide = true;
-          disable_conservative_redecl;
-          predeclare_ide_deps;
           load_decls_from_saved_state;
           naming_sqlite_path =
-            ( if enable_naming_table_fallback then
+            (if enable_naming_table_fallback then
               Some (saved_state_dir ^ "/" ^ saved_naming_filename)
             else
-              None );
+              None);
           enable_naming_table_fallback;
         };
       ServerEnv.config =
@@ -650,23 +652,32 @@ let load_state
     List.map local_changes ~f:(fun x ->
         Relative_path.create_detect_prefix (root ^ x))
   in
-  let saved_state_fn = saved_state_dir ^ "/" ^ saved_state_filename in
+  let naming_table_path = saved_state_dir ^ "/" ^ saved_state_filename in
   let deptable_fn = saved_state_dir ^ "/" ^ saved_state_filename ^ ".sql" in
+  (* TODO(hverr): Figure out 64-bit *)
+  let deptable_is_64bit = false in
   let load_state_approach =
     ServerInit.Precomputed
       {
-        ServerArgs.saved_state_fn;
+        ServerArgs.naming_table_path;
         (* in Precomputed scenario, base revision should only be used in logging,
          * which is irrelevant in tests *)
         corresponding_base_revision = "-1";
         deptable_fn;
+        deptable_is_64bit;
         naming_changes = [];
         prechecked_changes;
         changes;
       }
   in
   let init_id = Random_id.short_string () in
-  let env = ServerEnvBuild.make_env ~init_id !genv.ServerEnv.config in
+  (* TODO(hverr): Figure out 64-bit *)
+  let env =
+    ServerEnvBuild.make_env
+      ~init_id
+      ~deps_mode:Typing_deps_mode.SQLiteMode
+      !genv.ServerEnv.config
+  in
   match
     ServerInit.init
       ~init_approach:(ServerInit.Saved_state_init load_state_approach)
@@ -694,9 +705,14 @@ let errors_to_string x =
   Buffer.contents buf
 
 let get_diagnostics loop_output =
-  match loop_output.push_message with
-  | Some (DIAGNOSTIC (_, m)) -> m
-  | _ -> fail "Expected push diagnostics"
+  let diags =
+    List.filter_map loop_output.push_messages ~f:(function
+        | DIAGNOSTIC { errors; is_truncated = _ } -> Some errors
+        | _ -> None)
+  in
+  match diags with
+  | m :: _ -> m
+  | [] -> fail "Expected at least one diagnostic message"
 
 let assert_diagnostics loop_output expected =
   let diagnostics = get_diagnostics loop_output in
@@ -761,6 +777,25 @@ let assert_autocomplete loop_output expected =
     expected |> List.sort ~compare:String.compare |> list_to_string
   in
   assertEqual expected_as_string results_as_string
+
+let assert_autocomplete_does_not_contain loop_output not_expected =
+  let results =
+    match loop_output.persistent_client_response with
+    | Some res -> res
+    | _ -> fail "Expected autocomplete response"
+  in
+  let results =
+    List.map results ~f:(fun x -> x.AutocompleteTypes.res_name) |> SSet.of_list
+  in
+  let not_expected = SSet.of_list not_expected in
+  let occured = SSet.inter results not_expected in
+  if SSet.is_empty occured |> not then
+    Printf.sprintf
+      "unexpected symbol(s) %s occurs in autocomplete list"
+      (SSet.show occured)
+    |> fail
+  else
+    ()
 
 let assert_ide_autocomplete loop_output expected =
   let results =

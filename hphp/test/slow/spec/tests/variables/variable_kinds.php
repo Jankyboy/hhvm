@@ -33,18 +33,8 @@ const FAILURE2 = TRUE;
 function globalConst()
 {
     echo "Inside " . __FUNCTION__ . "\n";
-    echo "MAX_HEIGHT2 = " . MAX_HEIGHT2 . "\n";
-    echo "COEFFICIENT_2 = " . COEFFICIENT_2 . "\n";
-}
-
-function compute2($p)
-{
-    $GLOBALS['average'] = ($GLOBALS['max'] + $GLOBALS['min'])/2;
-
-    if ($p)
-    {
-        $GLOBALS['result'] = 3.456;     // initializes a global, creating it if necessary
-    }
+    echo "MAX_HEIGHT2 = " . (string)(MAX_HEIGHT2) . "\n";
+    echo "COEFFICIENT_2 = " . (string)(COEFFICIENT_2) . "\n";
 }
 
 class Point
@@ -69,28 +59,14 @@ function entrypoint_variable_kinds(): void {
 
   echo "---------------- recursive function example -------------------\n";
 
-  $GLOBALS['result'] = factorial(10);
-  echo "\$result = {$GLOBALS['result']}\n";
+  \HH\global_set('result', factorial(10));
+  $result = \HH\global_get('result');
+  echo "\$result = {$result}\n";
 
   echo "---------------- Global Constants -------------------\n";
-  echo "MAX_HEIGHT2 = " . MAX_HEIGHT2 . "\n";
+  echo "MAX_HEIGHT2 = " . (string)(MAX_HEIGHT2) . "\n";
 
   globalConst();
-
-  echo "---------------- Global Variables using \$GLOBALS -------------------\n";
-
-  $GLOBALS['done'] = FALSE;
-  var_dump($GLOBALS['done']);
-
-  $GLOBALS['min'] = 10;
-  $GLOBALS['max'] = 100;
-  $GLOBALS['average'] = NULL;
-
-  compute2(TRUE);
-  echo "\$average = {$GLOBALS['average']}\n";
-  echo "\$result = {$GLOBALS['result']}\n";
-
-  //var_dump($GLOBALS);
 
   echo "---------------- instance/static properties & constants -------------------\n";
 }

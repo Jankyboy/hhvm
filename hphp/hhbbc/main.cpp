@@ -38,8 +38,9 @@
 #include "hphp/runtime/base/vm-worker.h"
 #include "hphp/hhvm/process-init.h"
 #include "hphp/runtime/vm/native.h"
-#include "hphp/runtime/vm/repo.h"
+#include "hphp/runtime/vm/preclass-emitter.h"
 #include "hphp/runtime/vm/repo-autoload-map-builder.h"
+#include "hphp/runtime/vm/repo-file.h"
 #include "hphp/runtime/vm/repo-global-data.h"
 #include "hphp/runtime/vm/treadmill.h"
 
@@ -104,6 +105,8 @@ void parse_options(int argc, char** argv) {
 
   auto const defaultThreadCount =
     std::max<long>(sysconf(_SC_NPROCESSORS_ONLN) - 1, 1);
+  auto const defaultFinalThreadCount =
+    std::max<long>(defaultThreadCount - 2, 1);
 
   std::vector<std::string> interceptable_fns;
   std::vector<std::string> trace_fns;
@@ -143,7 +146,7 @@ void parse_options(int argc, char** argv) {
       "Number of threads to use for parallelism")
     ("parallel-final-threads",
       po::value(&parallel::final_threads)->default_value(
-        parallel::final_threads),
+        defaultFinalThreadCount),
       "Number of threads to use for the final pass")
     ("parallel-work-size",
       po::value(&parallel::work_chunk)->default_value(120),
@@ -261,114 +264,33 @@ UNUSED void validate_options() {
 
 //////////////////////////////////////////////////////////////////////
 
-void open_repo(const std::string& path) {
-  RuntimeOption::RepoCentralPath = path;
-  // Make sure the changes take effect
-  Repo::shutdown();
-  Repo::get();
-}
-
-template<typename F>
-std::vector<SString> load_input(F&& fun) {
+template<typename F> void load_input(F&& fun) {
   trace_time timer("load units");
 
-  open_repo(input_repo);
-  Repo::get().loadGlobalData();
-  SCOPE_EXIT { Repo::shutdown(); };
+  SCOPE_EXIT { RepoFile::destroy(); };
 
-  auto const& gd = Repo::get().global();
-  // When running hhbbc, these option is loaded from GD, and will override CLI.
-  // When running hhvm, these option is not loaded from GD, but read from CLI.
-  RO::EvalJitEnableRenameFunction = gd.EnableRenameFunction;
-  RO::EvalHackArrCompatNotices =
-    RO::EvalHackArrCompatCheckCompare =
-      gd.HackArrCompatNotices;
-  RO::EvalForbidDynamicCallsToFunc = gd.ForbidDynamicCallsToFunc;
-  RO::EvalForbidDynamicCallsToClsMeth =
-    gd.ForbidDynamicCallsToClsMeth;
-  RO::EvalForbidDynamicCallsToInstMeth =
-    gd.ForbidDynamicCallsToInstMeth;
-  RO::EvalForbidDynamicConstructs = gd.ForbidDynamicConstructs;
-  RO::EvalForbidDynamicCallsWithAttr =
-    gd.ForbidDynamicCallsWithAttr;
-  RO::EvalLogKnownMethodsAsDynamicCalls =
-    gd.LogKnownMethodsAsDynamicCalls;
-  RO::EvalNoticeOnBuiltinDynamicCalls =
-    gd.NoticeOnBuiltinDynamicCalls;
-  RO::EvalHackArrCompatIsVecDictNotices =
-    gd.HackArrCompatIsVecDictNotices;
-  RO::EvalHackArrCompatSerializeNotices =
-    gd.HackArrCompatSerializeNotices;
-  RO::EvalHackArrDVArrs = gd.HackArrDVArrs;
-  RO::EvalAbortBuildOnVerifyError = gd.AbortBuildOnVerifyError;
-  RO::EnableArgsInBacktraces = gd.EnableArgsInBacktraces;
-  RO::EvalEmitClassPointers = gd.EmitClassPointers;
-  RO::EvalEmitClsMethPointers = gd.EmitClsMethPointers;
-  RO::EvalIsVecNotices = gd.IsVecNotices;
-  RO::EvalIsCompatibleClsMethType = gd.IsCompatibleClsMethType;
-  RO::EvalArrayProvenance = gd.ArrayProvenance;
-  RO::StrictArrayFillKeys = gd.StrictArrayFillKeys;
-  if (gd.HardGenericsUB) {
-    RO::EvalEnforceGenericsUB = 2;
-  } else {
-    RO::EvalEnforceGenericsUB = 1;
-  }
-
-  auto const units = Repo::get().enumerateUnits(RepoIdCentral, true);
+  auto const units = RepoFile::enumerateUnits();
   auto const size = units.size();
   fun(size, nullptr);
   parallel::for_each(
     units,
-    [&] (const std::pair<std::string,SHA1>& kv) {
+    [&] (const StringData* path) {
       fun(
         size,
-        Repo::get().urp().loadEmitter(
-          kv.first, kv.second, Native::s_noNativeFuncs
-        )
+        RepoFile::loadUnitEmitter(path, path, Native::s_noNativeFuncs, false)
       );
     }
   );
-  return Repo().get().global().APCProfile;
 }
 
-void write_units(UnitEmitterQueue& ueq,
-                 RepoAutoloadMapBuilder& autoloadMapBuilder) {
-  folly::Optional<trace_time> timer;
-
-  RuntimeOption::RepoCommit = true;
-  RuntimeOption::RepoDebugInfo = false; // Don't record UnitSourceLoc
-  open_repo(output_repo);
-  SCOPE_EXIT { Repo::shutdown(); };
-
-  std::vector<std::unique_ptr<UnitEmitter>> ues;
-  while (auto ue = ueq.pop()) {
-    if (!timer) timer.emplace("writing output repo");
-    autoloadMapBuilder.addUnit(*ue);
-    ues.push_back(std::move(ue));
-    if (ues.size() == 8) {
-      auto const DEBUG_ONLY err = batchCommitWithoutRetry(ues, true);
-      always_assert(!err);
-      ues.clear();
-    }
-  }
-
-  auto const DEBUG_ONLY err = batchCommitWithoutRetry(ues, true);
-  always_assert(!err);
-  ues.clear();
-}
-
-void write_global_data(
-  std::unique_ptr<ArrayTypeTable::Builder>& arrTable,
-  std::vector<SString> apcProfile,
-  const RepoAutoloadMapBuilder& autoloadMapBuilder) {
-
+RepoGlobalData get_global_data() {
   auto const now = std::chrono::high_resolution_clock::now();
   auto const nanos =
     std::chrono::duration_cast<std::chrono::nanoseconds>(
       now.time_since_epoch()
     );
 
-  auto gd                        = Repo::GlobalData{};
+  auto gd                        = RepoGlobalData{};
   gd.Signature                   = nanos.count();
   gd.HardGenericsUB              = RuntimeOption::EvalEnforceGenericsUB >= 2;
   gd.CheckPropTypeHints          = RuntimeOption::EvalCheckPropTypeHints;
@@ -376,10 +298,7 @@ void write_global_data(
   gd.PHP7_NoHexNumerics          = RuntimeOption::PHP7_NoHexNumerics;
   gd.PHP7_Substr                 = RuntimeOption::PHP7_Substr;
   gd.PHP7_Builtins               = RuntimeOption::PHP7_Builtins;
-  gd.EnableRenameFunction        = RuntimeOption::EvalJitEnableRenameFunction;
-  gd.HackArrCompatNotices        = RuntimeOption::EvalHackArrCompatNotices;
   gd.EnableIntrinsicsExtension   = RuntimeOption::EnableIntrinsicsExtension;
-  gd.APCProfile                  = std::move(apcProfile);
   gd.ForbidDynamicCallsToFunc    = RuntimeOption::EvalForbidDynamicCallsToFunc;
   gd.ForbidDynamicCallsToClsMeth =
     RuntimeOption::EvalForbidDynamicCallsToClsMeth;
@@ -394,11 +313,8 @@ void write_global_data(
   gd.EnableArgsInBacktraces      = RuntimeOption::EnableArgsInBacktraces;
   gd.NoticeOnBuiltinDynamicCalls =
     RuntimeOption::EvalNoticeOnBuiltinDynamicCalls;
-  gd.HackArrCompatIsVecDictNotices =
-    RuntimeOption::EvalHackArrCompatIsVecDictNotices;
   gd.HackArrCompatSerializeNotices =
     RuntimeOption::EvalHackArrCompatSerializeNotices;
-  gd.HackArrDVArrs = RuntimeOption::EvalHackArrDVArrs;
   gd.InitialNamedEntityTableSize  =
     RuntimeOption::EvalInitialNamedEntityTableSize;
   gd.InitialStaticStringTableSize =
@@ -406,23 +322,33 @@ void write_global_data(
   gd.EmitClassPointers = RuntimeOption::EvalEmitClassPointers;
   gd.EmitClsMethPointers = RuntimeOption::EvalEmitClsMethPointers;
   gd.IsVecNotices = RuntimeOption::EvalIsVecNotices;
-  gd.IsCompatibleClsMethType = RuntimeOption::EvalIsCompatibleClsMethType;
-  gd.ArrayProvenance = RuntimeOption::EvalArrayProvenance;
+  gd.RaiseClassConversionWarning =
+    RuntimeOption::EvalRaiseClassConversionWarning;
+  gd.ClassPassesClassname =
+    RuntimeOption::EvalClassPassesClassname;
+  gd.ClassnameNotices =
+    RuntimeOption::EvalClassnameNotices;
+  gd.ClassIsStringNotices = RuntimeOption::EvalClassIsStringNotices;
   gd.StrictArrayFillKeys = RuntimeOption::StrictArrayFillKeys;
+  gd.NoticeOnCoerceForBitOp =
+    RuntimeOption::EvalNoticeOnCoerceForBitOp;
+  gd.TraitConstantInterfaceBehavior =
+    RuntimeOption::EvalTraitConstantInterfaceBehavior;
+  gd.BuildMayNoticeOnMethCallerHelperIsObject =
+    RuntimeOption::EvalBuildMayNoticeOnMethCallerHelperIsObject;
 
   for (auto const& elm : RuntimeOption::ConstantFunctions) {
-    gd.ConstantFunctions.push_back(elm);
+    auto const s = internal_serialize(tvAsCVarRef(elm.second));
+    gd.ConstantFunctions.emplace_back(elm.first, s.toCppString());
   }
 
-  if (arrTable) globalArrayTypeTable().repopulate(*arrTable);
-  // NOTE: There's no way to tell if saveGlobalData() fails for some reason.
-  Repo::get().saveGlobalData(std::move(gd), autoloadMapBuilder);
+  return gd;
 }
 
 void compile_repo() {
   auto program = make_program();
 
-  auto apcProfile = load_input(
+  load_input(
     [&] (size_t size, std::unique_ptr<UnitEmitter> ue) {
       if (!ue) {
         if (logging) {
@@ -434,7 +360,9 @@ void compile_repo() {
     }
   );
 
-  UnitEmitterQueue ueq;
+  RepoAutoloadMapBuilder autoloadMapBuilder;
+  UnitEmitterQueue ueq{&autoloadMapBuilder};
+
   std::unique_ptr<ArrayTypeTable::Builder> arrTable;
   std::exception_ptr wp_thread_ex = nullptr;
   VMWorker wp_thread(
@@ -445,15 +373,29 @@ void compile_repo() {
         whole_program(std::move(program), ueq, arrTable);
       } catch (...) {
         wp_thread_ex = std::current_exception();
-        ueq.push(nullptr);
+        ueq.finish();
       }
     }
   );
   wp_thread.start();
+
   {
-    RepoAutoloadMapBuilder autoloadMapBuilder;
-    write_units(ueq, autoloadMapBuilder);
-    write_global_data(arrTable, apcProfile, autoloadMapBuilder);
+    RepoFileBuilder repoBuilder{output_repo};
+
+    Optional<trace_time> timer;
+    while (auto ue = ueq.pop()) {
+      if (!timer) timer.emplace("writing output repo");
+      repoBuilder.add(*ue);
+    }
+
+    if (!wp_thread_ex) {
+      trace_time timer2("finalizing repo");
+      if (arrTable) globalArrayTypeTable().repopulate(*arrTable);
+      repoBuilder.finish(
+        get_global_data(),
+        autoloadMapBuilder
+      );
+    }
   }
 
   wp_thread.waitForEnd();
@@ -465,14 +407,26 @@ void compile_repo() {
 void print_repo_bytecode_stats() {
   std::array<std::atomic<uint64_t>,Op_count> op_counts{};
 
-  auto const input = load_input(
+  load_input(
     [&] (size_t, std::unique_ptr<UnitEmitter> ue) {
       if (!ue) return;
-      auto pc = ue->bc();
-      auto const end = pc + ue->bcPos();
-      for (; pc < end; pc += instrLen(pc)) {
-        auto &opc = op_counts[static_cast<uint16_t>(peek_op(pc))];
-        opc.fetch_add(1, std::memory_order_relaxed);
+
+      auto countInstrs = [&](const FuncEmitter& fe) {
+        auto pc = fe.bc();
+        auto const end = pc + fe.bcPos();
+        for (; pc < end; pc += instrLen(pc)) {
+          auto &opc = op_counts[static_cast<uint16_t>(peek_op(pc))];
+          opc.fetch_add(1, std::memory_order_relaxed);
+        }
+      };
+
+      for (auto& fe : ue->fevec()) {
+        countInstrs(*fe.get());
+      }
+      for (Id i = 0; i < ue->numPreClasses(); i++) {
+        for (auto fe : ue->pce(i)->methods()) {
+          countInstrs(*fe);
+        }
       }
     }
   );
@@ -506,24 +460,15 @@ int main(int argc, char** argv) try {
     return 1;
   }
 
-  initialize_repo();
+  RepoFile::init(input_repo);
 
-  // We need to set this flag so Repo::global will let us access it.
-  RuntimeOption::RepoAuthoritative = true;
-
-  LitstrTable::init();
-  RuntimeOption::RepoLocalMode = "--";
-  open_repo(input_repo);
-  Repo::get().loadGlobalData(false);
-  LitstrTable::fini();
-  auto const& gd = Repo::get().global();
+  auto const& gd = RepoFile::globalData();
+  gd.load(false);
   if (gd.InitialNamedEntityTableSize) {
-    RuntimeOption::EvalInitialNamedEntityTableSize =
-      gd.InitialNamedEntityTableSize;
+    RO::EvalInitialNamedEntityTableSize  = gd.InitialNamedEntityTableSize;
   }
   if (gd.InitialStaticStringTableSize) {
-    RuntimeOption::EvalInitialStaticStringTableSize =
-      gd.InitialStaticStringTableSize;
+    RO::EvalInitialStaticStringTableSize = gd.InitialStaticStringTableSize;
   }
 
   rds::local::init();
@@ -531,27 +476,44 @@ int main(int argc, char** argv) try {
 
   Hdf config;
   IniSetting::Map ini = IniSetting::Map::object;
-  RuntimeOption::Load(ini, config);
-  RuntimeOption::RepoLocalPath       = "/tmp/hhbbc.repo";
-  RuntimeOption::RepoCentralPath     = input_repo;
-  RuntimeOption::RepoLocalMode       = "--";
-  RuntimeOption::RepoJournal         = "memory";
-  RuntimeOption::RepoCommit          = false;
-  RuntimeOption::EvalJit             = false;
-
+  RO::Load(ini, config);
+  RO::RepoAuthoritative   = true;
+  RO::EvalJit             = false;
+  RO::EvalLowStaticArrays = false;
+  RO::RepoDebugInfo       = false;
   if (!hack_compiler_extract_path.empty()) {
-    RuntimeOption::EvalHackCompilerExtractPath = hack_compiler_extract_path;
+    RO::EvalHackCompilerExtractPath = hack_compiler_extract_path;
   }
-
-  RuntimeOption::EvalLowStaticArrays = false;
 
   register_process_init();
 
   hphp_process_init();
   LitstrTable::get().setWriting();
+  LitarrayTable::get().setWriting();
   SCOPE_EXIT { hphp_process_exit(); };
 
-  Repo::shutdown();
+  // When running hhbbc, these option is loaded from GD, and will override CLI.
+  // When running hhvm, these option is not loaded from GD, but read from CLI.
+  RO::EvalForbidDynamicCallsToFunc              = gd.ForbidDynamicCallsToFunc;
+  RO::EvalForbidDynamicCallsToClsMeth           = gd.ForbidDynamicCallsToClsMeth;
+  RO::EvalForbidDynamicCallsToInstMeth          = gd.ForbidDynamicCallsToInstMeth;
+  RO::EvalForbidDynamicConstructs               = gd.ForbidDynamicConstructs;
+  RO::EvalForbidDynamicCallsWithAttr            = gd.ForbidDynamicCallsWithAttr;
+  RO::EvalLogKnownMethodsAsDynamicCalls         = gd.LogKnownMethodsAsDynamicCalls;
+  RO::EvalNoticeOnBuiltinDynamicCalls           = gd.NoticeOnBuiltinDynamicCalls;
+  RO::EvalHackArrCompatSerializeNotices         = gd.HackArrCompatSerializeNotices;
+  RO::EvalAbortBuildOnVerifyError               = gd.AbortBuildOnVerifyError;
+  RO::EnableArgsInBacktraces                    = gd.EnableArgsInBacktraces;
+  RO::EvalEmitClassPointers                     = gd.EmitClassPointers;
+  RO::EvalEmitClsMethPointers                   = gd.EmitClsMethPointers;
+  RO::EvalIsVecNotices                          = gd.IsVecNotices;
+  RO::EvalRaiseClassConversionWarning           = gd.RaiseClassConversionWarning;
+  RO::EvalClassPassesClassname                  = gd.ClassPassesClassname;
+  RO::EvalClassnameNotices                      = gd.ClassnameNotices;
+  RO::EvalNoticeOnCoerceForBitOp                = gd.NoticeOnCoerceForBitOp;
+  RO::StrictArrayFillKeys                       = gd.StrictArrayFillKeys;
+  RO::EvalEnforceGenericsUB                     = gd.HardGenericsUB ? 2 : 1;
+  RO::EvalTraitConstantInterfaceBehavior        = gd.TraitConstantInterfaceBehavior;
 
   if (print_bytecode_stats_and_exit) {
     print_repo_bytecode_stats();
@@ -559,7 +521,7 @@ int main(int argc, char** argv) try {
   }
 
   Trace::BumpRelease bumper(Trace::hhbbc_time, -1, logging);
-  compile_repo(); // NOTE: errors ignored
+  compile_repo();
   return 0;
 }
 

@@ -13,13 +13,10 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_JIT_IRGEN_TYPES_H_
-#define incl_HPHP_JIT_IRGEN_TYPES_H_
+#pragma once
 
 #include "hphp/runtime/vm/containers.h"
 #include "hphp/runtime/vm/jit/types.h"
-
-#include <folly/Optional.h>
 
 namespace HPHP {
 
@@ -52,11 +49,6 @@ void verifyPropType(IRGS& env,
 void raiseClsmethCompatTypeHint(
   IRGS& env, int32_t id, const Func* func, const TypeConstraint& tc);
 
-// Does dvarray checks on `arr` needed to satisfy `tc`, jumping to `taken`
-// if the checks fail. Preconditions: arr->isA(TArr) && tc.isArray()
-SSATmp* doDVArrChecks(IRGS& env, SSATmp* arr, Block* taken,
-                      const TypeConstraint& tc);
-
 //////////////////////////////////////////////////////////////////////
 
 SSATmp* implInstanceOfD(IRGS& env, SSATmp* src, const StringData* className);
@@ -64,5 +56,3 @@ SSATmp* implInstanceOfD(IRGS& env, SSATmp* src, const StringData* className);
 //////////////////////////////////////////////////////////////////////
 
 }}}
-
-#endif

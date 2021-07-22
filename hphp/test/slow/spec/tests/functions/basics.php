@@ -14,7 +14,7 @@
 
 
 // function having no declared parameters
-
+<<__DynamicallyCallable>>
 function f1(...$argList)
 {
     echo "f1: # arguments passed is ".count($argList)."\n";
@@ -22,7 +22,8 @@ function f1(...$argList)
     foreach ($argList as $k => $e)
     {
         $t = HH\is_any_array($e) ? 'Array' : $e;
-        echo "\targ[$k] = >$t<\n";
+        $t__str = (string)($t);
+        echo "\targ[$k] = >$t__str<\n";
     }
 }
 
@@ -36,6 +37,7 @@ function f2($p1, $p2)
         ", \$p2 = ".($p2 == NULL ? "NULL" : $p2)."\n";
 }
 
+<<__DynamicallyCallable>>
 function square($v) { return $v * $v; }
 
 <<__EntryPoint>> function main(): void {

@@ -13,16 +13,16 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_RUNTIME_RDS_H_
-#define incl_HPHP_RUNTIME_RDS_H_
+#pragma once
 
 #include "hphp/runtime/base/rds-symbol.h"
+#include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/types.h"
 
 #include "hphp/util/alloc.h"
+#include "hphp/util/optional.h"
 #include "hphp/util/type-scan.h"
 
-#include <folly/Optional.h>
 #include <folly/Range.h>
 
 #include <atomic>
@@ -159,6 +159,12 @@ template <typename F> void forEachLocalAlloc(F);
  */
 extern __thread void* tl_base;
 
+/*
+ * An async singal safe way to determine if the current thread has a fully
+ * initialized RDS (including the initialization of rds::local).
+ */
+bool isFullyInitialized();
+
 //////////////////////////////////////////////////////////////////////
 
 enum class Mode : unsigned {
@@ -253,7 +259,7 @@ struct Link {
    * Ensure this Link is bound to an RDS allocation.
    *
    * Allocation is atomic and idempotent.  This ensures that only one thread
-   * allocates the handle, and (in the cast of persistent handles) that the
+   * allocates the handle, and (in the case of persistent handles) that the
    * value is initialized as part of the operation.  The effect is that other
    * threads only ever see an unbound handle or a bound handle with a valid
    * value.
@@ -278,6 +284,7 @@ struct Link {
   T& operator*() const;
   T* operator->() const;
   T* get() const;
+  T* getNoProfile() const;
 
   /*
    * Whether this Link is bound to RDS memory or not (i.e., whether its
@@ -321,6 +328,7 @@ struct Link {
    * Pre: bound()
    */
   bool isInit() const;
+  bool isInitNoProfile() const;
 
   /*
    * Manually mark this element as initialized or uninitialized.
@@ -419,7 +427,10 @@ Link<T,M> alloc();
 size_t allocBit();
 bool testAndSetBit(size_t bit);
 
-folly::Optional<Symbol> reverseLink(Handle handle);
+/*
+ * Table mapping handles to their symbols.  This excludes Profiling symbols.
+ */
+Optional<Symbol> reverseLink(Handle handle);
 
 //////////////////////////////////////////////////////////////////////
 
@@ -439,14 +450,14 @@ Handle currentGenNumberHandle();
  * Dereference an un-typed rds::Handle which is guaranteed to be in one of the
  * `modes`, optionally specifying a specific RDS base to use.
  */
-template<class T, Mode M> T& handleToRef(Handle h);
-template<class T, Mode M> T& handleToRef(void* base, Handle h);
+template<class T, Mode M, bool P = true> T& handleToRef(Handle h);
+template<class T, Mode M, bool P = true> T& handleToRef(void* base, Handle h);
 
 /*
  * Conversion between a pointer and an rds::Handle which is guaranteed to be in
  * one of the modes specified in `M`.
  */
-template<class T = void, Mode M> T* handleToPtr(Handle h);
+template<class T = void, Mode M, bool P = true> T* handleToPtr(Handle h);
 template<Mode M> Handle ptrToHandle(const void* ptr);
 template<Mode M> Handle ptrToHandle(uintptr_t ptr);
 
@@ -481,6 +492,7 @@ bool isPersistentHandle(Handle handle);
  *
  * Pre: isNormalHandle(handle)
  */
+template <bool P = true>
 GenNumber genNumberOf(Handle handle);
 
 /*
@@ -500,7 +512,8 @@ bool isHandleBound(Handle handle);
  */
 bool isHandleInit(Handle handle);
 bool isHandleInit(Handle handle, NormalTag);
-
+bool isHandleInitNoProfile(Handle handle);
+bool isHandleInitNoProfile(Handle handle, NormalTag);
 /*
  * Mark the element associated with `handle' as being initialized.
  *
@@ -516,6 +529,31 @@ void initHandle(Handle handle);
  * Pre: isNormalHandle(handle)
  */
 void uninitHandle(Handle handle);
+
+//////////////////////////////////////////////////////////////////////
+
+bool shouldProfileAccesses();
+
+Handle profileForHandle(Handle);
+
+void markAccess(Handle);
+
+struct Ordering {
+  struct Item {
+    std::string key;
+    size_t size;
+    size_t alignment;
+  };
+  std::vector<Item> persistent;
+  std::vector<Item> local;
+  std::vector<Item> normal;
+};
+
+Ordering profiledOrdering();
+
+void setPreAssignments(const Ordering&);
+
+//////////////////////////////////////////////////////////////////////
 
 /*
  * Used to record information about the rds handle h in the
@@ -541,5 +579,3 @@ extern rds::Link<bool, Mode::Persistent> s_persistentTrue;
 }}
 
 #include "hphp/runtime/base/rds-inl.h"
-
-#endif

@@ -64,107 +64,11 @@ namespace HPHP {
 // MacOS: /var/tmp
 const StaticString s_DEFAULT_TEMP_DIR(P_tmpdir);
 
-const int64_t k_ASSERT_ACTIVE      = 1;
-const int64_t k_ASSERT_BAIL        = 3;
-const int64_t k_ASSERT_WARNING     = 4;
-const int64_t k_ASSERT_EXCEPTION   = 6;
-
 ///////////////////////////////////////////////////////////////////////////////
 
-struct OptionData final : RequestEventHandler {
-  void requestInit() override {
-    assertActive = 1;
-    assertException = 0;
-    assertWarning = 1;
-    assertBail = 0;
-  }
+void StandardExtension::requestInitOptions() {}
 
-  void requestShutdown() override {}
-
-  int assertActive;
-  int assertException;
-  int assertWarning;
-  int assertBail;
-};
-
-IMPLEMENT_STATIC_REQUEST_LOCAL(OptionData, s_option_data);
-
-/////////////////////////////////////////////////////////////////////////////
-
-void StandardExtension::requestInitOptions() {
-  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_ALL,
-    "assert.active", "1", &s_option_data->assertActive);
-  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_ALL,
-    "assert.exception", "0", &s_option_data->assertException);
-  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_ALL,
-    "assert.warning", "1", &s_option_data->assertWarning);
-  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_ALL,
-    "assert.bail", "0", &s_option_data->assertBail);
-}
-
-static Variant HHVM_FUNCTION(assert_options,
-                             int64_t what, const Variant& value /*=null */) {
-  if (what == k_ASSERT_ACTIVE) {
-    int oldValue = s_option_data->assertActive;
-    if (!value.isNull()) s_option_data->assertActive = value.toInt64();
-    return oldValue;
-  }
-  if (what == k_ASSERT_WARNING) {
-    int oldValue = s_option_data->assertWarning;
-    if (!value.isNull()) s_option_data->assertWarning = value.toInt64();
-    return oldValue;
-  }
-  if (what == k_ASSERT_BAIL) {
-    int oldValue = s_option_data->assertBail;
-    if (!value.isNull()) s_option_data->assertBail = value.toInt64();
-    return oldValue;
-  }
-  if (what == k_ASSERT_EXCEPTION) {
-    int oldValue = s_option_data->assertException;
-    if (!value.isNull()) s_option_data->assertException = value.toBoolean();
-    return Variant(oldValue);
-  }
-  raise_invalid_argument_warning("assert option %ld is not supported", (long)what);
-  return false;
-}
-
-static Variant HHVM_FUNCTION(assert, const Variant& assertion,
-                             const Variant& message /* = null */) {
-  auto const warning = "assert() is deprecated and subject"
-    " to removal from the Hack language";
-  switch (RuntimeOption::DisableAssert) {
-    case 0:  break;
-    case 1:  raise_warning(warning); break;
-    default: raise_error(warning);
-  }
-
-  if (!s_option_data->assertActive) return true;
-
-  if (assertion.toBoolean()) return true;
-
-  if (s_option_data->assertException) {
-    if (message.isObject()) {
-      Object exn = message.toObject();
-      if (exn.instanceof(SystemLib::s_AssertionErrorClass)) {
-        throw_object(exn);
-      }
-    }
-
-    SystemLib::throwExceptionObject(message.toString());
-  }
-  if (s_option_data->assertWarning) {
-    String name(message.isNull() ? "Assertion" : message.toString());
-    auto const str = !assertion.isString()
-      ? " failed"
-      : concat3(" \"",  assertion.toString(), "\" failed");
-    raise_warning("assert(): %s%s", name.data(),  str.data());
-  }
-  if (s_option_data->assertBail) {
-    throw ExitException(1);
-  }
-
-  return init_null();
-}
+///////////////////////////////////////////////////////////////////////////////
 
 static bool HHVM_FUNCTION(extension_loaded, const String& name) {
   return ExtensionRegistry::isLoaded(name);
@@ -180,7 +84,7 @@ static TypedValue HHVM_FUNCTION(get_extension_funcs, const String& module_name) 
   if (!extension) return make_tv<KindOfBoolean>(false);
 
   auto const& fns = extension->getExtensionFunctions();
-  VArrayInit result(fns.size());
+  VecInit result(fns.size());
   for (auto const& fn : fns) {
     result.append(Variant(fn));
   }
@@ -217,7 +121,8 @@ static Array HHVM_FUNCTION(get_defined_constants, bool categorize /*=false */) {
 }
 
 static String HHVM_FUNCTION(get_include_path) {
-  return IniSetting::Get("include_path");
+  static StaticString s_include_path("include_path");
+  return IniSetting::Get(s_include_path);
 }
 
 static void HHVM_FUNCTION(restore_include_path) {
@@ -233,7 +138,7 @@ static String HHVM_FUNCTION(set_include_path, const Variant& new_include_path) {
 }
 
 static Array HHVM_FUNCTION(get_included_files) {
-  VArrayInit vai{g_context->m_evaledFilesOrder.size()};
+  VecInit vai{g_context->m_evaledFilesOrder.size()};
   for (auto& file : g_context->m_evaledFilesOrder) {
     vai.append(Variant{const_cast<StringData*>(file)});
   }
@@ -566,7 +471,7 @@ static Array HHVM_FUNCTION(getopt, const String& options,
     free_longopts(opt_vec);
   };
 
-  Array ret = Array::CreateDArray();
+  Array ret = Array::CreateDict();
 
   Variant val;
   int optchr = 0;
@@ -611,7 +516,7 @@ static Array HHVM_FUNCTION(getopt, const String& options,
       if (ret.exists(optname_int)) {
         auto const lval = ret.lval(optname_int);
         if (!isArrayLikeType(lval.type())) {
-          ret.set(optname_int, make_varray(Variant::wrap(lval.tv()), val));
+          ret.set(optname_int, make_vec_array(Variant::wrap(lval.tv()), val));
         } else {
           asArrRef(lval).append(val);
         }
@@ -624,7 +529,7 @@ static Array HHVM_FUNCTION(getopt, const String& options,
       if (ret.exists(key)) {
         auto const lval = ret.lval(key);
         if (!isArrayLikeType(lval.type())) {
-          ret.set(key, make_varray(Variant::wrap(lval.tv()), val));
+          ret.set(key, make_vec_array(Variant::wrap(lval.tv()), val));
         } else {
           asArrRef(lval).append(val);
         }
@@ -686,7 +591,7 @@ static Array HHVM_FUNCTION(getrusage, int64_t who /* = 0 */) {
       folly::errnoStr(errno).c_str());
   }
 
-  return make_darray(
+  return make_dict_array(
     PHP_RUSAGE_PARA(ru_oublock),
     PHP_RUSAGE_PARA(ru_inblock),
     PHP_RUSAGE_PARA(ru_msgsnd),
@@ -845,7 +750,7 @@ String HHVM_FUNCTION(php_sapi_name) {
 
 #ifdef _WIN32
 const char* php_get_edition_name(DWORD majVer, DWORD minVer);
-folly::Optional<String> php_get_windows_name();
+Optional<String> php_get_windows_name();
 String php_get_windows_cpu();
 #endif
 
@@ -1201,8 +1106,6 @@ Variant HHVM_FUNCTION(version_compare,
 ///////////////////////////////////////////////////////////////////////////////
 
 void StandardExtension::initOptions() {
-  HHVM_FE(assert_options);
-  HHVM_FE(assert);
   HHVM_FE(extension_loaded);
   HHVM_FE(get_loaded_extensions);
   HHVM_FE(get_extension_funcs);
@@ -1257,11 +1160,6 @@ void StandardExtension::initOptions() {
   HHVM_RC_INT(INFO_VARIABLES, 1 << 0);
   HHVM_RC_INT(INFO_LICENSE, 1 << 0);
   HHVM_RC_INT(INFO_ALL, 0x7FFFFFFF);
-
-  HHVM_RC_INT(ASSERT_ACTIVE, k_ASSERT_ACTIVE);
-  HHVM_RC_INT(ASSERT_BAIL, k_ASSERT_BAIL);
-  HHVM_RC_INT(ASSERT_WARNING, k_ASSERT_WARNING);
-  HHVM_RC_INT(ASSERT_EXCEPTION, k_ASSERT_EXCEPTION);
 
   loadSystemlib("std_options");
 }

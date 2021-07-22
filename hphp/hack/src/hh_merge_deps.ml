@@ -21,6 +21,7 @@ let sharedmem_config =
     (* Half a gig by default *)
     log_level = 0;
     sample_rate = 0.0;
+    compression = 0;
   }
 
 let merge_worker ((filename : string), (ignore_hh_version : bool)) : unit =
@@ -30,7 +31,8 @@ let merge_worker ((filename : string), (ignore_hh_version : bool)) : unit =
       SharedMem.load_dep_table_blob filename ignore_hh_version
     in
     Hh_logger.log "Rows read: %d" num_rows
-  with e ->
+  with
+  | e ->
     let stack = Printexc.get_backtrace () in
     Hh_logger.exc ~prefix:(Printf.sprintf "Error in '%s'" filename) ~stack e
 
@@ -42,7 +44,10 @@ let merge_input
   in
   let () = List.iter merge_worker input in
   let (edges_added : int) =
-    SharedMem.save_dep_table_sqlite db_name Build_id.build_revision false
+    SharedMem.save_dep_table_sqlite
+      db_name
+      Build_id.build_revision
+      ~replace_state_after_saving:false
   in
   Hh_logger.log "Edges added: %d" edges_added
 

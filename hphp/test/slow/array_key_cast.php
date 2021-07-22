@@ -26,7 +26,7 @@ function test9(varray $v) { return HH\array_key_cast($v); }
 function test10(vec $v) { return HH\array_key_cast($v); }
 function test11(dict $v) { return HH\array_key_cast($v); }
 function test12(keyset $v) { return HH\array_key_cast($v); }
-function test13(stdclass $v) { return HH\array_key_cast($v); }
+function test13(stdClass $v) { return HH\array_key_cast($v); }
 
 function func_maker1() { return 'HH\array_key_cast'; }
 
@@ -51,7 +51,7 @@ function make_tests($func) {
     vec[$func(), vec[]],
     vec[$func(), dict[]],
     vec[$func(), keyset[]],
-    vec[$func(), new stdclass]
+    vec[$func(), new stdClass]
   ];
   return __hhvm_intrinsics\launder_value($tests);
 }
@@ -59,6 +59,6 @@ function make_tests($func) {
 
 <<__EntryPoint>>
 function main_array_key_cast() {
-run_tests(make_tests(fun('func_maker1')));
-run_tests(make_tests(fun('func_maker2')));
+run_tests(make_tests(func_maker1<>));
+run_tests(make_tests(func_maker2<>));
 }

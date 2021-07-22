@@ -5,19 +5,19 @@
 
 mod syntax_smart_constructors_generated;
 
-use parser_core_types::{parser_env::ParserEnv, source_text::SourceText};
+use parser_core_types::syntax_by_ref::arena_state::State as ArenaState;
 use smart_constructors::NoState;
 
 pub use crate::syntax_smart_constructors_generated::*;
 
-pub trait StateType<'src, R>: Clone {
-    fn initial(env: &ParserEnv, source_text: &SourceText<'src>) -> Self;
+pub trait StateType<R>: Clone {
     fn next(&mut self, inputs: &[&R]);
 }
 
-impl<'src, R> StateType<'src, R> for NoState {
-    fn initial(_env: &ParserEnv, _: &SourceText<'src>) -> Self {
-        NoState {}
-    }
+impl<R> StateType<R> for NoState {
+    fn next(&mut self, _inputs: &[&R]) {}
+}
+
+impl<R> StateType<R> for ArenaState<'_> {
     fn next(&mut self, _inputs: &[&R]) {}
 }

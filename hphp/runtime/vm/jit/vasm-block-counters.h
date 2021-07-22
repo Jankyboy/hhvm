@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_VASM_BLOCK_COUNTERS_H_
-#define incl_HPHP_JIT_VASM_BLOCK_COUNTERS_H_
+#pragma once
 
 #include "hphp/runtime/vm/jit/prof-data-serialize.h"
 #include "hphp/runtime/vm/jit/vasm-unit.h"
@@ -32,9 +31,9 @@ namespace VasmBlockCounters {
 
 /*
  * If we have profiling data for the given region, return the profiled weight
- * of its entry block. Otherwise, return folly::none.
+ * of its entry block. Otherwise, return std::nullopt.
  */
-folly::Optional<uint64_t> getRegionWeight(const RegionDesc& region);
+Optional<uint64_t> getRegionWeight(const RegionDesc& region);
 
 /*
  * Profile-guided update the given Vunit. This is only applied to optimized
@@ -52,10 +51,10 @@ void serialize(ProfDataSerializer& ser);
 
 void deserialize(ProfDataDeserializer& des);
 
+void free();
+
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 
 } }
-
-#endif

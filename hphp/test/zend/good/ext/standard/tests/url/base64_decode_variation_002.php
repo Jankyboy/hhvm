@@ -9,7 +9,7 @@ function test_error_handler($err_no, $err_msg, $filename, $linenum, $vars) {
     echo "Error: $err_no - $err_msg, $filename($linenum)\n";
 }
 <<__EntryPoint>> function main(): void {
-set_error_handler(fun('test_error_handler'));
+set_error_handler(test_error_handler<>);
 echo "*** Testing base64_decode() : usage variations ***\n";
 
 // Initialise function arguments not being substituted (if any)
@@ -18,9 +18,6 @@ $str = 'aGVsbG8gd29ybGQh!';
 //getting the resource
 $file_handle = fopen(__FILE__, "r");
 
-//get an unset variable
-$unset_var = 10;
-unset ($unset_var);
 
 //array of values to iterate over
 $values =  darray [
@@ -59,13 +56,9 @@ $values =  darray [
     "''" => '',
 
     // object data
-    "stdClass object" => new stdclass(),
+    "stdClass object" => new stdClass(),
 
-    // undefined data
-    "undefined variable" => $undefined_var,
 
-    // unset data
-    "unset variable" => $unset_var,
 
     // resource data
     "resource" => $file_handle

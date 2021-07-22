@@ -8,7 +8,7 @@
  *)
 
 open Hh_prelude
-open Hh_core
+open Common
 open Typing_defs
 module Env = Typing_env
 module Reason = Typing_reason
@@ -22,7 +22,7 @@ exception Dont_simplify
 module Log = struct
   let log_union r ty1 ty2 (env, result) =
     Typing_log.(
-      log_with_level env "union" 1 (fun () ->
+      log_with_level env "union" ~level:1 (fun () ->
           log_types
             (Reason.to_pos r)
             env
@@ -39,7 +39,7 @@ module Log = struct
 
   let log_simplify_union r ty1 ty2 (env, result) =
     Typing_log.(
-      log_with_level env "union" 2 (fun () ->
+      log_with_level env "union" ~level:2 (fun () ->
           log_types
             (Reason.to_pos r)
             env
@@ -58,7 +58,7 @@ module Log = struct
 
   let log_union_list r tyl (env, result) =
     Typing_log.(
-      log_with_level env "union" 1 (fun () ->
+      log_with_level env "union" ~level:1 (fun () ->
           log_types
             (Reason.to_pos r)
             env
@@ -72,7 +72,7 @@ module Log = struct
 
   let log_simplify_unions r ty (env, result) =
     Typing_log.(
-      log_with_level env "union" 1 (fun () ->
+      log_with_level env "union" ~level:1 (fun () ->
           log_types
             (Reason.to_pos r)
             env
@@ -118,6 +118,30 @@ let ty_equiv env ty1 ty2 ~are_ty_param =
   in
   (env, ty)
 
+(* Destructure a union into a list of its sub-types, decending into sub-unions,
+   and also pulling out null and dynamic.
+*)
+let dest_union_list env tyl =
+  let orr r_opt r = Some (Option.value r_opt ~default:r) in
+  let rec dest_union env ty tyl tyl_res r_null r_union r_dyn =
+    let (env, ty) = Env.expand_type env ty in
+    match deref ty with
+    | (r, Tunion tyl') ->
+      dest_union_list env (tyl' @ tyl) tyl_res r_null (orr r_union r) r_dyn
+    | (r, Toption ty) ->
+      dest_union env ty tyl tyl_res (orr r_null r) r_union r_dyn
+    | (r, Tprim Aast.Tnull) ->
+      dest_union_list env tyl tyl_res (orr r_null r) r_union r_dyn
+    | (r, Tdynamic) ->
+      dest_union_list env tyl tyl_res r_null r_union (orr r_dyn r)
+    | _ -> dest_union_list env tyl (ty :: tyl_res) r_null r_union r_dyn
+  and dest_union_list env tyl tyl_res r_null r_union r_dyn =
+    match tyl with
+    | [] -> (env, (tyl_res, r_null, r_union, r_dyn))
+    | ty :: tyl -> dest_union env ty tyl tyl_res r_null r_union r_dyn
+  in
+  dest_union_list env tyl [] None None None
+
 (** Constructor for unions and options, taking a list of types and whether the
 result should be nullable. Simplify things like singleton unions or nullable nothing.
 This allows the result of any unioning function from this module to be flattened and normalized,
@@ -130,11 +154,11 @@ let make_union env r tyl reason_nullable_opt reason_dyn_opt =
     | tyl -> MakeType.union r tyl
   in
   (* Given that unions with null are encoded specially in the type system - as options -
-  we still need to simplify unions of null and nonnull here.
-  For example, we may have to construct ?(nonnull | any) which should result in mixed.
-  For something more complex like ?(A | (B & nonnull)), one can
-  distribute the option to give (?A | (?B & ?nonnull)) which then simplifies to ?(A | B).
-  This function performs those simplifications. *)
+     we still need to simplify unions of null and nonnull here.
+     For example, we may have to construct ?(nonnull | any) which should result in mixed.
+     For something more complex like ?(A | (B & nonnull)), one can
+     distribute the option to give (?A | (?B & ?nonnull)) which then simplifies to ?(A | B).
+     This function performs those simplifications. *)
   let simplify_nonnull env ty =
     let is_nonnull ty = ty_equal ty (MakeType.nonnull r) in
     let rec simplify env ty =
@@ -187,44 +211,63 @@ let exact_least_upper_bound e1 e2 =
   | (Exact, Exact) -> Exact
   | (_, _) -> Nonexact
 
-let rec union env ty1 ty2 =
+let rec union env ?(approx_cancel_neg = false) ty1 ty2 =
   let r1 = get_reason ty1 in
   let r2 = get_reason ty2 in
   Log.log_union r2 ty1 ty2
   @@
   if ty_equal ty1 ty2 then
     (env, ty1)
-  else if Typing_utils.is_sub_type_for_union env ty1 ty2 then
+  else if Typing_utils.is_sub_type_for_union ~coerce:None env ty1 ty2 then
     (env, ty2)
-  else if Typing_utils.is_sub_type_for_union env ty2 ty1 then
+  else if Typing_utils.is_sub_type_for_union ~coerce:None env ty2 ty1 then
     (env, ty1)
   else
     let r = union_reason r1 r2 in
-    union_ env ty1 ty2 r
+    let (env, non_ty2) =
+      Typing_intersection.negate_type env Reason.none ty2 ~approx:Utils.ApproxUp
+    in
+    if Utils.is_sub_type_for_union env non_ty2 ty1 then
+      (env, Typing_make_type.mixed r)
+    else
+      let (env, non_ty1) =
+        Typing_intersection.negate_type
+          env
+          Reason.none
+          ty1
+          ~approx:Utils.ApproxUp
+      in
+      if Utils.is_sub_type_for_union env non_ty1 ty2 then
+        (env, Typing_make_type.mixed r)
+      else
+        union_ ~approx_cancel_neg env ty1 ty2 r
 
-and union_ env ty1 ty2 r = union_lists env [ty1] [ty2] r
+and union_ ~approx_cancel_neg env ty1 ty2 r =
+  union_lists ~approx_cancel_neg env [ty1] [ty2] r
 
 (** Simplify the union of two types, for example (int|float) as num.
 Returns None if there is no simplification.
-Does not deal with null, options, unions and intersections, which are dealt with by union_lists. *)
-and simplify_union env ty1 ty2 r =
+Does not deal with null, options, unions and intersections, which are dealt with by union_lists.
+If approx_cancel_neg is true, then some unions with negations are treated over-approximately:
+C<t> | not C simplifies to mixed.*)
+and simplify_union ~approx_cancel_neg env ty1 ty2 r =
   Log.log_simplify_union r ty1 ty2
   @@
   if ty_equal ty1 ty2 then
     (env, Some ty1)
-  else if Typing_utils.is_sub_type_for_union env ty1 ty2 then
+  else if Typing_utils.is_sub_type_for_union ~coerce:None env ty1 ty2 then
     (env, Some ty2)
-  else if Typing_utils.is_sub_type_for_union env ty2 ty1 then
+  else if Typing_utils.is_sub_type_for_union ~coerce:None env ty2 ty1 then
     (env, Some ty1)
   else
-    simplify_union_ env ty1 ty2 r
+    simplify_union_ ~approx_cancel_neg env ty1 ty2 r
 
 and is_class ty =
   match get_node ty with
   | Tclass _ -> true
   | _ -> false
 
-and simplify_union_ env ty1 ty2 r =
+and simplify_union_ ~approx_cancel_neg env ty1 ty2 r =
   let (env, ty1) = Env.expand_type env ty1 in
   let (env, ty2) = Env.expand_type env ty2 in
   try
@@ -239,26 +282,30 @@ and simplify_union_ env ty1 ty2 r =
       if List.is_empty tyl1 then
         (env, Some (mk (r, Tclass ((p, id1), e, tyl1))))
       else
-        let (env, tyl) = union_class env id1 tyl1 tyl2 in
+        let (env, tyl) = union_class ~approx_cancel_neg env id1 tyl1 tyl2 in
         (env, Some (mk (r, Tclass ((p, id1), e, tyl))))
     | ((_, Tgeneric (name1, [])), (_, Tgeneric (name2, [])))
       when String.equal name1 name2 ->
       (* TODO(T69551141) handle type arguments above and below properly *)
       (env, Some (mk (r, Tgeneric (name1, []))))
     | ((_, Tvarray ty1), (_, Tvarray ty2)) ->
-      let (env, ty) = union env ty1 ty2 in
+      let (env, ty) = union ~approx_cancel_neg env ty1 ty2 in
       (env, Some (mk (r, Tvarray ty)))
     | ((_, Tdarray (tk1, tv1)), (_, Tdarray (tk2, tv2))) ->
-      let (env, tk) = union env tk1 tk2 in
-      let (env, tv) = union env tv1 tv2 in
+      let (env, tk) = union ~approx_cancel_neg env tk1 tk2 in
+      let (env, tv) = union ~approx_cancel_neg env tv1 tv2 in
       (env, Some (mk (r, Tdarray (tk, tv))))
     | ((_, Tvarray_or_darray (tk1, tv1)), (_, Tvarray_or_darray (tk2, tv2))) ->
-      let (env, tk) = union env tk1 tk2 in
-      let (env, tv) = union env tv1 tv2 in
+      let (env, tk) = union ~approx_cancel_neg env tk1 tk2 in
+      let (env, tv) = union ~approx_cancel_neg env tv1 tv2 in
       (env, Some (mk (r, Tvarray_or_darray (tk, tv))))
+    | ((_, Tvec_or_dict (tk1, tv1)), (_, Tvec_or_dict (tk2, tv2))) ->
+      let (env, tk) = union ~approx_cancel_neg env tk1 tk2 in
+      let (env, tv) = union ~approx_cancel_neg env tv1 tv2 in
+      (env, Some (mk (r, Tvec_or_dict (tk, tv))))
     | ((_, Tdependent (dep1, tcstr1)), (_, Tdependent (dep2, tcstr2)))
       when equal_dependent_type dep1 dep2 ->
-      let (env, tcstr) = union env tcstr1 tcstr2 in
+      let (env, tcstr) = union ~approx_cancel_neg env tcstr1 tcstr2 in
       (env, Some (mk (r, Tdependent (dep1, tcstr))))
     | ((_, Tdependent (_, ty1)), _) when is_class ty1 ->
       ty_equiv env ty1 ty2 ~are_ty_param:false
@@ -269,117 +316,213 @@ and simplify_union_ env ty1 ty2 r =
       if List.is_empty tyl1 then
         (env, Some ty1)
       else
-        let (env, tyl) = union_newtype env id1 tyl1 tyl2 in
-        let (env, tcstr) = union env tcstr1 tcstr2 in
+        let (env, tyl) = union_newtype ~approx_cancel_neg env id1 tyl1 tyl2 in
+        let (env, tcstr) = union ~approx_cancel_neg env tcstr1 tcstr2 in
         (env, Some (mk (r, Tnewtype (id1, tyl, tcstr))))
     | ((_, Ttuple tyl1), (_, Ttuple tyl2)) ->
       if Int.equal (List.length tyl1) (List.length tyl2) then
-        let (env, tyl) = List.map2_env env tyl1 tyl2 ~f:union in
+        let (env, tyl) =
+          List.map2_env env tyl1 tyl2 ~f:(union ~approx_cancel_neg)
+        in
         (env, Some (mk (r, Ttuple tyl)))
       else
         (env, None)
     | ((r1, Tshape (shape_kind1, fdm1)), (r2, Tshape (shape_kind2, fdm2))) ->
       let (env, ty) =
-        union_shapes env (shape_kind1, fdm1, r1) (shape_kind2, fdm2, r2)
+        union_shapes
+          ~approx_cancel_neg
+          env
+          (shape_kind1, fdm1, r1)
+          (shape_kind2, fdm2, r2)
       in
       (env, Some (mk (r, ty)))
     | ((_, Tfun ft1), (_, Tfun ft2)) ->
-      let (env, ft) = union_funs env ft1 ft2 in
+      let (env, ft) = union_funs ~approx_cancel_neg env ft1 ft2 in
       (env, Some (mk (r, Tfun ft)))
     | ((_, Tunapplied_alias _), _) ->
       Typing_defs.error_Tunapplied_alias_in_illegal_context ()
+    | ((_, Tneg (Neg_class (_, c1))), (_, Tclass ((_, c2), Exact, [])))
+    | ((_, Tclass ((_, c2), Exact, [])), (_, Tneg (Neg_class (_, c1))))
+      when String.equal c1 c2 ->
+      (env, Some (MakeType.mixed r))
+    | ((_, Tneg (Neg_class (_, c1))), (_, Tclass ((_, c2), Nonexact, [])))
+    | ((_, Tclass ((_, c2), Nonexact, [])), (_, Tneg (Neg_class (_, c1))))
+      when Typing_utils.is_sub_class_refl env c1 c2 ->
+      (* This union is mixed iff for all objects o,
+         o not in complement (union tyl. c1<tyl>) implies o in c2,
+         which is equivalent to
+         (union tyl. c1<tyl>) subset c2.
+         This is certainly the case when c1 is a sub-class of c2, since
+         c2 has no type parameters.
+      *)
+      (env, Some (MakeType.mixed r))
+    | ((_, Tneg (Neg_class (_, c1))), (_, Tclass ((_, c2), Nonexact, _ :: _)))
+    | ((_, Tclass ((_, c2), Nonexact, _ :: _)), (_, Tneg (Neg_class (_, c1))))
+      when approx_cancel_neg && Typing_utils.is_sub_class_refl env c1 c2 ->
+      (* Unlike the case where c2 has no parameters, here we can get a situation
+         where c1 is a sub-class of c2, but they don't union to mixed. For example,
+         Vector<int> | not Vector, which doesn't include Vector<string>, etc. However,
+         we can still approximate up to mixed when it would be both sound and convenient,
+         as controlled by the approx_cancel_neg flag. *)
+      (env, Some (MakeType.mixed r))
+    | ((_, Tneg (Neg_class (_, c1))), (_, Tclass ((_, c2), Exact, _ :: _)))
+    | ((_, Tclass ((_, c2), Exact, _ :: _)), (_, Tneg (Neg_class (_, c1))))
+      when approx_cancel_neg && String.equal c1 c2 ->
+      (env, Some (MakeType.mixed r))
+    | ((_, Tneg (Neg_prim tp1)), (_, Tprim tp2))
+    | ((_, Tprim tp1), (_, Tneg (Neg_prim tp2)))
+      when Aast_defs.equal_tprim tp1 tp2 ->
+      (env, Some (MakeType.mixed r))
+    | ((_, Tneg (Neg_prim Aast.Tnum)), (_, Tprim Aast.Tarraykey))
+    | ((_, Tprim Aast.Tarraykey), (_, Tneg (Neg_prim Aast.Tnum))) ->
+      (env, Some (MakeType.neg r (Neg_prim Aast.Tfloat)))
+    | ((_, Tneg (Neg_prim Aast.Tarraykey)), (_, Tprim Aast.Tnum))
+    | ((_, Tprim Aast.Tnum), (_, Tneg (Neg_prim Aast.Tarraykey))) ->
+      (env, Some (MakeType.neg r (Neg_prim Aast.Tstring)))
+    | ((r1, Tintersection tyl1), (r2, Tintersection tyl2)) ->
+      (match Typing_algebra.factorize_common_types tyl1 tyl2 with
+      | ([], _, _) ->
+        (* No common types, fall back to default case *)
+        ty_equiv env ty1 ty2 ~are_ty_param:false
+      | (common_tyl, tyl1', tyl2') ->
+        (match (tyl1', tyl2') with
+        | ([], _)
+        | (_, []) ->
+          (* If one of the intersections is now empty, then the union is mixed,
+             and we just return the common types from the intersetion *)
+          (env, Some (MakeType.intersection r common_tyl))
+        | _ ->
+          let (env, union_ty) =
+            match (tyl1', tyl2') with
+            | ([ty1], [ty2]) ->
+              (* It seems like it is wasteful to simplify with the main union function which checks
+                 subtyping. If there was a subtype relationship between these two, there
+                 would have been one with the common types in, and we wouldn't get here.
+                 However, in some cases, that is not the case. E.g., ?#1 & t <: #1 & t will
+                 not pass the initial sub-type check, but will here *)
+              union ~approx_cancel_neg env ty1 ty2
+            | ([ty], tyl)
+            | (tyl, [ty]) ->
+              union_lists
+                ~approx_cancel_neg
+                env
+                [ty]
+                [MakeType.intersection r1 tyl]
+                r
+            | _ ->
+              ( env,
+                MakeType.union
+                  r
+                  [
+                    MakeType.intersection r1 tyl1';
+                    MakeType.intersection r2 tyl2';
+                  ] )
+          in
+          (match common_tyl with
+          | [common_ty] ->
+            let (env, inter_ty) =
+              Typing_intersection.intersect env ~r common_ty union_ty
+            in
+            (env, Some inter_ty)
+          | _ -> (env, Some (MakeType.intersection r (union_ty :: common_tyl))))))
     (* TODO with Tclass, union type arguments if covariant *)
     | ( ( _,
-          ( ( Tprim _ | Tdynamic | Tgeneric _ | Tnewtype _ | Tdependent _
-            | Tclass _ | Ttuple _ | Tfun _ | Tobject | Tshape _ | Terr | Tvar _
-            | Tvarray _ | Tdarray _
-            | Tvarray_or_darray _
-            (* If T cannot be null, `union T nonnull = nonnull`. However, it's hard
-             * to say whether a given T can be null - e.g. opaque newtypes, dependent
-             * types, etc. - so for now we leave it here.
-             * TODO improve that. *)
-            | Tnonnull | Tany _ | Tintersection _ | Tpu _ | Tpu_type_access _
-            | Toption _ | Tunion _ ) as ty1_ ) ),
-        (_, ty2_) ) ->
-      (* Make sure to add a dependency on any classes referenced here, even if
-       * we're in an error state (i.e., where we are right now). The need for
-       * this is extremely subtle. Consider this function:
-       *
-       * function f(): blah {
-       *   // ...
-       * }
-       *
-       * Suppose that "blah" isn't currently defined, and we send the result
-       * of f() into a function that expects an int. We'll hit a unification
-       * error here, as we should. But, we might later define "blah" to be a
-       * type alias, "type blah = int", in another file. In that case, f()
-       * needs to be rechecked with the new definition of "blah" present.
-       *
-       * Normally this isn't a problem. The presence of the error in f() in
-       * the first place will cause it to be rechecked when "blah" pops into
-       * existance anyways. (And in strict mode, or with assume_php=false, you
-       * can't refer to the undefined "blah" anyways.) But there's one
-       * important case where this does matter: the JS cross-compile of the
-       * typechecker. The JS driver code uses the presence of dependencies to
-       * figure out what code to pull into the browser, and it's pretty aggro
-       * about not pulling in things it doesn't need. If this dep is missing,
-       * it will never pull in "blah" -- which actually does exist, but is
-       * "undefined" as far as the typechecker is concerned because the JS
-       * driver hasn't pulled it into the browser *yet*. The presence of this
-       * dep causes that to happen.
-       *
-       * Another way to do this might be to look up blah and see if it's
-       * defined (and doing this will add the dep for us), and suppress the
-       * error if it isn't. We typically say that undefined classes could live
-       * in PHP and thus be anything -- but the only way it could unify with
-       * a non-class is if it's a type alias, which isn't a PHP feature, so
-       * the strictness (and subtlety) is warranted here.
-       *
-       * And the dep is correct anyways: if there weren't a unification error
-       * like this, we'd be pulling in the declaration of "blah" (and adding
-       * the dep) anyways.
-       *)
-      let add env = function
-        | Tclass ((_, cid), _, _) -> Env.add_wclass env cid
-        | _ -> ()
-      in
-      add env ty1_;
-      add env ty2_;
+          ( Tprim _ | Tdynamic | Tgeneric _ | Tnewtype _ | Tdependent _
+          | Tclass _ | Ttuple _ | Tfun _ | Tobject | Tshape _ | Terr | Tvar _
+          | Tvarray _ | Tdarray _ | Tvarray_or_darray _ | Tvec_or_dict _
+          (* If T cannot be null, `union T nonnull = nonnull`. However, it's hard
+           * to say whether a given T can be null - e.g. opaque newtypes, dependent
+           * types, etc. - so for now we leave it here.
+           * TODO improve that. *)
+          | Tnonnull | Tany _ | Tintersection _ | Toption _ | Tunion _
+          | Taccess _ | Tneg _ ) ),
+        (_, _) ) ->
       ty_equiv env ty1 ty2 ~are_ty_param:false
-  with Dont_simplify -> (env, None)
+  with
+  | Dont_simplify -> (env, None)
+
+(* Recognise a pattern t1 | t2 | t3 | (t4 & t5 & t6) which happens frequently
+   at control flow join points, and check for types that drop out of the intersection
+   because they union to mixed with types in the union. Assume that all of the types
+   in tyl1 and tyl2 are not unions, having been processed by decompose in the
+   union_lists function. The semantics are that tyl1 and tyl2 are the union of their
+   elements, and we are building the union of the two lists. Instead of just appending,
+   we look for the special case where one of the elements of tyl1 or tyl2 is itself
+   an intersection, and try to cancel things out. We return the simplified
+   lists for further processing.
+
+   For example if tyl1 = [bool; int; string] represents bool | int | string, and
+   tyl2 = [float; (dynamic & not int & not string)],
+   then to union tyl1 and tyl2, we can remove the not int and not string conjuncts
+   from tyl2 because they union to mixed with elements of tyl1. Thus we end up with
+   a result [bool; int; string], [float; dynamic]
+  *)
+and try_special_union_of_intersection ~approx_cancel_neg env tyl1 tyl2 r :
+    Typing_env_types.env * locl_ty list * locl_ty list =
+  (* Assume that inter_ty is an intersection type and look for a pairs of a conjunct in
+     inter_ty and an element of tyl that union to mixed. Remove these from the intersection,
+     and return the remaining elements of the intersection,
+     or return None indicating that no pairs were found. *)
+  let simplify_inter env inter_ty tyl : Typing_env_types.env * locl_ty option =
+    let changed = ref false in
+    let (env, (inter_tyl, inter_r)) =
+      Typing_intersection.destruct_inter_list env [inter_ty]
+    in
+    let inter_r = Option.value inter_r ~default:r in
+    let (env, new_inter_tyl) =
+      List.filter_map_env env inter_tyl ~f:(fun env inter_ty ->
+          match
+            List.exists_env env tyl ~f:(fun env ty ->
+                match simplify_union_ ~approx_cancel_neg env inter_ty ty r with
+                | (env, None) -> (env, false)
+                | (env, Some ty) -> (env, Typing_utils.is_mixed env ty))
+          with
+          | (env, true) ->
+            changed := true;
+            (env, None)
+          | (env, false) -> (env, Some inter_ty))
+    in
+    ( env,
+      if !changed then
+        Some (Typing_make_type.intersection inter_r new_inter_tyl)
+      else
+        None )
+  in
+  let (inter_tyl1, not_inter_tyl1) =
+    List.partition_tf tyl1 ~f:(Typing_utils.is_tintersection env)
+  in
+  let (inter_tyl2, not_inter_tyl2) =
+    List.partition_tf tyl2 ~f:(Typing_utils.is_tintersection env)
+  in
+  let (env, res_tyl1) =
+    match inter_tyl1 with
+    | [inter_ty1] ->
+      (match simplify_inter env inter_ty1 not_inter_tyl2 with
+      | (env, None) -> (env, tyl1)
+      | (env, Some new_inter1) -> (env, new_inter1 :: not_inter_tyl1))
+    | _ -> (env, tyl1)
+  in
+  let (env, res_tyl2) =
+    match inter_tyl2 with
+    | [inter_ty2] ->
+      (match simplify_inter env inter_ty2 not_inter_tyl1 with
+      | (env, None) -> (env, tyl2)
+      | (env, Some new_inter1) -> (env, new_inter1 :: not_inter_tyl2))
+    | _ -> (env, tyl2)
+  in
+  (env, res_tyl1, res_tyl2)
 
 (** Union two lists of types together.
 This has complexity N*M where N, M are the sized of the two lists.
 The two lists are first flattened and null and dynamic are extracted from them,
 then we attempt to simplify each pair of types. *)
-and union_lists env tyl1 tyl2 r =
-  let orr r_opt r = Some (Option.value r_opt ~default:r) in
-  let rec decompose env ty tyl tyl_res r_null r_union r_dyn =
-    let (env, ty) = Env.expand_type env ty in
-    match deref ty with
-    | (r, Tunion tyl') ->
-      decompose_list env (tyl' @ tyl) tyl_res r_null (orr r_union r) r_dyn
-    | (r, Toption ty) ->
-      decompose env ty tyl tyl_res (orr r_null r) r_union r_dyn
-    | (r, Tprim Aast.Tnull) ->
-      decompose_list env tyl tyl_res (orr r_null r) r_union r_dyn
-    | (r, Tdynamic) ->
-      decompose_list env tyl tyl_res r_null r_union (orr r_dyn r)
-    | _ -> decompose_list env tyl (ty :: tyl_res) r_null r_union r_dyn
-  and decompose_list env tyl tyl_res r_null r_union r_dyn =
-    match tyl with
-    | [] -> (env, (tyl_res, r_null, r_union, r_dyn))
-    | ty :: tyl -> decompose env ty tyl tyl_res r_null r_union r_dyn
-  in
-  let decompose env tyl = decompose_list env tyl [] None None None in
-  let (env, (tyl1, r_null1, _r_union1, r_dyn1)) = decompose env tyl1 in
-  let (env, (tyl2, r_null2, _r_union2, r_dyn2)) = decompose env tyl2 in
+and union_lists ~approx_cancel_neg env tyl1 tyl2 r =
   let product_ty_tyl env ty1 tyl2 =
     let rec product_ty_tyl env ty1 tyl2 tyl_res =
       match tyl2 with
       | [] -> (env, ty1 :: tyl_res)
       | ty2 :: tyl2 ->
-        let (env, ty_opt) = simplify_union env ty1 ty2 r in
+        let (env, ty_opt) = simplify_union ~approx_cancel_neg env ty1 ty2 r in
         (match ty_opt with
         | None -> product_ty_tyl env ty1 tyl2 (ty2 :: tyl_res)
         | Some ty -> product_ty_tyl env ty tyl2 tyl_res)
@@ -395,61 +538,65 @@ and union_lists env tyl1 tyl2 r =
       let (env, tyl2) = product_ty_tyl env ty1 tyl2 in
       product env tyl1 tyl2
   in
+  let (env, (tyl1, r_null1, _r_union1, r_dyn1)) = dest_union_list env tyl1 in
+  let (env, (tyl2, r_null2, _r_union2, r_dyn2)) = dest_union_list env tyl2 in
+  let (env, tyl1, tyl2) =
+    try_special_union_of_intersection ~approx_cancel_neg env tyl1 tyl2 r
+  in
   let (env, tyl) = product env tyl1 tyl2 in
   let r_null = Option.first_some r_null1 r_null2 in
   let r_dyn = Option.first_some r_dyn1 r_dyn2 in
   make_union env r tyl r_null r_dyn
 
-and union_funs env fty1 fty2 =
+and union_funs ~approx_cancel_neg env fty1 fty2 =
   (* TODO: If we later add fields to ft, they will be forgotten here. *)
   if
     equal_locl_fun_arity fty1 fty2
-    && equal_reactivity fty1.ft_reactive fty2.ft_reactive
     && Int.equal fty1.ft_flags fty2.ft_flags
     && Int.equal (ft_params_compare fty1.ft_params fty2.ft_params) 0
   then
     let (env, ft_ret) =
-      union_possibly_enforced_tys env fty1.ft_ret fty2.ft_ret
+      union_possibly_enforced_tys ~approx_cancel_neg env fty1.ft_ret fty2.ft_ret
     in
     (env, { fty1 with ft_ret })
   else
     raise Dont_simplify
 
-and union_possibly_enforced_tys env ety1 ety2 =
-  let (env, et_type) = union env ety1.et_type ety2.et_type in
+and union_possibly_enforced_tys ~approx_cancel_neg env ety1 ety2 =
+  let (env, et_type) = union ~approx_cancel_neg env ety1.et_type ety2.et_type in
   (env, { ety1 with et_type })
 
-and union_class env name tyl1 tyl2 =
+and union_class ~approx_cancel_neg env name tyl1 tyl2 =
   let tparams =
     match Env.get_class env name with
     | None -> []
     | Some c -> Decl_provider.Class.tparams c
   in
-  union_tylists_w_variances env tparams tyl1 tyl2
+  union_tylists_w_variances ~approx_cancel_neg env tparams tyl1 tyl2
 
-and union_newtype env typename tyl1 tyl2 =
+and union_newtype ~approx_cancel_neg env typename tyl1 tyl2 =
   let tparams =
     match Env.get_typedef env typename with
     | None -> []
     | Some t -> t.td_tparams
   in
-  union_tylists_w_variances env tparams tyl1 tyl2
+  union_tylists_w_variances ~approx_cancel_neg env tparams tyl1 tyl2
 
-and union_tylists_w_variances env tparams tyl1 tyl2 =
-  let variances = List.map tparams (fun t -> t.tp_variance) in
+and union_tylists_w_variances ~approx_cancel_neg env tparams tyl1 tyl2 =
+  let variances = List.map tparams ~f:(fun t -> t.tp_variance) in
   let variances =
     let adjust_list_length l newlen filler =
       let len = List.length l in
       if len < newlen then
-        l @ List.init (newlen - len) (fun _ -> filler)
+        l @ List.init (newlen - len) ~f:(fun _ -> filler)
       else
-        List.sub l 0 newlen
+        List.sub l ~pos:0 ~len:newlen
     in
     adjust_list_length variances (List.length tyl1) Ast_defs.Invariant
   in
   let merge_ty_params env ty1 ty2 variance =
     match variance with
-    | Ast_defs.Covariant -> union env ty1 ty2
+    | Ast_defs.Covariant -> union ~approx_cancel_neg env ty1 ty2
     | _ ->
       let (env, ty_opt) = ty_equiv env ty1 ty2 ~are_ty_param:true in
       (match ty_opt with
@@ -457,15 +604,16 @@ and union_tylists_w_variances env tparams tyl1 tyl2 =
       | None -> raise Dont_simplify)
   in
   let (env, tyl) =
-    try List.map3_env env tyl1 tyl2 variances ~f:merge_ty_params
-    with Invalid_argument _ -> raise Dont_simplify
+    try List.map3_env env tyl1 tyl2 variances ~f:merge_ty_params with
+    | Invalid_argument _ -> raise Dont_simplify
   in
   (env, tyl)
 
-and union_shapes env (shape_kind1, fdm1, r1) (shape_kind2, fdm2, r2) =
+and union_shapes
+    ~approx_cancel_neg env (shape_kind1, fdm1, r1) (shape_kind2, fdm2, r2) =
   let shape_kind = union_shape_kind shape_kind1 shape_kind2 in
   let ((env, shape_kind), fdm) =
-    Nast.ShapeMap.merge_env
+    TShapeMap.merge_env
       (env, shape_kind)
       fdm1
       fdm2
@@ -490,7 +638,7 @@ and union_shapes env (shape_kind1, fdm1, r1) (shape_kind2, fdm2, r2) =
         | ( (_, Some { sft_optional = optional1; sft_ty = ty1 }, _),
             (_, Some { sft_optional = optional2; sft_ty = ty2 }, _) ) ->
           let sft_optional = optional1 || optional2 in
-          let (env, sft_ty) = union env ty1 ty2 in
+          let (env, sft_ty) = union ~approx_cancel_neg env ty1 ty2 in
           ((env, shape_kind), Some { sft_optional; sft_ty }))
   in
   (env, Tshape (shape_kind, fdm))
@@ -503,9 +651,9 @@ and union_shape_kind shape_kind1 shape_kind2 =
 (* TODO: add a new reason with positions of merge point and possibly merged
  * envs.*)
 and union_reason r1 r2 =
-  if Reason.(equal r1 none) then
+  if Reason.is_none r1 then
     r2
-  else if Reason.(equal r2 none) then
+  else if Reason.is_none r2 then
     r1
   else if Reason.compare r1 r2 <= 0 then
     r1
@@ -566,69 +714,81 @@ let normalize_union env ?on_tyvar tyl :
 
 (** Quadratically union types in a list two by two, attempting to simplify
 each pair. *)
-let union_list_2_by_2 env r tyl =
+let union_list_2_by_2 ~approx_cancel_neg env r tyl =
   let (env, tyl) =
     List.fold tyl ~init:(env, []) ~f:(fun (env, res_tyl) ty ->
         let rec union_ty_w_tyl env ty tyl tyl_acc =
           match tyl with
           | [] -> (env, ty :: tyl_acc)
           | ty' :: tyl ->
-            let (env, union_opt) = simplify_union env ty ty' r in
+            let (env, union_opt) =
+              simplify_union ~approx_cancel_neg env ty ty' r
+            in
             (match union_opt with
             | None -> union_ty_w_tyl env ty tyl (ty' :: tyl_acc)
-            | Some union -> (env, tyl @ (union :: tyl_acc)))
+            | Some union -> (env, tyl @ union :: tyl_acc))
         in
         union_ty_w_tyl env ty res_tyl [])
   in
   (env, tyl)
 
-let union_list env r tyl =
+let union_list env ?(approx_cancel_neg = false) r tyl =
   Log.log_union_list r tyl
   @@
   let (env, r_null, _r_union, r_dyn, tys) = normalize_union env tyl in
-  let (env, tyl) = union_list_2_by_2 env r (TySet.elements tys) in
+  let (env, tyl) =
+    union_list_2_by_2 ~approx_cancel_neg env r (TySet.elements tys)
+  in
   make_union env r tyl r_null r_dyn
 
-let fold_union env r tyl =
-  List.fold_left_env env tyl ~init:(MakeType.nothing r) ~f:union
+let fold_union env ?(approx_cancel_neg = false) r tyl =
+  List.fold_left_env
+    env
+    tyl
+    ~init:(MakeType.nothing r)
+    ~f:(union ~approx_cancel_neg)
 
 (* See documentation in mli file *)
-let simplify_unions env ?on_tyvar ty =
+let simplify_unions env ?(approx_cancel_neg = false) ?on_tyvar ty =
   let r = get_reason ty in
   Log.log_simplify_unions r ty
   @@
   let (env, r_null, r_union, r_dyn, tys) = normalize_union env [ty] ?on_tyvar in
-  let (env, tyl) = union_list_2_by_2 env r (TySet.elements tys) in
+  let (env, tyl) =
+    union_list_2_by_2 ~approx_cancel_neg env r (TySet.elements tys)
+  in
   let r = Option.value r_union ~default:r in
   make_union env r tyl r_null r_dyn
 
-let rec union_i env r ty1 lty2 =
+let rec union_i env ?(approx_cancel_neg = false) r ty1 lty2 =
   let ty2 = LoclType lty2 in
-  if Typing_utils.is_sub_type_for_union_i env ty1 ty2 then
+  if Typing_utils.is_sub_type_for_union_i ~coerce:None env ty1 ty2 then
     (env, ty2)
-  else if Typing_utils.is_sub_type_for_union_i env ty2 ty1 then
+  else if Typing_utils.is_sub_type_for_union_i ~coerce:None env ty2 ty1 then
     (env, ty1)
   else
     let (env, ty) =
       match ty1 with
       | LoclType lty1 ->
-        let (env, ty) = union env lty1 lty2 in
+        let (env, ty) = union ~approx_cancel_neg env lty1 lty2 in
         (env, LoclType ty)
       | ConstraintType cty1 ->
         (match deref_constraint_type cty1 with
         | (_, TCunion (lty1, cty1)) ->
-          let (env, lty) = union env lty1 lty2 in
+          let (env, lty) = union ~approx_cancel_neg env lty1 lty2 in
           (env, ConstraintType (mk_constraint_type (r, TCunion (lty, cty1))))
         | (r', TCintersection (lty1, cty1)) ->
           (* Distribute union over intersection.
-          At the moment local types in TCintersection can only be
-          unions or intersections involving only null and nonnull,
-          so applying distributivity allows for simplifying the types. *)
-          let (env, lty) = union env lty1 lty2 in
-          let (env, ty) = union_i env r (ConstraintType cty1) lty2 in
+             At the moment local types in TCintersection can only be
+             unions or intersections involving only null and nonnull,
+             so applying distributivity allows for simplifying the types. *)
+          let (env, lty) = union ~approx_cancel_neg env lty1 lty2 in
+          let (env, ty) =
+            union_i ~approx_cancel_neg env r (ConstraintType cty1) lty2
+          in
           (match ty with
           | LoclType ty ->
-            let (env, ty) = Typing_intersection.intersect env r' lty ty in
+            let (env, ty) = Typing_intersection.intersect env ~r:r' lty ty in
             (env, LoclType ty)
           | ConstraintType cty ->
             ( env,
@@ -655,6 +815,6 @@ let () = Typing_utils.simplify_unions_ref := simplify_unions
 let () = Typing_utils.make_union_ref := make_union
 
 let () =
-  (* discard optional parameter. *)
+  (* discard optional parameters. *)
   let simplify_unions env ty = simplify_unions env ty in
   Typing_env.simplify_unions_ref := simplify_unions

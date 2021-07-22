@@ -1,4 +1,145 @@
 (library
+  (name server_pos)
+  (wrapped false)
+  (modules
+    serverPos)
+  (libraries
+    naming_provider
+    tast)
+  (preprocess (pps lwt_ppx ppx_deriving.std)))
+
+(library
+ (name server_symbol_info_service_utils)
+ (wrapped false)
+ (modules symbolInfoServiceUtils)
+ (libraries
+  ast_provider
+  naming
+  server_command_types
+  tast_provider
+  server_services
+  utils_core
+ )
+ (preprocess (pps lwt_ppx ppx_deriving.std)))
+
+(library
+ (name server_codemod_type_printer)
+ (wrapped false)
+ (modules codemodTypePrinter)
+ (libraries
+    typing_defs
+    tast
+    utils_core
+ )
+ (preprocess (pps lwt_ppx ppx_deriving.std)))
+
+(library
+ (name server_global_inference)
+ (wrapped false)
+ (modules serverGlobalInference)
+ (libraries
+   full_fidelity
+   server_codemod_type_printer
+   tast
+   tast_type_collector
+   typing_defs
+   utils_core
+ )
+ (preprocess (pps lwt_ppx ppx_deriving.std)))
+
+(library
+  (name server_revision_tracker)
+  (wrapped false)
+  (modules serverRevisionTracker)
+  (libraries
+    hg
+    server_env
+    watchman_utils
+  )
+ (preprocess (pps lwt_ppx ppx_deriving.std)))
+
+(library
+  (name server_env_build)
+  (wrapped false)
+  (modules serverEnvBuild)
+  (libraries
+    server_env
+    server_revision_tracker
+    dfind
+  )
+ (preprocess (pps lwt_ppx ppx_deriving.std)))
+
+(library
+  (name server_prechecked_files)
+  (wrapped false)
+  (modules serverPrecheckedFiles)
+  (libraries
+    provider_utils
+    server_env
+    server_revision_tracker
+  )
+ (preprocess (pps lwt_ppx ppx_deriving.std)))
+
+(library
+  (name server_find_refs)
+  (wrapped false)
+  (modules serverFindRefs)
+  (libraries
+    provider_context
+    server_command_types
+    server_env
+    server_prechecked_files
+    server_services
+    utils_core
+  )
+ (preprocess (pps lwt_ppx ppx_deriving.std)))
+
+(library
+  (name server_go_to)
+  (wrapped false)
+  (modules serverGoToDefinition serverGoToImpl)
+  (libraries
+    provider_context
+    server_find_refs
+    server_services
+  )
+ (preprocess (pps lwt_ppx ppx_deriving.std)))
+
+(library
+  (name server_highlight_refs)
+  (wrapped false)
+  (modules serverHighlightRefs)
+  (libraries
+    provider_context
+    server_services
+  )
+ (preprocess (pps lwt_ppx ppx_deriving.std)))
+
+(library
+  (name server_color_file)
+  (wrapped false)
+  (modules
+    colorFile)
+  (libraries
+    typing_defs
+    ide_rpc_api_types
+    utils_core
+  )
+  (preprocess (pps lwt_ppx ppx_deriving.std)))
+
+(library
+  (name server_file_outline)
+  (wrapped false)
+  (modules
+    fileOutline)
+  (libraries
+    search
+    utils_core
+  )
+  (preprocess (pps lwt_ppx ppx_deriving.std)))
+
+
+(library
   (name server_env)
   (wrapped false)
   (modules
@@ -8,32 +149,33 @@
     serverEnv
     serverLocalConfig)
   (libraries
-    ai
+    ai_options
     build_options
     ci_util
     cli_args
-    config_state_loader
     diagnostic_subscription
+    diagnostic_pusher
     disk
     errors
-    experiments_config_file_stubs
+    experiments_config_file
     file_info
     glean_options
     symbol_write_options
     parser_options
     pos
     procs_bucket
+    re_stubs
     server_client_provider
     server_command_types
     server_monitor
     state_loader
     typechecker_options
     typing_service_api
-    typing_service_api_stubs
+    typing_service_delegate
     utils_core
     utils_www_root
     version)
-  (preprocess (pps lwt_ppx ppx_deriving.std))) ; See T41851208
+  (preprocess (pps lwt_ppx ppx_deriving.std)))
 
 (library
   (name diagnostic_subscription)
@@ -49,13 +191,25 @@
     pos
     relative_path
     utils_core)
-  (preprocess (pps lwt_ppx ppx_deriving.std))) ; See T41851208
+  (preprocess (pps lwt_ppx ppx_deriving.std)))
+
+(library
+  (name server_files)
+  (wrapped false)
+  (modules
+    serverFiles)
+  (libraries
+    core_kernel
+    hhi
+    global_config
+    sys_utils
+    utils_core)
+  (preprocess (pps lwt_ppx ppx_deriving.std)))
 
 (library
   (name server_utils)
   (wrapped false)
   (modules
-    serverFiles
     serverUtils)
   (libraries
     core_kernel
@@ -63,15 +217,15 @@
     decl
     decl_class
     hhi
-    global_config
     procs_bucket
     procs_procs
     relative_path
+    server_files
     server_monitor
     sys_utils
     utils_core
     watchman)
-  (preprocess (pps lwt_ppx ppx_deriving.std))) ; See T41851208
+  (preprocess (pps lwt_ppx ppx_deriving.std)))
 
 (library
   (name server_command_types)
@@ -81,6 +235,7 @@
     docblockService
     hoverService
     inferAtPosService
+    inferErrorAtPosService
     saveStateServiceTypes
     serverCommandTypes
     serverCommandTypesUtils
@@ -91,7 +246,8 @@
     serverLintTypes
     serverNotifierTypes
     serverRageTypes
-    serverRefactorTypes)
+    serverRefactorTypes
+    tastHolesService)
   (libraries
     connection_tracker
     full_fidelity
@@ -99,12 +255,14 @@
     ide_rpc_api_types
     lsp
     lwt
+    marshal_tools
     pos
     search_utils
     symbol
     typing_defs
-    utils_lint)
-  (preprocess (pps lwt_ppx ppx_deriving.std))) ; See T41851208
+    utils_lint
+    version)
+  (preprocess (pps lwt_ppx ppx_deriving.std)))
 
 (library
   (name server_client_provider)
@@ -112,36 +270,52 @@
   (modules
     clientProvider
     clientProvider_sig
+    ide_info_store
     serverClientProvider
     serverIdleGc
     testClientProvider)
   (libraries
     libancillary
+    relative_path
     server_command_types
     server_utils
     utils_core)
-  (preprocess (pps lwt_ppx ppx_deriving.std)))  ; See T41851208
+  (preprocess (pps lwt_ppx ppx_deriving.std)))
+
 
 (library
-  (name server_services)
+  (name server_autocomplete_services)
   (wrapped false)
   (modules
     autocompleteService
-    cstSearchService
     ffpAutocompleteContextParser
     ffpAutocompleteGlobals
     ffpAutocompleteKeywords
     ffpAutocompleteService
     ffpAutocompleteTypeCheck
-    fileOutline
+    serverAutoComplete
+  )
+  (libraries
+    provider_utils
+    search
+    server_command_types
+    server_pos
+    tast_provider
+    )
+  (preprocess (pps lwt_ppx ppx_deriving.std))
+)
+
+(library
+  (name server_services)
+  (wrapped false)
+  (modules
+    cstSearchService
     findRefsService
     identifySymbolService
     methodJumps
     saveStateService
-    serverAutoComplete
     serverFindLocals
     serverFunDepsBatch
-    serverFunIsLocallableBatch
     serverGlobalState
     serverIdentifyFunction
     serverRxApiShared
@@ -158,9 +332,10 @@
     parser
     provider_context
     provider_utils
-    search
     server_command_types
     server_env
+    server_file_outline
+    server_pos
     sys_utils
     tast_check
     tast_provider
@@ -170,7 +345,7 @@
     typing_check
     typing_deps
     utils_core)
-  (preprocess (pps lwt_ppx ppx_deriving.std)))  ; See T41851208
+  (preprocess (pps lwt_ppx ppx_deriving.std)))
 
 (library
   (name server_api)
@@ -180,10 +355,7 @@
 (libraries
     decl_redecl_service
     fileutils
-    hg
-    (select logging from
-      (facebook signed_source -> logging_fb)
-      (-> logging_stubs))
+    logging
     remote
     server_env
     sys_utils
@@ -191,14 +363,104 @@
     typing_check
     typing_service_api
     utils_core)
-  (preprocess (pps lwt_ppx ppx_deriving.std))) ; See T41851208
+  (preprocess (pps lwt_ppx ppx_deriving.std)))
+
+(library
+  (name server_coverage_metric_utils)
+  (wrapped false)
+  (modules serverCoverageMetricUtils)
+  (preprocess (pps lwt_ppx ppx_deriving.std))
+  (libraries
+    utils_core
+    typing_defs
+    coverage_level
+    pos
+    collections))
+
+(library
+  (name server_search)
+  (wrapped false)
+  (modules serverSearch)
+  (preprocess (pps lwt_ppx ppx_deriving.std))
+  (libraries
+    server_autocomplete_services
+    search
+    search_utils
+    utils_core
+    hh_json
+    pos
+  )
+)
+
+(library
+  (name server_infer_type)
+  (wrapped false)
+  (modules serverInferType
+    serverInferTypeError
+    serverCollectTastHoles)
+  (libraries
+    annotated_ast
+    ast
+    hh_json
+    pos
+    provider_context
+    server_command_types
+    tast
+    tast_provider
+    typing
+    utils_core)
+  (preprocess (pps lwt_ppx ppx_deriving.std))
+)
+
+(library
+  (name server_docblock_at)
+  (wrapped false)
+  (modules serverDocblockAt)
+  (libraries
+    ast
+    collections
+    decl_provider
+    naming_provider
+    parser
+    pos
+    provider_context
+    relative_path
+    search
+    search_utils
+    server_command_types
+    server_services
+    symbol
+    typing_defs
+    utils_core)
+  (preprocess (pps lwt_ppx ppx_deriving.std))
+)
+
+(library
+  (name server_hover)
+  (wrapped false)
+  (modules serverHover)
+  (libraries
+    decl_provider
+    naming_special_names
+    pos
+    provider_context
+    server_command_types
+    server_docblock_at
+    server_infer_type
+    server_services
+    symbol
+    tast
+    tast_provider
+    typing
+    utils_core
+    )
+  (preprocess (pps lwt_ppx ppx_deriving.std))
+)
 
 (library
   (name server)
   (wrapped false)
   (modules
-    codemodTypePrinter
-    colorFile
     fullFidelityParseService
     searchServiceRunner
     serverBigCode
@@ -208,47 +470,39 @@
     serverColorFile
     serverCoverageMetric
     serverConcatenateAll
-    serverDebug
-    serverDocblockAt
     serverDynamicView
-    serverEnvBuild
     serverError
     serverExtractStandalone
     serverFileDependents
     serverFileSync
-    serverFindRefs
     serverFormat
-    serverGoToDefinition
-    serverGoToImpl
-    serverHighlightRefs
     serverHotClasses
     serverHotClassesDescription
-    serverHover
     serverIdle
-    serverInferType
     serverInferTypeBatch
     serverInvalidateUnits
     serverLint
     serverMethodJumps
     serverMethodJumpsBatch
-    serverPrecheckedFiles
     serverRage
     serverRecheckCapture
     serverRefactor
-    serverRevisionTracker
     serverRewriteLambdaParameters
     serverRewriteTypeParamsType
-    serverSearch
     serverSignatureHelp
     serverStamp
     serverStatusSingle
+    serverStatusSingleRemoteExecution
+    serverStatusRemoteExecution
+    serverStatusMultiRemoteExecution
     serverTypeCheck
     serverTypeDefinition
     serverWorker
-    symbolInfoService
-    serverGlobalInference)
+    symbolInfoService)
   (libraries
+    base64
     buffered_line_reader
+    cgroup
     coverage_level
     decl_redecl_service
     dfind
@@ -260,16 +514,26 @@
     lsp
     parsing_service
     remote
-    search
     security_stubs
     server_api
+    server_codemod_type_printer
+    recli_stubs
+    server_coverage_metric_utils
+    server_docblock_at
     server_env
+    server_find_refs
+    server_hover
+    server_infer_type
+    server_prechecked_files
     server_remote_utils
+    server_revision_tracker
     server_services
+    server_symbol_info_service_utils
     sys_utils
     tast_provider
     typing
     typing_service_api
+    typing_check_job
     utils_core
     version
     watchman_utils
@@ -280,12 +544,13 @@
     (facebook signed_source -> facebook/serverInvalidateUnits.ml)
     (-> ../stubs/serverInvalidateUnits.ml))
   )
-  (preprocess (pps lwt_ppx ppx_deriving.std))) ; See T41851208
+  (preprocess (pps lwt_ppx ppx_deriving.std)))
 
 (library
   (name hh_server_monitor)
   (wrapped false)
   (modules
+    client_command_handler
     hhMonitorInformant
     hhMonitorInformant_sig
     hhServerMonitor
@@ -304,6 +569,8 @@
   (libraries
     build
     ci_util
+    cgroup
+    direct_decl_service
     folly_stubs
     load_script
     lwt
@@ -311,9 +578,28 @@
     provider_backend
     security_stubs
     server
+    server_env_build
+    server_global_inference
+    server_go_to
+    server_highlight_refs
+    server_search
+    startup_initializer_stubs
     state_loader
     typing_service_api
     vfs
     watchman_client
     write_symbol_info)
+  (preprocess (pps lwt_ppx ppx_deriving.std)))
+
+(library
+  (name diagnostic_pusher)
+  (wrapped false)
+  (modules
+    diagnostic_pusher)
+  (libraries
+    errors
+    relative_path
+    utils_core
+    server_client_provider
+    server_command_types)
   (preprocess (pps lwt_ppx ppx_deriving.std)))

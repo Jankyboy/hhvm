@@ -50,9 +50,7 @@ type t =
    * the lazy rule applies. The first Doc is for content before the lazy rule
    * becomes active, while the second is for content the lazy rule applies
    * to. *)
-  | WithLazyRule of Rule.kind * t * t
-  (*** Special cases ***)
-
+  | WithLazyRule of Rule.kind * t * t (*** Special cases ***)
   (* Tokens representing part of a string literal spanning multiple lines are
    * split on newlines and passed as a MultilineString. These strings are not
    * indented (since indenting would insert whitespace into the literal). *)
@@ -139,7 +137,7 @@ let rec has_printable_content node =
   | Nest nodes
   | ConditionalNest nodes
   | BlockNest nodes ->
-    List.exists nodes has_printable_content
+    List.exists nodes ~f:has_printable_content
   | WithRule (_, body)
   | WithOverridingParentalRule body ->
     has_printable_content body
@@ -169,7 +167,7 @@ let rec has_split node =
   | Nest nodes
   | ConditionalNest nodes
   | BlockNest nodes ->
-    List.exists nodes has_split
+    List.exists nodes ~f:has_split
   | WithRule (_, body)
   | WithOverridingParentalRule body ->
     has_split body
@@ -190,7 +188,7 @@ let dump ?(ignored = false) node =
   Printf.(
     let rec aux = function
       | Nothing -> ()
-      | Concat nodes -> List.iter nodes aux
+      | Concat nodes -> List.iter nodes ~f:aux
       | Text (text, _) -> print (sprintf "Text \"%s\"" text)
       | Comment (text, _) -> print (sprintf "Comment \"%s\"" text)
       | SingleLineComment (text, _) ->
@@ -206,7 +204,7 @@ let dump ?(ignored = false) node =
       | MultilineString (strings, _) ->
         print "MultilineString [";
         indent := !indent + 2;
-        List.iter strings (fun s -> print (sprintf "\"%s\"" s));
+        List.iter strings ~f:(fun s -> print (sprintf "\"%s\"" s));
         indent := !indent - 2;
         print "]"
       | DocLiteral node -> dump_list "DocLiteral" [node]
@@ -215,13 +213,13 @@ let dump ?(ignored = false) node =
       | Split -> print "Split"
       | SplitWith cost ->
         print
-          ( "SplitWith "
+          ("SplitWith "
           ^
           match cost with
           | Cost.NoCost -> "Cost.NoCost"
           | Cost.Base -> "Cost.Base"
           | Cost.Moderate -> "Cost.Moderate"
-          | Cost.High -> "Cost.High" )
+          | Cost.High -> "Cost.High")
       | Newline -> print "Newline"
       | BlankLine -> print "BlankLine"
       | Space -> print "Space"
@@ -246,15 +244,15 @@ let dump ?(ignored = false) node =
     and print s = eprintf "%s%s\n" (String.make !indent ' ') s
     and dump_list name nodes =
       print
-        ( if String.equal name "" then
+        (if String.equal name "" then
           "["
         else
-          name ^ " [" );
+          name ^ " [");
       dump_list_items nodes;
       print "]"
     and dump_list_items nodes =
       indent := !indent + 2;
-      List.iter nodes aux;
+      List.iter nodes ~f:aux;
       indent := !indent - 2
     in
     if is_nothing node then

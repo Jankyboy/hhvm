@@ -24,7 +24,6 @@
 
 #include <folly/gen/Base.h>
 #include <folly/Conv.h>
-#include <folly/Optional.h>
 #include <folly/Memory.h>
 
 #include "hphp/hhbbc/cfg.h"
@@ -116,7 +115,7 @@ caller(F&&, Bc&&) {}
 Id recordClass(EmitUnitState& euState, UnitEmitter& ue, Id id) {
   auto cls = euState.unit->classes[id].get();
   euState.pceInfo.push_back(
-    { ue.newPreClassEmitter(cls->name->toCppString(), cls->hoistability), id }
+    { ue.newPreClassEmitter(cls->name->toCppString()), id }
   );
   return euState.pceInfo.back().pce->id();
 }
@@ -205,7 +204,7 @@ struct EmitBcInfo {
     // depth at the jump site here.  This is needed to track
     // currentStackDepth correctly (and we also assert all the jumps
     // have the same depth).
-    folly::Optional<uint32_t> expectedStackDepth;
+    Optional<uint32_t> expectedStackDepth;
   };
 
   std::vector<BlockId> blockOrder;
@@ -253,7 +252,7 @@ ExnNodeId commonParent(const php::Func& func, ExnNodeId eh1, ExnNodeId eh2) {
 const StaticString
   s_hhbbc_fail_verification("__hhvm_intrinsics\\hhbbc_fail_verification");
 
-EmitBcInfo emit_bytecode(EmitUnitState& euState, UnitEmitter& ue,
+EmitBcInfo emit_bytecode(EmitUnitState& euState, UnitEmitter& ue, FuncEmitter& fe,
                          const php::WideFunc& func) {
   EmitBcInfo ret = {};
   auto& blockInfo = ret.blockInfo;
@@ -299,39 +298,39 @@ EmitBcInfo emit_bytecode(EmitUnitState& euState, UnitEmitter& ue,
       nl.name = kInvalidLocalName;
       return nl;
     }
-    assert(!loc.unusedName);
+    assertx(!loc.unusedName);
     nl.name = loc.nameId;
     return nl;
   };
 
-  auto set_expected_depth = [&] (BlockId block) {
+  auto const set_expected_depth = [&] (BlockId block) {
     auto& info = blockInfo[block];
 
     if (info.expectedStackDepth) {
-      assert(*info.expectedStackDepth == currentStackDepth);
+      assertx(*info.expectedStackDepth == currentStackDepth);
     } else {
       info.expectedStackDepth = currentStackDepth;
     }
   };
 
-  auto make_member_key = [&] (MKey mkey) {
+  auto const make_member_key = [&] (MKey mkey) {
     switch (mkey.mcode) {
       case MEC: case MPC:
-        return MemberKey{mkey.mcode, static_cast<int32_t>(mkey.idx)};
+        return MemberKey{mkey.mcode, static_cast<int32_t>(mkey.idx), mkey.rop};
       case MEL: case MPL:
-        return MemberKey{mkey.mcode, map_local_name(mkey.local)};
+        return MemberKey{mkey.mcode, map_local_name(mkey.local), mkey.rop};
       case MET: case MPT: case MQT:
-        return MemberKey{mkey.mcode, mkey.litstr};
+        return MemberKey{mkey.mcode, mkey.litstr, mkey.rop};
       case MEI:
-        return MemberKey{mkey.mcode, mkey.int64};
+        return MemberKey{mkey.mcode, mkey.int64, mkey.rop};
       case MW:
         return MemberKey{};
     }
     not_reached();
   };
 
-  auto emit_inst = [&] (const Bytecode& inst) {
-    auto const startOffset = ue.bcPos();
+  auto const emit_inst = [&] (const Bytecode& inst) {
+    auto const startOffset = fe.bcPos();
     lastOff = startOffset;
 
     FTRACE(4, " emit: {} -- {} @ {}\n", currentStackDepth, show(func, inst),
@@ -339,65 +338,65 @@ EmitBcInfo emit_bytecode(EmitUnitState& euState, UnitEmitter& ue,
 
     if (options.TraceBytecodes.count(inst.op)) traceBc = true;
 
-    auto emit_vsa = [&] (const CompactVector<LSString>& keys) {
+    auto const emit_vsa = [&] (const CompactVector<LSString>& keys) {
       auto n = keys.size();
-      ue.emitIVA(n);
+      fe.emitIVA(n);
       for (size_t i = 0; i < n; ++i) {
-        ue.emitInt32(ue.mergeLitstr(keys[i]));
+        fe.emitInt32(ue.mergeLitstr(keys[i]));
       }
     };
 
-    auto emit_branch = [&] (BlockId id) {
+    auto const emit_branch = [&] (BlockId id) {
       auto& info = blockInfo[id];
       if (info.offset != kInvalidOffset) {
-        ue.emitInt32(info.offset - startOffset);
+        fe.emitInt32(info.offset - startOffset);
       } else {
-        info.forwardJumps.push_back({ startOffset, ue.bcPos() });
-        ue.emitInt32(0);
+        info.forwardJumps.push_back({ startOffset, fe.bcPos() });
+        fe.emitInt32(0);
       }
     };
 
-    auto emit_switch = [&] (const SwitchTab& targets) {
-      ue.emitIVA(targets.size());
+    auto const emit_switch = [&] (const SwitchTab& targets) {
+      fe.emitIVA(targets.size());
       for (auto t : targets) {
         set_expected_depth(t);
         emit_branch(t);
       }
     };
 
-    auto emit_sswitch = [&] (const SSwitchTab& targets) {
-      ue.emitIVA(targets.size());
+    auto const emit_sswitch = [&] (const SSwitchTab& targets) {
+      fe.emitIVA(targets.size());
       for (size_t i = 0; i < targets.size() - 1; ++i) {
         set_expected_depth(targets[i].second);
-        ue.emitInt32(ue.mergeLitstr(targets[i].first));
+        fe.emitInt32(ue.mergeLitstr(targets[i].first));
         emit_branch(targets[i].second);
       }
-      ue.emitInt32(-1);
+      fe.emitInt32(-1);
       set_expected_depth(targets[targets.size() - 1].second);
       emit_branch(targets[targets.size() - 1].second);
     };
 
-    auto emit_srcloc = [&] {
+    auto const emit_srcloc = [&] {
       auto const sl = srcLoc(*func, inst.srcLoc);
       auto const loc = sl.isValid() ?
         Location::Range(sl.start.line, sl.start.col, sl.past.line, sl.past.col)
         : Location::Range(-1,-1,-1,-1);
-      ue.recordSourceLocation(loc, startOffset);
+      fe.recordSourceLocation(loc, startOffset);
     };
 
-    auto pop = [&] (int32_t n) {
+    auto const pop = [&] (int32_t n) {
       currentStackDepth -= n;
-      assert(currentStackDepth >= 0);
+      assertx(currentStackDepth >= 0);
     };
-    auto push = [&] (int32_t n) {
+    auto const push = [&] (int32_t n) {
       currentStackDepth += n;
       ret.maxStackDepth =
         std::max<uint32_t>(ret.maxStackDepth, currentStackDepth);
     };
 
-    auto ret_assert = [&] { assert(currentStackDepth == inst.numPop()); };
+    auto const ret_assert = [&] { assertx(currentStackDepth == inst.numPop()); };
 
-    auto createcl  = [&] (auto& data) {
+    auto const createcl  = [&] (auto& data) {
       auto& id = data.arg2;
       if (euState.classOffsets[id] != kInvalidOffset) {
         for (auto const& elm : euState.pceInfo) {
@@ -412,45 +411,45 @@ EmitBcInfo emit_bytecode(EmitUnitState& euState, UnitEmitter& ue,
       id = recordClass(euState, ue, id);
     };
 
-    auto emit_lar  = [&](const LocalRange& range) {
-      encodeLocalRange(ue, HPHP::LocalRange{
+    auto const emit_lar  = [&](const LocalRange& range) {
+      encodeLocalRange(fe, HPHP::LocalRange{
         map_local(range.first), range.count
       });
     };
 
-    auto emit_ita  = [&](IterArgs ita) {
+    auto const emit_ita  = [&](IterArgs ita) {
       if (ita.hasKey()) ita.keyId = map_local(ita.keyId);
       ita.valId = map_local(ita.valId);
-      encodeIterArgs(ue, ita);
+      encodeIterArgs(fe, ita);
     };
 
 #define IMM_BLA(n)     emit_switch(data.targets);
 #define IMM_SLA(n)     emit_sswitch(data.targets);
-#define IMM_IVA(n)     ue.emitIVA(data.arg##n);
-#define IMM_I64A(n)    ue.emitInt64(data.arg##n);
-#define IMM_LA(n)      ue.emitIVA(map_local(data.loc##n));
-#define IMM_NLA(n)     ue.emitNamedLocal(map_local_name(data.nloc##n));
-#define IMM_ILA(n)     ue.emitIVA(map_local(data.loc##n));
-#define IMM_IA(n)      ue.emitIVA(data.iter##n);
-#define IMM_DA(n)      ue.emitDouble(data.dbl##n);
-#define IMM_SA(n)      ue.emitInt32(ue.mergeLitstr(data.str##n));
-#define IMM_RATA(n)    encodeRAT(ue, data.rat);
-#define IMM_AA(n)      ue.emitInt32(ue.mergeArray(data.arr##n));
-#define IMM_OA_IMPL(n) ue.emitByte(static_cast<uint8_t>(data.subop##n));
+#define IMM_IVA(n)     fe.emitIVA(data.arg##n);
+#define IMM_I64A(n)    fe.emitInt64(data.arg##n);
+#define IMM_LA(n)      fe.emitIVA(map_local(data.loc##n));
+#define IMM_NLA(n)     fe.emitNamedLocal(map_local_name(data.nloc##n));
+#define IMM_ILA(n)     fe.emitIVA(map_local(data.loc##n));
+#define IMM_IA(n)      fe.emitIVA(data.iter##n);
+#define IMM_DA(n)      fe.emitDouble(data.dbl##n);
+#define IMM_SA(n)      fe.emitInt32(ue.mergeLitstr(data.str##n));
+#define IMM_RATA(n)    encodeRAT(fe, data.rat);
+#define IMM_AA(n)      fe.emitInt32(ue.mergeArray(data.arr##n));
+#define IMM_OA_IMPL(n) fe.emitByte(static_cast<uint8_t>(data.subop##n));
 #define IMM_OA(type)   IMM_OA_IMPL
 #define IMM_BA(n)      targets[numTargets++] = data.target##n; \
                        emit_branch(data.target##n);
 #define IMM_VSA(n)     emit_vsa(data.keys);
-#define IMM_KA(n)      encode_member_key(make_member_key(data.mkey), ue);
+#define IMM_KA(n)      encode_member_key(make_member_key(data.mkey), fe);
 #define IMM_LAR(n)     emit_lar(data.locrange);
 #define IMM_ITA(n)     emit_ita(data.ita);
 #define IMM_FCA(n)     encodeFCallArgs(                                 \
-                         ue, data.fca.base(),                           \
+                         fe, data.fca.base(),                           \
                          data.fca.enforceInOut(),                       \
                          [&] {                                          \
                            data.fca.applyIO(                            \
                              [&] (int numBytes, const uint8_t* inOut) { \
-                               encodeFCallArgsIO(ue, numBytes, inOut);  \
+                               encodeFCallArgsIO(fe, numBytes, inOut);  \
                              }                                          \
                            );                                           \
                          },                                             \
@@ -461,7 +460,7 @@ EmitBcInfo emit_bytecode(EmitUnitState& euState, UnitEmitter& ue,
                          },                                             \
                          data.fca.context() != nullptr,                 \
                          [&] {                                          \
-                           ue.emitInt32(ue.mergeLitstr(data.fca.context()));\
+                           fe.emitInt32(ue.mergeLitstr(data.fca.context()));\
                          });                                            \
                        if (!data.fca.hasUnpack()) ret.containsCalls = true;
 
@@ -483,10 +482,8 @@ EmitBcInfo emit_bytecode(EmitUnitState& euState, UnitEmitter& ue,
 #define POP_CMANY      pop(data.arg##1);
 #define POP_SMANY      pop(data.keys.size());
 #define POP_CUMANY     pop(data.arg##1);
-#define POP_CMANY_U3   pop(data.arg1 + 3);
-#define POP_CALLNATIVE pop(data.arg1 + data.arg3);
 #define POP_FCALL(nin, nobj) \
-                       pop(nin + data.fca.numInputs() + 2 + data.fca.numRets());
+                       pop(nin + data.fca.numInputs() + 1 + data.fca.numRets());
 
 #define PUSH_NOV
 #define PUSH_ONE(x)            push(1);
@@ -494,54 +491,55 @@ EmitBcInfo emit_bytecode(EmitUnitState& euState, UnitEmitter& ue,
 #define PUSH_THREE(x, y, z)    push(3);
 #define PUSH_CMANY             push(data.arg1);
 #define PUSH_FCALL             push(data.fca.numRets());
-#define PUSH_CALLNATIVE        push(data.arg3 + 1);
 
-#define O(opcode, imms, inputs, outputs, flags)                 \
-    auto emit_##opcode = [&] (OpInfo<bc::opcode> data) {        \
-      if (RuntimeOption::EnableIntrinsicsExtension) {           \
-        if (Op::opcode == Op::FCallBuiltin &&                   \
-            inst.FCallBuiltin.str4->isame(                      \
-              s_hhbbc_fail_verification.get())) {               \
-          ue.emitOp(Op::CheckProp);                             \
-          ue.emitInt32(                                         \
-            ue.mergeLitstr(inst.FCallBuiltin.str4));            \
-          ue.emitOp(Op::PopC);                                  \
-        }                                                       \
-      }                                                         \
-      caller<Op::CreateCl>(createcl, data);                     \
-                                                                \
-      if (isRet(Op::opcode)) ret_assert();                      \
-      ue.emitOp(Op::opcode);                                    \
-      POP_##inputs                                              \
-                                                                \
-      size_t numTargets = 0;                                    \
-      std::array<BlockId, kMaxHhbcImms> targets;                \
-                                                                \
-      if (Op::opcode == Op::MemoGet) {                          \
-        IMM_##imms                                              \
-        assertx(numTargets == 1);                               \
-        set_expected_depth(targets[0]);                         \
-        PUSH_##outputs                                          \
-      } else if (Op::opcode == Op::MemoGetEager) {              \
-        IMM_##imms                                              \
-        assertx(numTargets == 2);                               \
-        set_expected_depth(targets[0]);                         \
-        PUSH_##outputs                                          \
-        set_expected_depth(targets[1]);                         \
-      } else {                                                  \
-        PUSH_##outputs                                          \
-        IMM_##imms                                              \
-        for (size_t i = 0; i < numTargets; ++i) {               \
-          set_expected_depth(targets[i]);                       \
-        }                                                       \
-      }                                                         \
-                                                                \
-      if (flags & TF) currentStackDepth = 0;                    \
-      emit_srcloc();                                            \
-    };
-
-    OPCODES
-
+#define O(opcode, imms, inputs, outputs, flags)                  \
+    case Op::opcode: {                                           \
+      if (Op::opcode == Op::Nop) break;                          \
+      OpInfo<bc::opcode> data{inst.opcode};                      \
+      if (RuntimeOption::EnableIntrinsicsExtension) {            \
+        if (Op::opcode == Op::FCallFuncD &&                      \
+            inst.FCallFuncD.str2->isame(                         \
+              s_hhbbc_fail_verification.get())) {                \
+          fe.emitOp(Op::CheckProp);                              \
+          fe.emitInt32(                                          \
+            ue.mergeLitstr(inst.FCallFuncD.str2));               \
+          fe.emitOp(Op::PopC);                                   \
+          ret.maxStackDepth++;                                   \
+        }                                                        \
+      }                                                          \
+      caller<Op::CreateCl>(createcl, data);                      \
+                                                                 \
+      if (isRet(Op::opcode)) ret_assert();                       \
+      fe.emitOp(Op::opcode);                                     \
+      POP_##inputs                                               \
+                                                                 \
+      size_t numTargets = 0;                                     \
+      std::array<BlockId, kMaxHhbcImms> targets;                 \
+                                                                 \
+      if (Op::opcode == Op::MemoGet) {                           \
+        IMM_##imms                                               \
+        assertx(numTargets == 1);                                \
+        set_expected_depth(targets[0]);                          \
+        PUSH_##outputs                                           \
+      } else if (Op::opcode == Op::MemoGetEager) {               \
+        IMM_##imms                                               \
+        assertx(numTargets == 2);                                \
+        set_expected_depth(targets[0]);                          \
+        PUSH_##outputs                                           \
+        set_expected_depth(targets[1]);                          \
+      } else {                                                   \
+        PUSH_##outputs                                           \
+        IMM_##imms                                               \
+        for (size_t i = 0; i < numTargets; ++i) {                \
+          set_expected_depth(targets[i]);                        \
+        }                                                        \
+      }                                                          \
+                                                                 \
+      if (flags & TF) currentStackDepth = 0;                     \
+      emit_srcloc();                                             \
+      break;                                                     \
+    }
+    switch (inst.op) { OPCODES }
 #undef O
 
 #undef IMM_MA
@@ -581,8 +579,6 @@ EmitBcInfo emit_bytecode(EmitUnitState& euState, UnitEmitter& ue,
 #undef POP_CMANY
 #undef POP_SMANY
 #undef POP_CUMANY
-#undef POP_CMANY_U3
-#undef POP_CALLNATIVE
 #undef POP_FCALL
 #undef POP_MFINAL
 #undef POP_C_MFINAL
@@ -593,14 +589,7 @@ EmitBcInfo emit_bytecode(EmitUnitState& euState, UnitEmitter& ue,
 #undef PUSH_THREE
 #undef PUSH_CMANY
 #undef PUSH_FCALL
-#undef PUSH_CALLNATIVE
 
-#define O(opcode, ...)                                        \
-    case Op::opcode:                                          \
-      if (Op::opcode != Op::Nop) emit_##opcode(inst.opcode);  \
-      break;
-    switch (inst.op) { OPCODES }
-#undef O
   };
 
   ret.blockOrder        = order_blocks(func);
@@ -611,11 +600,11 @@ EmitBcInfo emit_bytecode(EmitUnitState& euState, UnitEmitter& ue,
     auto& info = blockInfo[bid];
     auto const b = func.blocks()[bid].get();
 
-    info.offset = ue.bcPos();
+    info.offset = fe.bcPos();
     FTRACE(2, "      block {}: {}\n", bid, info.offset);
 
     for (auto& fixup : info.forwardJumps) {
-      ue.emitInt32(info.offset - fixup.instrOff, fixup.jmpImmedOff);
+      fe.emitInt32(info.offset - fixup.instrOff, fixup.jmpImmedOff);
     }
 
     if (!info.expectedStackDepth) {
@@ -662,7 +651,7 @@ EmitBcInfo emit_bytecode(EmitUnitState& euState, UnitEmitter& ue,
       }
     }
 
-    info.past = ue.bcPos();
+    info.past = fe.bcPos();
 
     if (fallthrough != NoBlockId) {
       set_expected_depth(fallthrough);
@@ -683,7 +672,7 @@ EmitBcInfo emit_bytecode(EmitUnitState& euState, UnitEmitter& ue,
         // If we are in an exn region we pop from the current region to the
         // common parent. If the common parent is null, we pop all regions
         info.regionsToPop = depth(b->exnNodeId) - depth(parent);
-        assert(info.regionsToPop >= 0);
+        assertx(info.regionsToPop >= 0);
         FTRACE(4, "      popped catch regions: {}\n", info.regionsToPop);
       }
     }
@@ -711,9 +700,9 @@ void emit_locals_and_params(FuncEmitter& fe, const php::Func& func,
   Id id = 0;
   for (auto const& loc : func.locals) {
     if (loc.id < func.params.size()) {
-      assert(loc.name);
-      assert(!loc.killed);
-      assert(!loc.unusedName);
+      assertx(loc.name);
+      assertx(!loc.killed);
+      assertx(!loc.unusedName);
       auto& param = func.params[id];
       FuncEmitter::ParamInfo pinfo;
       pinfo.defaultValue = param.defaultValue;
@@ -735,8 +724,8 @@ void emit_locals_and_params(FuncEmitter& fe, const php::Func& func,
       if (loc.killed) continue;
       if (loc.name && !loc.unusedName && loc.name) {
         fe.allocVarId(loc.name);
-        assert(fe.lookupVarId(loc.name) == id);
-        assert(loc.id == id);
+        assertx(fe.lookupVarId(loc.name) == id);
+        assertx(loc.id == id);
         ++id;
       } else {
         fe.allocUnnamedLocal();
@@ -761,7 +750,7 @@ void emit_locals_and_params(FuncEmitter& fe, const php::Func& func,
     }
   }
 
-  assert(fe.numLocals() == id);
+  assertx(fe.numLocals() == id);
   fe.setNumIterators(func.numIters);
 }
 
@@ -797,8 +786,8 @@ void emit_eh_region(FuncEmitter& fe,
   auto& eh = fe.addEHEnt();
   eh.m_base = region->start;
   eh.m_past = region->past;
-  assert(eh.m_past >= eh.m_base);
-  assert(eh.m_base != kInvalidOffset && eh.m_past != kInvalidOffset);
+  assertx(eh.m_past >= eh.m_base);
+  assertx(eh.m_base != kInvalidOffset && eh.m_past != kInvalidOffset);
 
   // An unreachable parent won't be emitted (and thus its offset won't be set),
   // so find the closest reachable one.
@@ -806,7 +795,7 @@ void emit_eh_region(FuncEmitter& fe,
   while (parent && unreachable(*parent->node)) parent = parent->parent;
   if (parent) {
     auto parentIt = parentIndexMap.find(parent);
-    assert(parentIt != end(parentIndexMap));
+    assertx(parentIt != end(parentIndexMap));
     eh.m_parentIndex = parentIt->second;
   } else {
     eh.m_parentIndex = -1;
@@ -818,7 +807,7 @@ void emit_eh_region(FuncEmitter& fe,
   eh.m_end = kInvalidOffset;
   eh.m_iterId = cr.iterId;
 
-  assert(eh.m_handler != kInvalidOffset);
+  assertx(eh.m_handler != kInvalidOffset);
 }
 
 void exn_path(const php::Func& func,
@@ -922,7 +911,7 @@ void emit_ehent_tree(FuncEmitter& fe, const php::WideFunc& func,
     if (debug && !activeList.empty()) {
       current.clear();
       exn_path(*func, current, activeList.back()->idx);
-      assert(current == activeList);
+      assertx(current == activeList);
     }
   }
 
@@ -967,7 +956,7 @@ void emit_ehent_tree(FuncEmitter& fe, const php::WideFunc& func,
           if (debug) {
             auto p = a->parent;
             for (; p != b && p != nullptr; p = p->parent) continue;
-            assert(p == b);
+            assertx(p == b);
           }
           return false;
         }
@@ -989,12 +978,17 @@ void merge_repo_auth_type(UnitEmitter& ue, RepoAuthType rat) {
 
   switch (rat.tag()) {
   case T::OptBool:
+  case T::UninitBool:
   case T::OptInt:
+  case T::UninitInt:
   case T::OptSStr:
+  case T::UninitSStr:
   case T::OptStr:
+  case T::UninitStr:
   case T::OptDbl:
   case T::OptRes:
   case T::OptObj:
+  case T::UninitObj:
   case T::OptFunc:
   case T::OptCls:
   case T::OptClsMeth:
@@ -1031,20 +1025,12 @@ void merge_repo_auth_type(UnitEmitter& ue, RepoAuthType rat) {
   case T::ClsMeth:
   case T::Record:
   case T::LazyCls:
+  case T::Num:
+  case T::OptNum:
+  case T::InitPrim:
+  case T::NonNull:
     return;
 
-  case T::OptSArr:
-  case T::OptArr:
-  case T::SArr:
-  case T::Arr:
-  case T::OptSVArr:
-  case T::OptVArr:
-  case T::SVArr:
-  case T::VArr:
-  case T::OptSDArr:
-  case T::OptDArr:
-  case T::SDArr:
-  case T::DArr:
   case T::OptSVec:
   case T::OptVec:
   case T::SVec:
@@ -1057,34 +1043,24 @@ void merge_repo_auth_type(UnitEmitter& ue, RepoAuthType rat) {
   case T::OptKeyset:
   case T::SKeyset:
   case T::Keyset:
-  case T::ArrCompat:
-  case T::VArrCompat:
+  case T::SArrLike:
+  case T::ArrLike:
+  case T::OptSArrLike:
+  case T::OptArrLike:
+
   case T::VecCompat:
-  case T::OptArrCompat:
-  case T::OptVArrCompat:
+  case T::ArrLikeCompat:
   case T::OptVecCompat:
+  case T::OptArrLikeCompat:
     // NOTE: In repo mode, RAT's in Array's might only contain global litstr
     // id's. No need to merge. In non-repo mode, RAT's in Array's might contain
     // local litstr id's.
-    if (RuntimeOption::RepoAuthoritative) return;
-
-    if (rat.hasArrData()) {
-      auto arr = rat.array();
-      switch (arr->tag()) {
-        case RepoAuthType::Array::Tag::Packed:
-          for (uint32_t i = 0; i < arr->size(); ++i) {
-            merge_repo_auth_type(ue, arr->packedElem(i));
-          }
-          break;
-        case RepoAuthType::Array::Tag::PackedN:
-          merge_repo_auth_type(ue, arr->elemType());
-          break;
-      }
-    }
     return;
 
   case T::OptSubObj:
   case T::OptExactObj:
+  case T::UninitSubObj:
+  case T::UninitExactObj:
   case T::SubObj:
   case T::ExactObj:
   case T::OptSubCls:
@@ -1125,11 +1101,14 @@ void emit_finish_func(EmitUnitState& state, FuncEmitter& fe,
   fe.isNative = func.nativeInfo != nullptr;
   fe.isMemoizeWrapper = func.isMemoizeWrapper;
   fe.isMemoizeWrapperLSB = func.isMemoizeWrapperLSB;
-  fe.isRxDisabled = func.isRxDisabled;
+  fe.setNumClosures(func.numClosures);
   fe.hasParamsWithMultiUBs = func.hasParamsWithMultiUBs;
   fe.hasReturnWithMultiUBs = func.hasReturnWithMultiUBs;
 
-  auto const retTy = state.index.lookup_return_type_raw(&func);
+  for (auto& name : func.staticCoeffects) fe.staticCoeffects.push_back(name);
+  for (auto& rule : func.coeffectRules)   fe.coeffectRules.push_back(rule);
+
+  auto const retTy = state.index.lookup_return_type_raw(&func).first;
   if (!retTy.subtypeOf(BBottom)) {
     auto const rat = make_repo_type(*state.index.array_table_builder(), retTy);
     merge_repo_auth_type(fe.ue(), rat);
@@ -1157,7 +1136,7 @@ void emit_finish_func(EmitUnitState& state, FuncEmitter& fe,
                      fe.numLocals() +
                      fe.numIterators() * kNumIterCells;
 
-  fe.finish(fe.ue().bcPos());
+  fe.finish();
 }
 
 void renumber_locals(php::Func& func) {
@@ -1195,7 +1174,6 @@ void emit_init_func(FuncEmitter& fe, const php::Func& func) {
   fe.init(
     std::get<0>(func.srcInfo.loc),
     std::get<1>(func.srcInfo.loc),
-    fe.ue().bcPos(),
     func.attrs | (func.sampleDynamicCalls ? AttrDynamicallyCallable : AttrNone),
     func.srcInfo.docComment
   );
@@ -1204,14 +1182,18 @@ void emit_init_func(FuncEmitter& fe, const php::Func& func) {
 void emit_func(EmitUnitState& state, UnitEmitter& ue,
                FuncEmitter& fe, php::Func& f) {
   FTRACE(2,  "    func {}\n", f.name->data());
+  assertx(f.attrs & AttrUnique);
+  assertx(f.attrs & AttrPersistent);
   renumber_locals(f);
   emit_init_func(fe, f);
   auto func = php::WideFunc::mut(&f);
-  auto const info = emit_bytecode(state, ue, func);
+  auto const info = emit_bytecode(state, ue, fe, func);
   emit_finish_func(state, fe, func, info);
 }
 
 void emit_record(UnitEmitter& ue, const php::Record& rec) {
+  assertx(rec.attrs & AttrUnique);
+  assertx(rec.attrs & AttrPersistent);
   auto const re = ue.newRecordEmitter(rec.name->toCppString());
   re->init(
       std::get<0>(rec.srcInfo.loc),
@@ -1234,12 +1216,13 @@ void emit_record(UnitEmitter& ue, const php::Record& rec) {
         f.userAttributes
     );
   }
-  ue.pushMergeableRecord(re->id());
 }
 
 void emit_class(EmitUnitState& state, UnitEmitter& ue, PreClassEmitter* pce,
                 Offset offset, php::Class& cls) {
   FTRACE(2, "    class: {}\n", cls.name->data());
+  assertx(cls.attrs & AttrUnique);
+  assertx(cls.attrs & AttrPersistent);
   pce->init(
     std::get<0>(cls.srcInfo.loc),
     std::get<1>(cls.srcInfo.loc),
@@ -1251,6 +1234,7 @@ void emit_class(EmitUnitState& state, UnitEmitter& ue, PreClassEmitter* pce,
   pce->setUserAttributes(cls.userAttributes);
 
   for (auto& x : cls.interfaceNames)     pce->addInterface(x);
+  for (auto& x : cls.includedEnumNames)  pce->addEnumInclude(x);
   for (auto& x : cls.usedTraitNames)     pce->addUsedTrait(x);
   for (auto& x : cls.requirements)       pce->addClassRequirement(x);
   for (auto& x : cls.traitPrecRules)     pce->addTraitPrecRule(x);
@@ -1267,11 +1251,19 @@ void emit_class(EmitUnitState& state, UnitEmitter& ue, PreClassEmitter* pce,
     if (nativeConsts && nativeConsts->count(cconst.name)) {
       break;
     }
-    if (!cconst.val.has_value()) {
+    if (cconst.kind == ConstModifiers::Kind::Context) {
+      pce->addContextConstant(
+        cconst.name,
+        std::vector<LowStringPtr>(cconst.coeffects),
+        cconst.isAbstract,
+        cconst.isFromTrait
+      );
+    } else if (!cconst.val.has_value()) {
       pce->addAbstractConstant(
         cconst.name,
         cconst.typeConstraint,
-        cconst.isTypeconst
+        cconst.kind,
+        cconst.isFromTrait
       );
     } else {
       needs86cinit |= cconst.val->m_type == KindOfUninit;
@@ -1281,7 +1273,10 @@ void emit_class(EmitUnitState& state, UnitEmitter& ue, PreClassEmitter* pce,
         cconst.typeConstraint,
         &cconst.val.value(),
         cconst.phpCode,
-        cconst.isTypeconst
+        cconst.kind,
+        cconst.isFromTrait,
+        Array{},
+        cconst.isAbstract
       );
     }
   }
@@ -1303,7 +1298,8 @@ void emit_class(EmitUnitState& state, UnitEmitter& ue, PreClassEmitter* pce,
 
   auto const privateProps   = state.index.lookup_private_props(&cls, true);
   auto const privateStatics = state.index.lookup_private_statics(&cls, true);
-  for (auto& prop : cls.properties) {
+  auto const publicStatics  = state.index.lookup_public_statics(&cls);
+  for (auto const& prop : cls.properties) {
     auto const makeRat = [&] (const Type& ty) -> RepoAuthType {
       if (!ty.subtypeOf(BCell)) return RepoAuthType{};
       if (ty.subtypeOf(BBottom)) {
@@ -1319,30 +1315,40 @@ void emit_class(EmitUnitState& state, UnitEmitter& ue, PreClassEmitter* pce,
       return rat;
     };
 
-    auto const privPropTy = [&] (const PropState& ps) -> Type {
+    auto const privPropTy = [&] (const PropState& ps) -> std::pair<Type, bool> {
       if (is_closure(cls)) {
         // For closures use variables will be the first properties of the
         // closure object, in declaration order
-        if (uvIt != useVars.end()) return *uvIt++;
-        return Type{};
+        if (uvIt != useVars.end()) return std::make_pair(*uvIt++, true);
+        return std::make_pair(TCell, true);
       }
 
       auto it = ps.find(prop.name);
-      if (it == end(ps)) return Type{};
-      return it->second.ty;
+      if (it == end(ps)) return std::make_pair(TCell, true);
+      return std::make_pair(it->second.ty, it->second.everModified);
     };
 
-    Type propTy;
-    auto const attrs = prop.attrs;
+    auto propTy = TCell;
+    auto everModified = true;
+    auto attrs = prop.attrs;
     if (attrs & AttrPrivate) {
-      propTy = privPropTy((attrs & AttrStatic) ? privateStatics : privateProps);
-    } else if ((attrs & AttrPublic) && (attrs & AttrStatic)) {
-      propTy = state.index.lookup_public_static(Context{}, &cls, prop.name);
+      std::tie(propTy, everModified) =
+        privPropTy((attrs & AttrStatic) ? privateStatics : privateProps);
+    } else if ((attrs & (AttrPublic|AttrProtected)) && (attrs & AttrStatic)) {
+      std::tie(propTy, everModified) = [&] {
+        auto const it = publicStatics.find(prop.name);
+        if (it == end(publicStatics)) return std::make_pair(TCell, true);
+        return std::make_pair(it->second.ty, it->second.everModified);
+      }();
+    }
+
+    if (!everModified && (attrs & AttrStatic)) {
+      attrs |= AttrPersistent;
     }
 
     pce->addProperty(
       prop.name,
-      prop.attrs,
+      attrs,
       prop.userType,
       prop.typeConstraint,
       prop.ubs,
@@ -1352,12 +1358,14 @@ void emit_class(EmitUnitState& state, UnitEmitter& ue, PreClassEmitter* pce,
       prop.userAttributes
     );
   }
-  assert(uvIt == useVars.end());
+  assertx(uvIt == useVars.end());
 
   pce->setEnumBaseTy(cls.enumBaseTy);
 }
 
 void emit_typealias(UnitEmitter& ue, const php::TypeAlias& alias) {
+  assertx(alias.attrs & AttrUnique);
+  assertx(alias.attrs & AttrPersistent);
   auto const te = ue.newTypeAliasEmitter(alias.name->toCppString());
   te->init(
       std::get<0>(alias.srcInfo.loc),
@@ -1369,19 +1377,17 @@ void emit_typealias(UnitEmitter& ue, const php::TypeAlias& alias) {
   );
   te->setUserAttributes(alias.userAttrs);
   te->setTypeStructure(alias.typeStructure);
-
-  auto const id = te->id();
-  ue.pushMergeableId(Unit::MergeKind::TypeAlias, id);
 }
 
 void emit_constant(UnitEmitter& ue, const php::Constant& constant) {
+  assertx(constant.attrs & AttrUnique);
+  assertx(constant.attrs & AttrPersistent);
   Constant c {
     constant.name,
     constant.val,
     constant.attrs,
   };
-  auto const id = ue.addConstant(c);
-  ue.pushMergeableId(Unit::MergeKind::Define, id);
+  ue.addConstant(c);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1393,7 +1399,7 @@ std::unique_ptr<UnitEmitter> emit_unit(const Index& index, php::Unit& unit) {
     Trace::hhbbc_emit, kSystemLibBump, is_systemlib_part(unit)
   };
 
-  assert(check(unit));
+  assertx(check(unit));
 
   auto ue = std::make_unique<UnitEmitter>(unit.sha1,
                                           SHA1{},
@@ -1434,14 +1440,13 @@ std::unique_ptr<UnitEmitter> emit_unit(const Index& index, php::Unit& unit) {
    * Top level funcs are always defined when the unit is loaded, and
    * don't have a DefFunc bytecode. Process them up front.
    */
-  std::vector<std::unique_ptr<FuncEmitter> > top_fes;
   for (size_t id = 0; id < unit.funcs.size(); ++id) {
     auto const f = unit.funcs[id].get();
     if (const_86cinit_funcs.find(f->name) != const_86cinit_funcs.end()) {
       continue;
     }
-    top_fes.push_back(std::make_unique<FuncEmitter>(*ue, -1, -1, f->name));
-    emit_func(state, *ue, *top_fes.back(), *f);
+    auto fe = ue->newFuncEmitter(f->name);
+    emit_func(state, *ue, *fe, *f);
   }
 
   /*
@@ -1478,10 +1483,7 @@ std::unique_ptr<UnitEmitter> emit_unit(const Index& index, php::Unit& unit) {
     emit_record(*ue, *unit.records[id]);
   }
 
-  // Top level funcs need to go after any non-top level funcs. See
-  // Unit::merge for details.
-  for (auto& fe : top_fes) ue->appendTopEmitter(std::move(fe));
-
+  ue->finish();
   return ue;
 }
 

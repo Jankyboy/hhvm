@@ -27,39 +27,55 @@ let select
         fds |> List.filter ~f:condition |> List.map ~f:Lwt_unix.unix_file_descr
       in
       Lwt.return (Ok actionable_fds)
-    with _ ->
+    with
+    | _ ->
       (* Although we gather a list of exceptional file descriptors here, it
-      happens that no call site of `Unix.select` in the codebase has checked
-      this list, so we could in theory just return any list (or not return any
-      exceptional file descriptors at all). *)
+         happens that no call site of `Unix.select` in the codebase has checked
+         this list, so we could in theory just return any list (or not return any
+         exceptional file descriptors at all). *)
       let exceptional_fds =
         List.filter exn_fds ~f:(fun fd -> List.mem ~equal:Poly.( = ) fds fd)
       in
       Lwt.return (Error exceptional_fds)
   in
-  let read_task =
-    let%lwt readable_fds =
-      make_task
-        ~fds:read_fds
-        ~condition:Lwt_unix.readable
-        ~wait_f:Lwt_unix.wait_read
-    in
-    match readable_fds with
-    | Ok fds -> Lwt.return (fds, [], [])
-    | Error fds -> Lwt.return ([], [], fds)
+  let tasks = [] in
+  (* WRITE TASK *)
+  let tasks =
+    match write_fds with
+    | [] -> tasks
+    | _ ->
+      let write_task =
+        let%lwt writeable_fds =
+          make_task
+            ~fds:write_fds
+            ~condition:Lwt_unix.writable
+            ~wait_f:Lwt_unix.wait_write
+        in
+        match writeable_fds with
+        | Ok fds -> Lwt.return ([], fds, [])
+        | Error fds -> Lwt.return ([], [], fds)
+      in
+      write_task :: tasks
   in
-  let write_task =
-    let%lwt writeable_fds =
-      make_task
-        ~fds:write_fds
-        ~condition:Lwt_unix.writable
-        ~wait_f:Lwt_unix.wait_write
-    in
-    match writeable_fds with
-    | Ok fds -> Lwt.return ([], fds, [])
-    | Error fds -> Lwt.return ([], [], fds)
+  (* READ TASK *)
+  let tasks =
+    match read_fds with
+    | [] -> tasks
+    | _ ->
+      let read_task =
+        let%lwt readable_fds =
+          make_task
+            ~fds:read_fds
+            ~condition:Lwt_unix.readable
+            ~wait_f:Lwt_unix.wait_read
+        in
+        match readable_fds with
+        | Ok fds -> Lwt.return (fds, [], [])
+        | Error fds -> Lwt.return ([], [], fds)
+      in
+      read_task :: tasks
   in
-  let tasks = [read_task; write_task] in
+  (* TIMEOUT TASK *)
   let tasks =
     if Float.(timeout > 0.0) then
       let timeout_task =
@@ -100,11 +116,26 @@ module Process_failure = struct
       | None -> "<none>"
     in
     let exit_code =
-      Unix.(
-        match process_failure.process_status with
-        | WEXITED exit_code -> "WEXITED " ^ string_of_int exit_code
-        | WSIGNALED exit_code -> "WSIGNALED " ^ string_of_int exit_code
-        | WSTOPPED exit_code -> "WSTOPPED " ^ string_of_int exit_code)
+      match process_failure.process_status with
+      | Unix.WEXITED exit_code ->
+        Printf.sprintf
+          "WEXITED %d (%s)"
+          exit_code
+          (Exit_status.exit_code_to_string exit_code)
+      | Unix.WSIGNALED exit_code ->
+        Printf.sprintf
+          "WSIGNALLED %d (%s)%s"
+          exit_code
+          (PrintSignal.string_of_signal exit_code)
+          (if exit_code = Sys.sigkill then
+            " - this often indicates a timeout"
+          else
+            "")
+      | Unix.WSTOPPED exit_code ->
+        Printf.sprintf
+          "WSTOPPED %d (%s)"
+          exit_code
+          (PrintSignal.string_of_signal exit_code)
     in
     let stderr =
       match process_failure.stderr with
@@ -112,14 +143,19 @@ module Process_failure = struct
       | stderr -> stderr
     in
     Printf.sprintf
-      ( "Process '%s' failed with\n"
-      ^^ "Exception: %s\n"
+      ("Process '%s' failed with\n"
       ^^ "Exit code: %s\n"
-      ^^ "Stderr: %s" )
+      ^^ "%s -- %s\n"
+      ^^ "Exception: %s\n"
+      ^^ "Stderr: %s\n"
+      ^^ "Stdout: %s")
       process_failure.command_line
-      exn_message
       exit_code
+      (Utils.timestring process_failure.start_time)
+      (Utils.timestring process_failure.end_time)
+      exn_message
       stderr
+      process_failure.stdout
 end
 
 let exec_checked
@@ -164,7 +200,8 @@ let exec_checked
            Lwt.return_unit
          in
          Lwt.return_unit
-       with e ->
+       with
+       | e ->
          exn := Some e;
          Lwt.return_unit
      in
@@ -197,7 +234,8 @@ let try_finally ~(f : unit -> 'a Lwt.t) ~(finally : unit -> unit Lwt.t) :
     try%lwt
       let%lwt result = f () in
       Lwt.return result
-    with e ->
+    with
+    | e ->
       let%lwt () = finally () in
       raise e
   in
@@ -219,7 +257,8 @@ let read_all (path : string) : (string, string) Lwt_result.t =
           Lwt.return contents)
     in
     Lwt.return (Ok contents)
-  with _ ->
+  with
+  | _ ->
     Lwt.return
       (Error
          (Printf.sprintf
@@ -234,4 +273,6 @@ module Promise = struct
   let map e f = Lwt.map f e
 
   let bind = Lwt.bind
+
+  let both = Lwt.both
 end

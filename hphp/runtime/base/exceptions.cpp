@@ -17,6 +17,7 @@
 
 #include "hphp/system/systemlib.h"
 #include "hphp/runtime/base/array-iterator.h"
+#include "hphp/runtime/base/array-provenance.h"
 #include "hphp/runtime/base/backtrace.h"
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/base/object-data.h"
@@ -182,10 +183,6 @@ void raise_fatal_error(const char* msg,
                        bool recoverable /* = false */,
                        bool silent /* = false */,
                        bool throws /* = true */) {
-  if (RuntimeOption::PHP7_EngineExceptions && throws) {
-    VMRegAnchor _;
-    SystemLib::throwErrorObject(Variant(msg));
-  }
   auto ex = bt.isNull() && !recoverable
     ? FatalErrorException(msg)
     : FatalErrorException(msg, bt, recoverable);
@@ -215,7 +212,7 @@ namespace {
     return fp && fp->func()->isBuiltin();
   }
 
-  DEBUG_ONLY bool is_throwable(ObjectData* throwable) {
+  DEBUG_ONLY bool is_throwable(const ObjectData* throwable) {
     auto const erCls = SystemLib::s_ErrorClass;
     auto const exCls = SystemLib::s_ExceptionClass;
     return throwable->instanceof(erCls) || throwable->instanceof(exCls);
@@ -266,7 +263,7 @@ namespace {
       for (auto& f : bt->frames()) {
         if (!f.func || f.func->isBuiltin()) continue;
 
-        auto const ln = f.func->unit()->getLineNumber(f.prevPc);
+        auto const ln = f.func->getLineNumber(f.prevPc);
         tvSet(
           make_tv<KindOfInt64>(ln),
           throwable->propLvalAtOffset(s_lineSlot)
@@ -320,22 +317,10 @@ void throwable_init(ObjectData* throwable) {
   assertx(throwable_has_expected_props());
 
   auto const trace_lval = throwable->propLvalAtOffset(s_traceSlot);
-  auto opts = exception_get_trace_options();
-  auto const filterOpts = opts & ~k_DEBUG_BACKTRACE_IGNORE_ARGS;
-  if (
-    !RuntimeOption::EvalEnableCompactBacktrace || filterOpts ||
-    (RuntimeOption::EnableArgsInBacktraces &&
-     opts != k_DEBUG_BACKTRACE_IGNORE_ARGS)
-    ) {
-    auto trace = HHVM_FN(debug_backtrace)(opts);
-    auto tv = make_array_like_tv(trace.detach());
-    tvMove(tv, trace_lval);
-  } else {
-    tvMove(
-      make_tv<KindOfResource>(createCompactBacktrace().detach()->hdr()),
-      trace_lval
-    );
-  }
+  auto const opts = exception_get_trace_options();
+  auto trace = HHVM_FN(debug_backtrace)(opts);
+  auto tv = make_array_like_tv(trace.detach());
+  tvMove(tv, trace_lval);
 
   VMRegAnchor _;
   auto const fp = vmfp();
@@ -347,9 +332,9 @@ void throwable_init(ObjectData* throwable) {
     // always exist, as vmfp() is a non-builtin frame pointer.
     auto const funcAndOffset = getCurrentFuncAndOffset();
     assertx(funcAndOffset.first != nullptr);
-    auto const unit = funcAndOffset.first->unit();
+    auto const func = funcAndOffset.first;
     auto const file = const_cast<StringData*>(funcAndOffset.first->filename());
-    auto const line = unit->getLineNumber(funcAndOffset.second);
+    auto const line = func->getLineNumber(funcAndOffset.second);
     tvSet(
       make_tv<KindOfString>(file),
       throwable->propLvalAtOffset(s_fileSlot)
@@ -389,10 +374,26 @@ void throwable_recompute_backtrace_from_wh(ObjectData* throwable,
   throwable_init_file_and_line_from_trace(throwable);
 }
 
+void throwable_mark_array(const ObjectData* throwable, Array& props) {
+  assertx(is_throwable(throwable));
+  assertx(throwable_has_expected_props());
+
+  auto const prop = throwable->getVMClass()->declProperties()[s_traceSlot];
+  auto const name = StrNR(prop.mangledName).asString();
+  auto const base = props.lookup(name);
+  if (!tvIsArrayLike(base)) return;
+
+  auto const incref = Variant::wrap(base);
+  // We use a depth of 2 because backtrace arrays are varrays-of-darrays.
+  auto const marked = Variant::attach(arrprov::markTvToDepth(base, true, 2));
+  props.set(name, marked);
+}
+
 String throwable_to_string(ObjectData* throwable) {
   if (throwable->instanceof(SystemLib::s_ThrowableClass)) {
     try {
-      auto result = ObjectData::InvokeSimple(throwable, s___toString);
+      auto result = ObjectData::InvokeSimple(throwable, s___toString,
+                                             RuntimeCoeffects::fixme());
       if (result.isString()) {
         return result.asCStrRef();
       }

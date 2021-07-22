@@ -263,7 +263,7 @@ bool CmdVariable::onServer(DebuggerProxy &proxy) {
 
   auto const& denv = g_context->getDebuggerEnv();
   if (m_frame >= 0 && !denv.isNull()) {
-    IterateKVNoInc(denv.get(), [&] (TypedValue k, TypedValue v) {
+    IterateKV(denv.get(), [&] (TypedValue k, TypedValue v) {
       if (!m_variables.exists(k)) m_variables.set(k, v, true);
     });
   }
@@ -277,11 +277,11 @@ bool CmdVariable::onServer(DebuggerProxy &proxy) {
   // Version 1 of this command means we want the names of all variables, but we
   // don't care about their values just yet.
   if (m_version == 1) {
-    DArrayInit ret(m_variables->size());
+    DictInit ret(m_variables->size());
     Variant v;
     for (ArrayIter iter(m_variables); iter; ++iter) {
       assertx(iter.first().isString());
-      ret.add(iter.first().toString(), v);
+      ret.set(iter.first().toString(), v);
     }
     m_variables = ret.toArray();
     m_version = 2;
@@ -295,7 +295,7 @@ bool CmdVariable::onServer(DebuggerProxy &proxy) {
 
   // Variable name might not exist.
   if (!m_variables.exists(m_varName, true /* isKey */)) {
-    m_variables = Array::CreateDArray();
+    m_variables = Array::CreateDict();
     return proxy.sendToClient(this);
   }
 
@@ -303,13 +303,13 @@ bool CmdVariable::onServer(DebuggerProxy &proxy) {
   auto const result = m_formatMaxLen < 0
     ? DebuggerClient::FormatVariable(value)
     : DebuggerClient::FormatVariableWithLimit(value, m_formatMaxLen);
-  m_variables = make_darray(m_varName, result);
+  m_variables = make_dict_array(m_varName, result);
 
   // Remove the entry if its name or context does not match the filter.
   if (!m_filter.empty() && m_varName.find(m_filter, 0, false) < 0) {
     auto const fullvalue = DebuggerClient::FormatVariable(value);
     if (fullvalue.find(m_filter, 0, false) < 0) {
-      m_variables = Array::CreateDArray();
+      m_variables = Array::CreateDict();
     }
   }
 

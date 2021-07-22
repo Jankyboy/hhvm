@@ -11,14 +11,15 @@
     process_types
     future)
   (preprocess
-    (pps lwt_ppx ppx_deriving.std))) ; See T41851208
+    (pps lwt_ppx ppx_deriving.std)))
 
 (executable
   (name hg_runner)
   (modules hg_runner)
   (link_flags (:standard (:include ../../dune_config/ld-opts.sexp)))
+  (modes exe byte_complete)
   (libraries
     hg
     default_injector_config)
   (preprocess
-    (pps lwt_ppx ppx_deriving.std))) ; See T41851208
+    (pps lwt_ppx ppx_deriving.std)))

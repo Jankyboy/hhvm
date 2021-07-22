@@ -28,13 +28,13 @@ class ['self] iter_defs_base =
         : 'a. ('env -> 'a -> unit) -> 'env -> 'a LM.t -> unit =
       (fun f env -> LM.iter (fun _ -> f env))
 
+    method private on_xhp_enum_value _ _ : unit = ()
+
     method on_'fb _ _ = ()
 
     method on_'ex _ _ = ()
 
     method on_'en _ _ = ()
-
-    method on_'hi _ _ = ()
   end
 
 class virtual ['self] reduce_defs_base =
@@ -59,13 +59,13 @@ class virtual ['self] reduce_defs_base =
       fun f env x ->
         LM.fold (fun _ d acc -> self#plus acc (f env d)) x self#zero
 
+    method private on_xhp_enum_value _ _ = self#zero
+
     method on_'fb _env _ = self#zero
 
     method on_'ex _env _ = self#zero
 
     method on_'en _env _ = self#zero
-
-    method on_'hi _env _ = self#zero
   end
 
 class ['self] map_defs_base =
@@ -85,6 +85,8 @@ class ['self] map_defs_base =
     method private on_local_id_map
         : 'a 'b. ('env -> 'a -> 'b) -> 'env -> 'a LM.t -> 'b LM.t =
       (fun f env -> LM.map (f env))
+
+    method private on_xhp_enum_value _env xev = xev
   end
 
 class ['self] endo_defs_base =
@@ -95,7 +97,7 @@ class ['self] endo_defs_base =
         : 'a 'b. ('env -> 'a -> 'b) -> 'env -> 'a SM.t -> 'b SM.t =
       fun f env x ->
         (* FIXME: Should be possible to write a true (more efficient) endo
-         implementation rather than copying map *)
+           implementation rather than copying map *)
         let map_entry key data acc =
           let key = self#on_shape_field_name env key in
           let data = f env data in
@@ -106,4 +108,6 @@ class ['self] endo_defs_base =
     method private on_local_id_map
         : 'a 'b. ('env -> 'a -> 'b) -> 'env -> 'a LM.t -> 'b LM.t =
       (fun f env -> LM.map (f env))
+
+    method private on_xhp_enum_value _env xev = xev
   end

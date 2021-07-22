@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_MEMORY_MANAGER_INL_H
-#define incl_HPHP_MEMORY_MANAGER_INL_H
+#pragma once
 
 #include <limits>
 #include <utility>
@@ -74,6 +73,35 @@ private:
   const uint64_t startAlloc;
   const uint64_t startDealloc;
 };
+
+struct MemoryManager::CountMalloc {
+  explicit CountMalloc(MemoryManager& mm, uint64_t& allocated)
+    : m_mm(mm)
+    , m_allocated(allocated)
+    , startAlloc(s_statsEnabled ? *mm.m_allocated : 0)
+  {}
+
+  ~CountMalloc() {
+    if (s_statsEnabled) {
+      assertx(*m_mm.m_allocated >= startAlloc);
+      m_allocated = *m_mm.m_allocated - startAlloc;
+    } else {
+      m_allocated = 0;
+    }
+  }
+
+  CountMalloc(const CountMalloc&) = delete;
+  CountMalloc& operator=(const CountMalloc&) = delete;
+
+private:
+  MemoryManager& m_mm;
+  uint64_t& m_allocated;
+  const uint64_t startAlloc;
+};
+
+inline void MemoryManager::takeCreditForFreeOnOtherThread(uint64_t size) {
+  m_freedOnOtherThread += size;
+}
 
 struct MemoryManager::SuppressOOM {
   explicit SuppressOOM(MemoryManager& mm)
@@ -192,7 +220,7 @@ inline size_t MemoryManager::size2Index(size_t size) {
   return computeSize2Index(size);
 }
 
-inline size_t MemoryManager::sizeIndex2Size(size_t index) {
+inline constexpr size_t MemoryManager::sizeIndex2Size(size_t index) {
   return kSizeIndex2Size[index];
 }
 
@@ -387,10 +415,6 @@ inline void MemoryManager::setExiting() {
   if (tl_heap) tl_heap->m_exiting = true;
 }
 
-inline StringDataNode& MemoryManager::getStringList() {
-  return m_strings;
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 
 namespace req {
@@ -418,4 +442,3 @@ template<class T> void destroy_raw(T* t) {
 }
 
 }
-#endif

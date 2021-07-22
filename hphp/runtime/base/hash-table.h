@@ -14,18 +14,17 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_HASH_TABLE_H_
-#define incl_HPHP_HASH_TABLE_H_
+#pragma once
 
 #include "hphp/runtime/base/hash-table-x64.h"
 #include "hphp/runtime/base/string-data.h"
+#include "hphp/runtime/base/tv-uncounted.h"
 
 // NvGetStr is implemented in assembly in hash-table-x64.S, additional macros
 // are defined for various offsets in hash-table-x64.h
 // Types inheriting from HashTable should add this macro to statically verify
 // the offsets are correct.
-#if defined(__SSE4_2__) && defined(NO_M_DATA) && !defined(NO_HWCRC) && \
-    !defined(_MSC_VER)
+#ifdef USE_X86_STRING_HELPERS
 
 #define HASH_TABLE_CHECK_OFFSETS(ArrayType, ElmType) \
   static_assert(ArrayType::dataOff() == ArrayType ## _DATA, ""); \
@@ -221,7 +220,7 @@ struct HashTable : HashTableCommon {
   static ALWAYS_INLINE
   ArrayType* uncountedAlloc(uint32_t scale, size_t extra = 0) {
     auto const size = computeAllocBytes(scale) + extra;
-    auto const mem = uncounted_malloc(size);
+    auto const mem = AllocUncounted(size);
     return reinterpret_cast<ArrayType*>(reinterpret_cast<char*>(mem) + extra);
   }
 
@@ -250,11 +249,30 @@ struct HashTable : HashTableCommon {
   static TypedValue NvGetInt(const ArrayData* ad, int64_t k);
   static TypedValue NvGetStr(const ArrayData* ad, const StringData* k);
 
-  static ssize_t NvGetIntPos(const ArrayData* ad, int64_t k);
-  static ssize_t NvGetStrPos(const ArrayData* ad, const StringData* k);
-
   // Return the key at the given element, without any refcount ops.
   static TypedValue GetPosKey(const ArrayData* ad, ssize_t pos);
+
+
+  /////////////////////////////////////////////////////////////////////////////
+  // Erase
+  /////////////////////////////////////////////////////////////////////////////
+  void eraseNoCompact(RemovePos pos) {
+    assertx(pos.valid());
+    hashTab()[pos.probeIdx] = Tombstone;
+
+    ElmType* elms = data();
+    auto& e = elms[pos.elmIdx];
+    e.ElmType::erase();
+    e.setTombstone();
+
+    --array()->m_size;
+    assertx(m_used <= capacity());
+  }
+
+  ALWAYS_INLINE void erase(RemovePos pos) {
+    array()->ArrayType::eraseNoCompact(pos);
+    if (array()->m_size <= m_used / 2) array()->compact();
+  }
 
   /////////////////////////////////////////////////////////////////////////////
   // findForNewInsertImpl
@@ -312,9 +330,6 @@ protected:
     InitHash(table, scale);
     return table;
   }
-
-  // Hash table should be initialized before the header.
-  static void InitSmallHash(ArrayType* a);
 
   static ALWAYS_INLINE bool hitIntKey(const Elm& e, int64_t ki) {
     assertx(!e.isInvalid());
@@ -469,14 +484,14 @@ protected:
 private:
   static ALWAYS_INLINE
   ArrayType* asArrayType(ArrayData* ad) {
-    assertx(ad->hasVanillaMixedLayout() || ad->isKeysetKind());
+    assertx(ad->isVanillaDict() || ad->isVanillaKeyset());
     auto a = static_cast<ArrayType*>(ad);
     assertx(a->checkInvariants());
     return a;
   }
   static ALWAYS_INLINE
   const ArrayType* asArrayType(const ArrayData* ad) {
-    assertx(ad->hasVanillaMixedLayout() || ad->isKeysetKind());
+    assertx(ad->isVanillaDict() || ad->isVanillaKeyset());
     auto a = static_cast<const ArrayType*>(ad);
     assertx(a->checkInvariants());
     return a;
@@ -494,5 +509,3 @@ private:
 }  // namespace HPHP
 
 #include "hphp/runtime/base/hash-table-inl.h"
-
-#endif  // incl_HPHP_HASH_TABLE_H_

@@ -1,7 +1,7 @@
 <?hh
 function custom_readfunction($oCurl, $hReadHandle, $iMaxOut)
 {
-  $sData = fread($hReadHandle,$iMaxOut-10); # -10 to have space to add "custom:"
+  $sData = fread($hReadHandle,$iMaxOut-10); // -10 to have space to add "custom:"
   if ($sData ?? false)
   {
     $sData = "custom:".$sData;
@@ -20,7 +20,7 @@ $hReadHandle = fopen($sReadFile, 'r');
 $oCurl = curl_init();
 curl_setopt($oCurl, CURLOPT_URL,          $sWriteUrl);
 curl_setopt($oCurl, CURLOPT_UPLOAD,       1);
-curl_setopt($oCurl, CURLOPT_READFUNCTION, "custom_readfunction" );
+curl_setopt($oCurl, CURLOPT_READFUNCTION, custom_readfunction<> );
 curl_setopt($oCurl, CURLOPT_INFILE,       $hReadHandle );
 curl_exec($oCurl);
 curl_close($oCurl);

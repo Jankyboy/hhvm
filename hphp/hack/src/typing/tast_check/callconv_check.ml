@@ -11,11 +11,12 @@ open Hh_prelude
 open Aast
 open Typing_defs
 module Env = Tast_env
+module SN = Naming_special_names
 
-let check_types env ((p, _), te) =
+let check_types env (_, p, te) =
   let rec check_types_helper = function
     | Lvar _ -> ()
-    | Array_get (((_, ty1), te1), Some _) ->
+    | Array_get ((ty1, _, te1), Some _) ->
       let rec iter ty1 =
         let (_, ety1) = Env.expand_type env ty1 in
         match get_node ety1 with
@@ -25,6 +26,7 @@ let check_types env ((p, _), te) =
         | Tvarray _
         | Tdarray _
         | Tvarray_or_darray _
+        | Tvec_or_dict _
         | Ttuple _
         | Tshape _ ->
           true
@@ -37,7 +39,9 @@ let check_types env ((p, _), te) =
         | Tgeneric _
         | Tnewtype _
         | Tdependent _ ->
-          let (_, tyl) = Env.get_concrete_supertypes env ety1 in
+          let (_, tyl) =
+            Env.get_concrete_supertypes ~abstract_enum:true env ety1
+          in
           List.exists ~f:iter tyl
         | _ -> false
       in
@@ -58,6 +62,6 @@ let handler =
 
     method! at_expr env =
       function
-      | (_, Callconv (_, te)) -> check_types env te
+      | (_, _, Callconv (_, te)) -> check_types env te
       | _ -> ()
   end

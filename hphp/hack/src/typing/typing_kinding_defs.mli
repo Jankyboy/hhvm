@@ -18,16 +18,21 @@ type kind = {
   lower_bounds: tparam_bounds;
   upper_bounds: tparam_bounds;
   reified: Aast.reify_kind;
+      (** = Reified if generic parameter is marked `reify`, = Erased otherwise *)
   enforceable: bool;
-  newable: bool;
+      (** Set if generic parameter has attribute <<__Enforceable>> *)
+  newable: bool;  (** Set if generic parameter has attribute <<__Newable>> *)
+  require_dynamic: bool;
+      (** Set if class is marked <<__SupportDynamicType>> and
+          generic parameter does *not* have attribute <<__NoRequireDynamic>> *)
   parameters: named_kind list;
 }
 
-and named_kind = Aast.sid * kind
+and named_kind = pos_id * kind
 
 (** This can be used in situations where we don't have a name for a type
   parameter at hand. All error functions must be aware of this and not print the dummy name. *)
-val dummy_name : Aast.sid
+val dummy_name : pos_id
 
 (** Simple kinds are used in situations where we want to check well-kindedness, but
   ignore type constraints. Most importantly, this is used in Typing_phase.
@@ -53,7 +58,7 @@ module Simple : sig
 
   type kind
 
-  type named_kind = Aast.sid * kind
+  type named_kind = pos_id * kind
 
   type bounds_for_wildcard =
     | NonLocalized of (Ast_defs.constraint_kind * decl_ty) list

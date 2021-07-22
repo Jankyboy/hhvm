@@ -119,6 +119,7 @@ struct PageSpec {
 void setup_local_arenas(PageSpec, unsigned slabs);
 unsigned get_local_arena(uint32_t node);
 SlabManager* get_local_slab_manager(uint32_t node);
+void shutdown_slab_managers();
 
 void setup_arena0(PageSpec);
 
@@ -437,7 +438,7 @@ template<typename T> using LocalAllocator =
   WrapAllocator<local_malloc, local_sized_free, T>;
 
 // Per-thread buffer for global data, using a bump allocator.
-using TLStaticArena = ReadOnlyArena<LowerAllocator<char>, true, 16>;
+using TLStaticArena = ReadOnlyArena<LowerAllocator<char>, true, 8>;
 extern __thread TLStaticArena* tl_static_arena;
 extern bool s_enable_static_arena;
 

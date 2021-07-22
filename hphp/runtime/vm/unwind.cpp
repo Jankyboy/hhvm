@@ -159,22 +159,13 @@ ObjectData* tearDownFrame(ActRec*& fp, Stack& stack, PC& pc,
         fp->retSlot()->m_aux.u_asyncEagerReturnFlag = 0;
       }
     } else {
-      // We need to discard the NullUninits from inout on the stack but if the
-      // function was called with the wrong arity (resulting in an excpetion),
-      // then there may be missing inout arguments.
-      auto const numInOut = [&] () -> uint32_t {
-        if (!func->takesInOutParams()) return 0;
-        uint32_t i = 0;
-        for (int p = 0; p < fp->numArgs(); ++p) i += func->isInOut(p);
-        return i;
-      }();
       // Free ActRec.
       stack.ndiscard(func->numSlotsInFrame());
       stack.discardAR();
 
       // JIT may have optimized away NullUninit writes over the space reserved
-      // for inout outputs.
-      stack.ndiscard(numInOut);
+      // for inout outputs, so we need to discard them.
+      stack.ndiscard(func->numInOutParams());
     }
   } else if (func->isAsyncFunction()) {
     auto const waitHandle = frame_afwh(fp);
@@ -237,7 +228,7 @@ ObjectData* tearDownFrame(ActRec*& fp, Stack& stack, PC& pc,
 
   assertx(stack.isValidAddress(reinterpret_cast<uintptr_t>(prevFp)) ||
           isResumed(prevFp));
-  pc = prevFp->func()->at(callOff + prevFp->func()->base());
+  pc = prevFp->func()->at(callOff);
   assertx(prevFp->func()->contains(pc));
   fp = prevFp;
   return phpException;
@@ -265,7 +256,7 @@ DEBUG_ONLY bool throwable_has_expected_props() {
   // to know.
   auto const isException = [&](const TypeConstraint& tc) {
     if (!tc.isObject()) return false;
-    auto const cls = Unit::lookupClass(tc.namedEntity());
+    auto const cls = Class::lookup(tc.namedEntity());
     return cls && cls == SystemLib::s_ExceptionClass;
   };
 

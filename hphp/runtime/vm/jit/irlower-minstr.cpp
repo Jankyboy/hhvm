@@ -80,12 +80,16 @@ ArgGroup propArgs(IRLS& env, const IRInstruction* inst) {
 }
 
 void implProp(IRLS& env, const IRInstruction* inst) {
-  auto const mode    = inst->extra<MOpModeData>()->mode;
+  auto const mode    = inst->extra<PropData>()->mode;
   auto const base    = inst->src(0);
   auto const key     = inst->src(1);
   auto const keyType = getKeyTypeNoInt(key);
 
-  auto const args = propArgs(env, inst).memberKeyS(1).ssa(2);
+  auto const args = propArgs(env, inst)
+    .memberKeyS(1)
+    .ssa(3)
+    .imm(static_cast<int32_t>(inst->extra<PropData>()->op))
+    .ssa(2);
 
   auto const target = [&] {
     if (inst->is(PropDX)) {
@@ -117,7 +121,11 @@ void cgPropDX(IRLS& env, const IRInstruction* i) { implProp(env, i); }
 void cgPropQ(IRLS& env, const IRInstruction* inst) {
   using namespace MInstrHelpers;
 
-  auto const args = propArgs(env, inst).ssa(1).ssa(2);
+  auto const args = propArgs(env, inst)
+    .ssa(1)
+    .ssa(3)
+    .imm(static_cast<int32_t>(inst->extra<ReadOnlyData>()->op))
+    .ssa(2);
 
   auto helper = inst->src(0)->isA(TObj)
     ? CallSpec::direct(propCOQ)
@@ -128,7 +136,7 @@ void cgPropQ(IRLS& env, const IRInstruction* inst) {
 }
 
 void cgCGetProp(IRLS& env, const IRInstruction* inst) {
-  auto const mode    = inst->extra<MOpModeData>()->mode;
+  auto const mode    = inst->extra<PropData>()->mode;
   auto const base    = inst->src(0);
   auto const key     = inst->src(1);
   auto const keyType = getKeyTypeNoInt(key);
@@ -138,7 +146,9 @@ void cgCGetProp(IRLS& env, const IRInstruction* inst) {
                CGET_PROP_HELPER_TABLE,
                keyType, mode);
 
-  auto const args = propArgs(env, inst).memberKeyS(1);
+  auto const args = propArgs(env, inst)
+    .memberKeyS(1)
+    .imm(static_cast<int32_t>(inst->extra<PropData>()->op));
 
   auto& v = vmain(env);
   cgCallHelper(v, env, target, callDestTV(env, inst), SyncOptions::Sync, args);
@@ -147,7 +157,9 @@ void cgCGetProp(IRLS& env, const IRInstruction* inst) {
 void cgCGetPropQ(IRLS& env, const IRInstruction* inst) {
   using namespace MInstrHelpers;
 
-  auto args = propArgs(env, inst).ssa(1);
+  auto args = propArgs(env, inst)
+    .ssa(1)
+    .imm(static_cast<int32_t>(inst->extra<ReadOnlyData>()->op));
 
   auto& v = vmain(env);
 
@@ -166,7 +178,8 @@ void cgSetProp(IRLS& env, const IRInstruction* inst) {
 
   auto args = propArgs(env, inst)
     .memberKeyS(1)
-    .typedValue(2);
+    .typedValue(2)
+    .imm(static_cast<int32_t>(inst->extra<ReadOnlyData>()->op));
 
   auto const target = [&] {
     if (base->isA(TObj)) {
@@ -267,10 +280,11 @@ void implElem(IRLS& env, const IRInstruction* inst) {
   auto const mode = inst->extra<MOpModeData>()->mode;
   auto const key  = inst->src(1);
   auto const sync = SyncOptions::Sync;
-  auto const args = elemArgs(env, inst);
+  auto args = elemArgs(env, inst);
 
   if (inst->is(ElemDX)) {
     assertx(mode == MOpMode::Define);
+    args.ssa(2);
     BUILD_OPTAB(ELEMD_HELPER_TABLE, getKeyType(key));
     cgCallHelper(vmain(env), env, target, callDest(env, inst), sync, args);
     return;
@@ -278,6 +292,7 @@ void implElem(IRLS& env, const IRInstruction* inst) {
 
   if (inst->is(ElemUX)) {
     assertx(mode == MOpMode::Unset);
+    args.ssa(2);
     BUILD_OPTAB(ELEMU_HELPER_TABLE, getKeyType(key));
     cgCallHelper(vmain(env), env, target, callDest(env, inst), sync, args);
     return;
@@ -392,8 +407,19 @@ void implProfileHackArrayAccess(IRLS& env, const IRInstruction* inst,
   cgCallHelper(v, env, target, kVoidDest, SyncOptions::Sync, args);
 }
 
-void implCheckMixedArrayLikeOffset(IRLS& env, const IRInstruction* inst,
-                                   KeyType key_type) {
+}
+
+void cgProfileDictAccess(IRLS& env, const IRInstruction* inst) {
+  BUILD_OPTAB(PROFILE_DICT_ACCESS_HELPER_TABLE, getKeyType(inst->src(1)));
+  implProfileHackArrayAccess(env, inst, target);
+}
+
+void cgProfileKeysetAccess(IRLS& env, const IRInstruction* inst) {
+  BUILD_OPTAB(PROFILE_KEYSET_ACCESS_HELPER_TABLE, getKeyType(inst->src(1)));
+  implProfileHackArrayAccess(env, inst, target);
+}
+
+void cgCheckDictOffset(IRLS& env, const IRInstruction* inst) {
   auto const arr = srcLoc(env, inst, 0).reg();
   auto const key = srcLoc(env, inst, 1).reg();
   auto const branch = label(env, inst->taken());
@@ -403,7 +429,14 @@ void implCheckMixedArrayLikeOffset(IRLS& env, const IRInstruction* inst,
   auto const elmOff = MixedArray::elmOff(pos);
   using Elm = MixedArray::Elm;
 
-  { // Also fail if our predicted position exceeds bounds.
+  auto const key_type = getKeyType(inst->src(1));
+  auto const is_str_key = key_type == KeyType::Str;
+  assertx(key_type != KeyType::Any);
+
+  { // Also fail if our predicted position exceeds bounds. The layout-agnostic
+    // variant does a test on the (m_size, m_extra) quadword here; for vanilla
+    // array-likes, m_extra is always 0, and for bespoke array-likes, the full
+    // quadword is always a negative int64_t.
     auto const sf = v.makeReg();
     v << cmplim{safe_cast<int32_t>(pos), arr[MixedArray::usedOff()], sf};
     ifThen(v, CC_LE, sf, branch);
@@ -413,16 +446,10 @@ void implCheckMixedArrayLikeOffset(IRLS& env, const IRInstruction* inst,
     v << cmpqm{key, arr[elmOff + Elm::keyOff()], sf};
     ifThen(v, CC_NE, sf, branch);
   }
-  auto const is_str_key = key_type == KeyType::Str;
   { // Fail if the Elm key type doesn't match.
     auto const sf = v.makeReg();
     v << cmplim{0, arr[elmOff + Elm::dataOff() + TVOFF(m_aux)], sf};
 
-    assertx(key_type != KeyType::Any);
-
-    // Note that if `key' actually is an integer-ish string, we'd fail this
-    // check (and most likely would have failed the previous check also), but
-    // this false negative is allowed.
     ifThen(v, is_str_key ? CC_L : CC_GE, sf, branch);
   }
   { // Fail if the Elm is a tombstone.  See MixedArray::isTombstone().
@@ -436,26 +463,6 @@ void implCheckMixedArrayLikeOffset(IRLS& env, const IRInstruction* inst,
       ifThen(v, CC_E, sf, branch);
     }
   }
-}
-
-}
-
-void cgProfileDictAccess(IRLS& env, const IRInstruction* inst) {
-  BUILD_OPTAB(PROFILE_DICT_ACCESS_HELPER_TABLE, getKeyType(inst->src(1)));
-  implProfileHackArrayAccess(env, inst, target);
-}
-
-void cgProfileKeysetAccess(IRLS& env, const IRInstruction* inst) {
-  BUILD_OPTAB(PROFILE_KEYSET_ACCESS_HELPER_TABLE, getKeyType(inst->src(1)));
-  implProfileHackArrayAccess(env, inst, target);
-}
-
-void cgCheckMixedArrayOffset(IRLS& env, const IRInstruction* inst) {
-  implCheckMixedArrayLikeOffset(env, inst, getKeyType(inst->src(1)));
-}
-
-void cgCheckDictOffset(IRLS& env, const IRInstruction* inst) {
-  implCheckMixedArrayLikeOffset(env, inst, getKeyType(inst->src(1)));
 }
 
 void cgCheckKeysetOffset(IRLS& env, const IRInstruction* inst) {
@@ -596,7 +603,7 @@ void cgCheckMissingKeyInArrLike(IRLS& env, const IRInstruction* inst) {
 
 namespace {
 
-VscaledDisp getMixedLayoutOffset(IRLS& env, const IRInstruction* inst) {
+VscaledDisp getDictLayoutOffset(IRLS& env, const IRInstruction* inst) {
   auto const pos = srcLoc(env, inst, 2).reg();
   auto& v = vmain(env);
   // We want to index by MixedArray::Elm but VScaled doesn't let us scale by 24
@@ -620,22 +627,6 @@ VscaledDisp getSetArrayLayoutOffset(IRLS& env, const IRInstruction* inst) {
 
 } // namespace
 
-void cgElemMixedArrayK(IRLS& env, const IRInstruction* inst) {
-  auto const arr = srcLoc(env, inst, 0).reg();
-  auto const dst = dstLoc(env, inst, 0);
-
-  auto& v = vmain(env);
-  auto const off = getMixedLayoutOffset(env, inst);
-
-  v << lea{arr[off], dst.reg(tv_lval::val_idx)};
-  if (wide_tv_val) {
-    static_assert(TVOFF(m_data) == 0, "");
-    v << lea{arr[off + TVOFF(m_type)], dst.reg(tv_lval::type_idx)};
-  }
-}
-
-///////////////////////////////////////////////////////////////////////////////
-
 void cgGetDictPtrIter(IRLS& env, const IRInstruction* inst) {
   auto const pos_tmp = inst->src(1);
   auto const arr = srcLoc(env, inst, 0).reg();
@@ -656,31 +647,6 @@ void cgGetDictPtrIter(IRLS& env, const IRInstruction* inst) {
   v << lea{arr[px3 * 8 + MixedArray::dataOff()], dst};
 }
 
-void cgGetVecPtrIter(IRLS& env, const IRInstruction* inst) {
-  auto const pos_tmp = inst->src(1);
-  auto const arr = srcLoc(env, inst, 0).reg();
-  auto const pos = srcLoc(env, inst, 1).reg();
-  auto const dst = dstLoc(env, inst, 0).reg();
-
-  auto& v = vmain(env);
-  if (pos_tmp->hasConstVal(TInt)) {
-    auto const n = pos_tmp->intVal();
-    auto const offset = PackedArray::entriesOffset() + n * sizeof(TypedValue);
-    if (deltaFits(offset, sz::dword)) {
-      v << addqi{safe_cast<int32_t>(offset), arr, dst, v.makeReg()};
-      return;
-    }
-  }
-
-  auto const pos_l = v.makeReg();
-  auto const px2 = v.makeReg();
-  auto const px2_l = v.makeReg();
-  v << movtql{pos, pos_l};
-  v << shlli{1, pos_l, px2_l, v.makeReg()};
-  v << movzlq{px2_l, px2};
-  v << lea{arr[px2 * 8 + PackedArray::entriesOffset()], dst};
-}
-
 void cgAdvanceDictPtrIter(IRLS& env, const IRInstruction* inst) {
   auto const src = srcLoc(env, inst, 0).reg();
   auto const dst = dstLoc(env, inst, 0).reg();
@@ -688,16 +654,6 @@ void cgAdvanceDictPtrIter(IRLS& env, const IRInstruction* inst) {
   auto& v = vmain(env);
   auto const extra = inst->extra<AdvanceDictPtrIter>();
   auto const delta = extra->offset * int32_t(sizeof(MixedArrayElm));
-  v << addqi{delta, src, dst, v.makeReg()};
-}
-
-void cgAdvanceVecPtrIter(IRLS& env, const IRInstruction* inst) {
-  auto const src = srcLoc(env, inst, 0).reg();
-  auto const dst = dstLoc(env, inst, 0).reg();
-
-  auto& v = vmain(env);
-  auto const extra = inst->extra<AdvanceVecPtrIter>();
-  auto const delta = extra->offset * int32_t(sizeof(TypedValue));
   v << addqi{delta, src, dst, v.makeReg()};
 }
 
@@ -800,32 +756,41 @@ LvalPtrs implPackedLayoutElemAddr(IRLS& env, Vloc arrLoc,
   static_assert(TVOFF(m_data) == 0, "");
 
   if (idx->hasConstVal()) {
-    auto const offset = PackedArray::entriesOffset() +
-                        idx->intVal() * sizeof(TypedValue);
-    if (deltaFits(offset, sz::dword)) {
-      return {rarr[offset + TVOFF(m_type)], rarr[offset]};
+    auto const offset = PackedArray::entryOffset(idx->intVal());
+    if (deltaFits(offset.type_offset, sz::dword) &&
+        deltaFits(offset.data_offset, sz::dword)) {
+      return {rarr[offset.type_offset], rarr[offset.data_offset]};
     }
   }
 
-  /*
-   * Compute `rarr + ridx * sizeof(TypedValue) + PackedArray::entriesOffset()`.
-   *
-   * The logic of `scaledIdx * 16` is split in the following two instructions,
-   * in order to save a byte in the shl instruction.
-   *
-   * TODO(#7728856): We should really move this into vasm-x64.cpp...
-   */
-  auto idxl = v.makeReg();
-  auto scaled_idxl = v.makeReg();
-  auto scaled_idx = v.makeReg();
-  v << movtql{ridx, idxl};
-  v << shlli{1, idxl, scaled_idxl, v.makeReg()};
-  v << movzlq{scaled_idxl, scaled_idx};
+  if constexpr (PackedArray::stores_typed_values) {
+    // Compute `rarr + ridx * sizeof(TypedValue) + PackedArray::entriesOffset().
+    //
+    // The logic of `scaledIdx * 16` is split in the following two instructions,
+    // in order to save a byte in the shl instruction.
+    //
+    // TODO(#7728856): We should really move this into vasm-x64.cpp...
+    auto idxl = v.makeReg();
+    auto scaled_idxl = v.makeReg();
+    auto scaled_idx = v.makeReg();
+    v << movtql{ridx, idxl};
+    v << shlli{1, idxl, scaled_idxl, v.makeReg()};
+    v << movzlq{scaled_idxl, scaled_idx};
 
-  auto const valPtr = rarr[
-    scaled_idx * int(sizeof(TypedValue) / 2) + PackedArray::entriesOffset()
-  ];
-  return {valPtr + TVOFF(m_type), valPtr};
+    auto const valPtr = rarr[
+      scaled_idx * int(sizeof(TypedValue) / 2) + PackedArray::entriesOffset()
+    ];
+    return {valPtr + TVOFF(m_type), valPtr};
+  } else {
+    // See PackedBlock::LvalAt for an explanation of this math.
+    auto const x = v.makeReg();
+    auto const a = v.makeReg();
+    auto const b = v.makeReg();
+    v << andqi{-8, ridx, x, v.makeReg()};
+    v << lea{rarr[x    * 8] + PackedArray::entriesOffset(), a};
+    v << lea{rarr[ridx * 8] + PackedArray::entriesOffset(), b};
+    return {a[ridx], b[x] + 8};
+  }
 }
 
 void implVecSet(IRLS& env, const IRInstruction* inst) {
@@ -866,9 +831,7 @@ void cgLdVecElemAddr(IRLS& env, const IRInstruction* inst) {
   auto const dstLoc = irlower::dstLoc(env, inst, 0);
   auto const addr = implPackedLayoutElemAddr(env, arrLoc, idxLoc, inst->src(1));
   vmain(env) << lea{addr.val, dstLoc.reg(tv_lval::val_idx)};
-  if (wide_tv_val) {
-    vmain(env) << lea{addr.type, dstLoc.reg(tv_lval::type_idx)};
-  }
+  vmain(env) << lea{addr.type, dstLoc.reg(tv_lval::type_idx)};
 }
 
 void cgLdVecElem(IRLS& env, const IRInstruction* inst) {
@@ -972,13 +935,11 @@ void cgElemDictK(IRLS& env, const IRInstruction* inst) {
   auto const dst = dstLoc(env, inst, 0);
 
   auto& v = vmain(env);
-  auto const off = getMixedLayoutOffset(env, inst);
+  auto const off = getDictLayoutOffset(env, inst);
 
   v << lea{dict[off], dst.reg(tv_lval::val_idx)};
-  if (wide_tv_val) {
-    static_assert(TVOFF(m_data) == 0, "");
-    v << lea{dict[off + TVOFF(m_type)], dst.reg(tv_lval::type_idx)};
-  }
+  static_assert(TVOFF(m_data) == 0, "");
+  v << lea{dict[off + TVOFF(m_type)], dst.reg(tv_lval::type_idx)};
 }
 
 void cgDictGet(IRLS& env, const IRInstruction* inst) {
@@ -990,7 +951,7 @@ void cgDictGetQuiet(IRLS& env, const IRInstruction* inst) {
 
 void cgDictGetK(IRLS& env, const IRInstruction* inst) {
   auto const dict = srcLoc(env, inst, 0).reg();
-  auto const off = getMixedLayoutOffset(env, inst);
+  auto const off = getDictLayoutOffset(env, inst);
   loadTV(vmain(env), inst->dst(0), dstLoc(env, inst, 0), dict[off]);
 }
 
@@ -1063,10 +1024,8 @@ void cgElemKeysetK(IRLS& env, const IRInstruction* inst) {
   auto& v = vmain(env);
   auto const off = getSetArrayLayoutOffset(env, inst);
   v << lea{keyset[off], dst.reg(tv_lval::val_idx)};
-  if (wide_tv_val) {
-    static_assert(TVOFF(m_data) == 0, "");
-    v << lea{keyset[off + TVOFF(m_type)], dst.reg(tv_lval::type_idx)};
-  }
+  static_assert(TVOFF(m_data) == 0, "");
+  v << lea{keyset[off + TVOFF(m_type)], dst.reg(tv_lval::type_idx)};
 }
 
 void cgKeysetGet(IRLS& env, const IRInstruction* inst) {

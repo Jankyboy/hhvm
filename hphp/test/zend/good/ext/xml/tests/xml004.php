@@ -4,7 +4,7 @@ function start_element($xp, $elem, $attribs)
 {
 	print "<$elem";
 	if (sizeof($attribs)) {
-		while (list($k, $v) = each(inout $attribs)) {
+	    foreach ($attribs as $k => $v) {
 			print " $k=\"$v\"";
 		}
 	}
@@ -21,7 +21,7 @@ function main_entry(): void {
 
   $xp = xml_parser_create();
   xml_parser_set_option($xp, XML_OPTION_CASE_FOLDING, false);
-  xml_set_element_handler($xp, "start_element", "end_element");
+  xml_set_element_handler($xp, start_element<>, end_element<>);
   $fp = fopen("xmltest.xml", "r");
   while ($data = fread($fp, 4096)) {
   	xml_parse($xp, $data, feof($fp));
@@ -29,7 +29,7 @@ function main_entry(): void {
   xml_parser_free($xp);
   $xp = xml_parser_create();
   xml_parser_set_option($xp, XML_OPTION_CASE_FOLDING, true);
-  xml_set_element_handler($xp, "start_element", "end_element");
+  xml_set_element_handler($xp, start_element<>, end_element<>);
   $fp = fopen("xmltest.xml", "r");
   while ($data = fread($fp, 4096)) {
   	xml_parse($xp, $data, feof($fp));

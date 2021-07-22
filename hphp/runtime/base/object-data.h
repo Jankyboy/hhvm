@@ -14,13 +14,13 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_OBJECT_DATA_H_
-#define incl_HPHP_OBJECT_DATA_H_
+#pragma once
 
 #include "hphp/runtime/base/classname-is.h"
 #include "hphp/runtime/base/countable.h"
 #include "hphp/runtime/base/memory-manager.h"
 #include "hphp/runtime/base/req-ptr.h"
+#include "hphp/runtime/base/tv-conv-notice.h"
 #include "hphp/runtime/base/tv-val.h"
 #include "hphp/runtime/base/weakref-data.h"
 
@@ -37,27 +37,6 @@ namespace HPHP {
 
 struct TypedValue;
 
-#define INVOKE_FEW_ARGS_COUNT 6
-#define INVOKE_FEW_ARGS_DECL3                        \
-  const Variant& a0 = uninit_variant,                \
-  const Variant& a1 = uninit_variant,                \
-  const Variant& a2 = uninit_variant
-#define INVOKE_FEW_ARGS_DECL6                        \
-  INVOKE_FEW_ARGS_DECL3,                             \
-  const Variant& a3 = uninit_variant,                \
-  const Variant& a4 = uninit_variant,                \
-  const Variant& a5 = uninit_variant
-#define INVOKE_FEW_ARGS_DECL10                       \
-  INVOKE_FEW_ARGS_DECL6,                             \
-  const Variant& a6 = uninit_variant,                \
-  const Variant& a7 = uninit_variant,                \
-  const Variant& a8 = uninit_variant,                \
-  const Variant& a9 = uninit_variant
-#define INVOKE_FEW_ARGS_HELPER(kind,num) kind##num
-#define INVOKE_FEW_ARGS(kind,num) \
-  INVOKE_FEW_ARGS_HELPER(INVOKE_FEW_ARGS_##kind,num)
-#define INVOKE_FEW_ARGS_DECL_ARGS INVOKE_FEW_ARGS(DECL,INVOKE_FEW_ARGS_COUNT)
-
 void deepInitHelper(ObjectProps* propVec,
                     const Class::PropInitVec* propInitVec,
                     size_t nProps);
@@ -72,21 +51,38 @@ namespace Native {
 struct MemoSlot {
 public:
   /*
-   * We use the type field of the TypedValue to determine whether this is a single
-   * value or a memo cache. If the type is kInvalidDataType (which cannot occur
-   * for a valid TypedValue), its a memo cache. As a special case, if type is Uninit,
-   * and the pointer is null, it can also be a cache (its also a value). This
-   * lets us initialize the slots with zero regardless of how it will be
-   * used. When its actually used, the correct type will be filed in. The
-   * ambiguity isn't an issue because these predicates are just for assertions
-   * (the type of the slot is implied by the function).
+   * When we initialize a MemoSlot, we both make its type KindOfUninit
+   * (so that it's a valid value slot) and make its cache pointer nullptr
+   * (so that it's a valid cache slot). We don't need to know which one it is.
    */
+  void init() {
+    value.m_data.pcache = nullptr;
+    value.m_type = KindOfUninit;
+  }
 
+  /*
+   * We use the type field of the TypedValue to determine whether this is a
+   * single value or a memo cache:
+   *
+   *  - If the type is kInvalidDataType (i.e. it's not a valid TypedValue),
+   *    this slot is for a memo cache.
+   *
+   *  - If the type is valid and not KindOfUninit, then it's a single value.
+   *
+   *  - If the type is Uninit, and the cache pointer is nullptr, we cannot
+   *    distinguish the two cases - that's how we initialize these slots.
+   *
+   * The ambiguity in the last case is okay, because we only use the helpers
+   * below for assertions. For any given memo slot, the single vs. multiple
+   * value distinction is implied by whether the function takes arguments.
+   */
   bool isCache() const {
     return value.m_type == kInvalidDataType ||
-      (value.m_type == KindOfUninit && value.m_data.pcache == nullptr);
+           (value.m_type == KindOfUninit && value.m_data.pcache == nullptr);
   }
-  bool isValue() const { return value.m_type != kInvalidDataType; }
+  bool isValue() const {
+    return value.m_type != kInvalidDataType;
+  }
 
   // Get a reference to the pointer to the cache, for the purpose of a set on
   // the cache. Since we're going to be creating a cache in this slot, change
@@ -122,6 +118,7 @@ public:
     assertx(isCache());
     value.m_data.pcache = nullptr;
   }
+
 private:
   TYPE_SCAN_CUSTOM() {
     isCache() ? scanner.scan(value.m_data.pcache) : scanner.scan(value);
@@ -381,20 +378,27 @@ struct ObjectData : Countable, type_scan::MarkCollectable<ObjectData> {
   // migrate all callers to use invokeFunc(), invokeFuncFew(), and
   // vm_decode_function() instead.
   Variant o_invoke(const String& s, const Variant& params, bool fatal = true);
-  Variant o_invoke_few_args(const String& s, int count,
-                            INVOKE_FEW_ARGS_DECL_ARGS);
+  Variant o_invoke_few_args(const String& s,
+                            RuntimeCoeffects providedCoeffects,
+                            int count,
+                            const Variant& a0 = uninit_variant,
+                            const Variant& a1 = uninit_variant,
+                            const Variant& a2 = uninit_variant,
+                            const Variant& a3 = uninit_variant,
+                            const Variant& a4 = uninit_variant);
 
   ObjectData* clone();
 
   String invokeToString();
   bool hasToString();
 
-  Variant invokeSleep();
+  Variant invokeSleep(RuntimeCoeffects);
   Variant invokeToDebugDisplay();
-  Variant invokeWakeup();
+  Variant invokeWakeup(RuntimeCoeffects);
   Variant invokeDebugInfo();
 
-  Variant static InvokeSimple(ObjectData* data, const StaticString& name);
+  Variant static InvokeSimple(ObjectData* data, const StaticString& name,
+                              RuntimeCoeffects);
 
   /*
    * Returns whether this object has any dynamic properties.
@@ -482,6 +486,12 @@ struct ObjectData : Countable, type_scan::MarkCollectable<ObjectData> {
   [[noreturn]] NEVER_INLINE
   void throwMutateConstProp(Slot prop) const;
 
+  [[noreturn]] NEVER_INLINE
+  void throwMustBeMutable(Slot prop) const;
+
+  [[noreturn]] NEVER_INLINE
+  void throwMustBeReadOnly(Slot prop) const;
+
  public:
   // never box the lval returned from getPropLval; use propB instead
   tv_lval getPropLval(const Class*, const StringData*);
@@ -500,6 +510,7 @@ struct ObjectData : Countable, type_scan::MarkCollectable<ObjectData> {
     Slot slot;
     bool accessible;
     bool isConst;
+    bool readonly;
   };
 
   template <bool forWrite, bool forRead, bool ignoreLateInit>
@@ -513,19 +524,19 @@ struct ObjectData : Countable, type_scan::MarkCollectable<ObjectData> {
   };
 
   template<PropMode mode>
-  tv_lval propImpl(TypedValue* tvRef, const Class* ctx, const StringData* key);
+  tv_lval propImpl(TypedValue* tvRef, const Class* ctx, const StringData* key, const ReadOnlyOp op = ReadOnlyOp::Any, bool* roProp = nullptr);
 
   void setDynProp(const StringData* key, TypedValue val);
 
  public:
-  tv_lval prop(TypedValue* tvRef, const Class* ctx, const StringData* key);
-  tv_lval propW(TypedValue* tvRef, const Class* ctx, const StringData* key);
-  tv_lval propU(TypedValue* tvRef, const Class* ctx, const StringData* key);
-  tv_lval propD(TypedValue* tvRef, const Class* ctx, const StringData* key);
+  tv_lval prop(TypedValue* tvRef, const Class* ctx, const StringData* key, const ReadOnlyOp op, bool* roProp = nullptr);
+  tv_lval propW(TypedValue* tvRef, const Class* ctx, const StringData* key, const ReadOnlyOp op);
+  tv_lval propU(TypedValue* tvRef, const Class* ctx, const StringData* key, const ReadOnlyOp op, bool* roProp);
+  tv_lval propD(TypedValue* tvRef, const Class* ctx, const StringData* key, const ReadOnlyOp op, bool* roProp);
 
   bool propIsset(const Class* ctx, const StringData* key);
 
-  void setProp(Class* ctx, const StringData* key, TypedValue val);
+  void setProp(Class* ctx, const StringData* key, TypedValue val, ReadOnlyOp op = ReadOnlyOp::Any);
   tv_lval setOpProp(TypedValue& tvRef, Class* ctx, SetOpOp op,
                     const StringData* key, TypedValue* val);
 
@@ -535,8 +546,8 @@ struct ObjectData : Countable, type_scan::MarkCollectable<ObjectData> {
 
   tv_lval makeDynProp(const StringData* key);
 
-  static void raiseObjToIntNotice(const char*);
-  static void raiseObjToDoubleNotice(const char*);
+  static void throwObjToIntException(const char*);
+  static void throwObjToDoubleException(const char*);
   static void raiseAbstractClassError(Class*);
   void raiseUndefProp(const StringData*) const;
   void raiseCreateDynamicProp(const StringData*) const;
@@ -554,8 +565,6 @@ private:
     ObjectData* src, Class* cls, size_t nProps);
 
   bool toBooleanImpl() const noexcept;
-  int64_t toInt64Impl() const noexcept;
-  double toDoubleImpl() const noexcept;
 
   bool slowDestroyCheck() const;
   void slowDestroyCases();
@@ -645,5 +654,3 @@ typename std::enable_if<
 #undef incl_HPHP_OBJECT_DATA_INL_H_
 
 ///////////////////////////////////////////////////////////////////////////////
-
-#endif

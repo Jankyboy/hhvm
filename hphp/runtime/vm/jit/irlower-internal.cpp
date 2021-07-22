@@ -124,30 +124,26 @@ void prepareArg(const ArgDesc& arg,
 
 Fixup makeFixup(const BCMarker& marker, SyncOptions sync) {
   assertx(marker.valid());
+  // We can get here if we are memory profiling, since we override the
+  // normal sync settings and sync anyway.
+  always_assert(
+    sync == SyncOptions::Sync ||
+    RuntimeOption::EvalJitForceVMRegSync ||
+    RuntimeOption::HHProfEnabled
+  );
 
   // Stublogue code operates on behalf of the caller, so it needs an indirect
-  // fixup to obtain the real savedRip from the native frame.
-  if (sync == SyncOptions::SyncStublogue) return makeIndirectFixup(0);
+  // fixup to obtain the real savedRip from the native frame. The stack base
+  // of stublogues start at the fixup offset of their callers, so the SP offset
+  // of the marker represents the additional SP offset that needs to be added.
+  if (marker.stublogue()) return Fixup::indirect(0, marker.bcSPOff());
 
-  auto const stackOff = [&] {
-    switch (sync) {
-      case SyncOptions::None:
-        // We can get here if we are memory profiling, since we override the
-        // normal sync settings and sync anyway.
-        always_assert(RuntimeOption::EvalJitForceVMRegSync ||
-                      RuntimeOption::HHProfEnabled);
-        // fallthru
-      case SyncOptions::Sync:
-        return marker.spOff();
+  // The rest of the prologue cannot throw exceptions, but may execute C++ code
+  // that may need a fixup. Let it point to the first opcode of the function.
+  if (marker.prologue()) return Fixup::direct(0, marker.bcSPOff());
 
-      case SyncOptions::SyncStublogue:
-        not_reached();
-    }
-    not_reached();
-  }();
-
-  auto const bcOff = marker.fixupBcOff() - marker.fixupFunc()->base();
-  return Fixup{bcOff, stackOff.offset};
+  auto const bcOff = marker.fixupBcOff();
+  return Fixup::direct(bcOff, marker.bcSPOff());
 }
 
 void cgCallHelper(Vout& v, IRLS& env, CallSpec call, const CallDest& dstInfo,
@@ -178,7 +174,7 @@ void cgCallHelper(Vout& v, IRLS& env, CallSpec call, const CallDest& dstInfo,
       // to be correct during allocations no matter what.
       return makeFixup(inst->marker(), sync);
     }
-    return Fixup{};
+    return Fixup::none();
   }();
 
   Vlabel targets[2];

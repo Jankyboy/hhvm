@@ -37,8 +37,6 @@ inline Vptr emitTLSAddr(Vout& v, TLSDatum<T> datum) {
       return x64::detail::emitTLSAddr(v, datum);
     case Arch::ARM:
       return arm::detail::emitTLSAddr(v, datum);
-    case Arch::PPC64:
-      return ppc64::detail::emitTLSAddr(v, datum);
   }
   not_reached();
 }
@@ -50,8 +48,6 @@ inline Vreg emitTLSLea(Vout& v, TLSDatum<T> datum, int offset) {
       return x64::detail::emitTLSLea(v, datum, offset);
     case Arch::ARM:
       return arm::detail::emitTLSLea(v, datum, offset);
-    case Arch::PPC64:
-      return ppc64::detail::emitTLSLea(v, datum, offset);
   }
   not_reached();
 }
@@ -79,7 +75,7 @@ emitTLSLoad(Vout& v, TLSDatum<ThreadLocalNoCheck<T>> datum, Vreg d) {
     CallSpec::direct(pthread_getspecific),
     v.makeVcallArgs({{v.cns(datum.tls->m_key)}}),
     v.makeTuple({d}),
-    Fixup{},
+    Fixup::none(),
     DestType::SSA
   };
 }

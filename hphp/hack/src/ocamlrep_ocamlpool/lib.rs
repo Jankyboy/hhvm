@@ -6,15 +6,19 @@
 use std::ffi::CString;
 use std::panic::UnwindSafe;
 
-use ocamlpool_rust::utils::{caml_set_field, reserve_block};
 use ocamlrep::{Allocator, BlockBuilder, MemoizationCache, OpaqueValue, ToOcamlRep};
 
-pub use ocamlrep::FromOcamlRep;
+pub use bumpalo::Bump;
+pub use ocamlrep::{FromOcamlRep, FromOcamlRepIn, Value};
 
 extern "C" {
     fn ocamlpool_enter();
     fn ocamlpool_leave();
-    static mut ocamlpool_generation: usize;
+    fn ocamlpool_reserve_block(tag: u8, size: usize) -> usize;
+    fn caml_failwith(msg: *const i8);
+    fn caml_initialize(addr: *mut usize, value: usize);
+    static ocamlpool_generation: usize;
+    static ocamlpool_color: usize;
 }
 
 pub struct Pool {
@@ -62,7 +66,7 @@ impl Allocator for Pool {
 
     #[inline(always)]
     fn block_with_size_and_tag(&self, size: usize, tag: u8) -> BlockBuilder<'_> {
-        let ptr = unsafe { reserve_block(tag, size) as *mut OpaqueValue<'_> };
+        let ptr = unsafe { ocamlpool_reserve_block(tag, size) as *mut OpaqueValue<'_> };
         BlockBuilder::new(ptr as usize, size)
     }
 
@@ -70,7 +74,10 @@ impl Allocator for Pool {
     fn set_field<'a>(&self, block: &mut BlockBuilder<'a>, index: usize, value: OpaqueValue<'a>) {
         assert!(index < block.size());
         unsafe {
-            caml_set_field(self.block_ptr_mut(block) as usize, index, value.to_bits())
+            caml_initialize(
+                (self.block_ptr_mut(block) as *mut usize).add(index),
+                value.to_bits(),
+            )
         };
     }
 
@@ -109,7 +116,7 @@ impl Allocator for Pool {
 ///
 /// Panics upon attempts to re-enter `to_ocaml`.
 #[inline(always)]
-pub unsafe fn to_ocaml<T: ToOcamlRep>(value: &T) -> usize {
+pub unsafe fn to_ocaml<T: ToOcamlRep + ?Sized>(value: &T) -> usize {
     let pool = Pool::new();
     let result = pool.add_root(value);
     result.to_bits()
@@ -144,7 +151,7 @@ pub fn catch_unwind_with_handler(
         Ok(value) => return value,
         Err(err) => unsafe {
             let msg = CString::new(err).unwrap();
-            ocaml::core::fail::caml_failwith(msg.as_ptr());
+            caml_failwith(msg.as_ptr());
         },
     }
     unreachable!();
@@ -173,47 +180,37 @@ pub unsafe fn add_to_ambient_pool<T: ToOcamlRep>(value: &T) -> usize {
     result
 }
 
-#[macro_export]
-macro_rules! ocaml_ffi_no_panic_fn {
-    (fn $name:ident($($param:ident: $ty:ty),+  $(,)?) -> $ret:ty $code:block) => {
-        #[no_mangle]
-        pub unsafe extern "C" fn $name ($($param: usize,)*) -> usize {
-            fn inner($($param: $ty,)*) -> $ret { $code }
-            use $crate::FromOcamlRep;
-            $(let $param = <$ty>::from_ocaml($param).unwrap();)*
-            let result = inner($($param,)*);
-            $crate::to_ocaml(&result)
-        }
-    };
-
-    (fn $name:ident() -> $ret:ty $code:block) => {
-        #[no_mangle]
-        pub unsafe extern "C" fn $name (_unit: usize) -> usize {
-            fn inner() -> $ret { $code }
-            let result = inner();
-            $crate::to_ocaml(&result)
-        }
-    };
-
-    (fn $name:ident($($param:ident: $ty:ty),*  $(,)?) $code:block) => {
-        $crate::ocaml_ffi_no_panic_fn! {
-            fn $name($($param: $ty),*) -> () $code
-        }
-    };
-}
-
-/// For perf-sensitive use cases that cannot pay the cost of catch_unwind.
+/// # Safety
 ///
-/// Take care that the function body, the parameters' implementations of
-/// `OcamlRep::from_ocamlrep`, and the return type's implementation of
-/// `OcamlRep::to_ocamlrep` do not panic.
-#[macro_export]
-macro_rules! ocaml_ffi_no_panic {
-    ($(fn $name:ident($($param:ident: $ty:ty),*  $(,)?) $(-> $ret:ty)? $code:block)*) => {
-        $($crate::ocaml_ffi_no_panic_fn! {
-            fn $name($($param: $ty),*) $(-> $ret)* $code
-        })*
-    };
+/// The OCaml runtime is not thread-safe, and this function will interact with
+/// it. If any other thread interacts with the OCaml runtime or ocamlpool
+/// library during the execution of this function, undefined behavior will
+/// result.
+pub unsafe fn copy_slab_into_ocaml_heap(slab: ocamlrep::slab::SlabReader<'_>) -> usize {
+    // Enter an ocamlpool region. Use `Pool` instead of `ocamlpool_enter`
+    // directly so that `Pool` will invoke `ocamlpool_leave` in the event of a
+    // panic (it does so in its `Drop` implementation).
+    let _pool = Pool::new();
+
+    // Allocate a block large enough for the entire slab contents and copy the
+    // slab into it. Use `size - 1`, since we intend to overwrite the header.
+    let size = slab.value_size_in_words();
+    let block = ocamlpool_reserve_block(0, size - 1) as *mut usize;
+    let block = block.sub(1);
+    let block_words = std::slice::from_raw_parts_mut(block, size);
+    let value = ocamlrep::slab::copy_and_rebase_value(slab, block_words);
+    let value = value.to_bits();
+
+    // Write the correct GC color to every header in the slab (else values will
+    // be collected prematurely).
+    let mut idx = 0;
+    while idx < block_words.len() {
+        let size = block_words[idx] >> 10;
+        block_words[idx] |= ocamlpool_color;
+        idx += size + 1;
+    }
+
+    value
 }
 
 #[macro_export]
@@ -262,6 +259,87 @@ macro_rules! ocaml_ffi {
     ($(fn $name:ident($($param:ident: $ty:ty),*  $(,)?) $(-> $ret:ty)? $code:block)*) => {
         $($crate::ocaml_ffi_fn! {
             fn $name($($param: $ty),*) $(-> $ret)* $code
+        })*
+    };
+}
+
+#[macro_export]
+macro_rules! ocaml_ffi_with_arena_fn {
+    (fn $name:ident<$lifetime:lifetime>($arena:ident: $arena_ty:ty, $($param:ident: $ty:ty),+ $(,)?) -> $ret:ty $code:block) => {
+        #[no_mangle]
+        pub unsafe extern "C" fn $name ($($param: usize,)*) -> usize {
+            $crate::catch_unwind(|| {
+                use $crate::FromOcamlRep;
+                let arena = &$crate::Bump::new();
+                fn inner<$lifetime>($arena: &$lifetime $crate::Bump, $($param: usize,)*) -> $ret {
+                    $(let $param = unsafe { <$ty>::from_ocamlrep_in($crate::Value::from_bits($param), $arena).unwrap() };)*
+                    $code
+                }
+                let result = inner(arena, $($param,)*);
+                $crate::to_ocaml(&result)
+            })
+        }
+    };
+
+    (fn $name:ident<$lifetime:lifetime>($arena:ident: $arena_ty:ty $(,)?) -> $ret:ty $code:block) => {
+        #[no_mangle]
+        pub unsafe extern "C" fn $name (_unit: usize) -> usize {
+            $crate::catch_unwind(|| {
+                fn inner<$lifetime>($arena: &$lifetime $crate::Bump) -> $ret { $code }
+                let arena = &$crate::Bump::new();
+                let result = inner(arena);
+                $crate::to_ocaml(&result)
+            })
+        }
+    };
+
+    (fn $name:ident<$lifetime:lifetime>($($param:ident: $ty:ty),* $(,)?) $code:block) => {
+        $crate::ocaml_ffi_with_arena_fn! {
+            fn $name<$lifetime>($($param: $ty),*) -> () $code
+        }
+    };
+}
+
+/// Convenience macro for declaring OCaml FFI wrappers which use an arena to
+/// allocate the arguments and return value.
+///
+/// FFI functions declared with this macro must declare exactly one lifetime
+/// parameter. The function's first value parameter must be a reference to a
+/// `bumpalo::Bump` arena with that lifetime:
+///
+/// ```
+/// ocaml_ffi_with_arena! {
+///     fn swap_str_pair<'a>(arena: &'a Bump, pair: (&'a str, &'a str)) -> (&'a str, &'a str) {
+///         (pair.1, pair.0)
+///     }
+/// }
+/// ```
+///
+/// An OCaml extern declaration for this function would look like this:
+///
+/// ```
+/// external swap_str_pair : string * string -> string * string = "swap_str_pair"
+/// ```
+///
+/// Note that no parameter for the arena appears on the OCaml side--it is
+/// constructed on the Rust side and lives only for the duration of one FFI
+/// call.
+///
+/// Each (non-arena) parameter will be converted from OCaml using
+/// `ocamlrep::FromOcamlRepIn`, and allocated in the given arena (if its
+/// `FromOcamlRepIn` implementation makes use of the arena).
+///
+/// The return value (which may be allocated in the given arena, if convenient)
+/// will be converted to OCaml using `ocamlrep::ToOcamlRep`. The converted OCaml
+/// value will be allocated on the OCaml heap using `ocamlpool`.
+///
+/// Panics in the function body will be caught and converted to an OCaml
+/// exception of type `Failure`.
+#[macro_export]
+macro_rules! ocaml_ffi_with_arena {
+    ($(fn $name:ident<$lifetime:lifetime>($($param:ident: $ty:ty),* $(,)?) $(-> $ret:ty)? $code:block)*) => {
+        $($crate::ocaml_ffi_with_arena_fn! {
+            fn $name<$lifetime>($($param: $ty),*) $(-> $ret)* $code
         })*
     };
 }

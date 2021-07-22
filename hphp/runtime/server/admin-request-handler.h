@@ -14,11 +14,12 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_ADMIN_REQUEST_HANDLER_H_
-#define incl_HPHP_ADMIN_REQUEST_HANDLER_H_
+#pragma once
 
 #include "hphp/runtime/server/access-log.h"
 #include "hphp/runtime/server/server.h"
+
+#include <folly/File.h>
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -73,8 +74,7 @@ private:
                                    Transport *transport);
   bool handleStaticStringsRequest(const std::string &cmd,
                                   Transport *transport);
-  bool handleDumpStaticStringsRequest(const std::string &cmd,
-                                      const std::string &filename);
+  bool handleDumpStaticStringsRequest(folly::File& file);
   bool handleRandomStaticStringsRequest(const std::string &cmd,
                                         Transport *transport);
   bool handleVMRequest      (const std::string &cmd, Transport *transport);
@@ -96,4 +96,3 @@ private:
 ///////////////////////////////////////////////////////////////////////////////
 }
 
-#endif // incl_HPHP_ADMIN_REQUEST_HANDLER_H_

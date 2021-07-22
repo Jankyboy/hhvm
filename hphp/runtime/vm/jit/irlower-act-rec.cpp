@@ -68,38 +68,31 @@ void cgDefFuncEntryFP(IRLS& env, const IRInstruction* inst) {
   auto const prevFP = srcLoc(env, inst, 0).reg();
   auto const newFP = srcLoc(env, inst, 1).reg();
   auto const callFlags = srcLoc(env, inst, 2).reg();
-  auto const numArgs = srcLoc(env, inst, 3).reg();
-  auto const ctx = srcLoc(env, inst, 4).reg();
+  auto const ctx = srcLoc(env, inst, 3).reg();
   auto const dst = dstLoc(env, inst, 0).reg();
   auto& v = vmain(env);
 
   v << store{prevFP, newFP + AROFF(m_sfp)};
+  v << unrecordbasenativesp{};
   v << unstublogue{};
   v << phplogue{newFP};
-#ifdef USE_LOWPTR
-  emitStLowPtr(v, v.cns(func), newFP[AROFF(m_func)],
-               sizeof(LowPtr<const Func>));
-#else
-  v << storeli{(int32_t)func->getFuncId(), newFP[AROFF(m_funcId)]};
-#endif
+  v << storeli{(int32_t)func->getFuncId().toInt(), newFP[AROFF(m_funcId)]};
 
   int32_t constexpr flagsDelta =
     CallFlags::Flags::CallOffsetStart - ActRec::CallOffsetStart;
   assertx(ActRec::LocalsDecRefd == 0);
-  assertx(ActRec::AsyncEagerRet == 1);
-  assertx(ActRec::CallOffsetStart == 2);
-  assertx(CallFlags::Flags::ReservedZero == flagsDelta + 0);
-  assertx(CallFlags::Flags::AsyncEagerReturn == flagsDelta + 1);
-  assertx(CallFlags::Flags::CallOffsetStart == flagsDelta + 2);
+  assertx(ActRec::IsInlined == 1);
+  assertx(ActRec::AsyncEagerRet == 2);
+  assertx(ActRec::CallOffsetStart == 3);
+  assertx(CallFlags::Flags::ReservedZero0 == flagsDelta + 0);
+  assertx(CallFlags::Flags::ReservedZero1 == flagsDelta + 1);
+  assertx(CallFlags::Flags::AsyncEagerReturn == flagsDelta + 2);
+  assertx(CallFlags::Flags::CallOffsetStart == flagsDelta + 3);
   auto const callFlagsLow32 = v.makeReg();
   auto const callOffAndFlags = v.makeReg();
   v << movtql{callFlags, callFlagsLow32};
   v << shrli{flagsDelta, callFlagsLow32, callOffAndFlags, v.makeReg()};
   v << storel{callOffAndFlags, newFP + AROFF(m_callOffAndFlags)};
-
-  auto const numArgs32 = v.makeReg();
-  v << movtql{numArgs, numArgs32};
-  v << storel{numArgs32, newFP + AROFF(m_numArgs)};
 
   if (func->cls()) {
     v << store{ctx, newFP + AROFF(m_thisUnsafe)};
@@ -179,27 +172,20 @@ void cgStFrameMeta(IRLS& env, const IRInstruction* inst) {
   // Set m_callOffAndFlags.
   auto const coaf = safe_cast<int32_t>(ActRec::encodeCallOffsetAndFlags(
     extra->callBCOff,
-    extra->asyncEagerReturn ? (1 << ActRec::AsyncEagerRet) : 0
+    (extra->asyncEagerReturn ? (1 << ActRec::AsyncEagerRet) : 0) |
+      (extra->isInlined ? (1 << ActRec::IsInlined) : 0)
   ));
   v << storeli{coaf, fp[AROFF(m_callOffAndFlags)]};
-
-  // Set m_numArgs.
-  v << storeli{safe_cast<int32_t>(extra->numArgs), fp[AROFF(m_numArgs)]};
 }
 
 void cgStFrameFunc(IRLS& env, const IRInstruction* inst) {
   auto& v = vmain(env);
   auto const fp = srcLoc(env, inst, 0).reg();
   auto const func = inst->extra<StFrameFunc>()->func;
-#ifdef USE_LOWPTR
-  emitStLowPtr(v, v.cns(func), fp[AROFF(m_func)], sizeof(LowPtr<const Func>));
-#else
-  v << storeli{(int32_t)func->getFuncId(), fp[AROFF(m_funcId)]};
-#endif
+  v << storeli{(int32_t)func->getFuncId().toInt(), fp[AROFF(m_funcId)]};
 }
 
 void cgDbgCheckLocalsDecRefd(IRLS& env, const IRInstruction* inst) {
-  if (!debug) return;
   auto& v = vmain(env);
   auto const fp = srcLoc(env, inst, 0).reg();
   auto const callOffAndFlags = v.makeReg();
@@ -211,6 +197,23 @@ void cgDbgCheckLocalsDecRefd(IRLS& env, const IRInstruction* inst) {
   ifThen(v, CC_NZ, sf, [&](Vout& v) {
     v << trap{TRAP_REASON};
   });
+}
+
+namespace {
+const Func* funcFromActRecHelper(const ActRec* fp) { return fp->func(); }
+} // namespace
+
+void cgLdARFunc(IRLS& env, const IRInstruction* inst) {
+  auto& v = vmain(env);
+  if (use_lowptr) {
+    auto const fp = srcLoc(env, inst, 0).reg();
+    auto const dst = dstLoc(env, inst, 0).reg();
+    v << loadzlq{fp[AROFF(m_funcId)], dst};
+    return;
+  }
+  auto const args = argGroup(env, inst).ssa(0);
+  auto const target = CallSpec::direct(funcFromActRecHelper);
+  cgCallHelper(v, env, target, callDest(env, inst), SyncOptions::None, args);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

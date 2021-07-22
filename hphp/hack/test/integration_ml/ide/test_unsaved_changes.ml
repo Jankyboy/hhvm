@@ -37,20 +37,20 @@ let disk_diagnostics =
   {|
 File "/bar.php", line 4, characters 7-8:
 Invalid argument (Typing[4110])
-File "/foo.php", line 3, characters 14-16:
-Expected `int`
-File "/bar.php", line 3, characters 15-19:
-But got `mixed`
+  File "/foo.php", line 3, characters 14-16:
+  Expected `int`
+  File "/bar.php", line 3, characters 15-19:
+  But got `mixed`
 |}
 
 let ide_diagnostics =
   {|
 File "/bar.php", line 4, characters 7-8:
 Invalid argument (Typing[4110])
-File "/foo.php", line 3, characters 14-19:
-Expected `string`
-File "/bar.php", line 3, characters 15-19:
-But got `mixed`
+  File "/foo.php", line 3, characters 14-19:
+  Expected `string`
+  File "/bar.php", line 3, characters 15-19:
+  But got `mixed`
 |}
 
 let test () =
@@ -65,14 +65,14 @@ let test () =
 
   let env = Test.connect_persistent_client env in
   let env = Test.open_file env foo_name ~contents:foo_takes_string_contents in
-  let (env, _) = Test.full_check env in
+  let (env, _) = Test.full_check_status env in
   let (env, loop_output) = Test.status env in
   Test.assert_status loop_output ide_diagnostics;
 
   let (env, loop_output) = Test.status ~ignore_ide:true env in
   Test.assert_status loop_output disk_diagnostics;
 
-  let (env, _) = Test.full_check env in
+  let (env, _) = Test.full_check_status env in
   let (env, loop_output) = Test.status ~ignore_ide:false env in
   Test.assert_status loop_output ide_diagnostics;
   ignore env

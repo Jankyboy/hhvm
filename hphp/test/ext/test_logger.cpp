@@ -45,7 +45,7 @@ bool TestLogger::initializeRun() {
   buf[sizeof(buf) - 1] = '\0';
   std::string hostname = buf;
 
-  ArrayInit data(8, ArrayInit::Map{});
+  DictInit data(8);
   data.set(String("startedTime"),  time(nullptr));
   data.set(String("stillRunning"), true);
   data.set(String("hostname"),     hostname);
@@ -53,11 +53,11 @@ bool TestLogger::initializeRun() {
   data.set(String("repository"),   getRepoRoot());
   data.set(String("svnRevision"),  getSVNRevision());
   data.set(String("gitRevision"),  getGitRevision());
-  data.set(String("tags"),         make_varray("hphp", "c++"));
+  data.set(String("tags"),         make_vec_array("hphp", "c++"));
 
   auto dataArr = data.toArray();
 
-  Array response = postData(make_map_array("runData", dataArr));
+  Array response = postData(make_dict_array("runData", dataArr));
 
   if (!response[s_result].toBoolean()) {
     return false;
@@ -72,8 +72,8 @@ bool TestLogger::finishRun() {
   if (run_id <= 0)
     return false;
 
-  Array data = make_map_array("runId",   run_id,
-                              "runData", make_map_array("stillRunning", false));
+  Array data = make_dict_array("runId",   run_id,
+                              "runData", make_dict_array("stillRunning", false));
 
   Array response = postData(data);
   if (response[s_result].toBoolean()) {
@@ -88,9 +88,9 @@ bool TestLogger::logTest(Array test) {
   if (run_id <= 0)
     return false;
 
-  Array data = make_map_array("runId",   run_id,
-                              "runData", make_map_array("stillRunning", true),
-                              "tests",   make_varray(test));
+  Array data = make_dict_array("runId",   run_id,
+                              "runData", make_dict_array("stillRunning", true),
+                              "tests",   make_vec_array(test));
 
   Array response = postData(data);
   if (response[s_result].toBoolean()) {
@@ -107,9 +107,9 @@ Array TestLogger::postData(Array arr) {
   HttpClient client;
   StringBuffer response;
 
-  Array data = make_map_array(
+  Array data = make_dict_array(
     "method", "recordTestResults", "args",
-    Variant::attach(HHVM_FN(json_encode)(make_varray(arr)))
+    Variant::attach(HHVM_FN(json_encode)(make_vec_array(arr)))
   );
 
   auto const str = HHVM_FN(http_build_query)(data, "", "").toString();

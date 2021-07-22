@@ -126,10 +126,9 @@ ExtOpcodeResult getExtOpcode(TCA addr, const TransRec* trec) {
     if ((bcMap[i].aStart       <= addr && bcMap[i+1].aStart       > addr) ||
         (bcMap[i].acoldStart   <= addr && bcMap[i+1].acoldStart   > addr) ||
         (bcMap[i].afrozenStart <= addr && bcMap[i+1].afrozenStart > addr)) {
-      auto* unit = g_repo->getUnit(bcMap[i].sha1);
-      always_assert(unit);
-      auto const func = unit->getFunc(bcMap[i].bcStart);
-      return {true, (ExtOpcode)func->getOp(bcMap[i].bcStart)};
+      auto const func = bcMap[i].sk.func();
+      always_assert(func);
+      return {true, (ExtOpcode)func->getOp(bcMap[i].sk.offset())};
     }
   }
 
@@ -138,18 +137,18 @@ ExtOpcodeResult getExtOpcode(TCA addr, const TransRec* trec) {
   return {false};
 }
 
-folly::Optional<ExtOpcode>
+Optional<ExtOpcode>
 AddrToBcMapper::operator()(const TCA& addr) {
   TransID tid = transData->getTransContaining(addr);
-  if (tid == INVALID_ID) return folly::none;
+  if (tid == INVALID_ID) return std::nullopt;
 
   const TransRec* trec = transData->getTransRec(tid);
   Unit* unit = g_repo->getUnit(trec->sha1);
-  if (!unit) return folly::none;
+  if (!unit) return std::nullopt;
 
   auto r = getExtOpcode(addr, trec);
   always_assert(r.valid);
-  return folly::make_optional(r.opcode);
+  return make_optional(r.opcode);
 }
 
 /* AddrToTransFragmentMapper */
@@ -222,11 +221,11 @@ AddrToTransFragmentMapper::extractTransFragment(TCA addr, ExtOpcode opcode) {
   return tfragment;
 }
 
-folly::Optional<TransFragment>
+Optional<TransFragment>
 AddrToTransFragmentMapper::operator()(const TCA& addr) {
   AddrToBcMapper bcMapper(tdata);
-  folly::Optional<ExtOpcode> opcode = bcMapper(addr);
-  if (!opcode || (*opcode) != filterBy) return folly::none;
+  Optional<ExtOpcode> opcode = bcMapper(addr);
+  if (!opcode || (*opcode) != filterBy) return std::nullopt;
   return extractTransFragment(addr, *opcode);
 }
 

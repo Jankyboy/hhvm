@@ -11,6 +11,7 @@ open Hh_prelude
 type t = {
   id: string;
   telemetry: Telemetry.t;
+      (** A set of timestamps indexed by keys of type [key]. *)
   server_unblocked_time: float;
       (** this field is read by clientLsp: we store it explicitly
       here so we can read it, as well as inside the write-only Telemetry.t *)
@@ -26,11 +27,10 @@ type key =
   | Monitor_ready
   | Monitor_sent_ack_to_client
   | Client_connected_to_monitor
-  | Monitor_sent_fd
   | Server_sleep_and_check
   | Server_monitor_fd_ready
-  | Server_got_client_fd
   | Server_got_tracker
+  | Server_got_client_fd
   | Server_start_recheck
   | Server_done_recheck
   | Server_sent_diagnostics
@@ -77,8 +77,8 @@ let track ~(key : key) ?(time : float option) (t : t) : t =
     "[%s] Connection_tracker.%s%s"
     (log_id t)
     key
-    ( if String.equal (Utils.timestring tnow) (Utils.timestring time) then
+    (if String.equal (Utils.timestring tnow) (Utils.timestring time) then
       ""
     else
-      ", was at " ^ Utils.timestring time );
+      ", was at " ^ Utils.timestring time);
   { t with telemetry = Telemetry.float_ t.telemetry ~key ~value:time }

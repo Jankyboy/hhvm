@@ -25,7 +25,11 @@ let check_is_class env (p, h) =
         | Ast_defs.(Cabstract | Cnormal) ->
           if Cls.final cls then Errors.requires_final_class p name
         | _ ->
-          Errors.requires_non_class p name (Ast_defs.string_of_class_kind kind))
+          let is_enum_class = Typing_defs.is_enum_class (Cls.enum_type cls) in
+          Errors.requires_non_class
+            p
+            name
+            (Ast_defs.string_of_class_kind kind ~is_enum_class))
     end
   | Aast.Habstr (name, _) -> Errors.requires_non_class p name "a generic"
   | _ -> Errors.requires_non_class p "This" "an invalid type hint"
@@ -54,7 +58,11 @@ let check_is_trait env (p, h) =
       | Some cls ->
         let name = Cls.name cls in
         let kind = Cls.kind cls in
-        Errors.uses_non_trait p name (Ast_defs.string_of_class_kind kind)
+        let is_enum_class = Typing_defs.is_enum_class (Cls.enum_type cls) in
+        Errors.uses_non_trait
+          p
+          name
+          (Ast_defs.string_of_class_kind kind ~is_enum_class)
     end
   | _ -> failwith "assertion failure: trait isn't an Happly"
 
@@ -74,7 +82,10 @@ let duplicated_used_traits c =
   Hashtbl.iteri
     ~f:(fun ~key ~data ->
       if List.length data > 1 then
-        Errors.trait_reuse_inside_class c.c_name key (List.rev data))
+        Errors.trait_reuse_inside_class
+          c.c_name
+          key
+          (List.rev_map data ~f:Pos_or_decl.of_raw_pos))
     traits
 
 let handler =
@@ -82,12 +93,12 @@ let handler =
     inherit Tast_visitor.handler_base
 
     method! at_class_ env c =
-      let (req_extends, req_implements) = split_reqs c in
-      List.iter c.c_uses (check_is_trait env);
+      let (req_extends, req_implements) = split_reqs c.c_reqs in
+      List.iter c.c_uses ~f:(check_is_trait env);
       duplicated_used_traits c;
-      List.iter req_extends (check_is_class env);
-      List.iter c.c_implements (check_is_interface (env, "implement"));
+      List.iter req_extends ~f:(check_is_class env);
+      List.iter c.c_implements ~f:(check_is_interface (env, "implement"));
       List.iter
         req_implements
-        (check_is_interface (env, "require implementation of"))
+        ~f:(check_is_interface (env, "require implementation of"))
   end

@@ -1,4 +1,4 @@
-.function <"" N  > test(<"\?HH\\string" "HH\\string" nullable extended_hint > $a, <"\?HH\\string" "HH\\string" nullable extended_hint > $b, <"HH\\string" "HH\\string" > $c) {
+.function <"" N  > test(<"?HH\\string" "HH\\string" nullable extended_hint > $a, <"?HH\\string" "HH\\string" nullable extended_hint > $b, <"HH\\string" "HH\\string" > $c) {
   VerifyParamType $a
   VerifyParamType $b
   VerifyParamType $c
@@ -27,13 +27,11 @@ L4:
   NullUninit
   NullUninit
   NullUninit
-  NullUninit
-  NullUninit
+
   String "a"
   String "b"
   String "c"
   FCallFuncD <> 3 1 "" - "" "test"
-  NullUninit
   NullUninit
   NullUninit
   Null

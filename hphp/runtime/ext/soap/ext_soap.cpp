@@ -51,7 +51,7 @@ const StaticString s___dorequest("__dorequest");
 #define IMPLEMENT_GET_CLASS(cls)                                               \
 Class* cls::getClass() {                                                       \
   if (s_class == nullptr) {                                                    \
-    s_class = Unit::lookupClass(s_className.get());                            \
+    s_class = Class::lookup(s_className.get());                            \
     assertx(s_class);                                                          \
   }                                                                            \
   return s_class;                                                              \
@@ -512,7 +512,7 @@ static bool do_request(ObjectData* obj_client, xmlDoc *request,
   if (client->m_trace) {
     client->m_last_request = String((char*)buf, buf_size, CopyString);
   }
-  response = obj_client->o_invoke_few_args(s___dorequest, 5,
+  response = obj_client->o_invoke_few_args(s___dorequest, RuntimeCoeffects::fixme(), 5,
                                            String(buf, buf_size, CopyString),
                                            String(location, CopyString),
                                            String(action, CopyString),
@@ -520,7 +520,7 @@ static bool do_request(ObjectData* obj_client, xmlDoc *request,
   if (!response.isString()) {
     if (client->m_soap_fault.isNull()) {
       client->m_soap_fault =
-        create_soap_fault("Client", "SoapClient::__doRequest() "
+        create_soap_fault("Client", "SoapClient::__dorequest() "
                           "returned non string value");
     }
   } else if (client->m_trace) {
@@ -973,7 +973,7 @@ static std::shared_ptr<sdlFunction> deserialize_function_call
     }
   }
 
-  headers = Array::CreateVArray();
+  headers = Array::CreateVec();
   if (head) {
     attr = head->properties;
     while (attr != nullptr) {
@@ -1924,6 +1924,9 @@ const StaticString
   s_proxy_port("proxy_port"),
   s_proxy_login("proxy_login"),
   s_proxy_password("proxy_password"),
+  s_proxy_ssl_cert_path("proxy_ssl_cert_path"),
+  s_proxy_ssl_key_path("proxy_ssl_key_path"),
+  s_proxy_ssl_ca_bundle("proxy_ssl_ca_bundle"),
   s_trace("trace"),
   s_exceptions("exceptions"),
   s_compression("compression"),
@@ -2028,7 +2031,7 @@ void HHVM_METHOD(SoapServer, __construct,
   }
 }
 
-void HHVM_METHOD(SoapServer, setclass,
+void HHVM_METHOD(SoapServer, setClass,
                  const String& name,
                  const Array& argv /* = null_array */) {
   auto* data = Native::data<SoapServer>(this_);
@@ -2051,7 +2054,7 @@ void HHVM_METHOD(SoapServer, setobject,
   data->m_soap_object = obj.toObject();
 }
 
-void HHVM_METHOD(SoapServer, addfunction,
+void HHVM_METHOD(SoapServer, addFunction,
                  const Variant& func) {
   auto* data = Native::data<SoapServer>(this_);
   SoapServerScope ss(this_);
@@ -2102,7 +2105,7 @@ Variant HHVM_METHOD(SoapServer, getfunctions) {
   } else if (data->m_soap_functions.functions_all) {
     auto funcs1 = Unit::getSystemFunctions();
     auto funcs2 = Unit::getUserFunctions();
-    VArrayInit init(funcs1.size() + funcs2.size());
+    VecInit init(funcs1.size() + funcs2.size());
     IterateV(funcs1.get(), [&](TypedValue tv) { init.append(tv); });
     IterateV(funcs2.get(), [&](TypedValue tv) { init.append(tv); });
     return init.toArray();
@@ -2113,15 +2116,15 @@ Variant HHVM_METHOD(SoapServer, getfunctions) {
       )
     );
   } else {
-    return empty_varray();
+    return empty_vec_array();
   }
 
   assertx(class_name.get());
-  Class* cls = Unit::lookupClass(class_name.get());
+  Class* cls = Class::lookup(class_name.get());
   assertx(cls);
-  auto ret = DArrayInit(cls->numMethods()).toArray();
+  auto ret = DictInit(cls->numMethods()).toArray();
   Class::getMethodNames(cls, nullptr, ret);
-  return ret.toVArray();
+  return ret.toVec();
 }
 
 static bool valid_function(SoapServer *server, Object &soap_obj,
@@ -2404,7 +2407,7 @@ void HHVM_METHOD(SoapServer, fault,
   send_soap_server_fault(std::shared_ptr<sdlFunction>(), obj, nullptr);
 }
 
-void HHVM_METHOD(SoapServer, addsoapheader,
+void HHVM_METHOD(SoapServer, addSoapHeader,
                  const Variant& fault) {
   auto* data = Native::data<SoapServer>(this_);
   SoapServerScope ss(this_);
@@ -2494,6 +2497,10 @@ void HHVM_METHOD(SoapClient, __construct,
     data->m_proxy_login = options[s_proxy_login].toString();
     data->m_proxy_password = options[s_proxy_password].toString();
 
+    data->m_proxy_ssl_cert_path = options[s_proxy_ssl_cert_path].toString();
+    data->m_proxy_ssl_key_path = options[s_proxy_ssl_key_path].toString();
+    data->m_proxy_ssl_ca_bundle = options[s_proxy_ssl_ca_bundle].toString();
+
     data->m_trace = options[s_trace].toBoolean();
     if (options.exists(s_exceptions)) {
       data->m_exceptions = options[s_exceptions].toBoolean();
@@ -2536,6 +2543,12 @@ void HHVM_METHOD(SoapClient, __construct,
       if (!data->m_proxy_host.empty() && data->m_proxy_port) {
         http.proxy(data->m_proxy_host.data(), data->m_proxy_port,
                    data->m_proxy_login.data(), data->m_proxy_password.data());
+
+        if (!data->m_proxy_ssl_ca_bundle.empty()) {
+          http.setHttpsProxy(data->m_proxy_ssl_ca_bundle.data(),
+              data->m_proxy_ssl_cert_path.data(),
+              data->m_proxy_ssl_key_path.data());
+        }
       }
       if (!data->m_login.empty()) {
         http.auth(data->m_login.data(), data->m_password.data(),
@@ -2586,7 +2599,7 @@ Variant HHVM_METHOD(SoapClient, soapcallImpl,
     }
   }
 
-  Array soap_headers = Array::CreateVArray();
+  Array soap_headers = Array::CreateVec();
   if (input_headers.isNull()) {
   } else if (input_headers.isArray()) {
     Array arr = input_headers.toArray();
@@ -2594,13 +2607,15 @@ Variant HHVM_METHOD(SoapClient, soapcallImpl,
     soap_headers = input_headers;
   } else if (input_headers.isObject() &&
              input_headers.toObject().instanceof(SoapHeader::getClass())) {
-    soap_headers = make_varray(input_headers);
+    soap_headers = make_vec_array(input_headers);
   } else{
     raise_warning("Invalid SOAP header");
     return init_null();
   }
   if (!data->m_default_headers.isNull()) {
-    soap_headers.merge(data->m_default_headers.toArray());
+    IterateV(data->m_default_headers.toArray().get(), [&](auto val) {
+      soap_headers.append(val);
+    });
   }
 
   Array output_headers;
@@ -2741,12 +2756,12 @@ Variant HHVM_METHOD(SoapClient, __getlastresponseheaders) {
   return data->m_last_response_headers;
 }
 
-Variant HHVM_METHOD(SoapClient, __getfunctions) {
+Variant HHVM_METHOD(SoapClient, __getFunctions) {
   auto* data = Native::data<SoapClient>(this_);
   SoapClientScope ss(this_);
 
   if (data->m_sdl) {
-    VArrayInit ret(data->m_sdl->functionsOrder.size());
+    VecInit ret(data->m_sdl->functionsOrder.size());
     for (const auto& func: data->m_sdl->functionsOrder) {
       StringBuffer sb;
       function_to_string(data->m_sdl->functions[func], sb);
@@ -2757,12 +2772,12 @@ Variant HHVM_METHOD(SoapClient, __getfunctions) {
   return init_null();
 }
 
-Variant HHVM_METHOD(SoapClient, __gettypes) {
+Variant HHVM_METHOD(SoapClient, __getTypes) {
   auto* data = Native::data<SoapClient>(this_);
   SoapClientScope ss(this_);
 
   if (data->m_sdl) {
-    VArrayInit ret(data->m_sdl->types.size());
+    VecInit ret(data->m_sdl->types.size());
     for (const auto& type: data->m_sdl->types) {
       StringBuffer sb;
       type_to_string(type.get(), sb, 0);
@@ -2868,6 +2883,12 @@ Variant HHVM_METHOD(SoapClient, __dorequest,
   if (!data->m_proxy_host.empty() && data->m_proxy_port) {
     http.proxy(data->m_proxy_host.data(), data->m_proxy_port,
                data->m_proxy_login.data(), data->m_proxy_password.data());
+
+    if (!data->m_proxy_ssl_ca_bundle.empty()) {
+      http.setHttpsProxy(data->m_proxy_ssl_ca_bundle.data(),
+          data->m_proxy_ssl_cert_path.data(),
+          data->m_proxy_ssl_key_path.data());
+    }
   }
   if (!data->m_login.empty()) {
     http.auth(data->m_login.data(), data->m_password.data(), !data->m_digest);
@@ -2939,7 +2960,7 @@ Variant HHVM_METHOD(SoapClient, __setcookie,
   auto* data = Native::data<SoapClient>(this_);
   // FIXME: data->m_cookies is a write-only value
   if (!value.isNull()) {
-    data->m_cookies.set(name, make_varray(value.toString()));
+    data->m_cookies.set(name, make_vec_array(value.toString()));
   } else {
     data->m_cookies.remove(name);
   }
@@ -2967,7 +2988,7 @@ bool HHVM_METHOD(SoapClient, __setsoapheaders,
     data->m_default_headers = arr;
   } else if (headers.isObject() &&
              headers.toObject().instanceof(SoapHeader::getClass())) {
-    data->m_default_headers = make_varray(headers);
+    data->m_default_headers = make_vec_array(headers);
   } else {
     raise_warning("Invalid SOAP header");
   }
@@ -3104,14 +3125,14 @@ static struct SoapExtension final : Extension {
   SoapExtension() : Extension("soap", NO_EXTENSION_VERSION_YET) {}
   void moduleInit() override {
     HHVM_ME(SoapServer, __construct);
-    HHVM_ME(SoapServer, setclass);
+    HHVM_ME(SoapServer, setClass);
     HHVM_ME(SoapServer, setobject);
-    HHVM_ME(SoapServer, addfunction);
+    HHVM_ME(SoapServer, addFunction);
     HHVM_ME(SoapServer, getfunctions);
     HHVM_ME(SoapServer, handle);
     HHVM_ME(SoapServer, setpersistence);
     HHVM_ME(SoapServer, fault);
-    HHVM_ME(SoapServer, addsoapheader);
+    HHVM_ME(SoapServer, addSoapHeader);
     Native::registerNativeDataInfo<SoapServer>(SoapServer::s_className.get(),
                                                Native::NDIFlags::NO_SWEEP);
 
@@ -3121,8 +3142,8 @@ static struct SoapExtension final : Extension {
     HHVM_ME(SoapClient, __getlastresponse);
     HHVM_ME(SoapClient, __getlastrequestheaders);
     HHVM_ME(SoapClient, __getlastresponseheaders);
-    HHVM_ME(SoapClient, __getfunctions);
-    HHVM_ME(SoapClient, __gettypes);
+    HHVM_ME(SoapClient, __getFunctions);
+    HHVM_ME(SoapClient, __getTypes);
     HHVM_ME(SoapClient, __dorequest);
     HHVM_ME(SoapClient, __setcookie);
     HHVM_ME(SoapClient, __setlocation);

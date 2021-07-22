@@ -24,6 +24,10 @@
 #include "hphp/runtime/base/resource-data.h"
 #include "hphp/runtime/base/request-info.h"
 
+#include "hphp/util/async-func.h"
+
+#include "folly/io/IOBuf.h"
+
 namespace HPHP {
 
 static void allocAndJoin(size_t size, bool free) {
@@ -213,6 +217,116 @@ TEST(MemoryManager, GCLeakSmall) {
 
 TEST(MemoryManager, GCLeakBig) {
   testLeak(kMaxSmallSize * 2);
+}
+
+namespace {
+
+struct BgThreadFreeWorker {
+  void allocate(const String& s) {
+    assertx(!m_buf);
+    m_buf = folly::IOBuf::copyBuffer(s.data(), s.size());
+  }
+  void doJob() {
+    assertx(m_buf);
+    folly::IOBuf::destroy(std::move(m_buf));
+  }
+ private:
+  std::unique_ptr<folly::IOBuf> m_buf;
+};
+
+void give_memory_to_bg_thread(const String& payload) {
+  BgThreadFreeWorker worker;
+  {
+    /*
+     * NOTE: if you use this approach in your extension you are responsible for
+     * adding a mechanism for ensuring the server's memory cannot grow without
+     * bound (e.g. limiting the size of the queue that tasks owning memory
+     * allocated in this way on request threads can sit in, and failing to
+     * enqueue more work if this server-wide queue limit is reached).
+     *
+     * If you are passing data to a background thread in an async function
+     * consider the second approach below instead.
+     */
+    MemoryManager::MaskAlloc masker(*tl_heap);
+    worker.allocate(payload);
+  }
+  AsyncFunc<BgThreadFreeWorker>(&worker, &BgThreadFreeWorker::doJob).run();
+}
+
+void give_memory_to_bg_thread2(const String& payload) {
+  BgThreadFreeWorker worker;
+  uint64_t allocated = 0;
+  {
+    /*
+     * This approach is suitable when we get some feedback from the background
+     * thread that the process has completed and freed the memory, e.g. in
+     * an async function that returns an ExternalThreadEventWaitHandle (in
+     * which case you can takeCreditForFreeOnOtherThread in the unserialize
+     * method of the AsioExternalThreadEvent). This approach does not require
+     * you to implement your own memory limit, as the request is still debited
+     * for the allocation until after it has been freed.
+     */
+    MemoryManager::CountMalloc counter(*tl_heap, allocated);
+    worker.allocate(payload);
+  }
+  AsyncFunc<BgThreadFreeWorker>(&worker, &BgThreadFreeWorker::doJob).run();
+  tl_heap->takeCreditForFreeOnOtherThread(allocated);
+}
+
+struct BgThreadAllocWorker {
+  explicit BgThreadAllocWorker(const String& s): m_str(s) {}
+  void doJob() {
+    assertx(!m_buf);
+    m_buf = folly::IOBuf::copyBuffer(m_str.data(), m_str.size());
+  }
+  void free() {
+    assertx(m_buf);
+    folly::IOBuf::destroy(std::move(m_buf));
+  }
+ private:
+  const String& m_str;
+  std::unique_ptr<folly::IOBuf> m_buf;
+};
+
+void get_memory_from_bg_thread (const String& payload) {
+  BgThreadAllocWorker worker(payload);
+  AsyncFunc<BgThreadAllocWorker>(&worker, &BgThreadAllocWorker::doJob).run();
+  {
+    MemoryManager::MaskAlloc masker(*tl_heap);
+    worker.free();
+  }
+}
+
+} // end anonymous namespace
+
+TEST(MemoryManager, GiveMemoryToBgThread) {
+  String payload(std::string(1024, 'x'));
+  auto const usage_at_start = tl_heap->getStatsCopy().usage();
+  for (int i = 0; i < 1024; i++) {
+    give_memory_to_bg_thread(payload);
+  }
+  auto const usage_at_end = tl_heap->getStatsCopy().usage();
+  EXPECT_EQ(usage_at_end, usage_at_start);
+}
+
+TEST(MemoryManager, GiveMemoryToBgThread2) {
+  String payload(std::string(1024, 'x'));
+  auto const usage_at_start = tl_heap->getStatsCopy().usage();
+  for (int i = 0; i < 1024; i++) {
+    give_memory_to_bg_thread2(payload);
+  }
+  auto const usage_at_end = tl_heap->getStatsCopy().usage();
+  EXPECT_EQ(usage_at_end, usage_at_start);
+}
+
+TEST(MemoryManager, GetMemoryFromBgThread) {
+  String payload(std::string(1024, 'x'));
+  auto const usage_at_start = tl_heap->getStatsCopy().usage();
+  for (int i = 0; i < 1024; i++) {
+    get_memory_from_bg_thread(payload);
+  }
+  auto const usage_at_end = tl_heap->getStatsCopy().usage();
+  EXPECT_EQ(usage_at_end, usage_at_start);
 }
 
 }

@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VM_FUNC_EMITTER_H_
-#define incl_HPHP_VM_FUNC_EMITTER_H_
+#pragma once
 
 #include "hphp/runtime/base/attr.h"
 #include "hphp/runtime/base/datatype.h"
@@ -24,7 +23,6 @@
 #include "hphp/runtime/base/user-attributes.h"
 
 #include "hphp/runtime/vm/func.h"
-#include "hphp/runtime/vm/repo-helpers.h"
 #include "hphp/runtime/vm/type-constraint.h"
 #include "hphp/runtime/vm/unit.h"
 #include "hphp/runtime/vm/unit-emitter.h"
@@ -39,7 +37,8 @@ struct PreClass;
 struct StringData;
 
 struct PreClassEmitter;
-struct UnitEmitter;
+
+struct BlobDecoder;
 
 namespace Native {
 struct NativeFunctionInfo;
@@ -51,7 +50,6 @@ struct NativeFunctionInfo;
  * Bag of Func's fields used to emit Funcs.
  */
 struct FuncEmitter {
-
   /////////////////////////////////////////////////////////////////////////////
   // Types.
 
@@ -74,6 +72,9 @@ struct FuncEmitter {
   typedef std::vector<ParamInfo> ParamInfoVec;
   typedef std::vector<EHEnt> EHEntVec;
 
+  using CoeffectRuleVec = std::vector<CoeffectRule>;
+  using StaticCoeffectsVec = std::vector<LowStringPtr>;
+
   /////////////////////////////////////////////////////////////////////////////
   // Initialization and execution.
 
@@ -85,22 +86,33 @@ struct FuncEmitter {
   /*
    * Just set some fields when we start and stop emitting.
    */
-  void init(int l1, int l2, Offset base_, Attr attrs_,
+  void init(int l1, int l2, Attr attrs_,
             const StringData* docComment_);
-  void finish(Offset past);
-
-  /*
-   * Commit this function to a repo.
-   */
-  void commit(RepoTxn& txn) const; // throws(RepoExc)
+  void finish();
 
   /*
    * Instantiate a runtime Func*.
    */
   Func* create(Unit& unit, PreClass* preClass = nullptr) const;
 
-  template<class SerDe> void serdeMetaData(SerDe&);
+  /////////////////////////////////////////////////////////////////////////////
+  // Serialization.
 
+  /////////////////////////////////////////////////////////////////////////////
+  // Serialization.
+
+  template<class SerDe> void serdeMetaData(SerDe&);
+  template<class SerDe> void serde(SerDe&, bool lazy);
+
+  // Deserializing just a LineTable, previously encoded by serde (the
+  // BlobDecoder must be at the correct offset).
+  static void deserializeLineTable(BlobDecoder&, LineTable&);
+
+  // Like deserializeLineTable, but allows for the BlobDecoder to not
+  // have enough data. Returns the size of the encoded LineTable. If
+  // the returned size is greater than the size of the given
+  // BlobDecoder, nothing is read.
+  static size_t optDeserializeLineTable(BlobDecoder&, LineTable&);
 
   /////////////////////////////////////////////////////////////////////////////
   // Metadata.
@@ -117,11 +129,6 @@ struct FuncEmitter {
   int sn() const;
   Id id() const;
 
-  /*
-   * XXX: Set the whatever these things are.
-   */
-  void setIds(int sn, Id id);
-
   bool useGlobalIds() const;
   /////////////////////////////////////////////////////////////////////////////
   // Locals, iterators, and parameters.
@@ -133,12 +140,14 @@ struct FuncEmitter {
   Id numNamedLocals() const;
   Id numIterators() const;
   Id numLiveIterators() const;
+  Id numClosures() const;
 
   /*
    * Set things.
    */
   void setNumIterators(Id numIterators);
   void setNumLiveIterators(Id id);
+  void setNumClosures(Id numClosures);
 
   /*
    * Check existence of, look up, and allocate named locals.
@@ -236,10 +245,87 @@ public:
 
   Offset offsetOf(const unsigned char* pc) const;
 
+  /*
+   * Bytecode pointer and current emit position.
+   */
+  const unsigned char* bc() const;
+  Offset bcPos() const;
+
+  /*
+   * Set the bytecode pointer by allocating a copy of `bc' with size `bclen'.
+   *
+   * Not safe to call with m_bc as the argument because we free our current
+   * bytecode stream before allocating a copy of `bc'.
+   */
+  void setBc(const unsigned char* bc, size_t bclen);
+  void setBcToken(Func::BCPtr::Token token, size_t bclen);
+  Optional<Func::BCPtr::Token> loadBc();
+
+  /////////////////////////////////////////////////////////////////////////////
+  // Bytecode emit.
+  //
+  // These methods emit values to bc() at bcPos() (or pos, if given) and then
+  // update bcPos(), realloc-ing the bytecode region if necessary.
+
+  void emitOp(Op op);
+  void emitByte(unsigned char n, int64_t pos = -1);
+
+  void emitInt16(uint16_t n, int64_t pos = -1);
+  void emitInt32(int n, int64_t pos = -1);
+  void emitInt64(int64_t n, int64_t pos = -1);
+  void emitDouble(double n, int64_t pos = -1);
+
+  void emitIVA(bool) = delete;
+  template<typename T> void emitIVA(T n);
+
+  void emitNamedLocal(NamedLocal loc);
+
+ private:
+  /*
+   * Bytecode emit implementation.
+   */
+  template<class T>
+  void emitImpl(T n, int64_t pos);
+
+  /////////////////////////////////////////////////////////////////////////////
+  // Source locations.
+
+ public:
+  /*
+   * Return a copy of the SrcLocTable for the Func, if it has one; otherwise,
+   * return an empty table.
+   */
+  SourceLocTable createSourceLocTable() const;
+
+  /*
+   * Does this Func contain full source location information?
+   *
+   * Generally, FuncEmitters loaded from a production repo will have a
+   * LineTable only instead of a full SourceLocTable.
+   */
+  bool hasSourceLocInfo() const;
+
+  /*
+   * Const reference to the Func's LineTable.
+   */
+  const LineTable& lineTable() const;
+
+  /*
+   * Record source location information for the last chunk of bytecode added to
+   * this FuncEmitter.
+   *
+   * Adjacent regions associated with the same source line will be collapsed as
+   * this is created.
+   */
+  void recordSourceLocation(const Location::Range& sLoc, Offset start);
+
   /////////////////////////////////////////////////////////////////////////////
   // Data members.
 
 private:
+  // Initial bytecode size.
+  static const size_t BCMaxInit = 64;
+
   /*
    * Metadata.
    */
@@ -249,24 +335,28 @@ private:
   int m_sn;
   Id m_id;
 
+  Func::BCPtr m_bc;
+  size_t m_bclen;
+  size_t m_bcmax;
+
 public:
   /*
    * Func fields.
    */
-  Offset base;
-  Offset past;
   int line1;
   int line2;
   LowStringPtr name;
   Attr attrs;
 
   ParamInfoVec params;
-  int maxStackCells;
+  int16_t maxStackCells{0};
 
   MaybeDataType hniReturnType;
   TypeConstraint retTypeConstraint;
   LowStringPtr retUserType;
   UpperBoundVec retUpperBounds;
+  StaticCoeffectsVec staticCoeffects;
+  CoeffectRuleVec coeffectRules;
 
   EHEntVec ehtab;
 
@@ -281,7 +371,6 @@ public:
       bool isNative            : 1;
       bool isGenerator         : 1;
       bool isPairGenerator     : 1;
-      bool isRxDisabled        : 1;
       bool hasParamsWithMultiUBs : 1;
       bool hasReturnWithMultiUBs : 1;
     };
@@ -306,37 +395,28 @@ private:
   Id m_numLocals;
   int m_numUnnamedLocals;
   Id m_numIterators;
+  Id m_numClosures;
   Id m_nextFreeIterator;
-  bool m_ehTabSorted;
-};
+  bool m_ehTabSorted : 1;
 
-///////////////////////////////////////////////////////////////////////////////
+  /*
+   * Source location tables.
+   *
+   * Each entry encodes an open-closed range of bytecode offsets.
+   *
+   * The m_sourceLocTab is keyed by the start of each half-open range.  This is
+   * to allow appending new bytecode offsets that are part of the same range to
+   * coalesce.
+   *
+   * The m_lineTable is keyed by the past-the-end offset.  This is the
+   * format we'll want it in when we go to create a Unit.
+   */
 
-/*
- * Proxy for converting in-repo function representations into FuncEmitters.
- */
-struct FuncRepoProxy : public RepoProxy {
-  friend struct Func;
-  friend struct FuncEmitter;
+  void setLineTable(LineTable);
+  void setSourceLocTable(const SourceLocTable&);
 
-  explicit FuncRepoProxy(Repo& repo);
-  ~FuncRepoProxy();
-  void createSchema(int repoId, RepoTxn& txn); // throws(RepoExc)
-
-  struct InsertFuncStmt : public RepoProxy::Stmt {
-    InsertFuncStmt(Repo& repo, int repoId) : Stmt(repo, repoId) {}
-    void insert(const FuncEmitter& fe,
-                RepoTxn& txn, int64_t unitSn, int funcSn, Id preClassId,
-                const StringData* name); // throws(RepoExc)
-  };
-
-  struct GetFuncsStmt : public RepoProxy::Stmt {
-    GetFuncsStmt(Repo& repo, int repoId) : Stmt(repo, repoId) {}
-    void get(UnitEmitter& ue); // throws(RepoExc)
-  };
-
-  InsertFuncStmt insertFunc[RepoIdCount];
-  GetFuncsStmt getFuncs[RepoIdCount];
+  std::vector<std::pair<Offset,SourceLoc>> m_sourceLocTab;
+  Func::LineTablePtr m_lineTable;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -345,5 +425,3 @@ struct FuncRepoProxy : public RepoProxy {
 #define incl_HPHP_VM_FUNC_EMITTER_INL_H_
 #include "hphp/runtime/vm/func-emitter-inl.h"
 #undef incl_HPHP_VM_FUNC_EMITTER_INL_H_
-
-#endif // incl_HPHP_VM_FUNC_EMITTER_H_

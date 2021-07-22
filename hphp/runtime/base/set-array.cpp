@@ -17,7 +17,6 @@
 #include "hphp/runtime/base/set-array.h"
 
 #include "hphp/runtime/base/apc-array.h"
-#include "hphp/runtime/base/apc-stats.h"
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/array-iterator.h"
 #include "hphp/runtime/base/comparisons.h"
@@ -26,6 +25,7 @@
 #include "hphp/runtime/base/static-string-table.h"
 #include "hphp/runtime/base/tv-refcount.h"
 #include "hphp/runtime/base/tv-type.h"
+#include "hphp/runtime/base/tv-uncounted.h"
 
 #include "hphp/util/alloc.h"
 #include "hphp/util/hash.h"
@@ -47,6 +47,7 @@ struct SetArray::Initializer {
     auto const ad = reinterpret_cast<SetArray*>(&s_theEmptySetArray);
     ad->initHash(SetArray::SmallScale);
     ad->m_size = 0;
+    ad->m_layout_index = kVanillaLayoutIndex;
     ad->m_scale_used = SetArray::SmallScale;
     ad->initHeader(HeaderKind::Keyset, StaticValue);
     assertx(ad->checkInvariants());
@@ -57,14 +58,14 @@ SetArray::Initializer SetArray::s_initializer;
 //////////////////////////////////////////////////////////////////////
 
 SetArray* SetArray::asSet(ArrayData* ad) {
-  assertx(ad->isKeysetKind());
+  assertx(ad->isVanillaKeyset());
   auto a = static_cast<SetArray*>(ad);
   assertx(a->checkInvariants());
   return a;
 }
 
 const SetArray* SetArray::asSet(const ArrayData* ad) {
-  assertx(ad->isKeysetKind());
+  assertx(ad->isVanillaKeyset());
   auto a = static_cast<const SetArray*>(ad);
   assertx(a->checkInvariants());
   return a;
@@ -87,8 +88,9 @@ ArrayData* SetArray::MakeReserveSet(uint32_t size) {
 
   ad->initHash(scale);
   ad->initHeader(HeaderKind::Keyset, OneReference);
-  ad->m_size         = 0;
-  ad->m_scale_used   = scale;               // scale = scale, used = 0
+  ad->m_size          = 0;
+  ad->m_layout_index  = kVanillaLayoutIndex;
+  ad->m_scale_used    = scale;               // scale = scale, used = 0
 
   assertx(ad->kind() == kKeysetKind);
   assertx(!ad->isZombie());
@@ -105,7 +107,8 @@ ArrayData* SetArray::MakeSet(uint32_t size, const TypedValue* values) {
     auto& tv = values[i];
     if (!isIntType(tv.m_type) &&
         !isStringType(tv.m_type) &&
-        !isClassType(tv.m_type))  {
+        !isClassType(tv.m_type) &&
+        !isLazyClassType(tv.m_type))  {
       throwInvalidArrayKeyException(&tv, ArrayData::CreateKeyset());
     }
   }
@@ -119,36 +122,31 @@ ArrayData* SetArray::MakeSet(uint32_t size, const TypedValue* values) {
     if (isIntType(tv.m_type)) {
       ad->insert(tv.m_data.num);
     } else if (isStringType(tv.m_type)) {
-      ad->insert(tv.m_data.pstr);
+      ad->insert<false>(tv.m_data.pstr);
       decRefStr(tv.m_data.pstr); // FIXME
-    } else {
-      assertx(isClassType(tv.m_type));
+    } else if (isClassType(tv.m_type)) {
       auto const keyStr =
         const_cast<StringData*>(classToStringHelper(tv.m_data.pclass));
-      ad->insert(keyStr);
+      ad->insert<false>(keyStr);
+    } else {
+      assertx(isLazyClassType(tv.m_type));
+      auto const keyStr =
+        const_cast<StringData*>(lazyClassToStringHelper(tv.m_data.plazyclass));
+      ad->insert<false>(keyStr);
     }
   }
   return ad;
 }
 
-ArrayData* SetArray::MakeUncounted(ArrayData* array,
-                                   bool withApcTypedValue,
-                                   DataWalker::PointerMap* seen) {
-  auto const updateSeen = seen && array->hasMultipleRefs();
-  if (updateSeen) {
-    auto it = seen->find(array);
-    assertx(it != seen->end());
-    if (auto const arr = static_cast<ArrayData*>(it->second)) {
-      if (arr->uncountedIncRef()) {
-        return arr;
-      }
-    }
-  }
+ArrayData* SetArray::MakeUncounted(
+    ArrayData* array, const MakeUncountedEnv& env, bool hasApcTv) {
   auto src = asSet(array);
   assertx(!src->empty());
+  assertx(src->isRefCounted());
+
   auto const scale = src->scale();
   auto const used = src->m_used;
-  auto const extra = withApcTypedValue ? sizeof(APCTypedValue) : 0;
+  auto const extra = hasApcTv ? sizeof(APCTypedValue) : 0;
   auto const dest = uncountedAlloc(scale, extra);
 
   assertx(reinterpret_cast<uintptr_t>(dest) % 16 == 0);
@@ -157,7 +155,7 @@ ArrayData* SetArray::MakeUncounted(ArrayData* array,
   assertx(ClearElms(Data(dest) + used, Capacity(scale) - used));
   CopyHash(HashTab(dest, scale), src->hashTab(), scale);
   dest->initHeader_16(HeaderKind::Keyset, UncountedValue,
-                      withApcTypedValue ? ArrayData::kHasApcTv : 0);
+                      hasApcTv ? ArrayData::kHasApcTv : 0);
 
   // Make sure all strings are uncounted.
   auto const elms = dest->data();
@@ -167,32 +165,12 @@ ArrayData* SetArray::MakeUncounted(ArrayData* array,
     assertx(!elm.isEmpty());
     if (elm.hasStrKey()) {
       elm.tv.m_type = KindOfPersistentString;
-      StringData*& skey = elm.tv.m_data.pstr;
-
-      if (!skey->isStatic() &&
-          (!skey->isUncounted() || !skey->uncountedIncRef())) {
-        skey = [&] {
-          if (auto const st = lookupStaticString(skey)) return st;
-          HeapObject** seenStr = nullptr;
-          if (seen && skey->hasMultipleRefs()) {
-            seenStr = &(*seen)[skey];
-            if (auto const st = static_cast<StringData*>(*seenStr)) {
-              if (st->uncountedIncRef()) return st;
-            }
-          }
-          auto const st = StringData::MakeUncounted(skey->slice());
-          if (seenStr) *seenStr = st;
-          return st;
-        }();
-      }
+      auto& skey = elm.tv.m_data.pstr;
+      skey = MakeUncountedString(skey, env);
     }
   }
 
-  if (APCStats::IsCreated()) {
-    APCStats::getAPCStats().addAPCUncountedBlock();
-  }
-
-  if (updateSeen) (*seen)[array] = dest;
+  assertx(dest->checkInvariants());
   return dest;
 }
 
@@ -252,13 +230,13 @@ ArrayData* SetArray::AddToSetInPlace(ArrayData* ad, int64_t i) {
 
 ArrayData* SetArray::AddToSet(ArrayData* ad, StringData* s) {
   auto a = asSet(ad)->prepareForInsert(ad->cowCheck());
-  a->insert(s);
+  a->insert<false>(s);
   return a;
 }
 
 ArrayData* SetArray::AddToSetInPlace(ArrayData* ad, StringData* s) {
   auto a = asSet(ad)->prepareForInsert(false);
-  a->insert(s);
+  a->insert<false>(s);
   return a;
 }
 
@@ -286,7 +264,7 @@ void SetArray::Release(ArrayData* in) {
 }
 
 void SetArray::ReleaseUncounted(ArrayData* in) {
-  assertx(in->isUncounted());
+  assertx(!in->uncountedCowCheck());
   auto const ad = asSet(in);
 
   if (!ad->isZombie()) {
@@ -296,30 +274,16 @@ void SetArray::ReleaseUncounted(ArrayData* in) {
       auto& elm = elms[i];
       if (UNLIKELY(elm.isTombstone())) continue;
       assertx(!elm.isEmpty());
-      if (elm.hasStrKey()) {
-        auto const skey = elm.strKey();
-        assertx(!skey->isRefCounted());
-        if (skey->isUncounted()) {
-          StringData::ReleaseUncounted(skey);
-        }
-      }
+      if (elm.hasStrKey()) DecRefUncountedString(elm.strKey());
     }
   }
-  if (APCStats::IsCreated()) {
-    APCStats::getAPCStats().removeAPCUncountedBlock();
-  }
-  uncounted_free(reinterpret_cast<char*>(ad) -
-           (ad->hasApcTv() ? sizeof(APCTypedValue) : 0));
+
+  auto const extra = uncountedAllocExtra(ad, ad->hasApcTv());
+  FreeUncounted(reinterpret_cast<char*>(ad) - extra,
+                computeAllocBytes(ad->scale()) + extra);
 }
 
 //////////////////////////////////////////////////////////////////////
-
-ssize_t SetArray::findElm(const Elm& e) const {
-  assertx(!e.isInvalid());
-  return e.hasIntKey()
-    ? find(e.intKey(), e.hash())
-    : find(e.strKey(), e.hash());
-}
 
 void SetArray::insert(int64_t k, inthash_t h) {
   assertx(!isFull());
@@ -331,34 +295,17 @@ void SetArray::insert(int64_t k, inthash_t h) {
 }
 void SetArray::insert(int64_t k) { return insert(k, hash_int64(k)); }
 
+template <bool Move>
 void SetArray::insert(StringData* k, strhash_t h) {
   assertx(!isFull());
   auto const loc = findForInsert(k, h);
   if (isValidIns(loc)) {
     auto elm = allocElm(loc);
-    elm->setStrKey(k, h);
+    elm->setStrKey<Move>(k, h);
   }
 }
-void SetArray::insert(StringData* k) { return insert(k, k->hash()); }
-
-void SetArray::erase(RemovePos pos) {
-  assertx(pos.valid() && pos.elmIdx < m_used);
-  hashTab()[pos.probeIdx] = Tombstone;
-
-  auto const elms = data();
-  auto& elm = elms[pos.elmIdx];
-  assertx(!elm.isInvalid());
-  tvDecRefGen(&elm.tv);
-  elm.setTombstone();
-  --m_size;
-
-  if (m_size <= m_used / 2) {
-    /*
-     * Compact the array when the load become <=.5.
-     */
-    compact();
-  }
-}
+template <bool Move>
+void SetArray::insert(StringData* k) { return insert<Move>(k, k->hash()); }
 
 //////////////////////////////////////////////////////////////////////
 
@@ -377,9 +324,10 @@ SetArray* SetArray::grow(bool copy) {
   assertx(Capacity(newScale) >= m_size);
   assertx(newScale >= SmallScale && (newScale & (newScale - 1)) == 0);
 
-  auto ad            = reqAlloc(newScale);
-  ad->m_size         = m_size;
-  ad->m_scale_used   = newScale | (uint64_t{oldUsed} << 32);
+  auto ad              = reqAlloc(newScale);
+  ad->m_size           = m_size;
+  ad->m_layout_index   = kVanillaLayoutIndex;
+  ad->m_scale_used     = newScale | (uint64_t{oldUsed} << 32);
   ad->initHeader(HeaderKind::Keyset, OneReference);
 
   assertx(reinterpret_cast<uintptr_t>(Data(ad)) % 16 == 0);
@@ -478,9 +426,9 @@ bool SetArray::checkInvariants() const {
 
   // All arrays:
   assertx(checkCount());
-  assertx(isNotDVArray());
   assertx(m_scale >= 1 && (m_scale & (m_scale - 1)) == 0);
   assertx(HashSize(m_scale) == folly::nextPowTwo<uint64_t>(capacity()));
+  assertx(m_layout_index == kVanillaLayoutIndex);
 
   if (isZombie()) return true;
 
@@ -577,12 +525,16 @@ arr_lval SetArray::LvalStr(ArrayData*, StringData*) {
   throwInvalidKeysetOperation();
 }
 
-ArrayData* SetArray::SetInt(ArrayData*, int64_t, TypedValue) {
+ArrayData* SetArray::SetIntMove(ArrayData*, int64_t, TypedValue) {
   throwInvalidKeysetOperation();
 }
 
-ArrayData* SetArray::SetStr(ArrayData*, StringData*, TypedValue) {
+ArrayData* SetArray::SetStrMove(ArrayData*, StringData*, TypedValue) {
   throwInvalidKeysetOperation();
+}
+
+void SetArray::eraseNoCompact(RemovePos pos) {
+  HashTable::eraseNoCompact(pos);
 }
 
 template<class K> ArrayData*
@@ -626,27 +578,25 @@ ArrayData* SetArray::CopyStatic(const ArrayData* ad) {
 }
 
 ArrayData* SetArray::AppendImpl(ArrayData* ad, TypedValue v, bool copy) {
-  if (isIntType(v.m_type)) {
-    auto a = asSet(ad)->prepareForInsert(copy);
-    a->insert(v.m_data.num);
-    return a;
-  } else if (isStringType(v.m_type)) {
-    auto a = asSet(ad)->prepareForInsert(copy);
-    a->insert(v.m_data.pstr);
-    return a;
-  } else {
-    throwInvalidArrayKeyException(&v, ad);
-  }
+  auto const res = [&] {
+    if (isIntType(v.m_type)) {
+      auto a = asSet(ad)->prepareForInsert(copy);
+      a->insert(v.m_data.num);
+      return a;
+    } else if (isStringType(v.m_type)) {
+      auto a = asSet(ad)->prepareForInsert(copy);
+      a->insert<true>(v.m_data.pstr);
+      return a;
+    } else {
+      throwInvalidArrayKeyException(&v, ad);
+    }
+  }();
+  if (res != ad && ad->decReleaseCheck()) SetArray::Release(ad);
+  return res;
 }
 
-ArrayData* SetArray::Append(ArrayData* ad, TypedValue v) {
+ArrayData* SetArray::AppendMove(ArrayData* ad, TypedValue v) {
   return AppendImpl(ad, tvClassToString(v), ad->cowCheck());
-}
-
-ArrayData* SetArray::Merge(ArrayData*, const ArrayData*) {
-  SystemLib::throwInvalidOperationExceptionObject(
-    "Invalid keyset operation (merge)"
-  );
 }
 
 ArrayData* SetArray::Pop(ArrayData* ad, Variant& value) {
@@ -667,61 +617,6 @@ ArrayData* SetArray::Pop(ArrayData* ad, Variant& value) {
   return a;
 }
 
-ArrayData* SetArray::Dequeue(ArrayData* ad, Variant& value) {
-  auto a = asSet(ad);
-  if (a->cowCheck()) a = a->copySet();
-  if (a->m_size) {
-    ssize_t pos = a->getIterBegin();
-    tvDup(a->getElm(pos), *value.asTypedValue());
-    auto const pelm = &a->data()[pos];
-    auto const loc = a->findForRemove(pelm->hash(),
-      [pelm] (const Elm& e) { return &e == pelm; }
-    );
-    assertx(loc.valid());
-    a->erase(loc);
-  } else {
-    value = uninit_null();
-  }
-  return a;
-}
-
-ArrayData* SetArray::Prepend(ArrayData* ad, TypedValue v) {
-  Elm e;
-  assertx(ClearElms(&e, 1));
-  auto a = [&]{
-    if (isIntType(v.m_type)) {
-      e.setIntKey(v.m_data.num, hash_int64(v.m_data.num));
-      return asSet(RemoveInt(ad, v.m_data.num));
-    } else if (isStringType(v.m_type)) {
-      e.setStrKey(v.m_data.pstr, v.m_data.pstr->hash());
-      return asSet(RemoveStr(ad, v.m_data.pstr));
-    } else {
-      throwInvalidArrayKeyException(&v, ad);
-    }
-  }();
-  if (a->cowCheck()) a = a->copySet();
-
-  auto elms = a->data();
-  if (!elms[0].isTombstone()) {
-    a = a->prepareForInsert(false);
-    elms = a->data();
-    memmove(&elms[1], &elms[0], a->m_used * sizeof(Elm));
-    ++a->m_used;
-  }
-
-  ++a->m_size;
-  elms[0] = e;
-  assertx(!elms[0].isInvalid());
-  a->compact(); // Rebuild the hash table.
-  return a;
-}
-
-ArrayData* SetArray::Renumber(ArrayData*) {
-  SystemLib::throwInvalidOperationExceptionObject(
-    "Invalid keyset operation (renumbering)"
-  );
-}
-
 void SetArray::OnSetEvalScalar(ArrayData* ad) {
   auto a = asSet(ad);
   auto const used = a->m_used;
@@ -732,47 +627,6 @@ void SetArray::OnSetEvalScalar(ArrayData* ad) {
     assertx(!elm.isEmpty());
     tvAsVariant(&elm.tv).setEvalScalar();
   }
-}
-
-ArrayData* SetArray::ToDArrayImpl(const SetArray* ad) {
-  auto const size = ad->size();
-  if (!size) return ArrayData::CreateDArray();
-  DArrayInit init{size};
-
-  auto const elms = ad->data();
-  auto const used = ad->m_used;
-  for (uint32_t i = 0; i < used; ++i) {
-    auto const& elm = elms[i];
-    if (UNLIKELY(elm.isTombstone())) continue;
-    if (elm.hasIntKey()) {
-      init.set(elm.intKey(), tvAsCVarRef(&elm.tv));
-    } else {
-      init.set(elm.strKey(), tvAsCVarRef(&elm.tv));
-    }
-  }
-
-  auto const out = init.create();
-  assertx(MixedArray::asMixed(out));
-  return out;
-}
-
-ArrayData* SetArray::ToDArray(ArrayData* ad, bool copy) {
-  if (RuntimeOption::EvalHackArrDVArrs) {
-    auto out = ToDict(ad, copy);
-    if (RuntimeOption::EvalHackArrDVArrMark) {
-      if (out->cowCheck()) out = out->copy();
-      out->setLegacyArray(true);
-    }
-    return out;
-  }
-  auto out = ToDArrayImpl(SetArray::asSet(ad));
-  assertx(out->isDArray());
-  return out;
-}
-
-ArrayData* SetArray::ToKeyset(ArrayData* ad, bool /*copy*/) {
-  assertx(asSet(ad)->checkInvariants());
-  return ad;
 }
 
 ALWAYS_INLINE

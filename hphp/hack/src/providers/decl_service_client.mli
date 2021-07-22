@@ -10,7 +10,8 @@
 for decls and get back answers. Often these requests will block upon IO. *)
 type t
 
-val from_raw_client : Decl_ipc_ffi_externs.decl_client -> t
+val from_raw_client :
+  Decl_ipc_ffi_externs.decl_client -> DeclParserOptions.t -> t
 
 val rpc_get_fun : t -> string -> Typing_defs.fun_elt option
 
@@ -20,7 +21,7 @@ val rpc_get_typedef : t -> string -> Typing_defs.typedef_type option
 
 val rpc_get_record_def : t -> string -> Typing_defs.record_def_type option
 
-val rpc_get_gconst : t -> string -> Typing_defs.decl_ty option
+val rpc_get_gconst : t -> string -> Typing_defs.const_decl option
 
 val rpc_get_gconst_path : t -> string -> Relative_path.t option
 
@@ -32,3 +33,5 @@ val rpc_get_type_path_and_kind :
 val rpc_get_fun_canon_name : t -> string -> string option
 
 val rpc_get_type_canon_name : t -> string -> string option
+
+val parse_and_cache_decls_in : t -> Relative_path.t -> string -> unit

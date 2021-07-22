@@ -26,111 +26,100 @@ type possibly_enforced_ty = Typing_defs.locl_possibly_enforced_ty
 
 type decl_ty = Typing_defs.decl_ty
 
-type reactivity = Typing_defs.reactivity
-
-type mutability_env = Typing_mutability_env.mutability_env
-
-type type_param_mutability = Typing_defs.param_mutability
-
 type val_kind = Typing_defs.val_kind
 
-let pp_ty = Pp_type.pp_locl_ty
+let pp_ty = Typing_defs.pp_locl_ty
 
-let show_ty = Pp_type.show_locl_ty
+let show_ty = Typing_defs.show_locl_ty
 
-let pp_decl_ty = Pp_type.pp_decl_ty
+let pp_decl_ty = Typing_defs.pp_decl_ty
 
-let show_decl_ty = Pp_type.show_decl_ty
+let show_decl_ty = Typing_defs.show_decl_ty
 
-let pp_reactivity fmt r = Pp_type.pp_reactivity fmt r
+let pp_ifc_fun_decl fmt d = Typing_defs.pp_ifc_fun_decl fmt d
 
-let show_reactivity r = Pp_type.show_reactivity r
-
-let show_mutability_env _ = "<mutability-env>"
-
-let pp_mutability_env fmt _ = Format.fprintf fmt "<mutability-env>"
-
-let show_param_mutability = Pp_type.show_param_mutability
-
-let pp_type_param_mutability fmt v =
-  Format.fprintf fmt "%s" (show_param_mutability v)
+(* Contains information about a specific function that we
+    a) want to make available to TAST checks
+    b) isn't otherwise (space-efficiently) present in the saved typing env *)
+type fun_tast_info = {
+  has_implicit_return: bool;
+      (** True if there are leaves of the function's imaginary CFG without a return statement *)
+  named_body_is_unsafe: bool;  (** Result of {!Nast.named_body_is_unsafe} *)
+}
+[@@deriving show]
 
 type saved_env = {
   tcopt: TypecheckerOptions.t; [@opaque]
   inference_env: Typing_inference_env.t;
   tpenv: Type_parameter_env.t;
-  reactivity: reactivity;
-  local_mutability: mutability_env;
-  fun_mutable: type_param_mutability option;
   condition_types: decl_ty SMap.t;
   pessimize: bool;
+  fun_tast_info: fun_tast_info option;
 }
 [@@deriving show]
 
-type program = (Pos.t * ty, unit, saved_env, ty) Aast.program [@@deriving show]
+type program = (ty, unit, saved_env) Aast.program [@@deriving show]
 
-type def = (Pos.t * ty, unit, saved_env, ty) Aast.def
+type def = (ty, unit, saved_env) Aast.def
 
-type expr = (Pos.t * ty, unit, saved_env, ty) Aast.expr
+type expr = (ty, unit, saved_env) Aast.expr
 
-type expr_ = (Pos.t * ty, unit, saved_env, ty) Aast.expr_
+type expr_ = (ty, unit, saved_env) Aast.expr_
 
-type stmt = (Pos.t * ty, unit, saved_env, ty) Aast.stmt
+type stmt = (ty, unit, saved_env) Aast.stmt
 
-type block = (Pos.t * ty, unit, saved_env, ty) Aast.block
+type stmt_ = (ty, unit, saved_env) Aast.stmt_
 
-type class_ = (Pos.t * ty, unit, saved_env, ty) Aast.class_
+type block = (ty, unit, saved_env) Aast.block
 
-type class_id = (Pos.t * ty, unit, saved_env, ty) Aast.class_id
+type class_ = (ty, unit, saved_env) Aast.class_
+
+type class_id = (ty, unit, saved_env) Aast.class_id
 
 type type_hint = ty Aast.type_hint
 
 type targ = ty Aast.targ
 
-type class_get_expr = (Pos.t * ty, unit, saved_env, ty) Aast.class_get_expr
+type class_get_expr = (ty, unit, saved_env) Aast.class_get_expr
 
-type class_typeconst = (Pos.t * ty, unit, saved_env, ty) Aast.class_typeconst
+type class_typeconst_def = (ty, unit, saved_env) Aast.class_typeconst_def
 
-type user_attribute = (Pos.t * ty, unit, saved_env, ty) Aast.user_attribute
+type user_attribute = (ty, unit, saved_env) Aast.user_attribute
 
-type fun_ = (Pos.t * ty, unit, saved_env, ty) Aast.fun_
+type fun_ = (ty, unit, saved_env) Aast.fun_
 
-type file_attribute = (Pos.t * ty, unit, saved_env, ty) Aast.file_attribute
+type file_attribute = (ty, unit, saved_env) Aast.file_attribute
 
-type fun_def = (Pos.t * ty, unit, saved_env, ty) Aast.fun_def
+type fun_def = (ty, unit, saved_env) Aast.fun_def
 
-type fun_param = (Pos.t * ty, unit, saved_env, ty) Aast.fun_param
+type fun_param = (ty, unit, saved_env) Aast.fun_param
 
-type func_body = (Pos.t * ty, unit, saved_env, ty) Aast.func_body
+type fun_variadicity = (ty, unit, saved_env) Aast.fun_variadicity
 
-type method_ = (Pos.t * ty, unit, saved_env, ty) Aast.method_
+type func_body = (ty, unit, saved_env) Aast.func_body
 
-type class_var = (Pos.t * ty, unit, saved_env, ty) Aast.class_var
+type method_ = (ty, unit, saved_env) Aast.method_
 
-type class_const = (Pos.t * ty, unit, saved_env, ty) Aast.class_const
+type class_var = (ty, unit, saved_env) Aast.class_var
 
-type tparam = (Pos.t * ty, unit, saved_env, ty) Aast.tparam
+type class_const = (ty, unit, saved_env) Aast.class_const
 
-type typedef = (Pos.t * ty, unit, saved_env, ty) Aast.typedef
+type tparam = (ty, unit, saved_env) Aast.tparam
 
-type record_def = (Pos.t * ty, unit, saved_env, ty) Aast.record_def
+type typedef = (ty, unit, saved_env) Aast.typedef
 
-type gconst = (Pos.t * ty, unit, saved_env, ty) Aast.gconst
+type record_def = (ty, unit, saved_env) Aast.record_def
 
-type pu_enum = (Pos.t * ty, unit, saved_env, ty) Aast.pu_enum
-
-type pu_member = (Pos.t * ty, unit, saved_env, ty) Aast.pu_member
+type gconst = (ty, unit, saved_env) Aast.gconst
 
 let empty_saved_env tcopt : saved_env =
   {
     tcopt;
     inference_env = Typing_inference_env.empty_inference_env;
     tpenv = Type_parameter_env.empty;
-    reactivity = Typing_defs.Nonreactive;
-    local_mutability = Local_id.Map.empty;
-    fun_mutable = None;
     condition_types = SMap.empty;
     pessimize = false;
+    fun_tast_info = None;
   }
 
 (* Used when an env is needed in codegen.
@@ -146,32 +135,30 @@ let dummy_type_hint (hint : hint option) : ty * hint option =
  * some abstraction in so that we can change the representation (e.g. put
  * further annotations on the expression) as we see fit.
  *)
-let make_expr_annotation p ty : Pos.t * ty = (p, ty)
+let make_expr_annotation _p ty : ty = ty
 
 (* Helper function to create a typed and positioned expression.
  * Do not construct this triple directly - at some point we will build
  * some abstraction in so that we can change the representation (e.g. put
  * further annotations on the expression) as we see fit.
  *)
-let make_typed_expr p ty te : expr = (make_expr_annotation p ty, te)
+let make_typed_expr p ty te : expr = (make_expr_annotation p ty, p, te)
 
 (* Get the position of an expression *)
-let get_position (((p, _), _) : expr) = p
+let get_position ((_, p, _) : expr) = p
 
 (* Get the type of an expression *)
-let get_type (((_, ty), _) : expr) = ty
+let get_type ((ty, _, _) : expr) = ty
 
 let nast_converter =
   object
     inherit [_] Aast.map
 
-    method on_'ex _ (p, _ex) = p
+    method on_'ex _ _ = ()
 
     method on_'fb _ _fb = Nast.Named
 
     method on_'en _ _ = ()
-
-    method on_'hi _ _ = ()
   end
 
 let to_nast p = nast_converter#on_program () p

@@ -1,15 +1,5 @@
 
 ===================================
-Testing reified tuple:
-varray: []
-darray: (Notice: Hack Array Compat: darray is tuple) []
-
-===================================
-Testing reified shape:
-varray: (Notice: Hack Array Compat: varray is shape) []
-darray: []
-
-===================================
 Testing tuple:
 
 Using empty tuple:
@@ -22,7 +12,7 @@ keyset: bool(false)
 Using matching tuple:
 varray: bool(true)
 darray: bool(false)
-vec:    (Notice: Hack Array Compat: vec is tuple) bool(false)
+vec:    bool(true)
 dict:   bool(false)
 keyset: bool(false)
 
@@ -40,7 +30,7 @@ Using matching shape:
 varray: bool(false)
 darray: bool(true)
 vec:    bool(false)
-dict:   (Notice: Hack Array Compat: dict is shape) bool(false)
+dict:   bool(true)
 keyset: bool(false)
 
 ===================================
@@ -50,5 +40,5 @@ Using empty shape:
 varray: bool(false)
 darray: bool(true)
 vec:    bool(false)
-dict:   (Notice: Hack Array Compat: dict is shape) bool(false)
+dict:   bool(true)
 keyset: bool(false)

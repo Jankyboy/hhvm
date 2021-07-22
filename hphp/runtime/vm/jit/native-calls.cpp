@@ -66,6 +66,7 @@ constexpr irlower::SyncOptions SNone = irlower::SyncOptions::None;
 constexpr irlower::SyncOptions SSync = irlower::SyncOptions::Sync;
 
 constexpr DestType DSSA  = DestType::SSA;
+constexpr DestType DTV   = DestType::TV;
 constexpr DestType DNone = DestType::None;
 
 template<class EDType, class MemberType>
@@ -130,33 +131,17 @@ using StrIntCmpFnInt = int64_t (*)(const StringData*, int64_t);
  */
 static CallMap s_callMap {
     /* Opcode, Func, Dest, SyncPoint, Args */
-    {ConvArrLikeToVArr,  convArrLikeToVArrHelper, DSSA, SSync,
-                           {{SSA, 0}}},
-    {ConvClsMethToVArr,  convClsMethToVArrHelper, DSSA, SSync,
-                           {{SSA, 0}}},
-
-    {ConvArrLikeToDArr,  convArrLikeToDArrHelper, DSSA, SSync,
-                           {{SSA, 0}}},
-    {ConvClsMethToDArr,  convClsMethToDArrHelper, DSSA, SSync,
-                           {{SSA, 0}}},
-
     {ConvArrLikeToVec,   convArrLikeToVecHelper, DSSA, SSync,
-                           {{SSA, 0}}},
-    {ConvClsMethToVec,   convClsMethToVecHelper, DSSA, SSync,
                            {{SSA, 0}}},
     {ConvObjToVec,       convObjToVecHelper, DSSA, SSync,
                            {{SSA, 0}}},
 
     {ConvArrLikeToDict,  convArrLikeToDictHelper, DSSA, SSync,
                            {{SSA, 0}}},
-    {ConvClsMethToDict,  convClsMethToDictHelper, DSSA, SSync,
-                           {{SSA, 0}}},
     {ConvObjToDict,      convObjToDictHelper, DSSA, SSync,
                            {{SSA, 0}}},
 
     {ConvArrLikeToKeyset, convArrLikeToKeysetHelper, DSSA, SSync,
-                           {{SSA, 0}}},
-    {ConvClsMethToKeyset, convClsMethToKeysetHelper, DSSA, SSync,
                            {{SSA, 0}}},
     {ConvObjToKeyset,     convObjToKeysetHelper, DSSA, SSync,
                            {{SSA, 0}}},
@@ -174,13 +159,20 @@ static CallMap s_callMap {
                            {{TV, 0}}},
 
     {ConvObjToInt,       &ObjectData::toInt64, DSSA, SSync,
-                           {{SSA, 0}}},
+                           {{SSA, 0}, extra(&ConvNoticeData::level),
+                            extra(&ConvNoticeData::reasonIntVal)}},
     {ConvStrToInt,       &StringData::toInt64, DSSA, SNone,
                            {{SSA, 0}, immed(10)}},
     {ConvResToInt,       &ResourceHdr::getId, DSSA, SNone,
                            {{SSA, 0}}},
-    {ConvTVToInt,      tvToInt, DSSA, SSync,
-                           {{TV, 0}}},
+    {ConvTVToInt,        static_cast<int64_t (*)(
+                             TypedValue,
+                             const ConvNoticeLevel,
+                             const StringData*,
+                             bool)>(tvToInt), DSSA, SSync,
+                           {{TV, 0}, extra(&ConvNoticeData::level),
+                            extra(&ConvNoticeData::reasonIntVal),
+                            extra(&ConvNoticeData::noticeWithinNum)}},
 
     {ConvDblToStr,       convDblToStrHelper, DSSA, SNone,
                            {{SSA, 0}}},
@@ -188,10 +180,12 @@ static CallMap s_callMap {
                            {{SSA, 0}}},
     {ConvObjToStr,       convObjToStrHelper, DSSA, SSync,
                            {{SSA, 0}}},
-    {ConvResToStr,       convResToStrHelper, DSSA, SSync,
-                           {{SSA, 0}}},
-    {ConvTVToStr,      tvCastToStringData, DSSA, SSync,
-                           {{TV, 0}}},
+    {ConvTVToStr,        static_cast<StringData* (*)(
+                             TypedValue,
+                             const ConvNoticeLevel,
+                             const StringData*)>(tvCastToStringData), DSSA, SSync,
+                           {{TV, 0}, extra(&ConvNoticeData::level),
+                            extra(&ConvNoticeData::reasonIntVal)}},
 
     {ConcatStrStr,       concat_ss, DSSA, SSync, {{SSA, 0}, {SSA, 1}}},
     {ConcatStrInt,       concat_si, DSSA, SSync, {{SSA, 0}, {SSA, 1}}},
@@ -218,7 +212,6 @@ static CallMap s_callMap {
     {InitSProps,         &Class::initSProps, DNone, SSync,
                            {{extra(&ClassData::cls)}}},
     {DebugBacktrace,     debug_backtrace_jit, DSSA, SSync, {{SSA, 0}}},
-    {DebugBacktraceFast, debug_backtrace_fast, DSSA, SSync, {}},
     {InitThrowableFileAndLine,
                          throwable_init_file_and_line_from_builtin,
                            DNone, debug ? SSync : SNone, {{SSA, 0}}},
@@ -226,7 +219,8 @@ static CallMap s_callMap {
                            {{SSA, 0}, {SSA, 1}}},
     {LookupClsMethod,    lookupClsMethodHelper, DSSA, SSync,
                            {{SSA, 0}, {SSA, 1}, {SSA, 2}, {SSA, 3}}},
-    {LookupClsRDS,       lookupClsRDS, DSSA, SNone, {{SSA, 0}}},
+    {LookupClsCns,       lookupClsCns, DTV, SSync, {{SSA, 0}, {SSA, 1}}},
+    {LookupClsCtxCns,    lookupClsCtxCns, DSSA, SSync, {{SSA, 0}, {SSA, 1}}},
     {PrintStr,           print_string, DNone, SSync, {{SSA, 0}}},
     {PrintInt,           print_int, DNone, SSync, {{SSA, 0}}},
     {PrintBool,          print_boolean, DNone, SSync, {{SSA, 0}}},
@@ -244,26 +238,34 @@ static CallMap s_callMap {
                              {SSA, 2}, {TV, 3}}},
     {VerifyRetCallable,  VerifyRetTypeCallable, DNone, SSync,
                          {extra(&ParamData::paramId), {TV, 0}}},
-    {RaiseUninitLoc,     raiseUndefVariable, DNone, SSync, {{SSA, 0}}},
+    {ThrowUninitLoc,     throwUndefVariable, DNone, SSync, {{SSA, 0}}},
     {RaiseError,         raise_error_sd, DNone, SSync, {{SSA, 0}}},
     {RaiseWarning,       raiseWarning, DNone, SSync, {{SSA, 0}}},
     {RaiseNotice,        raiseNotice, DNone, SSync, {{SSA, 0}}},
-    {ThrowArrayIndexException,
-                         throwArrayIndexException, DNone, SSync,
+    {ThrowMustBeReadOnlyException,
+                         throwMustBeReadOnlyException, DNone, SSync,
+                         {{SSA, 0}, {SSA, 1}}},
+    {ThrowMustBeMutableException,
+                         throwMustBeMutableException, DNone, SSync,
+                         {{SSA, 0}, {SSA, 1}}},
+    {ThrowArrayKeyException,
+                         throwArrayKeyException, DNone, SSync,
                          {{SSA, 0}, {SSA, 1}}},
     {ThrowArrayKeyException,
                          throwArrayKeyException, DNone, SSync,
                          {{SSA, 0}, {SSA, 1}}},
     {RaiseUndefProp,     raiseUndefProp, DNone, SSync,
                            {{SSA, 0}, {SSA, 1}}},
-    {RaiseClsMethPropConvertNotice, raiseClsMethPropConvertNotice, DNone, SSync,
-                           {extra(&RaiseClsMethPropConvertNoticeData::tcIntVal),
-                            extra(&RaiseClsMethPropConvertNoticeData::isSProp),
-                            {SSA, 0}, {SSA, 1}}},
     {RaiseTooManyArg,    raiseTooManyArgumentsPrologue, DNone, SSync,
                            {extra(&FuncData::func), {SSA, 0}}},
-    {RaiseRxCallViolation, raiseRxCallViolation,
-                          DNone, SSync, {{SSA, 0}, {SSA, 1}}},
+    {RaiseCoeffectsCallViolation, raiseCoeffectsCallViolationHelper,
+                          DNone, SSync, {extra(&FuncData::func),
+                                         {SSA, 0}, {SSA, 1}}},
+    {RaiseCoeffectsFunParamTypeViolation, raiseCoeffectsFunParamTypeViolation,
+                          DNone, SSync, {{TV, 0}, extra(&ParamData::paramId)}},
+    {RaiseCoeffectsFunParamCoeffectRulesViolation,
+                          raiseCoeffectsFunParamCoeffectRulesViolation,
+                          DNone, SSync, {{SSA, 0}}},
     {ThrowInvalidOperation, throw_invalid_operation_exception,
                           DNone, SSync, {{SSA, 0}}},
     {ThrowCallReifiedFunctionWithoutGenerics,
@@ -372,10 +374,10 @@ static CallMap s_callMap {
     /* Static prop helpers */
     {LdClsPropAddrOrNull,
                          getSPropOrNull, DSSA, SSync,
-                           {{SSA, 0}, {SSA, 1}, {SSA, 2}, {SSA, 3}, {SSA, 4}}},
+                           {{SSA, 0}, {SSA, 1}, {SSA, 2}, {SSA, 3}, {SSA, 4}, {SSA, 5}, {SSA, 6}, {SSA, 7}, {SSA, 8}}},
     {LdClsPropAddrOrRaise,
                          getSPropOrRaise, DSSA, SSync,
-                           {{SSA, 0}, {SSA, 1}, {SSA, 2}, {SSA, 3}, {SSA, 4}}},
+                           {{SSA, 0}, {SSA, 1}, {SSA, 2}, {SSA, 3}, {SSA, 4}, {SSA, 5}, {SSA, 6}, {SSA, 7}, {SSA, 8}}},
 
     {ProfileProp,        &PropertyProfile::incCount, DNone, SNone,
                            {{SSA, 0}, {SSA, 1}}},
@@ -442,7 +444,7 @@ static CallMap s_callMap {
                              DSSA, SNone, {{SSA, 0}}},
     {InterfaceSupportsDbl, IFaceSupportFn{interface_supports_double},
                              DSSA, SNone, {{SSA, 0}}},
-    {OODeclExists, &Unit::classExists, DSSA, SSync,
+    {OODeclExists, &Class::exists, DSSA, SSync,
                      {{SSA, 0}, {SSA, 1}, extra(&ClassKindData::kind)}},
 
     /* is/as expressions */
@@ -452,17 +454,17 @@ static CallMap s_callMap {
                                    {{SSA, 0}, {TV, 1}}},
 
     /* surprise flag support */
-    {SuspendHookAwaitEF, &EventHook::onFunctionSuspendAwaitEF, DNone,
+    {SuspendHookAwaitEF, &EventHook::onFunctionSuspendAwaitEFJit, DNone,
                             SSync, {{SSA, 0}, {SSA, 1}}},
-    {SuspendHookAwaitEG, &EventHook::onFunctionSuspendAwaitEG, DNone,
+    {SuspendHookAwaitEG, &EventHook::onFunctionSuspendAwaitEGJit, DNone,
                             SSync, {{SSA, 0}}},
-    {SuspendHookAwaitR, &EventHook::onFunctionSuspendAwaitR, DNone,
+    {SuspendHookAwaitR, &EventHook::onFunctionSuspendAwaitRJit, DNone,
                             SSync, {{SSA, 0}, {SSA, 1}}},
-    {SuspendHookCreateCont, &EventHook::onFunctionSuspendCreateCont, DNone,
+    {SuspendHookCreateCont, &EventHook::onFunctionSuspendCreateContJit, DNone,
                             SSync, {{SSA, 0}, {SSA, 1}}},
-    {SuspendHookYield, &EventHook::onFunctionSuspendYield, DNone,
+    {SuspendHookYield, &EventHook::onFunctionSuspendYieldJit, DNone,
                             SSync, {{SSA, 0}}},
-    {ReturnHook, &EventHook::onFunctionReturn, DNone,
+    {ReturnHook, &EventHook::onFunctionReturnJit, DNone,
                             SSync, {{SSA, 0}, {TV, 1}}},
 
     /* silence operator support */
@@ -471,9 +473,6 @@ static CallMap s_callMap {
 
     /* count($mixed) */
     {Count, &countHelper, DSSA, SSync, {{TV, 0}}},
-
-    /* method_exists($obj, $meth) */
-    {MethodExists, methodExistsHelper, DSSA, SNone, {{SSA, 0}, {SSA, 1}}},
 
     /* microtime(true) */
     {GetTime, TimeStamp::CurrentSecond, DSSA, SNone, {}},

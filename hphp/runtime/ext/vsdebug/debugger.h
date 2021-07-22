@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VSDEBUG_DEBUGGER_H_
-#define incl_HPHP_VSDEBUG_DEBUGGER_H_
+#pragma once
 
 #include <atomic>
 #include <unordered_map>
@@ -482,7 +481,7 @@ struct Debugger final {
     const Unit* unit = func != nullptr ? func->unit() : nullptr;
     HPHP::SourceLoc loc;
     if (unit != nullptr) {
-      bool success = unit->getSourceLoc(pcOff(), loc);
+      bool success = func->getSourceLoc(pcOff(), loc);
       if (success) {
         return std::pair<const Unit*, HPHP::SourceLoc>(unit, loc);
       }
@@ -777,4 +776,3 @@ struct DebuggerNoBreakContext {
 }
 }
 
-#endif // incl_HPHP_VSDEBUG_DEBUGGER_H_

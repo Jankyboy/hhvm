@@ -17,6 +17,7 @@
 #include "hphp/runtime/vm/func-emitter.h"
 
 #include "hphp/runtime/base/array-iterator.h"
+#include "hphp/runtime/base/coeffects-config.h"
 #include "hphp/runtime/base/unit-cache.h"
 #include "hphp/runtime/base/rds.h"
 
@@ -25,9 +26,10 @@
 #include "hphp/runtime/vm/blob-helper.h"
 #include "hphp/runtime/vm/bytecode.h"
 #include "hphp/runtime/vm/native.h"
+#include "hphp/runtime/vm/preclass-emitter.h"
 #include "hphp/runtime/vm/reified-generics.h"
-#include "hphp/runtime/vm/repo.h"
 #include "hphp/runtime/vm/repo-autoload-map-builder.h"
+#include "hphp/runtime/vm/repo-file.h"
 #include "hphp/runtime/vm/runtime.h"
 
 #include "hphp/runtime/vm/jit/types.h"
@@ -41,6 +43,7 @@
 #include "hphp/util/trace.h"
 
 namespace HPHP {
+
 ///////////////////////////////////////////////////////////////////////////////
 // FuncEmitter.
 
@@ -49,9 +52,12 @@ FuncEmitter::FuncEmitter(UnitEmitter& ue, int sn, Id id, const StringData* n)
   , m_pce(nullptr)
   , m_sn(sn)
   , m_id(id)
+  , m_bc()
+  , m_bclen(0)
+  , m_bcmax(0)
   , name(n)
   , maxStackCells(0)
-  , hniReturnType(folly::none)
+  , hniReturnType(std::nullopt)
   , retUserType(nullptr)
   , docComment(nullptr)
   , originalFilename(nullptr)
@@ -61,6 +67,7 @@ FuncEmitter::FuncEmitter(UnitEmitter& ue, int sn, Id id, const StringData* n)
   , m_numLocals(0)
   , m_numUnnamedLocals(0)
   , m_numIterators(0)
+  , m_numClosures(0)
   , m_nextFreeIterator(0)
   , m_ehTabSorted(false)
 {}
@@ -71,9 +78,12 @@ FuncEmitter::FuncEmitter(UnitEmitter& ue, int sn, const StringData* n,
   , m_pce(pce)
   , m_sn(sn)
   , m_id(kInvalidId)
+  , m_bc()
+  , m_bclen(0)
+  , m_bcmax(0)
   , name(n)
   , maxStackCells(0)
-  , hniReturnType(folly::none)
+  , hniReturnType(std::nullopt)
   , retUserType(nullptr)
   , docComment(nullptr)
   , originalFilename(nullptr)
@@ -83,20 +93,112 @@ FuncEmitter::FuncEmitter(UnitEmitter& ue, int sn, const StringData* n,
   , m_numLocals(0)
   , m_numUnnamedLocals(0)
   , m_numIterators(0)
+  , m_numClosures(0)
   , m_nextFreeIterator(0)
   , m_ehTabSorted(false)
 {}
 
 FuncEmitter::~FuncEmitter() {
+  if (m_bc.isPtr()) {
+    if (auto const p = m_bc.ptr()) free(p);
+  }
+  if (m_lineTable.isPtr()) {
+    if (auto const p = m_lineTable.ptr()) delete p;
+  }
 }
 
 
 ///////////////////////////////////////////////////////////////////////////////
+// Source locations.
+
+SourceLocTable FuncEmitter::createSourceLocTable() const {
+  assertx(m_sourceLocTab.size() != 0);
+  SourceLocTable locations;
+  for (size_t i = 0; i < m_sourceLocTab.size(); ++i) {
+    Offset endOff = i < m_sourceLocTab.size() - 1
+      ? m_sourceLocTab[i + 1].first
+      : m_bclen;
+    locations.push_back(SourceLocEntry(endOff, m_sourceLocTab[i].second));
+  }
+  return locations;
+}
+
+void FuncEmitter::setLineTable(LineTable table) {
+  if (m_lineTable.isPtr()) {
+    if (auto p = m_lineTable.ptr()) {
+      *p = std::move(table);
+      return;
+    }
+  }
+  m_lineTable = Func::LineTablePtr::FromPtr(new LineTable{std::move(table)});
+}
+
+void FuncEmitter::setSourceLocTable(const SourceLocTable& table) {
+  m_sourceLocTab.clear();
+  for (auto const& e : table) {
+    m_sourceLocTab.emplace_back(e.pastOffset(), e.val());
+  }
+  for (size_t i = m_sourceLocTab.size(); i > 1; --i) {
+    m_sourceLocTab[i - 1].first = m_sourceLocTab[i - 2].first;
+  }
+}
+
+namespace {
+
+using SrcLoc = std::vector<std::pair<Offset, SourceLoc>>;
+
+/*
+ * Create a LineTable from `srcLoc'.
+ */
+LineTable createLineTable(const SrcLoc& srcLoc, Offset bclen) {
+  LineTable lines;
+  if (srcLoc.empty()) {
+    return lines;
+  }
+
+  auto prev = srcLoc.begin();
+  for (auto it = prev + 1; it != srcLoc.end(); ++it) {
+    if (prev->second.line1 != it->second.line1) {
+      lines.push_back(LineEntry(it->first, prev->second.line1));
+      prev = it;
+    }
+  }
+
+  lines.push_back(LineEntry(bclen, prev->second.line1));
+  return lines;
+}
+
+}
+
+void FuncEmitter::recordSourceLocation(const Location::Range& sLoc,
+                                       Offset start) {
+  // Some byte codes, such as for the implicit "return 0" at the end of a
+  // a source file do not have valid source locations. This check makes
+  // sure we don't record a (dummy) source location in this case.
+  if (start > 0 && sLoc.line0 == -1) return;
+  SourceLoc newLoc(sLoc);
+  if (!m_sourceLocTab.empty()) {
+    if (m_sourceLocTab.back().second == newLoc) {
+      // Combine into the interval already at the back of the vector.
+      assertx(start >= m_sourceLocTab.back().first);
+      return;
+    }
+    assertx(m_sourceLocTab.back().first < start &&
+           "source location offsets must be added to UnitEmitter in "
+           "increasing order");
+  } else {
+    // First record added should be for bytecode offset zero or very rarely one
+    // when the source starts with a label and a Nop is inserted.
+    assertx(start == 0 || start == 1);
+  }
+  m_sourceLocTab.push_back(std::make_pair(start, newLoc));
+}
+
+///////////////////////////////////////////////////////////////////////////////
 // Initialization and execution.
 
-void FuncEmitter::init(int l1, int l2, Offset base_, Attr attrs_,
+void FuncEmitter::init(int l1, int l2, Attr attrs_,
                        const StringData* docComment_) {
-  base = base_;
   line1 = l1;
   line2 = l2;
   attrs = fix_attrs(attrs_);
@@ -105,22 +207,13 @@ void FuncEmitter::init(int l1, int l2, Offset base_, Attr attrs_,
   if (!SystemLib::s_inited) assertx(attrs & AttrBuiltin);
 }
 
-void FuncEmitter::finish(Offset past_) {
-  past = past_;
+void FuncEmitter::finish() {
   sortEHTab();
 }
 
-void FuncEmitter::commit(RepoTxn& txn) const {
-  Repo& repo = Repo::get();
-  FuncRepoProxy& frp = repo.frp();
-  int repoId = m_ue.m_repoId;
-  int64_t usn = m_ue.m_sn;
-
-  frp.insertFunc[repoId]
-     .insert(*this, txn, usn, m_sn, m_pce ? m_pce->id() : -1, name);
-}
-
-const StaticString s_DynamicallyCallable("__DynamicallyCallable");
+const StaticString
+  s_construct("__construct"),
+  s_DynamicallyCallable("__DynamicallyCallable");
 
 Func* FuncEmitter::create(Unit& unit, PreClass* preClass /* = NULL */) const {
   bool isGenerated = isdigit(name->data()[0]);
@@ -132,14 +225,14 @@ Func* FuncEmitter::create(Unit& unit, PreClass* preClass /* = NULL */) const {
   if (attrs & AttrIsMethCaller && RuntimeOption::RepoAuthoritative) {
     attrs |= AttrPersistent | AttrUnique;
   }
-  if (attrs & AttrPersistent && !preClass) {
+  if (attrs & (AttrPersistent | AttrUnique) && !preClass) {
     if ((RuntimeOption::EvalJitEnableRenameFunction ||
          attrs & AttrInterceptable ||
          (!RuntimeOption::RepoAuthoritative && SystemLib::s_inited))) {
       if (attrs & AttrBuiltin) {
         SystemLib::s_anyNonPersistentBuiltins = true;
       }
-      attrs = Attr(attrs & ~AttrPersistent);
+      attrs = Attr(attrs & ~(AttrPersistent | AttrUnique));
     }
   } else {
     assertx(preClass || !(attrs & AttrBuiltin) || (attrs & AttrIsMethCaller));
@@ -152,7 +245,9 @@ Func* FuncEmitter::create(Unit& unit, PreClass* preClass /* = NULL */) const {
     attrs |= AttrSupportsAsyncEagerReturn;
   }
 
-  auto const dynCallSampleRate = [&] () -> folly::Optional<int64_t> {
+  if (!coeffectRules.empty()) attrs |= AttrHasCoeffectRules;
+
+  auto const dynCallSampleRate = [&] () -> Optional<int64_t> {
     if (!(attrs & AttrDynamicallyCallable)) return {};
 
     auto const uattr = userAttributes.find(s_DynamicallyCallable.get());
@@ -175,21 +270,45 @@ Func* FuncEmitter::create(Unit& unit, PreClass* preClass /* = NULL */) const {
   auto const uait = userAttributes.find(s___Reified.get());
   auto const hasReifiedGenerics = uait != userAttributes.end();
 
+  // Returns (static coeffects, escapes)
+  auto const coeffectsInfo = [&]() -> std::pair<StaticCoeffects,
+                                               RuntimeCoeffects> {
+    if (staticCoeffects.empty()) {
+      return {StaticCoeffects::defaults(), RuntimeCoeffects::none()};
+    }
+    auto coeffects = StaticCoeffects::none();
+    auto escapes = RuntimeCoeffects::none();
+    for (auto const& name : staticCoeffects) {
+      coeffects |= CoeffectsConfig::fromName(name->toCppString());
+      escapes |= CoeffectsConfig::escapesTo(name->toCppString());
+    }
+    if (preClass && name == s_construct.get()) {
+      coeffects |= StaticCoeffects::write_this_props();
+    }
+    return {coeffects, escapes};
+  }();
+  f->m_requiredCoeffects = coeffectsInfo.first.toRequired();
+
   bool const needsExtendedSharedData =
     isNative ||
+    params.size() > 64 ||
     line2 - line1 >= Func::kSmallDeltaLimit ||
-    past - base >= Func::kSmallDeltaLimit ||
+    m_bclen >= Func::kSmallDeltaLimit ||
+    m_sn >= Func::kSmallDeltaLimit ||
     hasReifiedGenerics ||
     hasParamsWithMultiUBs ||
     hasReturnWithMultiUBs ||
-    dynCallSampleRate;
+    dynCallSampleRate ||
+    coeffectsInfo.second.value() != 0 ||
+    !coeffectRules.empty() ||
+    (docComment && !docComment->empty());
 
   f->m_shared.reset(
     needsExtendedSharedData
-      ? new Func::ExtendedSharedData(preClass, base, past, line1, line2,
-                                     !containsCalls, docComment)
-      : new Func::SharedData(preClass, base, past,
-                             line1, line2, !containsCalls, docComment)
+      ? new Func::ExtendedSharedData(m_bc, m_bclen, preClass, m_sn, line1, line2,
+                                     !containsCalls)
+      : new Func::SharedData(m_bc, m_bclen, preClass, m_sn, line1, line2,
+                             !containsCalls)
   );
 
   f->init(params.size());
@@ -198,20 +317,24 @@ Func* FuncEmitter::create(Unit& unit, PreClass* preClass /* = NULL */) const {
     ex->m_allFlags.m_hasExtendedSharedData = true;
     ex->m_arFuncPtr = nullptr;
     ex->m_nativeFuncPtr = nullptr;
+    ex->m_bclen = m_bclen;
+    ex->m_sn = m_sn;
     ex->m_line2 = line2;
-    ex->m_past = past;
     ex->m_dynCallSampleRate = dynCallSampleRate.value_or(-1);
     ex->m_allFlags.m_returnByValue = false;
     ex->m_allFlags.m_isMemoizeWrapper = false;
     ex->m_allFlags.m_isMemoizeWrapperLSB = false;
+
+    if (!coeffectRules.empty()) ex->m_coeffectRules = coeffectRules;
+    ex->m_coeffectEscapes = coeffectsInfo.second;
+    ex->m_docComment = docComment;
   }
 
   std::vector<Func::ParamInfo> fParams;
   for (unsigned i = 0; i < params.size(); ++i) {
     Func::ParamInfo pi = params[i];
     if (pi.isVariadic()) {
-      pi.builtinType = RuntimeOption::EvalHackArrDVArrs
-        ? KindOfVec : KindOfVArray;
+      pi.builtinType = KindOfVec;
     }
     f->appendParam(params[i].isInOut(), pi, fParams);
     auto const& fromUBs = params[i].upperBounds;
@@ -256,13 +379,37 @@ Func* FuncEmitter::create(Unit& unit, PreClass* preClass /* = NULL */) const {
   f->shared()->m_allFlags.m_isMemoizeWrapper = isMemoizeWrapper;
   f->shared()->m_allFlags.m_isMemoizeWrapperLSB = isMemoizeWrapperLSB;
   f->shared()->m_allFlags.m_hasReifiedGenerics = hasReifiedGenerics;
-  f->shared()->m_allFlags.m_isRxDisabled = isRxDisabled;
+
+  for (auto const& name : staticCoeffects) {
+    f->shared()->m_staticCoeffectNames.push_back(name);
+  }
 
   if (hasReifiedGenerics) {
-    auto tv = uait->second;
-    assertx(tvIsHAMSafeVArray(tv));
+    auto const tv = uait->second;
+    assertx(tvIsVec(tv));
     f->extShared()->m_reifiedGenericsInfo =
       extractSizeAndPosFromReifiedAttribute(tv.m_data.parr);
+  }
+
+  /*
+   * If we have a m_sourceLocTab, use that to create the line
+   * table. Otherwise use the line table we loaded out of the repo, or
+   * a token to lazy load it.
+   */
+  if (m_sourceLocTab.size() != 0) {
+    f->setLineTable(createLineTable(m_sourceLocTab, m_bclen));
+    // If the debugger is enabled, or we plan to dump hhas we will
+    // need the extended line table information in the output, and if
+    // we're not writing the repo, stashing it here is necessary for
+    // it to make it through.
+    if (needs_extended_line_table()) {
+      f->stashExtendedLineTable(createSourceLocTable());
+    }
+  } else if (m_lineTable.isPtr()) {
+    f->setLineTable(*m_lineTable.ptr());
+  } else {
+    assertx(RO::RepoAuthoritative);
+    f->setLineTable(m_lineTable.token());
   }
 
   if (isNative) {
@@ -434,6 +581,38 @@ void FuncEmitter::setEHTabIsSorted() {
   }
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// Bytecode
+
+void FuncEmitter::setBc(const unsigned char* bc, size_t bclen) {
+  if (m_bc.isPtr()) {
+    if (auto const p = m_bc.ptr()) free(p);
+  }
+  auto const p = (unsigned char*)malloc(bclen);
+  m_bcmax = bclen;
+  if (bclen) memcpy(p, bc, bclen);
+  m_bc = Func::BCPtr::FromPtr(p);
+  m_bclen = bclen;
+}
+
+void FuncEmitter::setBcToken(Func::BCPtr::Token token, size_t bclen) {
+  if (m_bc.isPtr()) {
+    if (auto const p = m_bc.ptr()) free(p);
+  }
+  m_bcmax = bclen;
+  m_bclen = bclen;
+  m_bc = Func::BCPtr::FromToken(token);
+}
+
+Optional<Func::BCPtr::Token> FuncEmitter::loadBc() {
+  if (m_bc.isPtr()) return std::nullopt;
+  assertx(RO::RepoAuthoritative);
+  auto const old = m_bc.token();
+  auto bc = (unsigned char*)malloc(m_bclen);
+  RepoFile::loadBytecode(m_ue.m_sn, old, bc, m_bclen);
+  m_bc = Func::BCPtr::FromPtr(bc);
+  return old;
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 // Complex setters.
@@ -494,25 +673,24 @@ Attr FuncEmitter::fix_attrs(Attr a) const {
 template<class SerDe>
 void FuncEmitter::serdeMetaData(SerDe& sd) {
   // NOTE: name and a few other fields currently handled outside of this.
-  Offset past_delta;
   Attr a = attrs;
 
   if (!SerDe::deserializing) {
-    past_delta = past - base;
     a = fix_attrs(attrs);
   }
 
   sd(line1)
     (line2)
-    (base)
-    (past_delta)
     (a)
+    (m_bclen)
+    (staticCoeffects)
     (hniReturnType)
     (repoReturnType)
     (repoAwaitedReturnType)
     (docComment)
     (m_numLocals)
     (m_numIterators)
+    (m_numClosures)
     (maxStackCells)
     (m_repoBoolBitset)
 
@@ -537,104 +715,106 @@ void FuncEmitter::serdeMetaData(SerDe& sd) {
     (retUserType)
     (retUpperBounds)
     (originalFilename)
+    (coeffectRules)
     ;
 
   if (SerDe::deserializing) {
     repoReturnType.resolveArray(ue());
     repoAwaitedReturnType.resolveArray(ue());
-    past = base + past_delta;
     attrs = fix_attrs(a);
   }
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// FuncRepoProxy.
+template void FuncEmitter::serdeMetaData<>(BlobDecoder&);
+template void FuncEmitter::serdeMetaData<>(BlobEncoder&);
 
-FuncRepoProxy::FuncRepoProxy(Repo& repo)
-    : RepoProxy(repo),
-      insertFunc{InsertFuncStmt(repo, 0), InsertFuncStmt(repo, 1)},
-      getFuncs{GetFuncsStmt(repo, 0), GetFuncsStmt(repo, 1)}
-{}
+template<class SerDe>
+void FuncEmitter::serde(SerDe& sd, bool lazy) {
+  assertx(IMPLIES(lazy, RO::RepoAuthoritative));
+  assertx(IMPLIES(!SerDe::deserializing, !lazy));
 
-FuncRepoProxy::~FuncRepoProxy() {
-}
+  serdeMetaData(sd);
 
-void FuncRepoProxy::createSchema(int repoId, RepoTxn& txn) {
-  auto createQuery = folly::sformat(
-    "CREATE TABLE {} "
-    "(unitSn INTEGER, funcSn INTEGER, preClassId INTEGER, name TEXT, "
-    " extraData BLOB, PRIMARY KEY (unitSn, funcSn));",
-    m_repo.table(repoId, "Func"));
-  txn.exec(createQuery);
-}
+  // Never lazy load any builtins (this avoids issues with HHBBC
+  // trying to load data after we've shutdown the repo).
+  if (attrs & AttrBuiltin) lazy = false;
 
-void FuncRepoProxy::InsertFuncStmt
-                  ::insert(const FuncEmitter& fe,
-                           RepoTxn& txn, int64_t unitSn, int funcSn,
-                           Id preClassId, const StringData* name) {
-  if (!prepared()) {
-    auto insertQuery = folly::sformat(
-      "INSERT INTO {} "
-      "VALUES(@unitSn, @funcSn, @preClassId, @name, @extraData);",
-      m_repo.table(m_repoId, "Func"));
-    txn.prepare(*this, insertQuery);
-  }
-
-  BlobEncoder extraBlob{fe.useGlobalIds()};
-  RepoTxnQuery query(txn, *this);
-  query.bindInt64("@unitSn", unitSn);
-  query.bindInt("@funcSn", funcSn);
-  query.bindId("@preClassId", preClassId);
-  query.bindStaticString("@name", name);
-  const_cast<FuncEmitter&>(fe).serdeMetaData(extraBlob);
-  query.bindBlob("@extraData", extraBlob, /* static */ true);
-  query.exec();
-}
-
-void FuncRepoProxy::GetFuncsStmt
-                  ::get(UnitEmitter& ue) {
-  auto txn = RepoTxn{m_repo.begin()};
-  if (!prepared()) {
-    auto selectQuery = folly::sformat(
-      "SELECT funcSn, preClassId, name, extraData "
-      "FROM {} "
-      "WHERE unitSn == @unitSn ORDER BY funcSn ASC;",
-      m_repo.table(m_repoId, "Func"));
-    txn.prepare(*this, selectQuery);
-  }
-  RepoTxnQuery query(txn, *this);
-  query.bindInt64("@unitSn", ue.m_sn);
-  do {
-    query.step();
-    if (query.row()) {
-      int funcSn;               /**/ query.getInt(0, funcSn);
-      Id preClassId;            /**/ query.getId(1, preClassId);
-      StringData* name;         /**/ query.getStaticString(2, name);
-      BlobDecoder extraBlob =   /**/ query.getBlob(3, ue.useGlobalIds());
-
-      FuncEmitter* fe;
-      if (preClassId < 0) {
-        fe = ue.newFuncEmitter(name);
-      } else {
-        PreClassEmitter* pce = ue.pce(preClassId);
-        fe = ue.newMethodEmitter(name, pce);
-        bool added UNUSED = pce->addMethod(fe);
-        assertx(added);
-      }
-      assertx(fe->sn() == funcSn);
-      fe->serdeMetaData(extraBlob);
-      if (!SystemLib::s_inited) {
-        assertx(fe->attrs & AttrBuiltin);
-        if (preClassId < 0) {
-          assertx(fe->attrs & AttrPersistent);
-          assertx(fe->attrs & AttrUnique);
-        }
-      }
-      fe->setEHTabIsSorted();
-      fe->finish(fe->past);
+  if constexpr (SerDe::deserializing) {
+    if (lazy) {
+      m_lineTable = Func::LineTablePtr::FromToken(sd.advanced());
+      sd.skipWithSize();
+    } else {
+      LineTable lineTable;
+      deserializeLineTable(sd, lineTable);
+      setLineTable(std::move(lineTable));
     }
-  } while (!query.done());
-  txn.commit();
+  } else {
+    auto const& lines = m_sourceLocTab.empty()
+      ? *m_lineTable.ptr()
+      : createLineTable(m_sourceLocTab, m_bclen);
+    sd.withSize(
+      [&] {
+        sd(
+          lines,
+          [&] (const LineEntry& prev, const LineEntry& curDelta) {
+            return LineEntry {
+              curDelta.pastOffset() - prev.pastOffset(),
+              curDelta.val() - prev.val()
+            };
+          }
+        );
+      }
+    );
+  }
+
+  if constexpr (SerDe::deserializing) {
+    sd(m_sourceLocTab);
+  } else {
+    sd(RO::RepoDebugInfo ? m_sourceLocTab : decltype(m_sourceLocTab){});
+  }
+
+  // Bytecode
+  if constexpr (SerDe::deserializing) {
+    assertx(sd.remaining() >= m_bclen);
+    if (lazy) {
+      setBcToken(sd.advanced(), m_bclen);
+    } else {
+      setBc(sd.data(), m_bclen);
+    }
+    sd.advance(m_bclen);
+  } else {
+    sd.writeRaw((const char*)m_bc.ptr(), m_bclen);
+  }
+}
+
+template void FuncEmitter::serde<>(BlobDecoder&, bool);
+template void FuncEmitter::serde<>(BlobEncoder&, bool);
+
+void FuncEmitter::deserializeLineTable(BlobDecoder& decoder,
+                                       LineTable& lineTable) {
+  decoder.withSize(
+    [&] {
+      decoder(
+        lineTable,
+        [&] (const LineEntry& prev, const LineEntry& curDelta) {
+          return LineEntry {
+            curDelta.pastOffset() + prev.pastOffset(),
+            curDelta.val() + prev.val()
+          };
+        }
+      );
+    }
+  );
+}
+
+size_t FuncEmitter::optDeserializeLineTable(BlobDecoder& decoder,
+                                            LineTable& lineTable) {
+  // We encoded the size of the line table along with the table. So,
+  // peek its size and bail if the decoder doesn't have enough data
+  // remaining.
+  auto const size = decoder.peekSize();
+  if (size <= decoder.remaining()) deserializeLineTable(decoder, lineTable);
+  return size;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

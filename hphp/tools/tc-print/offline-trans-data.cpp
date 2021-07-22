@@ -17,8 +17,10 @@
 
 #include "hphp/tools/tc-print/tc-print.h"
 #include "hphp/tools/tc-print/offline-code.h"
+#include "hphp/tools/tc-print/repo-wrapper.h"
 #include "hphp/util/build-info.h"
-#include "hphp/runtime/vm/repo.h"
+
+#include <folly/Math.h>
 
 using std::string;
 
@@ -37,10 +39,9 @@ static string tcDataFileName("/tc_data.txt.gz");
 
 namespace HPHP { namespace jit {
 
-void OfflineTransData::loadTCData(string dumpDir) {
+void OfflineTransData::loadTCHeader() {
   string fileName = dumpDir + tcDataFileName;
   char buf[BUFLEN+1];
-  char funcName[BUFLEN+1];
 
   gzFile file = gzopen(fileName.c_str(), "r");
   if (!file) {
@@ -48,7 +49,7 @@ void OfflineTransData::loadTCData(string dumpDir) {
   }
 
   // read header info
-  READ("repo_schema = %s", repoSchema);
+  READ("repo_schema = %40s", repoSchema);
   READ("ahot.base = %p", &ahotBase);
   READ("ahot.frontier = %p", &ahotFrontier);
   READ("a.base = %p", &aBase);
@@ -63,13 +64,28 @@ void OfflineTransData::loadTCData(string dumpDir) {
   READ("total_translations = %u", &nTranslations);
   READ_EMPTY();
 
+  headerSize = gztell(file);
+  gzclose(file);
+}
+
+void OfflineTransData::loadTCData(RepoWrapper* repoWrapper) {
+  string fileName = dumpDir + tcDataFileName;
+  char buf[BUFLEN+1];
+  char funcName[BUFLEN+1];
+
+  gzFile file = gzopen(fileName.c_str(), "r");
+  if (!file) {
+    error("Error opening file " + fileName);
+  }
+
+  gzseek(file, headerSize, SEEK_SET);
+
   // Read translations
   for (uint32_t tid = 0; tid < nTranslations; tid++) {
     TransRec  tRec;
-    SHA1Str    sha1Str;
+    SHA1Str   sha1Str;
     uint32_t  kind;
-    FuncId    funcId;
-    int32_t   resumeMode;
+    uint64_t  srcKeyInt;
     uint64_t  annotationsCount;
     size_t    numBCMappings = 0;
     size_t    numBlocks = 0;
@@ -82,29 +98,33 @@ void OfflineTransData::loadTCData(string dumpDir) {
       READ_EMPTY();
       continue;
     }
-    READ(" src.sha1 = %s", sha1Str);
+    READ(" src.sha1 = %40s", sha1Str);
     tRec.sha1 = SHA1(sha1Str);
-    READ(" src.funcId = %u", &funcId);
     READ(" src.funcName = %s", funcName);
     tRec.funcName = funcName;
-    READ(" src.resumeMode = %d", &resumeMode);
-    READ(" src.bcStart = %d", &tRec.bcStart);
+    READ(" src.key = %" PRIu64 "", &srcKeyInt);
+    tRec.src = SrcKey::fromAtomicInt(srcKeyInt);
 
     READ(" src.blocks = %lu", &numBlocks);
     for (size_t i = 0; i < numBlocks; ++i) {
       SHA1Str sha1Tmp;
-      Offset start = kInvalidOffset;
+      Id funcSn = kInvalidId;
+      uint64_t srcKeyIntTmp;
       Offset past = kInvalidOffset;
 
       if (gzgets(file, buf, BUFLEN) == Z_NULL ||
-          sscanf(buf, "%s %d %d", sha1Tmp, &start, &past) != 3) {
+          sscanf(buf, "%40s %d %" PRIu64 " %d", sha1Tmp, &funcSn, &srcKeyIntTmp, &past) != 4) {
         snprintf(buf, BUFLEN,
                  "Error reading bytecode block #%lu at translation %u\n",
                  i, tRec.id);
         error(buf);
       }
 
-      tRec.blocks.emplace_back(TransRec::Block{SHA1(sha1Tmp), start, past});
+      auto const sha1 = SHA1(sha1Tmp);
+      auto const func = repoWrapper->getFunc(sha1, funcSn);
+      auto const funcId = func != nullptr ? func->getFuncId() : FuncId::Invalid;
+      auto const sk = SrcKey::fromAtomicInt(srcKeyIntTmp).withFuncID(funcId);
+      tRec.blocks.emplace_back(TransRec::Block { sha1, sk, past });
     }
 
     READ(" src.guards = %lu", &numGuards);
@@ -165,13 +185,17 @@ void OfflineTransData::loadTCData(string dumpDir) {
     for (size_t i = 0; i < numBCMappings; i++) {
       TransBCMapping bcMap;
       SHA1Str sha1Tmp;
+      Id funcSn = kInvalidId;
+      uint64_t srcKeyIntTmp;
 
       if (gzgets(file, buf, BUFLEN) == Z_NULL ||
-          sscanf(buf, "%s %d %p %p %p",
-                 sha1Tmp, &bcMap.bcStart,
+          sscanf(buf, "%40s %d %" PRIu64 " %p %p %p",
+                 sha1Tmp,
+                 &funcSn,
+                 &srcKeyIntTmp,
                  (void**)&bcMap.aStart,
                  (void**)&bcMap.acoldStart,
-                 (void**)&bcMap.afrozenStart) != 5) {
+                 (void**)&bcMap.afrozenStart) != 6) {
 
         snprintf(buf, BUFLEN,
                  "Error reading bytecode mapping #%lu at translation %u\n",
@@ -181,11 +205,14 @@ void OfflineTransData::loadTCData(string dumpDir) {
       }
 
       bcMap.sha1 = SHA1(sha1Tmp);
+      auto const func = repoWrapper->getFunc(bcMap.sha1, funcSn);
+      auto const funcId = func != nullptr ? func->getFuncId() : FuncId::Invalid;
+      bcMap.sk = SrcKey::fromAtomicInt(srcKeyIntTmp).withFuncID(funcId);
       tRec.bcMapping.push_back(bcMap);
     }
 
     // push a sentinel bcMapping so that we can figure out stop offsets later on
-    const TransBCMapping sentinel { tRec.sha1, 0,
+    const TransBCMapping sentinel { tRec.sha1, SrcKey {},
                                     tRec.aStart + tRec.aLen,
                                     tRec.acoldStart + tRec.acoldLen,
                                     tRec.afrozenStart + tRec.afrozenLen };
@@ -194,14 +221,6 @@ void OfflineTransData::loadTCData(string dumpDir) {
     READ_EMPTY();
     READ_EMPTY();
     tRec.kind = (TransKind)kind;
-    if (isPrologue(tRec.kind)) {
-      tRec.src = SrcKey { funcId, tRec.bcStart, SrcKey::PrologueTag{} };
-    } else {
-      tRec.src = SrcKey {
-        funcId, tRec.bcStart,
-        static_cast<ResumeMode>(resumeMode)
-      };
-    }
     always_assert_flog(tid == tRec.id,
                        "Translation {} has id {}", tid, tRec.id);
     addTrans(tRec);
@@ -246,7 +265,7 @@ TransID OfflineTransData::getTransContaining(TCA addr) const {
   int32_t first = 0;
   int32_t last  = transAddrRanges.size() - 1;
   while (first <= last) {
-    int32_t mid = (first + last) / 2;
+    const auto mid = folly::midpoint(first, last);
     if (transAddrRanges[mid].start > addr) {
       last = mid - 1;
     } else if (transAddrRanges[mid].end < addr) {
@@ -265,7 +284,7 @@ void OfflineTransData::findFuncTrans(uint32_t selectedFuncId,
   for (uint32_t tid = 0; tid < nTranslations; tid++) {
     if (!translations[tid].isValid() ||
         translations[tid].kind == TransKind::Anchor ||
-        translations[tid].src.funcID() != selectedFuncId) continue;
+        translations[tid].src.funcID().toInt() != selectedFuncId) continue;
     inodes->push_back(tid);
   }
 }
@@ -320,7 +339,7 @@ void OfflineTransData::printTransRec(TransID transId,
     tRec->funcName,
     static_cast<int32_t>(tRec->src.resumeMode()),
     tRec->src.prologue(),
-    tRec->src.offset(),
+    tRec->src.printableOffset(),
     tRec->guards.size());
 
   for (auto& guard : tRec->guards) {

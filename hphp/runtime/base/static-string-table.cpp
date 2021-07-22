@@ -330,8 +330,8 @@ const StaticString s_Core("Core");
 
 Array lookupDefinedConstants(bool categorize /*= false */) {
   assertx(s_stringDataMap);
-  auto usr = Array::CreateDArray();
-  auto sys = categorize ? Array::CreateDArray() : Array();
+  auto usr = Array::CreateDict();
+  auto sys = categorize ? Array::CreateDict() : Array();
 
   for (auto const& it : *s_stringDataMap) {
     auto const& rval = it.second;
@@ -353,7 +353,7 @@ Array lookupDefinedConstants(bool categorize /*= false */) {
   }
 
   if (categorize) {
-    return make_darray(
+    return make_dict_array(
       s_user, usr,
       s_Core, sys
     );

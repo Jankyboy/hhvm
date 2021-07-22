@@ -38,7 +38,6 @@
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/runtime/vm/jit/translator.h"
 #include "hphp/runtime/vm/method-lookup.h"
-#include "hphp/runtime/vm/repo.h"
 #include "hphp/runtime/vm/reified-generics.h"
 #include "hphp/runtime/vm/type-constraint.h"
 #include "hphp/runtime/vm/unit-util.h"
@@ -74,14 +73,6 @@ const StaticString s_cmpWithCollection(
   "Cannot use relational comparison operators (<, <=, >, >=, <=>) to compare "
   "a collection with an integer, double, string, array, or object"
 );
-const StaticString s_cmpWithVArray(
-  "Cannot use relational comparison operators (<, <=, >, >=, <=>) to compare "
-  "a varray with a non-varray"
-);
-const StaticString s_cmpWithDArray(
-  "Cannot use relational comparison operators (<, <=, >, >=, <=>) to compare "
-  "darrays"
-);
 const StaticString s_cmpWithVec(
   "Cannot use relational comparison operators (<, <=, >, >=, <=>) to compare "
   "a vec with a non-vec"
@@ -100,7 +91,7 @@ const StaticString s_cmpWithRecord(
 );
 const StaticString s_cmpWithClsMeth(
   "Cannot use relational comparison operators (<, <=, >, >=, <=>) to compare "
-  "a clsmeth with a non-clsmeth"
+  "a clsmeth"
 );
 const StaticString s_cmpWithRClsMeth(
   "Cannot use relational comparison operators (<, <=, >, >=, <=>) to compare "
@@ -125,13 +116,13 @@ const StaticString s_cmpWithFunc(
 ///////////////////////////////////////////////////////////////////////////////
 
 bool array_is_valid_callback(const Array& arr) {
-  if (!arr.isPHPArray() && !arr.isVec() && !arr.isDict()) return false;
+  if (!arr.isVec() && !arr.isDict()) return false;
   if (arr.size() != 2 || !arr.exists(int64_t(0)) || !arr.exists(int64_t(1))) {
     return false;
   }
   auto const elem0 = arr.lookup(0);
   if (!isStringType(elem0.type()) && !isObjectType(elem0.type()) &&
-      !isClassType(elem0.type())) {
+      !isClassType(elem0.type()) && !isLazyClassType(elem0.type())) {
     return false;
   }
   auto const elem1 = arr.lookup(1);
@@ -180,8 +171,7 @@ bool is_callable(const Variant& v, bool syntax_only, Variant* name) {
     return ret;
   }
 
-  if (isArrayType(tv_func->m_type) ||
-      isVecType(tv_func->m_type) ||
+  if (isVecType(tv_func->m_type) ||
       isDictType(tv_func->m_type)) {
     auto const arr = Array(tv_func->m_data.parr);
     auto const clsname = arr.lookup(int64_t(0));
@@ -198,6 +188,8 @@ bool is_callable(const Variant& v, bool syntax_only, Variant* name) {
       clsString = clsname.val().pobj->getClassName().get();
     } else if (isStringType(clsname.type())) {
       clsString = clsname.val().pstr;
+    } else if (isLazyClassType(clsname.type())) {
+      clsString = const_cast<StringData*>(clsname.val().plazyclass.name());
     } else if (isClassType(clsname.type())) {
       clsString = const_cast<StringData*>(clsname.val().pclass->name());
     } else {
@@ -288,7 +280,7 @@ Class* vm_decode_class_from_name(
                       "is undefined", clsName.data(), funcName.data());
       }
     }
-    cls = Unit::loadClass(clsName.get());
+    cls = Class::load(clsName.get());
   }
   return cls;
 }
@@ -303,7 +295,8 @@ const Func* vm_decode_func_from_name(
   Class* cc,
   DecodeFlags flags) {
   CallType lookupType = this_ ? CallType::ObjMethod : CallType::ClsMethod;
-  auto f = lookupMethodCtx(cc, funcName.get(), ctx, lookupType);
+  auto f = lookupMethodCtx(cc, funcName.get(), ctx, lookupType,
+                           MethodLookupErrorOptions::None);
   if (f && (f->attrs() & AttrStatic)) {
     // If we found a method and its static, null out this_
     this_ = nullptr;
@@ -417,7 +410,7 @@ bool checkMethCallerTarget(const Func* meth, const Class* ctx, bool error) {
 }
 
 void checkMethCaller(const Func* func, const Class* ctx) {
-  auto const cls = Unit::loadClass(func->methCallerClsName());
+  auto const cls = Class::load(func->methCallerClsName());
   if (!cls) {
     SystemLib::throwInvalidArgumentExceptionObject(folly::sformat(
       "meth_caller(): class {} not found", func->methCallerClsName()->data()
@@ -430,7 +423,13 @@ void checkMethCaller(const Func* func, const Class* ctx) {
     ));
   }
 
-  auto const meth = cls->lookupMethod(func->methCallerMethName());
+  auto const meth = [&] () -> const Func* {
+    if (auto const m = cls->lookupMethod(func->methCallerMethName())) return m;
+    for (auto const i : cls->allInterfaces().range()) {
+      if (auto const m = i->lookupMethod(func->methCallerMethName())) return m;
+    }
+    return nullptr;
+  }();
   if (!meth) {
     SystemLib::throwInvalidArgumentExceptionObject(folly::sformat(
       "meth_caller(): method {}::{} not found",
@@ -507,6 +506,8 @@ vm_decode_function(const_variant_ref function,
           cls = this_->getVMClass();
         } else if (elem0.isClass()) {
           cls = elem0.toClassVal();
+        } else if (elem0.isLazyClass()) {
+          cls = Class::load(elem0.toLazyClassVal().name());
         } else {
           raise_error("calling an ill-formed array without resolved "
                       "object/class pointer");
@@ -520,9 +521,11 @@ vm_decode_function(const_variant_ref function,
       pos = name.find("::");
       nameContainsClass =
         (pos != 0 && pos != String::npos && pos + 2 < name.size());
-      if (elem0.isString()) {
+      if (elem0.isString() || elem0.isLazyClass()) {
+        auto const clsName = elem0.isString() ?
+          elem0.toString() : StrNR{elem0.toLazyClassVal().name()};
         cls = vm_decode_class_from_name(
-          elem0.toString(), name, nameContainsClass, ar, forwarding, ctx,
+          clsName, name, nameContainsClass, ar, forwarding, ctx,
           flags);
         if (!cls) {
           if (flags == DecodeFlags::Warn) {
@@ -579,7 +582,7 @@ vm_decode_function(const_variant_ref function,
           }
         }
       } else {
-        cc = Unit::loadClass(c.get());
+        cc = Class::load(c.get());
       }
       if (!cc) {
         if (flags == DecodeFlags::Warn) {
@@ -661,7 +664,8 @@ Variant vm_call_user_func(const_variant_ref function, const Variant& params,
   }
   auto ret = Variant::attach(
     g_context->invokeFunc(ctx.func, params, ctx.this_, ctx.cls,
-                          ctx.dynamic, checkRef, allowDynCallNoPointer)
+                          RuntimeCoeffects::fixme(), ctx.dynamic,
+                          checkRef, allowDynCallNoPointer)
   );
   return ret;
 }
@@ -672,7 +676,8 @@ invoke(const String& function, const Variant& params,
   Func* func = Func::load(function.get());
   if (func && (isContainer(params) || params.isNull())) {
     auto ret = Variant::attach(
-      g_context->invokeFunc(func, params, nullptr, nullptr, true, false,
+      g_context->invokeFunc(func, params, nullptr, nullptr,
+                            RuntimeCoeffects::fixme(), true, false,
                             allowDynCallNoPointer)
 
     );
@@ -687,7 +692,7 @@ invoke(const String& function, const Variant& params,
 
 Variant invoke_static_method(const String& s, const String& method,
                              const Variant& params, bool fatal /* = true */) {
-  HPHP::Class* class_ = Unit::lookupClass(s.get());
+  HPHP::Class* class_ = Class::lookup(s.get());
   if (class_ == nullptr) {
     o_invoke_failed(s.data(), method.data(), fatal);
     return uninit_null();
@@ -699,7 +704,7 @@ Variant invoke_static_method(const String& s, const String& method,
     return uninit_null();
   }
   auto ret = Variant::attach(
-    g_context->invokeFunc(f, params, nullptr, class_)
+    g_context->invokeFunc(f, params, nullptr, class_, RuntimeCoeffects::fixme())
   );
   return ret;
 }
@@ -784,14 +789,6 @@ void throw_collection_compare_exception() {
   SystemLib::throwInvalidOperationExceptionObject(s_cmpWithCollection);
 }
 
-void throw_varray_compare_exception() {
-  SystemLib::throwInvalidOperationExceptionObject(s_cmpWithVArray);
-}
-
-void throw_darray_compare_exception() {
-  SystemLib::throwInvalidOperationExceptionObject(s_cmpWithDArray);
-}
-
 void throw_vec_compare_exception() {
   SystemLib::throwInvalidOperationExceptionObject(s_cmpWithVec);
 }
@@ -822,10 +819,6 @@ void throw_clsmeth_compare_exception() {
 
 void throw_rclsmeth_compare_exception() {
   SystemLib::throwInvalidOperationExceptionObject(s_cmpWithRClsMeth);
-}
-
-void throw_arr_non_arr_compare_exception() {
-  SystemLib::throwInvalidOperationExceptionObject(s_cmpWithNonArr);
 }
 
 void throw_func_compare_exception() {
@@ -883,6 +876,25 @@ void throw_cannot_modify_static_const_prop(const char* className,
 {
   auto msg = folly::sformat(
    "Cannot modify static const property {} of class {}.",
+   propName, className
+  );
+  SystemLib::throwInvalidOperationExceptionObject(msg);
+}
+
+void throw_cannot_write_non_readonly_prop(const char* className,
+                                          const char* propName)
+{
+  auto msg = folly::sformat(
+   "Cannot store readonly value in a non-readonly property {} of class {}.",
+   propName, className
+  );
+  SystemLib::throwInvalidOperationExceptionObject(msg);
+}
+
+void throw_must_be_mutable(const char* className, const char* propName)
+{
+  auto msg = folly::sformat(
+   "Property {} of class {} must be mutable.",
    propName, className
   );
   SystemLib::throwInvalidOperationExceptionObject(msg);
@@ -1029,12 +1041,14 @@ Variant throw_fatal_unset_static_property(const char *s, const char *prop) {
 
 Variant unserialize_ex(const char* str, int len,
                        VariableUnserializer::Type type,
-                       const Array& options /* = null_array */) {
+                       const Array& options /* = null_array */,
+                       bool pure /* = false */) {
   if (str == nullptr || len <= 0) {
     return false;
   }
 
   VariableUnserializer vu(str, len, type, true, options);
+  if (pure) vu.setPure();
   Variant v;
   try {
     v = vu.unserialize();
@@ -1055,8 +1069,9 @@ Variant unserialize_ex(const char* str, int len,
 
 Variant unserialize_ex(const String& str,
                        VariableUnserializer::Type type,
-                       const Array& options /* = null_array */) {
-  return unserialize_ex(str.data(), str.size(), type, options);
+                       const Array& options /* = null_array */,
+                       bool pure /* = false */) {
+  return unserialize_ex(str.data(), str.size(), type, options, pure);
 }
 
 String concat3(const String& s1, const String& s2, const String& s3) {

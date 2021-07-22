@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_ALIAS_CLASS_H_
-#define incl_HPHP_ALIAS_CLASS_H_
+#pragma once
 
 #include "hphp/runtime/base/rds.h"
 
@@ -22,8 +21,6 @@
 
 #include "hphp/runtime/vm/jit/alias-id-set.h"
 #include "hphp/runtime/vm/jit/stack-offsets.h"
-
-#include <folly/Optional.h>
 
 #include <bitset>
 #include <string>
@@ -92,7 +89,7 @@ struct ALocal;
 struct AIter;
 
 namespace detail {
-FPRelOffset frame_base_offset(SSATmp* fp);
+u_int32_t frame_depth_index(SSATmp* fp);
 
 static constexpr uint32_t kSlotsPerAIter = 4;
 static constexpr uint32_t kAIterBaseOffset = 0;
@@ -103,25 +100,21 @@ static constexpr uint32_t kAIterEndOffset = 3;
 }
 
 struct UFrameBase {
-  UFrameBase(SSATmp* fp) : base{detail::frame_base_offset(fp)} {}
-  UFrameBase(FPRelOffset off) : base{off} {}
-  FPRelOffset base;
+  explicit UFrameBase(SSATmp* fp) : frameIdx{detail::frame_depth_index(fp)} {}
+  explicit UFrameBase(uint32_t frameIdx) : frameIdx{frameIdx} {}
+  uint32_t frameIdx;
 };
 
-#define FRAME_RELATIVE(Name)                                                  \
-  struct Name : UFrameBase {                                                  \
-    Name(SSATmp* fp, AliasIdSet ids, FPInvOffset off = FPInvOffset{0})        \
-      : UFrameBase{detail::frame_base_offset(fp) - off.offset}, ids{ids} {}   \
-    Name(FPRelOffset off, AliasIdSet ids) : UFrameBase{off}, ids{ids} {}      \
-    AliasIdSet ids;                                                           \
+#define FRAME_RELATIVE(Name)                                                   \
+  struct Name : UFrameBase {                                                   \
+    Name(SSATmp* fp, AliasIdSet ids) : UFrameBase{fp}, ids{ids} {}             \
+    Name(uint32_t frameIdx, AliasIdSet ids) : UFrameBase{frameIdx}, ids{ids} {}\
+    AliasIdSet ids;                                                            \
   }
 
-#define FRAME_RELATIVE0(Name)                                                 \
-  struct Name : UFrameBase {                                                  \
-    using UFrameBase::UFrameBase;                                             \
-    Name() = default;                                                         \
-    /* implicit */ Name(const UFrameBase& base) : UFrameBase{base} {}         \
-    Name& operator=(const UFrameBase& b) { base = b.base; return *this; }     \
+#define FRAME_RELATIVE0(Name)                                                  \
+  struct Name : UFrameBase {                                                   \
+    using UFrameBase::UFrameBase;                                              \
   }
 
 /*
@@ -135,42 +128,35 @@ FRAME_RELATIVE(ALocal);
  */
 FRAME_RELATIVE(AIter);
 
-inline AIter aiter_base(SSATmp* fp, uint32_t id,
-                        FPInvOffset off = FPInvOffset{0}) {
+inline AIter aiter_base(SSATmp* fp, uint32_t id) {
   using namespace detail;
-  return AIter { fp, id * kSlotsPerAIter + kAIterBaseOffset, off };
+  return AIter { fp, id * kSlotsPerAIter + kAIterBaseOffset };
 }
-inline AIter aiter_type(SSATmp* fp, uint32_t id,
-                        FPInvOffset off = FPInvOffset{0}) {
+inline AIter aiter_type(SSATmp* fp, uint32_t id) {
   using namespace detail;
-  return AIter { fp, id * kSlotsPerAIter + kAIterTypeOffset, off };
+  return AIter { fp, id * kSlotsPerAIter + kAIterTypeOffset };
 }
-inline AIter aiter_pos(SSATmp* fp, uint32_t id,
-                       FPInvOffset off = FPInvOffset{0}) {
+inline AIter aiter_pos(SSATmp* fp, uint32_t id) {
   using namespace detail;
-  return AIter { fp, id * kSlotsPerAIter + kAIterPosOffset, off };
+  return AIter { fp, id * kSlotsPerAIter + kAIterPosOffset };
 }
-inline AIter aiter_end(SSATmp* fp, uint32_t id,
-                       FPInvOffset off = FPInvOffset{0}) {
+inline AIter aiter_end(SSATmp* fp, uint32_t id) {
   using namespace detail;
-  return AIter { fp, id * kSlotsPerAIter + kAIterEndOffset, off };
+  return AIter { fp, id * kSlotsPerAIter + kAIterEndOffset };
 }
 
-inline AIter aiter_all(SSATmp* fp, uint32_t id,
-                       FPInvOffset off = FPInvOffset{0}) {
+inline AIter aiter_all(SSATmp* fp, uint32_t id) {
   using namespace detail;
   return AIter {
     fp,
-    AliasIdSet::IdRange(id * kSlotsPerAIter, (id + 1) * kSlotsPerAIter),
-    off
+    AliasIdSet::IdRange(id * kSlotsPerAIter, (id + 1) * kSlotsPerAIter)
   };
 }
 
 /*
  * These singleton values are each associated with a given frame. AFContext
  * is the m_thisUnsafe field of ActRec, AFFunc is m_func, AFMeta holds the
- * flags, numArgs, hardware, and VM return fields (m_savedRip, m_numArgs, and
- * m_callOffAndFlags),
+ * flags, hardware, and VM return fields (m_savedRip and m_callOffAndFlags).
  */
 FRAME_RELATIVE0(AFContext);
 FRAME_RELATIVE0(AFFunc);
@@ -189,7 +175,7 @@ struct AProp  { SSATmp* obj; uint16_t offset; };
 
 /*
  * A integer index inside of an array, with base `arr'.  The `arr' tmp is any
- * kind of array (not necessarily kPackedKind or whatnot).
+ * kind of array (not necessarily a vec).
  */
 struct AElemI { SSATmp* arr; int64_t idx; };
 
@@ -200,27 +186,25 @@ struct AElemI { SSATmp* arr; int64_t idx; };
 struct AElemS { SSATmp* arr; const StringData* key; };
 
 /*
- * A range of the stack, starting at `offset' from the outermost frame pointer,
- * and extending `size' slots deeper into the stack (toward lower memory
- * addresses).  As an example, `acls = AStack { fp, FPRelOffset{-1}, 3 }`
+ * A range of the stack located between the `low' and `high' offsets from
+ * the IRSP. The `low' offset may be set to INT32_MIN to refer to the class
+ * of all stack locations below the `high' depth. The stack pointer is the same
+ * for all stack ranges in the IR unit, and thus is not stored here.
+ *
+ * As an example, `acls = AStack::range(IRSPRelOffset{-3}, IRSPRelOffset{-1})'
  * represents the following:
  *
  *         ___________________
- *        | (i am an actrec)  |
- *  high  |___________________| ___...fp points here        __
- *    ^   |   local 0         |                               \
- *    |   |___________________| ___...start counting here: 1  |
- *    |   |   local 1         |                               | acls
- *    |   |___________________| ___...2                       |
- *    |   |   local 2         |                               |
- *   low  |___________________| ___...3; we're done         __/
- *        |   local 3         |
+ *  high  |   irspoff  0      |
+ *    ^   |___________________| ___...sp points here
+ *    |   |   irspoff -1      |
+ *    |   |___________________| ___...acls.high             __
+ *    |   |   ifspoff -2      |                               \
+ *    |   |___________________|                                | acls
+ *    |   |   irspoff -3      |                                |
+ *    |   |___________________| ___...acls.low              __/
+ *   low  |   irspoff -4      |
  *        |___________________|
- *
- * The frame pointer is the same for all stack ranges in the IR unit, and thus
- * is not stored here.  The reason ranges extend downward is that it is common
- * to need to refer to the class of all stack locations below some depth (this
- * can be done by putting INT32_MAX in the size).
  *
  * Some notes on how the evaluation stack is treated for alias analysis:
  *
@@ -238,15 +222,33 @@ struct AElemS { SSATmp* arr; const StringData* key; };
  *     HHBC-level semantics.)
  */
 struct AStack {
-  // We can create an AStack from either a stack pointer or a frame pointer.
-  // These constructors canonicalize the offset to be relative to the outermost
-  // frame pointer.
-  explicit AStack(SSATmp* fp, FPRelOffset offset, int32_t size);
-  explicit AStack(SSATmp* sp, IRSPRelOffset offset, int32_t size);
-  explicit AStack(FPRelOffset o, int32_t s) : offset(o), size(s) {}
+  // Return AStack representing a single stack cell at `offset`.
+  static AStack at(IRSPRelOffset offset) {
+    return AStack{offset, offset + 1};
+  }
 
-  FPRelOffset offset;
-  int32_t size;
+  // Return AStack representing a range of stack cells between low (inclusive)
+  // and high (exclusive) offsets.
+  static AStack range(IRSPRelOffset low, IRSPRelOffset high) {
+    return AStack{low, high};
+  }
+
+  // Return AStack representing all stack cells below the high offset (not
+  // including the cell at the high offset, as that one is above).
+  static AStack below(IRSPRelOffset high) {
+    auto constexpr low = IRSPRelOffset{std::numeric_limits<int32_t>::min()};
+    return AStack{low, high};
+  }
+
+  uint32_t size() const {
+    return safe_cast<uint32_t>(int64_t{high.offset} - int64_t{low.offset});
+  }
+
+  IRSPRelOffset low;
+  IRSPRelOffset high;
+
+private:
+  explicit AStack(IRSPRelOffset l, IRSPRelOffset h) : low(l), high(h) {}
 };
 
 /*
@@ -293,11 +295,12 @@ struct AliasClass {
     // Have no specialization, put them last.
     BMITempBase = 1U << 10,
     BMIBase     = 1U << 11,
-    BFBasePtr   = 1U << 12,
+    BMIROProp   = 1U << 12,
+    BFBasePtr   = 1U << 13,
 
     BElem      = BElemI | BElemS,
     BHeap      = BElem | BProp,
-    BMIState   = BMITempBase | BMIBase,
+    BMIState   = BMITempBase | BMIBase | BMIROProp,
 
     BActRec = BFContext | BFFunc | BFMeta,
 
@@ -341,17 +344,17 @@ struct AliasClass {
 
   /*
    * Return an AliasClass that is the precise union of this class and another
-   * class, or folly::none if that precise union cannot be represented.
+   * class, or std::nullopt if that precise union cannot be represented.
    *
    * Guaranteed to be commutative.
    */
-  folly::Optional<AliasClass> precise_union(AliasClass) const;
+  Optional<AliasClass> precise_union(AliasClass) const;
 
   /*
    * Create an alias class that is at least as big as the true union of this
    * alias class and another one.
    *
-   * If this.precise_union(o) is not folly::none, this function is guaranteed
+   * If this.precise_union(o) is not std::nullopt, this function is guaranteed
    * to return *this.precise_union(o).  Otherwise it may return an arbitrary
    * AliasClass bigger than the (unrepresentable) true union---callers should
    * not rely on specifics about how much bigger it is.
@@ -381,19 +384,19 @@ struct AliasClass {
   /*
    * Conditionally access specific known information of various kinds.
    *
-   * Returns folly::none if this alias class has no specialization in that way.
+   * Returns std::nullopt if this alias class has no specialization in that way.
    */
-  folly::Optional<ALocal>          local() const;
-  folly::Optional<AIter>           iter() const;
-  folly::Optional<AProp>           prop() const;
-  folly::Optional<AElemI>          elemI() const;
-  folly::Optional<AElemS>          elemS() const;
-  folly::Optional<AStack>          stack() const;
-  folly::Optional<ARds>            rds() const;
-  folly::Optional<AFContext>       fcontext() const;
-  folly::Optional<AFFunc>          ffunc() const;
-  folly::Optional<AFMeta>          fmeta() const;
-  folly::Optional<AActRec>         actrec() const;
+  Optional<ALocal>          local() const;
+  Optional<AIter>           iter() const;
+  Optional<AProp>           prop() const;
+  Optional<AElemI>          elemI() const;
+  Optional<AElemS>          elemS() const;
+  Optional<AStack>          stack() const;
+  Optional<ARds>            rds() const;
+  Optional<AFContext>       fcontext() const;
+  Optional<AFFunc>          ffunc() const;
+  Optional<AFMeta>          fmeta() const;
+  Optional<AActRec>         actrec() const;
 
   /*
    * Conditionally access specific known information, but also checking that
@@ -401,28 +404,28 @@ struct AliasClass {
    *
    * I.e., cls.is_foo() is semantically equivalent to:
    *
-   *   cls <= AFooAny ? cls.foo() : folly::none
+   *   cls <= AFooAny ? cls.foo() : std::nullopt
    */
-  folly::Optional<ALocal>          is_local() const;
-  folly::Optional<AIter>           is_iter() const;
-  folly::Optional<AProp>           is_prop() const;
-  folly::Optional<AElemI>          is_elemI() const;
-  folly::Optional<AElemS>          is_elemS() const;
-  folly::Optional<AStack>          is_stack() const;
-  folly::Optional<ARds>            is_rds() const;
-  folly::Optional<AFContext>       is_fcontext() const;
-  folly::Optional<AFFunc>          is_ffunc() const;
-  folly::Optional<AFMeta>          is_fmeta() const;
-  folly::Optional<AActRec>         is_actrec() const;
+  Optional<ALocal>          is_local() const;
+  Optional<AIter>           is_iter() const;
+  Optional<AProp>           is_prop() const;
+  Optional<AElemI>          is_elemI() const;
+  Optional<AElemS>          is_elemS() const;
+  Optional<AStack>          is_stack() const;
+  Optional<ARds>            is_rds() const;
+  Optional<AFContext>       is_fcontext() const;
+  Optional<AFFunc>          is_ffunc() const;
+  Optional<AFMeta>          is_fmeta() const;
+  Optional<AActRec>         is_actrec() const;
 
   /*
    * Like the other foo() and is_foo() methods, but since we don't have an
    * AMIState anymore, these return AliasClass instead.
    */
-  folly::Optional<AliasClass> mis() const;
-  folly::Optional<AliasClass> is_mis() const;
-  folly::Optional<AliasClass> frame_base() const;
-  folly::Optional<AliasClass> is_frame_base() const;
+  Optional<AliasClass> mis() const;
+  Optional<AliasClass> is_mis() const;
+  Optional<AliasClass> frame_base() const;
+  Optional<AliasClass> is_frame_base() const;
 
 private:
   enum class STag {
@@ -446,7 +449,7 @@ private:
   bool maybeData(AliasClass) const;
   bool diffSTagSubclassData(rep relevant_bits, AliasClass) const;
   bool diffSTagMaybeData(rep relevant_bits, AliasClass) const;
-  folly::Optional<UFrameBase> asUFrameBase() const;
+  Optional<UFrameBase> asUFrameBase() const;
   static AliasClass unionData(rep newBits, AliasClass, AliasClass);
   static STag stagFor(rep bits);
 
@@ -488,8 +491,9 @@ auto const AUnknownTV         = AliasClass{AliasClass::BUnknownTV};
 auto const AUnknown           = AliasClass{AliasClass::BUnknown};
 
 /* Alias classes for specific MInstrState fields. */
-auto const AMIStateTempBase   = AliasClass{AliasClass::BMITempBase};
 auto const AMIStateBase       = AliasClass{AliasClass::BMIBase};
+auto const AMIStateROProp     = AliasClass{AliasClass::BMIROProp};
+auto const AMIStateTempBase   = AliasClass{AliasClass::BMITempBase};
 
 /* Alias class for the frame base register */
 auto const AFBasePtr          = AliasClass{AliasClass::BFBasePtr};
@@ -515,5 +519,3 @@ std::string show(AliasClass);
 //////////////////////////////////////////////////////////////////////
 
 }}
-
-#endif

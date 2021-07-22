@@ -1,3 +1,10 @@
+(*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the "hack" directory of this source tree.
+ *
+ *)
 open Hh_prelude
 open Common
 open Utils
@@ -9,6 +16,7 @@ module KindDefs = Typing_kinding_defs
 module TGenConstraint = Typing_generic_constraint
 module TUtils = Typing_utils
 module Subst = Decl_subst
+module SN = Naming_special_names
 
 module Locl_Inst = struct
   let rec instantiate subst (ty : locl_ty) =
@@ -41,7 +49,7 @@ module Locl_Inst = struct
     else
       match deref ty with
       | (r, Tgeneric (x, args)) ->
-        let args = List.map args (instantiate subst) in
+        let args = List.map args ~f:(instantiate subst) in
         (match SMap.find_opt x subst with
         | Some x_ty -> merge_hk_type r x x_ty args
         | None -> mk (r, Tgeneric (x, args)))
@@ -59,17 +67,21 @@ module Locl_Inst = struct
       let ty1 = instantiate subst ty1 in
       let ty2 = instantiate subst ty2 in
       Tvarray_or_darray (ty1, ty2)
-    | ( Tobject | Tvar _ | Tdynamic | Tnonnull | Tany _ | Terr | Tprim _
-      | Tpu_type_access _ ) as x ->
+    | Tvec_or_dict (ty1, ty2) ->
+      let ty1 = instantiate subst ty1 in
+      let ty2 = instantiate subst ty2 in
+      Tvec_or_dict (ty1, ty2)
+    | (Tobject | Tvar _ | Tdynamic | Tnonnull | Tany _ | Terr | Tprim _ | Tneg _)
+      as x ->
       x
     | Ttuple tyl ->
-      let tyl = List.map tyl (instantiate subst) in
+      let tyl = List.map tyl ~f:(instantiate subst) in
       Ttuple tyl
     | Tunion tyl ->
-      let tyl = List.map tyl (instantiate subst) in
+      let tyl = List.map tyl ~f:(instantiate subst) in
       Tunion tyl
     | Tintersection tyl ->
-      let tyl = List.map tyl (instantiate subst) in
+      let tyl = List.map tyl ~f:(instantiate subst) in
       Tintersection tyl
     | Toption ty ->
       let ty = instantiate subst ty in
@@ -91,7 +103,7 @@ module Locl_Inst = struct
           tparams
       in
       let params =
-        List.map ft.ft_params (fun param ->
+        List.map ft.ft_params ~f:(fun param ->
             let ty = instantiate_possibly_enforced_ty subst param.fp_type in
             { param with fp_type = ty })
       in
@@ -104,16 +116,16 @@ module Locl_Inst = struct
       in
       let ret = instantiate_possibly_enforced_ty subst ft.ft_ret in
       let tparams =
-        List.map tparams (fun t ->
+        List.map tparams ~f:(fun t ->
             {
               t with
               tp_constraints =
-                List.map t.tp_constraints (fun (ck, ty) ->
+                List.map t.tp_constraints ~f:(fun (ck, ty) ->
                     (ck, instantiate subst ty));
             })
       in
       let where_constraints =
-        List.map ft.ft_where_constraints (fun (ty1, ck, ty2) ->
+        List.map ft.ft_where_constraints ~f:(fun (ty1, ck, ty2) ->
             (instantiate subst ty1, ck, instantiate outer_subst ty2))
       in
       Tfun
@@ -126,11 +138,11 @@ module Locl_Inst = struct
           ft_where_constraints = where_constraints;
         }
     | Tnewtype (x, tyl, bound) ->
-      let tyl = List.map tyl (instantiate subst) in
+      let tyl = List.map tyl ~f:(instantiate subst) in
       let bound = instantiate subst bound in
       Tnewtype (x, tyl, bound)
     | Tclass (x, exact, tyl) ->
-      let tyl = List.map tyl (instantiate subst) in
+      let tyl = List.map tyl ~f:(instantiate subst) in
       Tclass (x, exact, tyl)
     | Tshape (shape_kind, fdm) ->
       let fdm = ShapeFieldMap.map (instantiate subst) fdm in
@@ -139,9 +151,9 @@ module Locl_Inst = struct
     | Tdependent (dep, ty) ->
       let ty = instantiate subst ty in
       Tdependent (dep, ty)
-    | Tpu (ty, sid) ->
+    | Taccess (ty, ids) ->
       let ty = instantiate subst ty in
-      Tpu (ty, sid)
+      Taccess (ty, ids)
 
   and instantiate_possibly_enforced_ty subst et =
     { et_type = instantiate subst et.et_type; et_enforced = et.et_enforced }
@@ -155,7 +167,7 @@ end
   type Bar<T2> = Foo<T2>;
 
   Here, T2 of Bar implicitly has the bound T2 as num. However, in the current design, we only
-  ever check that when expaning Bar, the argument in place of T2 satisfies all the
+  ever check that when expanding Bar, the argument in place of T2 satisfies all the
   implicit bounds.
   However, this is not feasible for using aliases and newtypes as higher-kinded types, where we
   use them without expanding them.
@@ -173,11 +185,11 @@ let check_typedef_usable_as_hk_type env use_pos typedef_name typedef_info =
     let intersection = SSet.inter tparams_in_ty tparams_of_typedef in
     if SSet.is_empty intersection then
       (* Just violated constraints inside the typedef that do not involve
-      the type parameters of the typedef we are looking at. Nothing to report at this point *)
+         the type parameters of the typedef we are looking at. Nothing to report at this point *)
       ()
     else
       (* We choose an arbitrary element. If a constraint violation were to contain multiple
-      tparams of the typedef, we can live with only showing the user one of them. *)
+         tparams of the typedef, we can live with only showing the user one of them. *)
       let typedef_tparam_name = SSet.min_elt intersection in
       let (used_class_in_def_pos, used_class_in_def_name) = used_class in
       let typedef_pos = typedef_info.td_pos in
@@ -192,22 +204,21 @@ let check_typedef_usable_as_hk_type env use_pos typedef_name typedef_info =
   in
   let check_tapply r class_sid type_args =
     let decl_ty = Typing_make_type.apply r class_sid type_args in
-    let (env, locl_ty) = TUtils.localize_with_self env decl_ty in
+    let (env, locl_ty) =
+      TUtils.localize_no_subst env ~ignore_errors:true decl_ty
+    in
     match get_node (TUtils.get_base_type env locl_ty) with
-    | Tclass (cls_name, _, tyl) ->
+    | Tclass (cls_name, _, tyl) when not (List.is_empty tyl) ->
       (match Env.get_class env (snd cls_name) with
       | Some cls ->
         let tc_tparams = Cls.tparams cls in
         let ety_env =
-          {
-            (TUtils.env_with_self env) with
-            substs = Subst.make_locl tc_tparams tyl;
-          }
+          { empty_expand_env with substs = Subst.make_locl tc_tparams tyl }
         in
         iter2_shortest
           begin
             fun { tp_name = (_p, x); tp_constraints = cstrl; _ } ty ->
-            List.iter cstrl (fun (ck, cstr_ty) ->
+            List.iter cstrl ~f:(fun (ck, cstr_ty) ->
                 let (env, cstr_ty) = TUtils.localize ~ety_env env cstr_ty in
                 let (_ : Typing_env_types.env) =
                   TGenConstraint.check_constraint
@@ -215,7 +226,7 @@ let check_typedef_usable_as_hk_type env use_pos typedef_name typedef_info =
                     ck
                     ty
                     ~cstr_ty
-                    (fun ?code:_ _l -> report_constraint ty cls_name x)
+                    (fun ?code:_ _ -> report_constraint ty cls_name x)
                 in
                 ())
           end
@@ -244,7 +255,7 @@ let check_class_usable_as_hk_type use_pos class_info =
   let name = Cls.name class_info in
   let tparams = Cls.tparams class_info in
   let has_tparam_constraints =
-    List.exists tparams (fun tp -> not (List.is_empty tp.tp_constraints))
+    List.exists tparams ~f:(fun tp -> not (List.is_empty tp.tp_constraints))
   in
   if has_tparam_constraints then
     Errors.class_with_constraints_used_as_hk_type use_pos name
@@ -261,8 +272,8 @@ let report_kind_error ~use_pos ~def_pos ~tparam_name ~expected ~actual =
 
 module Simple = struct
   (* TODO(T70068435) Once we support constraints on higher-kinded types, this should only be used
-  during the localization of declaration site types, everything else should be doing full
-  kind-checking (including constraints) *)
+     during the localization of declaration site types, everything else should be doing full
+     kind-checking (including constraints) *)
 
   let is_subkind _env ~(sub : Simple.kind) ~(sup : Simple.kind) =
     let rec is_subk subk superk =
@@ -273,7 +284,7 @@ module Simple = struct
           ~init:true
           ~f:(fun ok (_, param_sub) (_, param_sup) ->
             (* Treating parameters contravariantly here. For simple subkinding, it doesn't make
-             a difference, though *)
+               a difference, though *)
             ok && is_subk param_sup param_sub)
       in
       let open List.Or_unequal_lengths in
@@ -285,6 +296,7 @@ module Simple = struct
 
   let rec check_targs_well_kinded
       ~allow_missing_targs
+      ~in_signature
       ~def_pos
       ~use_pos
       env
@@ -294,44 +306,49 @@ module Simple = struct
     let act_len = List.length tyargs in
     let arity_mistmach_okay =
       Int.equal act_len 0
-      && ( allow_missing_targs
+      && (allow_missing_targs
          || (* 4101 is Error_codes.Typing.TypeArityMismatch error code *)
          (not (Partial_provider.should_check_error (Env.get_mode env) 4101))
          && not
               (TypecheckerOptions.experimental_feature_enabled
                  (Env.get_tcopt env)
-                 TypecheckerOptions.experimental_generics_arity) )
+                 TypecheckerOptions.experimental_generics_arity))
     in
     if Int.( <> ) exp_len act_len && not arity_mistmach_okay then
       Errors.type_arity use_pos def_pos ~expected:exp_len ~actual:act_len;
     let length = min exp_len act_len in
     let (tyargs, nkinds) = (List.take tyargs length, List.take nkinds length) in
-    List.iter2_exn tyargs nkinds ~f:(check_targ_well_kinded env)
+    List.iter2_exn tyargs nkinds ~f:(check_targ_well_kinded ~in_signature env)
 
-  and check_targ_well_kinded env tyarg (nkind : Simple.named_kind) =
+  and check_targ_well_kinded ~in_signature env tyarg (nkind : Simple.named_kind)
+      =
     let kind = snd nkind in
     match get_node tyarg with
     | Tapply ((_, x), _argl) when String.equal x SN.Typehints.wildcard ->
       let is_higher_kinded = Simple.get_arity kind > 0 in
       if is_higher_kinded then (
-        let pos = get_reason tyarg |> Reason.to_pos in
+        let pos =
+          get_reason tyarg |> Reason.to_pos |> Pos_or_decl.unsafe_to_raw_pos
+        in
         Errors.wildcard_for_higher_kinded_type pos;
-        check_well_kinded env tyarg nkind
+        check_well_kinded ~in_signature env tyarg nkind
       )
-    | _ -> check_well_kinded env tyarg nkind
+    | _ -> check_well_kinded ~in_signature env tyarg nkind
 
-  and check_possibly_enforced_ty env enf_ty =
-    check_well_kinded_type ~allow_missing_targs:false env enf_ty.et_type
+  and check_possibly_enforced_ty ~in_signature env enf_ty =
+    check_well_kinded_type
+      ~allow_missing_targs:false
+      ~in_signature
+      env
+      enf_ty.et_type
 
-  and check_well_kinded_type ~allow_missing_targs env (ty : decl_ty) =
-    let check_opt =
-      Option.value_map
-        ~default:()
-        ~f:(check_well_kinded_type ~allow_missing_targs:false env)
-    in
+  and check_well_kinded_type
+      ~allow_missing_targs ~in_signature env (ty : decl_ty) =
     let (r, ty_) = deref ty in
-    let use_pos = Reason.to_pos r in
-    let check = check_well_kinded_type ~allow_missing_targs:false env in
+    let use_pos = Reason.to_pos r |> Pos_or_decl.unsafe_to_raw_pos in
+    let check =
+      check_well_kinded_type ~allow_missing_targs:false ~in_signature env
+    in
     let check_against_tparams def_pos tyargs tparams =
       let kinds = Simple.named_kinds_of_decl_tparams tparams in
 
@@ -354,32 +371,30 @@ module Simple = struct
     | Tmixed
     | Tthis ->
       ()
-    | Tarray (ty1, ty2) ->
-      check_opt ty1;
-      check_opt ty2
     | Tdarray (tk, tv) ->
       check tk;
       check tv
     | Tvarray tv -> check tv
+    | Tvec_or_dict (tk, tv)
     | Tvarray_or_darray (tk, tv) ->
       check tk;
       check tv
-    | Tpu_access (ty, _)
     | Tlike ty
     | Toption ty ->
       check ty
     | Ttuple tyl
     | Tunion tyl
     | Tintersection tyl ->
-      List.iter tyl check
+      List.iter tyl ~f:check
     | Taccess (ty, _) ->
       (* Because type constants cannot depend on type parameters,
-       we allow Foo::the_type even if Foo has type parameters *)
-      check_well_kinded_type ~allow_missing_targs:true env ty
-    | Tshape (_, map) -> Nast.ShapeMap.iter (fun _ sft -> check sft.sft_ty) map
+         we allow Foo::the_type even if Foo has type parameters *)
+      check_well_kinded_type ~allow_missing_targs:true ~in_signature env ty
+    | Tshape (_, map) -> TShapeMap.iter (fun _ sft -> check sft.sft_ty) map
     | Tfun ft ->
-      check_possibly_enforced_ty env ft.ft_ret;
-      List.iter ft.ft_params (fun p -> check_possibly_enforced_ty env p.fp_type)
+      check_possibly_enforced_ty ~in_signature env ft.ft_ret;
+      List.iter ft.ft_params ~f:(fun p ->
+          check_possibly_enforced_ty ~in_signature env p.fp_type)
     (* FIXME shall we inspect tparams and where_constraints *)
     (* List.iter ft.ft_where_constraints (fun (ty1, _, ty2) -> check ty1; check ty2 ); *)
     | Tgeneric (name, targs) ->
@@ -391,6 +406,7 @@ module Simple = struct
           in
           check_targs_well_kinded
             ~allow_missing_targs:false
+            ~in_signature
             ~def_pos
             ~use_pos
             env
@@ -400,27 +416,36 @@ module Simple = struct
       end
     | Tapply ((_p, cid), argl) ->
       begin
-        match Env.get_class env cid with
-        | Some class_info ->
+        match Env.get_class_or_typedef env cid with
+        | Some (Env.ClassResult class_info) ->
+          Typing_visibility.check_classname_access
+            ~use_pos
+            ~in_signature
+            env
+            class_info;
           let tparams = Cls.tparams class_info in
-          check_against_tparams (Cls.pos class_info) argl tparams
-        | None ->
-          begin
-            match Env.get_typedef env cid with
-            | Some typedef ->
-              check_against_tparams typedef.td_pos argl typedef.td_tparams
-            | None -> ()
-          end
+          check_against_tparams ~in_signature (Cls.pos class_info) argl tparams
+        | Some (Env.TypedefResult typedef) ->
+          Typing_visibility.check_typedef_access
+            ~use_pos
+            ~in_signature
+            env
+            typedef;
+          check_against_tparams
+            ~in_signature
+            typedef.td_pos
+            argl
+            typedef.td_tparams
+        | None -> ()
       end
 
-  and check_well_kinded env (ty : decl_ty) (expected_nkind : Simple.named_kind)
-      =
+  and check_well_kinded
+      ~in_signature env (ty : decl_ty) (expected_nkind : Simple.named_kind) =
     let (expected_name, expected_kind) = expected_nkind in
     let r = get_reason ty in
-    let use_pos = Reason.to_pos r in
+    let use_pos = Reason.to_pos r |> Pos_or_decl.unsafe_to_raw_pos in
     let kind_error actual_kind =
       let (def_pos, tparam_name) = expected_name in
-
       report_kind_error
         ~use_pos
         ~def_pos
@@ -435,25 +460,21 @@ module Simple = struct
     in
 
     if Int.( = ) (Simple.get_arity expected_kind) 0 then
-      check_well_kinded_type ~allow_missing_targs:false env ty
+      check_well_kinded_type ~allow_missing_targs:false ~in_signature env ty
     else
       match get_node ty with
       | Tapply ((_pos, name), []) ->
         begin
-          match Env.get_class env name with
-          | Some class_info ->
+          match Env.get_class_or_typedef env name with
+          | Some (Env.ClassResult class_info) ->
             let tparams = Cls.tparams class_info in
             check_class_usable_as_hk_type use_pos class_info;
             check_against_tparams tparams
-          | None ->
-            begin
-              match Env.get_typedef env name with
-              | Some typedef ->
-                let tparams = typedef.td_tparams in
-                check_typedef_usable_as_hk_type env use_pos name typedef;
-                check_against_tparams tparams
-              | None -> ()
-            end
+          | Some (Env.TypedefResult typedef) ->
+            let tparams = typedef.td_tparams in
+            check_typedef_usable_as_hk_type env use_pos name typedef;
+            check_against_tparams tparams
+          | None -> ()
         end
       | Tgeneric (name, []) ->
         begin
@@ -467,7 +488,7 @@ module Simple = struct
       | Tgeneric (_, targs)
       | Tapply (_, targs) ->
         Errors.higher_kinded_partial_application
-          (Reason.to_pos r)
+          (Reason.to_pos r |> Pos_or_decl.unsafe_to_raw_pos)
           (List.length targs)
       | Terr
       | Tany _ ->
@@ -475,10 +496,10 @@ module Simple = struct
       | _ -> kind_error (Simple.fully_applied_type ())
 
   (* Export the version that doesn't expose allow_missing_targs *)
-  let check_well_kinded_type env (ty : decl_ty) =
-    check_well_kinded_type ~allow_missing_targs:false env ty
+  let check_well_kinded_type ~in_signature env (ty : decl_ty) =
+    check_well_kinded_type ~allow_missing_targs:false ~in_signature env ty
 
-  let check_well_kinded_hint env hint =
+  let check_well_kinded_hint ~in_signature env hint =
     let decl_ty = Decl_hint.hint env.Typing_env_types.decl_env hint in
-    check_well_kinded_type env decl_ty
+    check_well_kinded_type ~in_signature env decl_ty
 end

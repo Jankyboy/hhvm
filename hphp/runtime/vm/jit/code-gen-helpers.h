@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VM_CODE_GEN_HELPERS_H_
-#define incl_HPHP_VM_CODE_GEN_HELPERS_H_
+#pragma once
 
 #include "hphp/runtime/base/stats.h"
 #include "hphp/runtime/vm/hhbc.h"
@@ -294,6 +293,9 @@ Vreg checkRDSHandleInitialized(Vout& v, Vreg ch);
 void markRDSHandleInitialized(Vout& v, rds::Handle ch);
 void markRDSHandleInitialized(Vout& v, Vreg ch);
 
+void markRDSAccess(Vout& v, rds::Handle ch);
+void markRDSAccess(Vout& v, Vreg ch);
+
 ///////////////////////////////////////////////////////////////////////////////
 // Locals
 
@@ -321,7 +323,8 @@ void nextLocal(Vout& v,
                Vreg typeIn,
                Vreg dataIn,
                Vreg typeOut,
-               Vreg dataOut);
+               Vreg dataOut,
+               unsigned distance = 1);
 
 /*
  * Given (valid) pointers to a local's type and value `typeIn' and
@@ -347,5 +350,3 @@ uint64_t auxToMask(AuxUnion);
 }}
 
 #include "hphp/runtime/vm/jit/code-gen-helpers-inl.h"
-
-#endif

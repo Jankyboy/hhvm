@@ -50,6 +50,9 @@ function get_expect_file_and_type($test, $options) {
     'hhvm.expectf',
   ];
   if (isset($options['repo'])) {
+    if (file_exists($test . '.hphpc_assert')) {
+      return varray[$test . '.hphpc_assert', 'expectf'];
+    }
     if (file_exists($test . '.hhbbc_assert')) {
       return varray[$test . '.hhbbc_assert', 'expectf'];
     }
@@ -60,6 +63,7 @@ function get_expect_file_and_type($test, $options) {
       }
     }
   }
+
   foreach ($types as $type) {
     $fname = "$test.$type";
     if (file_exists($fname)) {
@@ -94,10 +98,10 @@ function jit_serialize_option(string $cmd, $test, $options, $serialize) {
   $serialized = test_repo($options, $test) . "/jit.dump";
   $cmds = explode(' -- ', $cmd, 2);
   $cmds[0] .=
-    ' --count=' . ($serialize ? $options['jit-serialize'] + 1 : 1) .
-    " -vEval.JitSerdesFile=" . $serialized .
-    " -vEval.JitSerdesMode=" . ($serialize ? 'Serialize' : 'DeserializeOrFail').
-    ($serialize ? " -vEval.JitSerializeOptProfRequests=1" : '');
+    ' --count=' . ($serialize ? (int)$options['jit-serialize'] + 1 : 1) .
+    " -vEval.JitSerdesFile=\"" . $serialized . "\"" .
+    " -vEval.JitSerdesMode=" . ($serialize ? 'Serialize' : 'DeserializeOrFail') .
+    ($serialize ? " -vEval.JitSerializeOptProfRequests=" . (int)$options['jit-serialize'] : '');
   if (isset($options['jitsample']) && $serialize) {
     $cmds[0] .= ' -vDeploymentId="' . $options['jitsample'] . '-serialize"';
   }
@@ -151,6 +155,9 @@ Examples:
   # Quick tests in JIT mode with some extra runtime options:
   % {$argv[0]} test/quick -a '-vEval.JitMaxTranslations=120 -vEval.HHIRRefcountOpts=0'
 
+  # Quick tests in JIT mode with RepoAuthoritative and an extra compile-time option:
+  % {$argv[0]} test/quick -r --compiler-args '--parse-on-demand=false'
+
   # All quick tests except debugger
   % {$argv[0]} -e debugger test/quick
 
@@ -180,11 +187,13 @@ EOT;
 }
 
 function error($message) {
+  $message ??= "";
   print "$message\n";
   exit(1);
 }
 
 function success($message) {
+  $message ??= "";
   print "$message\n";
   exit(0);
 }
@@ -351,6 +360,10 @@ function verify_hhbc() {
   return bin_root().'/verify.hhbc';
 }
 
+function unit_cache_file() {
+  return Status::getTmpPathFile('unit-cache.sql');
+}
+
 function read_opts_file($file) {
   if ($file === null || !file_exists($file)) {
     return "";
@@ -404,8 +417,9 @@ function rel_path($to) {
   return implode('/', $relPath);
 }
 
-function get_options($argv) {
-  # Options marked * affect test behavior, and need to be reported by list_tests
+function get_options($argv): (darray<string, mixed>, varray<string>) {
+  // Options marked * affect test behavior, and need to be reported by list_tests.
+  // Options with a trailing : take a value.
   $parameters = darray[
     '*env:' => '',
     'exclude:' => 'e:',
@@ -414,6 +428,7 @@ function get_options($argv) {
     'include:' => 'i:',
     'include-pattern:' => 'I:',
     '*repo' => 'r',
+    '*split-hphpc' => '',
     '*repo-single' => '',
     '*repo-separate' => '',
     '*repo-threads:' => '',
@@ -428,10 +443,12 @@ function get_options($argv) {
     'testpilot' => '',
     'threads:' => '',
     '*args:' => 'a:',
+    '*compiler-args:' => '',
     'log' => 'l',
     'failure-file:' => '',
     '*wholecfg' => '',
     '*hhas-round-trip' => '',
+    '*use-internal-compiler' => '',
     'color' => 'c',
     'no-fun' => '',
     'no-skipif' => '',
@@ -446,12 +463,13 @@ function get_options($argv) {
     '*vendor:' => '',
     'record-failures:' => '',
     '*hackc' => '',
-    '*hack-only' => '',
     '*ignore-oids' => '',
     'jitsample:' => '',
     '*hh_single_type_check:' => '',
     'write-to-checkout' => '',
     'bespoke' => '',
+    'lazyclass' => '',
+    'hn' => '',
   ];
   $options = darray[];
   $files = varray[];
@@ -539,6 +557,17 @@ function get_options($argv) {
     }
   }
 
+  if (isset($options['split-hphpc'])) {
+    if (!isset($options['repo'])) {
+      echo "split-hphpc only works in repo mode\n";
+      exit(1);
+    }
+    if (!isset($options['repo-separate'])) {
+      echo "split-hphpc only works in repo-separate mode\n";
+      exit(1);
+    }
+  }
+
   if (isset($options['repo']) && isset($options['hhas-round-trip'])) {
     echo "repo and hhas-round-trip are mutually exclusive options\n";
     exit(1);
@@ -558,7 +587,12 @@ function get_options($argv) {
     Status::$write_to_checkout = true;
   }
 
-  return varray[$options, $files];
+  if (isset($options['hackc']) && isset($options['use-internal-compiler'])) {
+    echo "hackc and use-internal-compiler are mutually exclusive options\n";
+    exit(1);
+  }
+
+  return tuple($options, $files);
 }
 
 /*
@@ -634,18 +668,18 @@ function find_test_files($file) {
 
 // Some tests have to be run together in the same test bucket, serially, one
 // after other in order to avoid races and other collisions.
-function serial_only_tests($tests) {
+function serial_only_tests(varray<string> $tests): varray<string> {
   if (is_testing_dso_extension()) {
     return varray[];
   }
   // Add a <testname>.php.serial file to make your test run in the serial
   // bucket.
-  $serial_tests = array_filter(
+  $serial_tests = varray(array_filter(
     $tests,
     function($test) {
       return file_exists($test . '.serial');
     }
-  );
+  ));
   return $serial_tests;
 }
 
@@ -655,7 +689,7 @@ function serial_only_tests($tests) {
 function exec_find(mixed $files, string $extra): mixed {
   $results = varray[];
   foreach (array_chunk($files, 500) as $chunk) {
-    $efa = implode(' ', array_map(fun('escapeshellarg'), $chunk));
+    $efa = implode(' ', array_map(escapeshellarg<>, $chunk));
     $output = shell_exec("find $efa $extra");
     foreach (explode("\n", $output) as $result) {
       // Collect the (non-empty) results, which should all be file paths.
@@ -665,7 +699,7 @@ function exec_find(mixed $files, string $extra): mixed {
   return $results;
 }
 
-function find_tests($files, darray $options = null) {
+function find_tests($files, darray $options = null): varray<string> {
   if (!$files) {
     $files = varray['quick'];
   }
@@ -708,37 +742,37 @@ function find_tests($files, darray $options = null) {
           usage());
   }
   asort(inout $tests);
-  $tests = array_filter($tests);
+  $tests = varray(array_filter($tests));
   if ($options['exclude'] ?? false) {
     $exclude = $options['exclude'];
-    $tests = array_filter($tests, function($test) use ($exclude) {
+    $tests = varray(array_filter($tests, function($test) use ($exclude) {
       return (false === strpos($test, $exclude));
-    });
+    }));
   }
   if ($options['exclude-pattern'] ?? false) {
     $exclude = $options['exclude-pattern'];
-    $tests = array_filter($tests, function($test) use ($exclude) {
+    $tests = varray(array_filter($tests, function($test) use ($exclude) {
       return !preg_match($exclude, $test);
-    });
+    }));
   }
   if ($options['exclude-recorded-failures'] ?? false) {
     $exclude_file = $options['exclude-recorded-failures'];
     $exclude = file($exclude_file, FILE_IGNORE_NEW_LINES);
-    $tests = array_filter($tests, function($test) use ($exclude) {
+    $tests = varray(array_filter($tests, function($test) use ($exclude) {
       return (false === in_array(canonical_path($test), $exclude));
-    });
+    }));
   }
   if ($options['include'] ?? false) {
     $include = $options['include'];
-    $tests = array_filter($tests, function($test) use ($include) {
+    $tests = varray(array_filter($tests, function($test) use ($include) {
       return (false !== strpos($test, $include));
-    });
+    }));
   }
   if ($options['include-pattern'] ?? false) {
     $include = $options['include-pattern'];
-    $tests = array_filter($tests, function($test) use ($include) {
+    $tests = varray(array_filter($tests, function($test) use ($include) {
       return preg_match($include, $test);
-    });
+    }));
   }
   return $tests;
 }
@@ -762,14 +796,18 @@ function list_tests($files, $options) {
   }
 }
 
-function find_test_ext($test, $ext, $configName='config') {
+function find_test_ext(
+  string $test,
+  string $ext,
+  string $configName='config',
+): ?string {
   if (is_file("{$test}.{$ext}")) {
     return "{$test}.{$ext}";
   }
   return find_file_for_dir(dirname($test), "{$configName}.{$ext}");
 }
 
-function find_file_for_dir($dir, $name) {
+function find_file_for_dir(string $dir, string $name): ?string {
   // Handle the case where the $dir might come in as '.' because you
   // are running the test runner on a file from the same directory as
   // the test e.g., './mytest.php'. dirname() will give you the '.' when
@@ -801,9 +839,7 @@ function find_debug_config($test, $name) {
 function mode_cmd($options): varray<string> {
   $repo_args = '';
   if (!isset($options['repo'])) {
-    // Set the non-repo-mode shared repo.
-    // When in repo mode, we set our own central path.
-    $repo_args = "-vRepo.Local.Mode=-- -vRepo.Central.Path=".verify_hhbc();
+    $repo_args = "-vUnitFileCache.Path=".unit_cache_file();
   }
   $interp_args = "$repo_args -vEval.Jit=0";
   $jit_args = "$repo_args -vEval.Jit=true";
@@ -829,7 +865,16 @@ function extra_args($options): string {
     $args .= ' -d auto_prepend_file=';
     $args .= escapeshellarg($vendor.'/hh_autoload.php');
   }
+
+  if (isset($options['lazyclass'])) {
+    $args .= ' -vEval.EmitClassPointers=2';
+    $args .= ' -vEval.ClassPassesClassname=true';
+  }
   return $args;
+}
+
+function extra_compiler_args($options): string {
+  return $options['compiler-args'] ?? '';
 }
 
 function hhvm_cmd_impl(
@@ -851,23 +896,30 @@ function hhvm_cmd_impl(
       '-vEval.EnableIntrinsicsExtension=true',
       '-vEval.HHIRInliningIgnoreHints=false',
       '-vEval.HHIRAlwaysInterpIgnoreHint=false',
-      '-vEval.HackArrDVArrVarDump=true',
+      '-vEval.FoldLazyClassKeys=false',
       $mode,
       isset($options['wholecfg']) ? '-vEval.JitPGORegionSelector=wholecfg' : '',
 
       // load/store counters don't work on Ivy Bridge so disable for tests
       '-vEval.ProfileHWEnable=false',
 
-      // use a fixed path for embedded data
-      '-vEval.HackCompilerExtractPath='
+      isset($options['use-internal-compiler']) ?  '' :
+        '-vEval.HackCompilerExtractPath='
         .escapeshellarg(bin_root().'/hackc_%{schema}'),
+
+      // use a fixed path for embedded data
       '-vEval.EmbeddedDataExtractPath='
         .escapeshellarg(bin_root().'/hhvm_%{type}_%{buildid}'),
+
+      // Stick to a single thread for retranslate-all
+      '-vEval.JitWorkerThreads=1',
+      '-vEval.JitWorkerThreadsForSerdes=1',
+
       extra_args($options),
     ];
 
     if ($autoload_db_prefix !== null) {
-      $args[] = '-vAutoload.DBPath='.escapeshellarg("$autoload_db_prefix.$mode_num");
+      $args[] = '-vAutoload.DB.Path='.escapeshellarg("$autoload_db_prefix.$mode_num");
     }
 
     if (isset($options['hackc'])) {
@@ -876,7 +928,7 @@ function hhvm_cmd_impl(
     }
 
     if (isset($options['retranslate-all'])) {
-      $args[] = '--count='.($options['retranslate-all'] * 2);
+      $args[] = '--count='.((int)$options['retranslate-all'] * 2);
       $args[] = '-vEval.JitPGO=true';
       $args[] = '-vEval.JitRetranslateAllRequest='.$options['retranslate-all'];
       // Set to timeout.  We want requests to trigger retranslate all.
@@ -916,6 +968,11 @@ function hhvm_cmd_impl(
 
     if (isset($options['bespoke'])) {
       $args[] = '-vEval.BespokeArrayLikeMode=1';
+      $args[] = '-vServer.APC.MemModelTreadmill=true';
+    }
+
+    if (isset($options['use-internal-compiler'])) {
+      $args[] = '-vEval.HackCompilerUseCompilerPool=false';
     }
 
     $cmds[] = implode(' ', array_merge($args, $extra_args));
@@ -935,25 +992,27 @@ function hhvm_cmd(
   $test_run = null,
   $is_temp_file = false
 ): (varray<string>, darray<string, mixed>) {
-  if ($test_run === null) {
-    $test_run = $test;
-  }
+  $test_run ??= $test;
   // hdf support is only temporary until we fully migrate to ini
   // Discourage broad use.
   $hdf_suffix = ".use.for.ini.migration.testing.only.hdf";
   $hdf = file_exists($test.$hdf_suffix)
        ? '-c ' . $test . $hdf_suffix
        : "";
+  $extra_opts = read_opts_file(find_test_ext($test, 'opts'));
+  if (isset($options['hn'])) {
+    $extra_opts = read_opts_file("$test.hn_opts")." ".$extra_opts;
+  }
   $cmds = hhvm_cmd_impl(
     $options,
     find_test_ext($test, 'ini'),
     Status::getTestTmpPath($test, 'autoloadDB'),
     $hdf,
     find_debug_config($test, 'hphpd.ini'),
-    read_opts_file(find_test_ext($test, 'opts')),
+    $extra_opts,
+    $is_temp_file ? " --temp-file" : "",
     '--file',
     escapeshellarg($test_run),
-    $is_temp_file ? " --temp-file" : ""
   );
 
   $cmd = "";
@@ -997,8 +1056,8 @@ function hhvm_cmd(
 
     $program = isset($options['hackc']) ? "hackc" : "hhvm";
     $hhbbc_repo = '"' . test_repo($options, $test) . "/$program.$repo_suffix\"";
-    $cmd .= ' -vRepo.Authoritative=true -vRepo.Commit=0';
-    $cmd .= " -vRepo.Central.Path=$hhbbc_repo";
+    $cmd .= ' -vRepo.Authoritative=true';
+    $cmd .= " -vRepo.Path=$hhbbc_repo";
   }
 
   if (isset($options['jitsample'])) {
@@ -1010,6 +1069,7 @@ function hhvm_cmd(
   }
 
   $env = $_ENV;
+  $env['LC_ALL'] = 'C';
 
   // Apply the --env option
   if (isset($options['env'])) {
@@ -1043,15 +1103,17 @@ function hhvm_cmd(
 }
 
 function hphp_cmd($options, $test, $program): string {
-  $extra_args = preg_replace("/-v\s*/", "-vRuntime.", extra_args($options));
+  // Transform extra_args like "-vName=Value" into "-vRuntime.Name=Value".
+  $extra_args = preg_replace("/(^-v|\s+-v)\s*/", "$1Runtime.", extra_args($options));
 
-  $compiler_args = "";
+  $compiler_args = extra_compiler_args($options);
   if (isset($options['hackc'])) {
     $hh_single_compile = hh_codegen_path();
     $compiler_args = implode(" ", varray[
       '-vRuntime.Eval.HackCompilerUseEmbedded=false',
       "-vRuntime.Eval.HackCompilerInheritConfig=true",
-      "-vRuntime.Eval.HackCompilerCommand=\"{$hh_single_compile} --daemon --dump-symbol-refs\""
+      "-vRuntime.Eval.HackCompilerCommand=\"{$hh_single_compile} --daemon --dump-symbol-refs\"",
+      $compiler_args
     ]);
   }
 
@@ -1071,7 +1133,7 @@ function hphp_cmd($options, $test, $program): string {
   }
 
   return implode(" ", varray[
-    hhvm_path(),
+    hphpc_path($options),
     '--hphp',
     '-vUseHHBBC='. (repo_separate($options, $test) ? 'false' : 'true'),
     '--config',
@@ -1080,23 +1142,39 @@ function hphp_cmd($options, $test, $program): string {
     '-vRuntime.ResourceLimit.CoreFileSize=0',
     '-vRuntime.Eval.EnableIntrinsicsExtension=true',
     '-vRuntime.Eval.EnableArgsInBacktraces=true',
-    '-vRuntime.Eval.HackCompilerExtractPath='
+    '-vRuntime.Eval.FoldLazyClassKeys=false',
+    isset($options['use-internal-compiler']) ?  '' :
+      '-vRuntime.Eval.HackCompilerExtractPath='
       .escapeshellarg(bin_root().'/hackc_%{schema}'),
     '-vParserThreadCount=' . ($options['repo-threads'] ?? 1),
     '--nofork=1 -thhbc -l1 -k1',
     '-o "' . test_repo($options, $test) . '"',
     "--program $program.hhbc \"$test\"",
-    "-vRuntime.Repo.Local.Mode=rw -vRuntime.Repo.Local.Path=".verify_hhbc(),
+    "-vRuntime.UnitFileCache.Path=".unit_cache_file(),
     $extra_args,
     $compiler_args,
     read_opts_file("$test.hphp_opts"),
   ]);
 }
 
+function hphpc_path($options) {
+  if (isset($options['split-hphpc'])) {
+    $file = "";
+    $file = bin_root().'/hphpc';
+
+    if (!is_file($file)) {
+      error("$file doesn't exist. Did you forget to build first?");
+    }
+    return rel_path($file);
+  } else {
+    return hhvm_path();
+  }
+}
+
 function hhbbc_cmd($options, $test, $program) {
   $test_repo = test_repo($options, $test);
   return implode(" ", varray[
-    hhvm_path(),
+    hphpc_path($options),
     '--hhbbc',
     '--no-logging',
     '--no-cores',
@@ -1140,10 +1218,10 @@ function exec_with_stack($cmd) {
     }
     $all_selects_failed=false;
     if ($available === 0) continue;
-    # var_dump($read);
+    // var_dump($read);
     foreach ($read as $pipe) {
       $t = fread($pipe, 4096);
-      # var_dump($t);
+      // var_dump($t);
       if ($t === false) continue;
       $s .= $t;
     }
@@ -1395,7 +1473,7 @@ enum TempDirRemove: int {
   NEVER = 2;
 }
 
-class Status {
+final class Status {
   private static $results = varray[];
   private static $mode = 0;
 
@@ -1451,6 +1529,10 @@ class Status {
   // Remember to teach clean_intermediate_files to clean up all the exts you use
   public static function getTestTmpPath(string $test, string $ext): string {
     return self::$tmpdir . '/' . $test . '.' . $ext;
+  }
+
+  public static function getTmpPathFile(string $filename): string {
+    return self::$tmpdir . '/' . $filename;
   }
 
   // Similar to getTestTmpPath, but if we're run with --write-to-checkout
@@ -1600,9 +1682,9 @@ class Status {
     } else {
       self::$temp_dir_remove = TempDirRemove::ON_RUN_SUCCESS;
     }
-    register_shutdown_function(class_meth(self::class, 'destroy'));
-    pcntl_signal(SIGTERM, class_meth(self::class, 'destroyFromSignal'));
-    pcntl_signal(SIGINT, class_meth(self::class, 'destroyFromSignal'));
+    register_shutdown_function(self::destroy<>);
+    pcntl_signal(SIGTERM, self::destroyFromSignal<>);
+    pcntl_signal(SIGINT, self::destroyFromSignal<>);
   }
 
   public static function serverRestarted() {
@@ -1615,7 +1697,7 @@ class Status {
                              'start_time' => $stime,
                              'end_time' => $etime,
                              'time' => $time];
-    self::send(self::MSG_TEST_PASS, varray[$test, $time, $stime, $etime]);
+    self::send(self::MSG_TEST_PASS, vec[$test, $time, $stime, $etime]);
   }
 
   public static function skip($test, $reason, $time, $stime, $etime) {
@@ -1631,7 +1713,7 @@ class Status {
       'time' => $time,
     ];
     self::send(self::MSG_TEST_SKIP,
-               varray[$test, $reason, $time, $stime, $etime]);
+               vec[$test, $reason, $time, $stime, $etime]);
   }
 
   public static function fail($test, $time, $stime, $etime, $diff) {
@@ -1643,7 +1725,7 @@ class Status {
       'end_time' => $etime,
       'time' => $time
     ];
-    self::send(self::MSG_TEST_FAIL, varray[$test, $time, $stime, $etime]);
+    self::send(self::MSG_TEST_FAIL, vec[$test, $time, $stime, $etime]);
   }
 
   public static function handle_message($type, $message) {
@@ -1935,11 +2017,15 @@ function clean_intermediate_files($test, $options) {
   }
 }
 
-function run($options, $tests, $bad_test_file) {
+function child_main(
+  darray<string, mixed> $options,
+  varray<string> $tests,
+  string $json_results_file,
+): int {
   foreach ($tests as $test) {
-    run_and_lock_test($options, $test);
+    run_and_log_test($options, $test);
   }
-  file_put_contents($bad_test_file, json_encode(Status::getResults()));
+  file_put_contents($json_results_file, json_encode(Status::getResults()));
   foreach (Status::getResults() as $result) {
     if ($result['status'] == 'failed') {
       return 1;
@@ -1948,32 +2034,358 @@ function run($options, $tests, $bad_test_file) {
   return 0;
 }
 
-function is_hack_file($options, $test) {
-  if (substr($test, -3) === '.hh') return true;
+/**
+ * The runif feature is similar in spirit to skipif, but instead of allowing
+ * one to run arbitrary code it can only skip based on pre-defined reasons
+ * understood by the test runner.
+ *
+ * The .runif file should consist of one or more lines made up of words
+ * separated by spaces, optionally followed by a comment starting with #.
+ * Empty lines (or lines with only comments) are ignored. The first word
+ * determines the interpretation of the rest. The .runif file will allow the
+ * test to run if all the non-empty lines 'match'.
+ *
+ * Currently supported operations:
+ *   os [not] <os_name> # matches if we are (or are not) on the named OS
+ *   file <path> # matches if the file at the (possibly relative) path exists
+ *   euid [not] root # matches if we are (or are not) running as root (euid==0)
+ *   extension <extension_name> # matches if the named extension is available
+ *   function <function_name> # matches if the named function is available
+ *   class <class_name> # matches if the named class is available
+ *   method <class_name> <method name> # matches if the method is available
+ *   const <constant_name> # matches if the named constant is available
+ *   # matches if any named locale is available for the named LC_* category
+ *   locale LC_<something> <locale name>[ <another locale name>]
+ *
+ * Several functions in this implementation return RunifResult. Valid sets of
+ * keys are:
+ *   valid, error # valid will be false
+ *   valid, match # valid will be true, match will be true
+ *   valid, match, skip_reason # valid will be true, match will be false
+ */
+type RunifResult = shape(
+  'valid' => bool, // was the runif file valid
+  ?'error' => string, // if !valid, what was the problem
+  ?'match' => bool, // did the line match/did all the lines in the file match
+  ?'skip_reason' => string, // if !match, the skip reason to use
+);
 
-  $file = fopen($test, 'r');
-  if ($file === false) return false;
-
-  // Skip lines that are a shebang or whitespace.
-  while (($line = fgets($file)) !== false) {
-    $line = trim($line);
-    if ($line === '' || substr($line, 0, 2) === '#!') continue;
-    // Allow partial and strict, but don't count decl files as Hack code
-    if ($line === '<?hh' || $line === '<?hh //strict') return true;
-    break;
-  }
-  fclose($file);
-
-  return false;
+<<__Memoize>> function runif_canonical_os(): string {
+  if (PHP_OS === 'Linux' || PHP_OS === 'Darwin') return PHP_OS;
+  if (substr(PHP_OS, 0, 3) === 'WIN') return 'WIN';
+  invariant_violation('add proper canonicalization for your OS');
 }
 
-function skip_test($options, $test, $run_skipif = true): ?string {
-  if (isset($options['hack-only']) &&
-      substr($test, -5) !== '.hhas' &&
-      !is_hack_file($options, $test)) {
-    return 'skip-hack-only';
+function runif_known_os(string $match_os): bool {
+  switch ($match_os) {
+    case 'Linux':
+    case 'Darwin':
+    case 'WIN':
+      return true;
+    default:
+      return false;
   }
+}
 
+function runif_os_matches(varray<string> $words): RunifResult {
+  if (count($words) === 2) {
+    if ($words[0] !== 'not') {
+      return shape('valid' => false, 'error' => "malformed 'os' match");
+    }
+    $match_os = $words[1];
+    $invert = true;
+  } else if (count($words) === 1) {
+    $match_os = $words[0];
+    $invert = false;
+  } else {
+    return shape('valid' => false, 'error' => "malformed 'os' match");
+  }
+  if (!runif_known_os($match_os)) {
+    return shape('valid' => false, 'error' => "unknown os '$match_os'");
+  }
+  $matches = (runif_canonical_os() === $match_os);
+  if ($matches !== $invert) return shape('valid' => true, 'match' => true);
+  return shape(
+    'valid' => true,
+    'match' => false,
+    'skip_reason' => 'skip-runif-os-' . implode('-', $words)
+  );
+}
+
+function runif_file_matches(varray<string> $words): RunifResult {
+  /* This implementation has a trade-off. On the one hand, we could get more
+   * accurate results if we do the check in a process with the same configs as
+   * the test via runif_test_for_feature (e.g. if config differences make a
+   * file we can see invisible to the test). However, this check was added to
+   * skip tests where the test configs depend on a file that may be absent, in
+   * which case hhvm configured the same way as the test cannot run. By doing
+   * the check ourselves we can successfully skip such tests.
+   */
+  if (count($words) !== 1) {
+    return shape('valid' => false, 'error' => "malformed 'file' match");
+  }
+  if (file_exists($words[0])) {
+    return shape('valid' => true, 'match' => true);
+  }
+  return shape(
+    'valid' => true,
+    'match' => false,
+    'skip_reason' => 'skip-runif-file',
+  );
+}
+
+function runif_test_for_feature(
+  darray<string, mixed> $options,
+  string $test,
+  string $bool_expression,
+): bool {
+  $tmp = tempnam(sys_get_temp_dir(), 'test-run-runif-');
+  file_put_contents(
+    $tmp,
+    "<?hh\n" .
+      "<<__EntryPoint>> function main(): void {\n" .
+      "  echo ($bool_expression) as bool ? 'PRESENT' : 'ABSENT';\n" .
+      "}\n",
+  );
+
+  // Run the check in non-repo mode to avoid building the repo (same features
+  // should be available). Pick the mode arbitrarily for the same reason.
+  $options_without_repo = $options;
+  unset($options_without_repo['repo']);
+  list($hhvm, $_) = hhvm_cmd($options_without_repo, $test, $tmp, true);
+  $hhvm = $hhvm[0];
+  // Remove any --count <n> from the command
+  $hhvm = preg_replace('/ --count[ =]\d+/', '', $hhvm);
+  // some tests set open_basedir to a restrictive value, override to permissive
+  $hhvm .= ' -dopen_basedir= ';
+
+  $result = shell_exec("$hhvm 2>&1");
+  invariant ($result !== false, 'shell_exec in runif_test_for_feature failed');
+  $result = trim($result);
+  if ($result === 'ABSENT') return false;
+  if ($result === 'PRESENT') return true;
+  invariant_violation(
+    "unexpected output from shell_exec in runif_test_for_feature: '$result'"
+  );
+}
+
+function runif_euid_matches(
+  darray<string, mixed> $options,
+  string $test,
+  varray<string> $words,
+): RunifResult {
+  if (count($words) === 2) {
+    if ($words[0] !== 'not' || $words[1] !== 'root') {
+      return shape('valid' => false, 'error' => "malformed 'euid' match");
+    }
+    $invert = true;
+  } else if (count($words) === 1) {
+    if ($words[0] !== 'root') {
+      return shape('valid' => false, 'error' => "malformed 'euid' match");
+    }
+    $invert = false;
+  } else {
+    return shape('valid' => false, 'error' => "malformed 'euid' match");
+  }
+  $matches = runif_test_for_feature($options, $test, 'posix_geteuid() === 0');
+  if ($matches !== $invert) return shape('valid' => true, 'match' => true);
+  return shape(
+    'valid' => true,
+    'match' => false,
+    'skip_reason' => 'skip-runif-euid-' . implode('-', $words)
+  );
+}
+
+function runif_extension_matches(
+  darray<string, mixed> $options,
+  string $test,
+  varray<string> $words,
+): RunifResult {
+  if (count($words) !== 1) {
+    return shape('valid' => false, 'error' => "malformed 'extension' match");
+  }
+  if (runif_test_for_feature($options, $test, "extension_loaded('{$words[0]}')")) {
+    return shape('valid' => true, 'match' => true);
+  }
+  return shape(
+    'valid' => true,
+    'match' => false,
+    'skip_reason' => 'skip-runif-extension-' . $words[0]
+  );
+}
+
+function runif_function_matches(
+  darray<string, mixed> $options,
+  string $test,
+  varray<string> $words,
+): RunifResult {
+  if (count($words) !== 1) {
+    return shape('valid' => false, 'error' => "malformed 'function' match");
+  }
+  if (runif_test_for_feature($options, $test, "function_exists('{$words[0]}')")) {
+    return shape('valid' => true, 'match' => true);
+  }
+  return shape(
+    'valid' => true,
+    'match' => false,
+    'skip_reason' => 'skip-runif-function-' . $words[0]
+  );
+}
+
+function runif_class_matches(
+  darray<string, mixed> $options,
+  string $test,
+  varray<string> $words,
+): RunifResult {
+  if (count($words) !== 1) {
+    return shape('valid' => false, 'error' => "malformed 'class' match");
+  }
+  if (runif_test_for_feature($options, $test, "class_exists('{$words[0]}')")) {
+    return shape('valid' => true, 'match' => true);
+  }
+  return shape(
+    'valid' => true,
+    'match' => false,
+    'skip_reason' => 'skip-runif-class-' . $words[0]
+  );
+}
+
+function runif_method_matches(
+  darray<string, mixed> $options,
+  string $test,
+  varray<string> $words,
+): RunifResult {
+  if (count($words) !== 2) {
+    return shape('valid' => false, 'error' => "malformed 'method' match");
+  }
+  if (runif_test_for_feature($options, $test,
+                             "method_exists('{$words[0]}', '{$words[1]}')")) {
+    return shape('valid' => true, 'match' => true);
+  }
+  return shape(
+    'valid' => true,
+    'match' => false,
+    'skip_reason' => 'skip-runif-method-' . $words[0] . '-' . $words[1],
+  );
+}
+
+function runif_const_matches(
+  darray<string, mixed> $options,
+  string $test,
+  varray<string> $words,
+): RunifResult {
+  if (count($words) !== 1) {
+    return shape('valid' => false, 'error' => "malformed 'const' match");
+  }
+  if (runif_test_for_feature($options, $test, "defined('{$words[0]}')")) {
+    return shape('valid' => true, 'match' => true);
+  }
+  return shape(
+    'valid' => true,
+    'match' => false,
+    'skip_reason' => 'skip-runif-const-' . $words[0]
+  );
+}
+
+function runif_locale_matches(
+  darray<string, mixed> $options,
+  string $test,
+  varray<string> $words,
+): RunifResult {
+  if (count($words) < 2) {
+    return shape('valid' => false, 'error' => "malformed 'locale' match");
+  }
+  $category = array_shift(inout $words);
+  if (!preg_match('/^LC_[A-Z]+$/', $category)) {
+    return shape('valid' => false, 'error' => "bad locale category '$category'");
+  }
+  $locale_args = implode(', ', array_map($word ==> "'$word'", $words));
+  $matches = runif_test_for_feature(
+    $options,
+    $test,
+    "defined('$category') && (false !== setlocale($category, $locale_args))",
+  );
+  if ($matches) {
+    return shape('valid' => true, 'match' => true);
+  }
+  return shape(
+    'valid' => true,
+    'match' => false,
+    'skip_reason' => 'skip-runif-locale',
+  );
+}
+
+function runif_should_skip_test(
+  darray<string, mixed> $options,
+  string $test,
+): RunifResult {
+  $runif_path = find_test_ext($test, 'runif');
+  if (!$runif_path) return shape('valid' => true, 'match' => true);
+
+  $file_empty = true;
+  $contents = file($runif_path, FILE_IGNORE_NEW_LINES);
+  foreach ($contents as $line) {
+    $line = preg_replace('/[#].*$/', '', $line); // remove comment
+    $line = trim($line);
+    if ($line === '') continue;
+    $file_empty = false;
+
+    $words = preg_split('/ +/', $line);
+    if (count($words) < 2) {
+      return shape('valid' => false, 'error' => "malformed line '$line'");
+    }
+    foreach ($words as $word) {
+      if (!preg_match('|^[\w/.-]+$|', $word)) {
+        return shape(
+          'valid' => false,
+          'error' => "bad word '$word' in line '$line'",
+        );
+      }
+    }
+
+    $type = array_shift(inout $words);
+    $words = varray($words); // array_shift always promotes to darray :-\
+    switch ($type) {
+      case 'os':
+        $result = runif_os_matches($words);
+        break;
+      case 'file':
+        $result = runif_file_matches($words);
+        break;
+      case 'euid':
+        $result = runif_euid_matches($options, $test, $words);
+        break;
+      case 'extension':
+        $result = runif_extension_matches($options, $test, $words);
+        break;
+      case 'function':
+        $result = runif_function_matches($options, $test, $words);
+        break;
+      case 'class':
+        $result = runif_class_matches($options, $test, $words);
+        break;
+      case 'method':
+        $result = runif_method_matches($options, $test, $words);
+        break;
+      case 'const':
+        $result = runif_const_matches($options, $test, $words);
+        break;
+      case 'locale':
+        $result = runif_locale_matches($options, $test, $words);
+        break;
+      default:
+        return shape('valid' => false, 'error' => "bad match type '$type'");
+    }
+    if (!$result['valid'] || !$result['match']) return $result;
+  }
+  if ($file_empty) return shape('valid' => false, 'error' => 'empty runif file');
+  return shape('valid' => true, 'match' => true);
+}
+
+function should_skip_test_simple(
+  darray<string, mixed> $options,
+  string $test,
+): ?string {
   if ((isset($options['cli-server']) || isset($options['server'])) &&
       !can_run_server_test($test, $options)) {
     return 'skip-server';
@@ -1999,31 +2411,56 @@ function skip_test($options, $test, $run_skipif = true): ?string {
     if (file_exists($test . ".verify")) {
       return 'skip-verify';
     }
+    $no_multireq_tag = "nomultireq";
+    if (file_exists("$test.$no_multireq_tag") ||
+        file_exists(dirname($test).'/'.$no_multireq_tag)) {
+      return 'skip-multi-req';
+    }
     if (find_debug_config($test, 'hphpd.ini')) {
       return 'skip-debugger';
     }
   }
 
-
+  $no_bespoke_tag = "nobespoke";
   if (isset($options['bespoke']) &&
-      strpos($test, "nan_array_id_test.php") !== false) {
+      file_exists("$test.$no_bespoke_tag")) {
       // Skip due to changes in array identity
       return 'skip-bespoke';
   }
 
-  if (!$run_skipif) return null;
-  $skipif_test = find_test_ext($test, 'skipif');
-  if (!$skipif_test) {
-    return null;
+  $no_lazyclass_tag = "nolazyclass";
+  if (isset($options['lazyclass']) &&
+      file_exists("$test.$no_lazyclass_tag")) {
+    return 'skip-lazyclass';
   }
 
-  // For now, run the .skipif in non-repo since building a repo for it is hard.
+  $no_jitserialize_tag = "nojitserialize";
+  if (isset($options['jit-serialize']) &&
+      file_exists("$test.$no_jitserialize_tag")) {
+    return 'skip-jit-serialize';
+  }
+
+  return null;
+}
+
+function skipif_should_skip_test(
+  darray<string, mixed> $options,
+  string $test,
+): RunifResult {
+  $skipif_test = find_test_ext($test, 'skipif');
+  if (!$skipif_test) {
+    return shape('valid' => true, 'match' => true);
+  }
+
+  // Run the .skipif in non-repo mode since building a repo for it is
+  // inconvenient and the same features should be available. Pick the mode
+  // arbitrarily for the same reason.
   $options_without_repo = $options;
   unset($options_without_repo['repo']);
-
   list($hhvm, $_) = hhvm_cmd($options_without_repo, $test, $skipif_test);
-  // running .skipif, arbitrarily picking a mode
   $hhvm = $hhvm[0];
+  // Remove any --count <n> from the command
+  $hhvm = preg_replace('/ --count[ =]\d+/', '', $hhvm);
 
   $descriptorspec = darray[
     0 => varray["pipe", "r"],
@@ -2033,26 +2470,30 @@ function skip_test($options, $test, $run_skipif = true): ?string {
   $pipes = null;
   $process = proc_open("$hhvm $test 2>&1", $descriptorspec, inout $pipes);
   if (!is_resource($process)) {
-    // This is weird. We can't run HHVM but we probably shouldn't skip the test
-    // since on a broken build everything will show up as skipped and give you a
-    // SHIPIT.
-    return null;
+    return shape(
+      'valid' => false,
+      'error' => 'proc_open failed while running skipif'
+    );
   }
 
   fclose($pipes[0]);
-  $output = stream_get_contents($pipes[1]);
+  $output = trim(stream_get_contents($pipes[1]));
   fclose($pipes[1]);
   proc_close($process);
 
-  // The standard php5 .skipif semantics is if the .skipif outputs ANYTHING
-  // then it should be skipped. This is a poor design, but I'll just add a
-  // small blacklist of things that are really bad if they are output so we
-  // surface the errors in the tests themselves.
-  if (stripos($output, 'segmentation fault') !== false) {
-    return null;
+  // valid output is empty or a single line starting with 'skip'
+  // everything else must result in a test failure
+  if ($output === '') {
+    return shape('valid' => true, 'match' => true);
   }
-
-  return strlen($output) === 0 ? null : 'skip-skipif';
+  if (preg_match('/^skip.*$/', $output)) {
+    return shape(
+      'valid' => true,
+      'match' => false,
+      'skip_reason' => 'skip-skipif',
+    );
+  }
+  return shape('valid' => false, 'error' => "invalid skipif output '$output'");
 }
 
 function comp_line($l1, $l2, $is_reg) {
@@ -2187,7 +2628,7 @@ function generate_diff($wanted, $wanted_re, $output)
       $t = explode("\n", $m[1]);
       $r = varray[];
       $w2 = varray[];
-      for ($i = 0; $i < $m[2]; $i++) {
+      for ($i = 0; $i < (int)$m[2]; $i++) {
         foreach ($t as $v) {
           $r[] = $v;
         }
@@ -2266,7 +2707,10 @@ function can_run_server_test($test, $options) {
 
 const SERVER_TIMEOUT = 45;
 function run_config_server($options, $test) {
-  invariant(can_run_server_test($test, $options), "skip_test should have skipped this");
+  invariant(
+    can_run_server_test($test, $options),
+    'should_skip_test_simple should have skipped this',
+  );
 
   Status::createTestTmpDir($test); // force it to be created
   $config = find_file_for_dir(dirname($test), 'config.ini');
@@ -2300,6 +2744,7 @@ function run_config_cli(
   } else {
     $cmd_env['HPHP_TEST_TMPDIR'] = Status::createTestTmpDir($test);
   }
+  $cmd_env['HPHP_TEST_SOURCE_FILE'] = $test;
   if (isset($options['log'])) {
     $cmd_env['TRACE'] = 'printir:1';
     $cmd_env['HPHP_TRACE_FILE'] = $test . '.log';
@@ -2345,7 +2790,8 @@ function run_config_post($outputs, $test, $options) {
   file_put_contents(Status::getTestOutputPath($test, 'out'), $output);
 
   $check_hhbbc_error = isset($options['repo'])
-    && file_exists($test . '.hhbbc_assert');
+    && (file_exists($test . '.hhbbc_assert') ||
+        file_exists($test . '.hphpc_assert'));
 
   // hhvm redirects errors to stdout, so anything on stderr is really bad.
   if ($stderr && !$check_hhbbc_error) {
@@ -2356,20 +2802,14 @@ function run_config_post($outputs, $test, $options) {
     return false;
   }
 
-  // Needed for testing non-hhvm binaries that don't actually run the code
-  // e.g. parser/test/parse_tester.cpp.
-  if ($output == "FORCE PASS") {
-    return true;
-  }
-
   $repeats = 0;
   if (!$check_hhbbc_error) {
     if (isset($options['retranslate-all'])) {
-      $repeats = $options['retranslate-all'] * 2;
+      $repeats = (int)$options['retranslate-all'] * 2;
     }
 
     if (isset($options['recycle-tc'])) {
-      $repeats = $options['recycle-tc'];
+      $repeats = (int)$options['recycle-tc'];
     }
 
     if (isset($options['cli-server'])) {
@@ -2531,61 +2971,61 @@ function run_foreach_config(
   return $result;
 }
 
-function run_and_lock_test($options, $test) {
+function run_and_log_test($options, $test) {
   $stime = time();
   $time = microtime(true);
-  $failmsg = "";
-  $status = false;
-  $lock = fopen($test, 'r');
-  $wouldblock = false;
-  if (!$lock || !flock($lock, LOCK_EX, inout $wouldblock)) {
-    $failmsg = "Failed to lock test";
-    if ($lock) fclose($lock);
-    $lock = null;
-  } else {
-    $status = run_test($options, $test);
-  }
+  $status = run_test($options, $test);
   $time = microtime(true) - $time;
   $etime = time();
-  if ($lock) {
-    if ($status) {
-      clean_intermediate_files($test, $options);
-    } else if ($failmsg === '') {
-      $failmsg = Status::diffForTest($test);
-      if (!$failmsg) $failmsg = "Test failed with empty diff";
-    }
-    if (!flock($lock, LOCK_UN, inout $wouldblock)) {
-      if ($failmsg !== '') $failmsg .= "\n";
-      $failmsg .= "Failed to release test lock";
-      $status = false;
-    }
-    if (!fclose($lock)) {
-      if ($failmsg !== '') $failmsg .= "\n";
-      $failmsg .= "Failed to close lock file";
-      $status = false;
-    }
-  }
+
   if ($status === false) {
-    invariant($failmsg !== '', "test failed with empty failmsg");
-    Status::fail($test, $time, $stime, $etime, $failmsg);
+    $diff = Status::diffForTest($test);
+    if ($diff === '') {
+      $diff = 'Test failed with empty diff';
+    }
+    Status::fail($test, $time, $stime, $etime, $diff);
   } else if ($status === true) {
-    invariant($failmsg === '', "test passed with non-empty failmsg $failmsg");
     Status::pass($test, $time, $stime, $etime);
+    clean_intermediate_files($test, $options);
   } else if ($status is string) {
     invariant(
       preg_match('/^skip-[\w-]+$/', $status),
       "invalid skip status $status"
     );
-    invariant($failmsg === '', "test skipped with non-empty failmsg $failmsg");
     Status::skip($test, substr($status, 5), $time, $stime, $etime);
+    clean_intermediate_files($test, $options);
   } else {
     invariant_violation("invalid status type " . gettype($status));
   }
 }
 
 function run_test($options, $test) {
-  $skip_reason = skip_test($options, $test, !($options['no-skipif'] ?? false));
+  $skip_reason = should_skip_test_simple($options, $test);
   if ($skip_reason !== null) return $skip_reason;
+
+  if (!($options['no-skipif'] ?? false)) {
+    $result = runif_should_skip_test($options, $test);
+    if (!$result['valid']) {
+      invariant($result['error'] is string, 'missing runif error');
+      Status::writeDiff($test, 'Invalid .runif file: ' . $result['error']);
+      return false;
+    }
+    if (!$result['match']) {
+      invariant($result['skip_reason'] is string, 'missing skip_reason');
+      return $result['skip_reason'];
+    }
+
+    $result = skipif_should_skip_test($options, $test);
+    if (!$result['valid']) {
+      invariant($result['error'] is string, 'missing skipif error');
+      Status::writeDiff($test, $result['error']);
+      return false;
+    }
+    if (!$result['match']) {
+      invariant($result['skip_reason'] is string, 'missing skip_reason');
+      return $result['skip_reason'];
+    }
+  }
 
   list($hhvm, $hhvm_env) = hhvm_cmd($options, $test);
 
@@ -2606,7 +3046,7 @@ function run_test($options, $test) {
       return 'skip-norepo';
     }
     if (file_exists($test.'.onlyjumpstart') &&
-       (!isset($options['jit-serialize']) || $options['jit-serialize'] < 1)) {
+       (!isset($options['jit-serialize']) || (int)$options['jit-serialize'] < 1)) {
       return 'skip-onlyjumpstart';
     }
 
@@ -2624,7 +3064,10 @@ function run_test($options, $test) {
 
     $program = isset($options['hackc']) ? "hackc" : "hhvm";
 
-    if (file_exists($test . '.hhbbc_assert')) {
+    if (file_exists($test . '.hphpc_assert')) {
+      $hphp = hphp_cmd($options, $test, $program);
+      return run_foreach_config($options, $test, varray[$hphp], $hhvm_env);
+    } else if (file_exists($test . '.hhbbc_assert')) {
       $hphp = hphp_cmd($options, $test, $program);
       if (repo_separate($options, $test)) {
         $result = exec_with_stack($hphp);
@@ -2676,6 +3119,9 @@ function run_test($options, $test) {
       $cmd = jit_serialize_option($hhvm[0], $test, $options, true);
       $outputs = run_config_cli($options, $test, $cmd, $hhvm_env);
       if ($outputs === false) return false;
+      $cmd = jit_serialize_option($hhvm[0], $test, $options, true);
+      $outputs = run_config_cli($options, $test, $cmd, $hhvm_env);
+      if ($outputs === false) return false;
       $hhvm[0] = jit_serialize_option($hhvm[0], $test, $options, false);
     }
 
@@ -2690,7 +3136,10 @@ function run_test($options, $test) {
   }
 
   if (isset($options['hhas-round-trip'])) {
-    invariant(substr($test, -5) !== ".hhas", "skip_test should have skipped");
+    invariant(
+      substr($test, -5) !== ".hhas",
+      'should_skip_test_simple should have skipped this',
+    );
     // create tmpdir now so that we can write hhas
     Status::createTestTmpDir($test);
     // dumping hhas, not running code so arbitrarily picking a mode
@@ -2780,6 +3229,8 @@ function print_commands($tests, $options) {
       invariant(count($commands) === 1, 'get_options enforces jit mode only');
       $hhbbc_cmds .=
         jit_serialize_option($commands[0], $test, $options, true) . "\n";
+      $hhbbc_cmds .=
+        jit_serialize_option($commands[0], $test, $options, true) . "\n";
       $commands[0] = jit_serialize_option($commands[0], $test, $options, false);
     }
     foreach ($commands as $c) {
@@ -2816,7 +3267,7 @@ function msg_loop($num_tests, $queue) {
 
     if ($do_progress) {
       $total_run = (Status::$skipped + Status::$failed + Status::$passed);
-      $bar_cols = ($cols - 45);
+      $bar_cols = ((int)$cols - 45);
 
       $passed_ticks  = round($bar_cols * (Status::$passed  / $num_tests));
       $skipped_ticks = round($bar_cols * (Status::$skipped / $num_tests));
@@ -3047,7 +3498,7 @@ function start_server_proc($options, $config, $port) {
   $command = hhvm_cmd_impl(
     $options,
     $config,
-    null, // we do not pass Autoload.DBPath to the server process
+    null, // we do not pass Autoload.DB.Path to the server process
     '-m', 'server',
     "-vServer.Port=$port",
     "-vServer.Type=proxygen",
@@ -3254,7 +3705,7 @@ function main($argv) {
         error("Couldn't find config file for $test");
       }
       if (array_key_exists($config, $configs)) continue;
-      if (skip_test($options, $test, false) !== null) continue;
+      if (should_skip_test_simple($options, $test) !== null) continue;
       $configs[] = $config;
     }
 
@@ -3345,25 +3796,25 @@ function main($argv) {
 
   // Fork "worker" children (if needed).
   $children = darray[];
-  // A poor man's shared memory.
-  $bad_test_files = varray[];
+  // We write results as json in each child and collate them at the end
+  $json_results_files = varray[];
   if (Status::$nofork) {
     Status::registerCleanup(isset($options['no-clean']));
-    $bad_test_file = tempnam('/tmp', 'test-run-');
-    $bad_test_files[] = $bad_test_file;
+    $json_results_file = tempnam('/tmp', 'test-run-');
+    $json_results_files[] = $json_results_file;
     invariant(count($test_buckets) === 1, "nofork was set erroneously");
-    $return_value = run($options, $test_buckets[0], $bad_test_file);
+    $return_value = child_main($options, $test_buckets[0], $json_results_file);
   } else {
     foreach ($test_buckets as $test_bucket) {
-      $bad_test_file = tempnam('/tmp', 'test-run-');
-      $bad_test_files[] = $bad_test_file;
+      $json_results_file = tempnam('/tmp', 'test-run-');
+      $json_results_files[] = $json_results_file;
       $pid = pcntl_fork();
       if ($pid == -1) {
         error('could not fork');
       } else if ($pid) {
         $children[$pid] = $pid;
       } else {
-        exit(run($options, $test_bucket, $bad_test_file));
+        exit(child_main($options, $test_bucket, $json_results_file));
       }
     }
 
@@ -3424,8 +3875,8 @@ function main($argv) {
 
   // aggregate results
   $results = darray[];
-  foreach ($bad_test_files as $bad_test_file) {
-    $json = json_decode(file_get_contents($bad_test_file), true);
+  foreach ($json_results_files as $json_results_file) {
+    $json = json_decode(file_get_contents($json_results_file), true);
     if (!is_array($json)) {
       error(
         "\nNo JSON output was received from a test thread. ".
@@ -3433,7 +3884,7 @@ function main($argv) {
       );
     }
     $results = array_merge($results, $json);
-    unlink($bad_test_file);
+    unlink($json_results_file);
   }
 
   // print results

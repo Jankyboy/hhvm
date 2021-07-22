@@ -14,16 +14,13 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_HTTP_REQUEST_HANDLER_H_
-#define incl_HPHP_HTTP_REQUEST_HANDLER_H_
+#pragma once
 
 #include "hphp/runtime/base/string-buffer.h"
 #include "hphp/runtime/server/virtual-host.h"
 #include "hphp/runtime/server/access-log.h"
 #include "hphp/runtime/server/server.h"
 #include "hphp/runtime/server/source-root-info.h"
-
-#include <folly/Optional.h>
 
 namespace HPHP {
 
@@ -61,7 +58,7 @@ public:
 private:
   bool m_pathTranslation;
   ServiceData::ExportedTimeSeries* m_requestTimedOutOnQueue;
-  folly::Optional<SourceRootInfo> m_sourceRootInfo;
+  Optional<SourceRootInfo> m_sourceRootInfo;
 
   bool handleFileRequest(Transport *transport, const String& translated,
                          const std::string& path, const char* ext);
@@ -83,5 +80,3 @@ private:
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif // incl_HPHP_HTTP_REQUEST_HANDLER_H_

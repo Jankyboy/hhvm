@@ -174,7 +174,7 @@ void emitEntryAssertions(irgen::IRGS& irgs, const Func* func, SrcKey sk) {
   // are DV initializers, because they can run arbitrary code before they get
   // here (and they do, in some hhas-based builtins, and they may not even get
   // to the Func main entry point).
-  if (sk.offset() == func->base()) {
+  if (sk.offset() == 0) {
     // The assertions inserted here are only valid if the first bytecode
     // instruction does not have unprocessed predecessors.  This invariant is
     // ensured by the emitter using an EntryNop instruction when necessary.
@@ -192,9 +192,15 @@ void emitEntryAssertions(irgen::IRGS& irgs, const Func* func, SrcKey sk) {
   auto const numLocs = func->numLocals();
   auto loc = func->numParams();
   if (func->hasReifiedGenerics()) {
-    // First non parameter local will specially set
-    auto const t = RuntimeOption::EvalHackArrDVArrs ? TVec : TArr;
-    irgen::assertTypeLocation(irgs, Location::Local { loc }, t);
+    // The next non-parameter local contains the reified generics.
+    assertx(func->reifiedGenericsLocalId() == loc);
+    irgen::assertTypeLocation(irgs, Location::Local { loc }, TVec);
+    loc++;
+  }
+  if (func->hasCoeffectsLocal()) {
+    // The next non-parameter local contains the coeffects.
+    assertx(func->coeffectsLocalId() == loc);
+    irgen::assertTypeLocation(irgs, Location::Local { loc }, TInt);
     loc++;
   }
   for (; loc < numLocs; ++loc) {
@@ -202,6 +208,19 @@ void emitEntryAssertions(irgen::IRGS& irgs, const Func* func, SrcKey sk) {
     irgen::assertTypeLocation(irgs, location, TUninit);
   }
 }
+
+//////////////////////////////////////////////////////////////////////
+
+namespace {
+
+struct ArrayReachInfo {
+  Location loc;
+  uint32_t guardIdx;
+};
+
+}
+
+//////////////////////////////////////////////////////////////////////
 
 /*
  * Emit type guards.
@@ -220,10 +239,10 @@ void emitGuards(irgen::IRGS& irgs,
 
   // Emit type guards/preconditions.
   for (auto const& preCond : typePreConditions) {
-    auto type = preCond.type;
-    auto loc  = preCond.location;
-    assertx(type <= TCell);
-    irgen::checkType(irgs, loc, type, bcOff);
+    auto const type = preCond.type;
+    auto const loc  = preCond.location;
+    assertx(IMPLIES(type.arrSpec(), irgs.context.kind == TransKind::Live));
+    irgen::checkType(irgs, loc, type, sk);
   }
 
   // Finish emitting guards, and emit profiling counters.
@@ -236,7 +255,7 @@ void emitGuards(irgen::IRGS& irgs,
 
     if (irgs.context.kind == TransKind::Profile) {
       assertx(irgs.context.transIDs.size() == 1);
-      auto transID = *irgs.context.transIDs.begin();
+      auto const transID = *irgs.context.transIDs.begin();
       if (block.func()->isEntry(bcOff) && !mcgen::retranslateAllEnabled()) {
         irgen::checkCold(irgs, transID);
       } else {
@@ -254,11 +273,11 @@ void emitGuards(irgen::IRGS& irgs,
 /*
  * Returns the id of the next region block in workQ whose
  * corresponding IR block is currently reachable from the IR unit's
- * entry, or folly::none if no such block exists.  Furthermore, any
+ * entry, or std::nullopt if no such block exists.  Furthermore, any
  * unreachable blocks appearing before the first reachable block are
  * moved to the end of workQ.
  */
-folly::Optional<RegionDesc::BlockId> nextReachableBlock(
+Optional<RegionDesc::BlockId> nextReachableBlock(
   jit::queue<RegionDesc::BlockId>& workQ,
   const irgen::IRBuilder& irb,
   const BlockIdToIRBlockMap& blockIdToIRBlock
@@ -275,7 +294,7 @@ folly::Optional<RegionDesc::BlockId> nextReachableBlock(
     // reachable after processing some of the other blocks.
     workQ.push(regionBlockId);
   }
-  return folly::none;
+  return std::nullopt;
 }
 
 /*
@@ -337,8 +356,7 @@ static bool needsSurpriseCheck(Op op) {
   return op == Op::JmpZ || op == Op::JmpNZ || op == Op::Jmp;
 }
 
-// Unlike isCompare, this also allows Not, Same, NSame and Cmp.
-static bool isCmp(Op op) {
+static bool isSimpleOp(Op op) {
   return op == Op::Not ||
       op == Op::Same ||
       op == Op::NSame ||
@@ -348,7 +366,43 @@ static bool isCmp(Op op) {
       op == Op::Lte ||
       op == Op::Gt ||
       op == Op::Gte ||
-      op == Op::Cmp;
+      op == Op::Cmp ||
+      op == Op::IsTypeL ||
+      op == Op::IsTypeC ||
+      op == Op::Add ||
+      op == Op::Sub ||
+      op == Op::Mul ||
+      op == Op::Div ||
+      op == Op::Mod ||
+      op == Op::Pow ||
+      op == Op::BitAnd ||
+      op == Op::BitOr ||
+      op == Op::BitXor ||
+      op == Op::BitNot ||
+      op == Op::CastBool ||
+      op == Op::CastInt;
+}
+
+Optional<unsigned> scheduleSurprise(const RegionDesc::Block& block) {
+  Optional<unsigned> checkIdx;
+  auto sk = block.start();
+  for (unsigned i = 0; i < block.length(); ++i, sk.advance(block.func())) {
+    auto const backwards = [&]{
+      auto const offsets = instrJumpOffsets(sk.pc());
+      return std::any_of(
+        offsets.begin(), offsets.end(), [] (Offset o) { return o < 0; }
+      );
+    };
+    if (i == block.length() - 1 && needsSurpriseCheck(sk.op()) && backwards()) {
+      return checkIdx;
+    }
+    if (isSimpleOp(sk.op())) {
+      if (!checkIdx) checkIdx = i;
+      continue;
+    }
+    checkIdx.reset();
+  }
+  return {};
 }
 
 TransID canonTransID(const TransIDSet& tids) {
@@ -408,7 +462,7 @@ TranslateResult irGenRegionImpl(irgen::IRGS& irgs,
     // Set the first callee block as a successor to the FCall's block and
     // "fallthrough" from the caller into the callee's first block.
     setIRBlock(irgs, region.entry()->id(), region, blockIdToIRBlock);
-    irgen::endBlock(irgs, region.start().offset());
+    irgen::endBlock(irgs, region.start());
   }
 
   RegionDesc::BlockIdSet processedBlocks;
@@ -423,6 +477,7 @@ TranslateResult irGenRegionImpl(irgen::IRGS& irgs,
     auto const& block  = *region.block(blockId);
     auto sk            = block.start();
     bool emitedSurpriseCheck = false;
+    auto const surprise = scheduleSurprise(block);
 
     SCOPE_ASSERT_DETAIL("IRGS") { return show(irgs); };
 
@@ -472,7 +527,6 @@ TranslateResult irGenRegionImpl(irgen::IRGS& irgs,
     for (unsigned i = 0; i < block.length(); ++i, sk.advance(block.func())) {
       ProfSrcKey psk { canonTransID(irgs.profTransIDs), sk };
       auto const lastInstr = i == block.length() - 1;
-      auto const penultimateInst = i == block.length() - 2;
 
       // Update bcOff here so any guards or assertions from metadata are
       // attributed to this instruction.
@@ -482,35 +536,14 @@ TranslateResult irGenRegionImpl(irgen::IRGS& irgs,
       NormalizedInstruction inst(sk, block.unit());
       inst.interp = irgs.retryContext->toInterp.count(psk);
 
-      if (penultimateInst && isCmp(inst.op())) {
-          SrcKey nextSk = inst.nextSk();
-          Op nextOp = nextSk.op();
-          auto const backwards = [&]{
-            auto const offsets = instrJumpOffsets(nextSk.pc());
-            return std::any_of(
-              offsets.begin(), offsets.end(), [] (Offset o) { return o < 0; }
-            );
-          };
-          if (needsSurpriseCheck(nextOp) && backwards()) {
-            emitedSurpriseCheck = true;
-            inst.forceSurpriseCheck = true;
-          }
+      if (surprise && *surprise == i) {
+        emitedSurpriseCheck = true;
+        inst.forceSurpriseCheck = true;
       }
 
       // Emit IR for the body of the instruction.
       try {
-        auto const backwards = [&]{
-          auto const offsets = instrJumpOffsets(inst.pc());
-          return std::any_of(
-            offsets.begin(), offsets.end(), [] (Offset o) { return o < 0; }
-          );
-        };
-        if (lastInstr && !emitedSurpriseCheck &&
-            needsSurpriseCheck(inst.op()) &&
-            backwards()) {
-          emitedSurpriseCheck = true;
-          inst.forceSurpriseCheck = true;
-        }
+        irgs.skipSurpriseCheck = emitedSurpriseCheck;
         translateInstr(irgs, inst);
       } catch (const RetryIRGen& e) {
         return TranslateResult::Retry;
@@ -544,7 +577,7 @@ TranslateResult irGenRegionImpl(irgen::IRGS& irgs,
             irgen::endRegion(irgs);
           }
         } else if (instrAllowsFallThru(inst.op())) {
-          irgen::endBlock(irgs, inst.nextSk().offset());
+          irgen::endBlock(irgs, inst.nextSk());
         }
       }
     }
@@ -586,6 +619,7 @@ std::unique_ptr<IRUnit> irGenRegion(const RegionDesc& region,
                                     std::make_unique<AnnotationData>());
     unit->initLogEntry(context.initSrcKey.func());
     irgen::IRGS irgs{*unit, &region, budgetBCInstrs, &retryContext};
+    irgen::defineFrameAndStack(irgs, region.entry()->initialSpOffset());
     tries++;
 
     // Set the profCount of the IRUnit's entry block, which is created a
@@ -693,7 +727,7 @@ bool irGenTryInlineFCall(irgen::IRGS& irgs, const Func* callee,
   auto const returnTarget = InlineReturnTarget {
     returnBlock, suspendRetBlock, asyncEagerOffset
   };
-  auto callFuncOff = bcOff(irgs) - curFunc(irgs)->base();
+  auto callFuncOff = bcOff(irgs);
 
   irgen::beginInlining(irgs, callee, fca, ctx, dynamicCall,
                        psk.srcKey.op(),
@@ -759,8 +793,10 @@ std::unique_ptr<IRUnit> irGenInlineRegion(const TransContext& ctx,
     const int32_t budgetBCInstrs = ctx.kind == TransKind::Live
       ? RuntimeOption::EvalJitMaxLiveRegionInstrs
       : RuntimeOption::EvalJitMaxRegionInstrs;
+    // TODO: ctx contains caller info, make inlining cost calc caller agnostic
     unit = std::make_unique<IRUnit>(ctx, std::make_unique<AnnotationData>());
     irgen::IRGS irgs{*unit, &region, budgetBCInstrs, &retryContext};
+    irgen::defineFrameAndStack(irgs, SBInvOffset{0});
     irgs.inlineState.conjure = true;
     if (hasTransID(entryBID)) {
       irgs.profTransIDs.clear();

@@ -30,6 +30,12 @@ type range = {
 }
 [@@deriving eq]
 
+type textDocumentSaveReason =
+  | Manual [@value 1]
+  | AfterDelay [@value 2]
+  | FocusOut [@value 3]
+[@@deriving enum]
+
 module Location : sig
   type t = {
     uri: documentUri;
@@ -150,7 +156,7 @@ module SymbolInformation : sig
     | Object [@value 19]
     | Key [@value 20]
     | Null [@value 21]
-    | EnumMember [@value 22]
+    | MemberOf [@value 22]
     | Struct [@value 23]
   [@@deriving enum]
 
@@ -450,6 +456,17 @@ module DidChange : sig
   }
 end
 
+module WillSaveWaitUntil : sig
+  type params = willSaveWaitUntilTextDocumentParams
+
+  and willSaveWaitUntilTextDocumentParams = {
+    textDocument: TextDocumentIdentifier.t;
+    reason: textDocumentSaveReason;
+  }
+
+  and result = TextEdit.t list
+end
+
 module DidChangeWatchedFiles : sig
   type registerOptions = { watchers: fileSystemWatcher list }
 
@@ -541,7 +558,7 @@ module Completion : sig
     | File (* 17 *)
     | Reference (* 18 *)
     | Folder (* 19 *)
-    | EnumMember (* 20 *)
+    | MemberOf (* 20 *)
     | Constant (* 21 *)
     | Struct (* 22 *)
     | Event (* 23 *)
@@ -553,7 +570,7 @@ module Completion : sig
     | PlainText (* 1 *)
     (* the insertText/textEdits are just plain strings *)
     | SnippetFormat (* 2 *)
-                    (* wire: just "Snippet" *)
+  (* wire: just "Snippet" *)
   [@@deriving enum]
 
   type completionTriggerKind =
@@ -585,6 +602,10 @@ module Completion : sig
     items: completionItem list;
   }
 
+  and completionDocumentation =
+    | MarkedStringsDocumentation of markedString list
+    | UnparsedDocumentation of Hh_json.json
+
   and completionItem = {
     label: string;
     (* the label in the UI *)
@@ -596,7 +617,7 @@ module Completion : sig
     (* nuclide-specific, right column *)
     itemType: string option;
     (* nuclide-specific, left column *)
-    documentation: markedString list option;
+    documentation: completionDocumentation option;
     (* human-readable doc-comment *)
     sortText: string option;
     (* used for sorting; if absent, uses label *)
@@ -899,6 +920,7 @@ type lsp_request =
   | HackTestStartServerRequestFB
   | HackTestStopServerRequestFB
   | HackTestShutdownServerlessRequestFB
+  | WillSaveWaitUntilRequest of WillSaveWaitUntil.params
   | UnknownRequest of string * Hh_json.json option
 
 type lsp_result =
@@ -930,6 +952,7 @@ type lsp_result =
   | HackTestStopServerResultFB
   | HackTestShutdownServerlessResultFB
   | RegisterCapabilityRequestResult
+  | WillSaveWaitUntilResult of WillSaveWaitUntil.result
   | ErrorResult of Error.t
 
 type lsp_notification =

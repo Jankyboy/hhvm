@@ -13,8 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_JIT_ARG_GROUP_H
-#define incl_HPHP_JIT_ARG_GROUP_H
+#pragma once
 
 #include "hphp/runtime/vm/jit/containers.h"
 #include "hphp/runtime/vm/jit/reg-alloc.h"
@@ -102,7 +101,7 @@ struct ArgDesc {
   }
 
   bool isZeroExtend() const { return m_zeroExtend; }
-  folly::Optional<AuxUnion> aux() const { return m_aux; }
+  Optional<AuxUnion> aux() const { return m_aux; }
 
 private: // These should be created using ArgGroup.
   friend struct ArgGroup;
@@ -131,7 +130,7 @@ private: // These should be created using ArgGroup.
   explicit ArgDesc(SSATmp* tmp,
                    Vloc,
                    bool val = true,
-                   folly::Optional<AuxUnion> aux = folly::none);
+                   Optional<AuxUnion> aux = std::nullopt);
 
 private:
   Kind m_kind;
@@ -142,7 +141,7 @@ private:
     DataType m_typeImm;
     Vreg m_srcReg2;
   };
-  folly::Optional<AuxUnion> m_aux;
+  Optional<AuxUnion> m_aux;
   bool m_zeroExtend{false};
 };
 
@@ -239,7 +238,7 @@ struct ArgGroup {
   /*
    * Pass tmp as a TypedValue passed by value.
    */
-  ArgGroup& typedValue(int i, folly::Optional<AuxUnion> aux = folly::none);
+  ArgGroup& typedValue(int i, Optional<AuxUnion> aux = std::nullopt);
 
   ArgGroup& memberKeyIS(int i) {
     return memberKeyImpl(i, true);
@@ -270,7 +269,7 @@ private:
   /*
    * For passing the m_type field of a TypedValue.
    */
-  ArgGroup& type(int i, folly::Optional<AuxUnion> aux) {
+  ArgGroup& type(int i, Optional<AuxUnion> aux) {
     auto s = m_inst->src(i);
     push_arg(ArgDesc(s, m_locs[s], false, aux));
     return *this;
@@ -300,4 +299,3 @@ ArgGroup toArgGroup(const NativeCalls::CallInfo&,
                     const IRInstruction*);
 
 }}
-#endif

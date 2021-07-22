@@ -142,7 +142,7 @@ template<class Hook>
 void suspendHook(IRGS& env, Hook hook) {
   // Sync the marker to let the unwinder know that the consumed input is
   // no longer on the eval stack.
-  env.irb->setCurMarker(makeMarker(env, bcOff(env)));
+  updateMarker(env);
   env.irb->exceptionStackBoundary();
 
   ringbufferMsg(env, Trace::RBTypeFuncExit, curFunc(env)->fullName());
@@ -163,6 +163,8 @@ void implAwaitE(IRGS& env, SSATmp* child, Offset suspendOffset,
                 Offset resumeOffset) {
   assertx(curFunc(env)->isAsync());
   assertx(resumeMode(env) != ResumeMode::Async);
+  // FIXME(T88328140): ifThenElse() emits unreachable code with bad state
+  // assertx(spOffBCFromStackBase(env) == spOffEmpty(env));
   assertx(child->type() <= TObj);
 
   // Bind address at which the execution should resume after awaiting.
@@ -170,7 +172,7 @@ void implAwaitE(IRGS& env, SSATmp* child, Offset suspendOffset,
   auto const suspendOff = cns(env, suspendOffset);
   auto const resumeAddr = [&]{
     auto const resumeSk = SrcKey(func, resumeOffset, ResumeMode::Async);
-    auto const bindData = LdBindAddrData { resumeSk, spOffBCFromFP(env) + 1 };
+    auto const bindData = LdBindAddrData { resumeSk, spOffEmpty(env) + 1 };
     return gen(env, LdBindAddr, bindData);
   };
 
@@ -215,10 +217,6 @@ void implAwaitE(IRGS& env, SSATmp* child, Offset suspendOffset,
 
     if (RO::EvalEnableImplicitContext) gen(env, StImplicitContext, waitHandle);
 
-    if (RuntimeOption::EvalHHIRGenerateAsserts) {
-      gen(env, DbgTrashRetVal, fp(env));
-    }
-
     if (isInlining(env)) {
       suspendFromInlined(env, waitHandle);
       return;
@@ -253,6 +251,8 @@ void implAwaitR(IRGS& env, SSATmp* child, Offset suspendOffset,
                 Offset resumeOffset) {
   assertx(curFunc(env)->isAsync());
   assertx(resumeMode(env) == ResumeMode::Async);
+  // FIXME(T88328140): ifThenElse() emits unreachable code with bad state
+  // assertx(spOffBCFromStackBase(env) == spOffEmpty(env));
   assertx(child->isA(TObj));
   assertx(!isInlining(env));
 
@@ -268,8 +268,8 @@ void implAwaitR(IRGS& env, SSATmp* child, Offset suspendOffset,
 
   // Suspend the async function.
   auto const resumeSk = SrcKey(curFunc(env), resumeOffset, ResumeMode::Async);
-  auto const data = LdBindAddrData { resumeSk, spOffBCFromFP(env) + 1 };
-  auto const resumeAddr = gen(env, LdBindAddr, data);
+  auto const bindData = LdBindAddrData { resumeSk, spOffEmpty(env) + 1 };
+  auto const resumeAddr = gen(env, LdBindAddr, bindData);
   gen(env, StArResumeAddr, SuspendOffset { suspendOffset }, fp(env),
       resumeAddr);
 
@@ -286,7 +286,7 @@ void implAwaitR(IRGS& env, SSATmp* child, Offset suspendOffset,
 SSATmp* implYieldGen(IRGS& env, SSATmp* key, SSATmp* value) {
   if (key != nullptr) {
     // Teleport yielded key.
-    auto const oldKey = gen(env, LdContArKey, TCell, fp(env));
+    auto const oldKey = gen(env, LdContArKey, TInitCell, fp(env));
     gen(env, StContArKey, fp(env), key);
     decRef(env, oldKey);
 
@@ -297,7 +297,7 @@ SSATmp* implYieldGen(IRGS& env, SSATmp* key, SSATmp* value) {
     // Increment key.
     if (curFunc(env)->isPairGenerator()) {
       auto const newIdx = gen(env, ContArIncIdx, fp(env));
-      auto const oldKey = gen(env, LdContArKey, TCell, fp(env));
+      auto const oldKey = gen(env, LdContArKey, TInitCell, fp(env));
       gen(env, StContArKey, fp(env), newIdx);
       decRef(env, oldKey);
     } else {
@@ -308,7 +308,7 @@ SSATmp* implYieldGen(IRGS& env, SSATmp* key, SSATmp* value) {
   }
 
   // Teleport yielded value.
-  auto const oldValue = gen(env, LdContArValue, TCell, fp(env));
+  auto const oldValue = gen(env, LdContArValue, TInitCell, fp(env));
   gen(env, StContArValue, fp(env), value);
   decRef(env, oldValue);
 
@@ -320,7 +320,7 @@ SSATmp* implYieldAGen(IRGS& env, SSATmp* key, SSATmp* value) {
   key = key ? key : cns(env, TInitNull);
 
   // Wrap the key and value into a tuple.
-  auto const keyValueTuple = gen(env, AllocVArray, PackedArrayData { 2 });
+  auto const keyValueTuple = gen(env, AllocVec, PackedArrayData { 2 });
   gen(env, InitVecElem, IndexData { 0 }, keyValueTuple, key);
   gen(env, InitVecElem, IndexData { 1 }, keyValueTuple, value);
 
@@ -331,6 +331,7 @@ SSATmp* implYieldAGen(IRGS& env, SSATmp* key, SSATmp* value) {
 void implYield(IRGS& env, bool withKey) {
   assertx(resumeMode(env) != ResumeMode::None);
   assertx(curFunc(env)->isGenerator());
+  assertx(spOffBCFromStackBase(env) == spOffEmpty(env) + (withKey ? 2 : 1));
 
   if (resumeMode(env) == ResumeMode::Async) PUNT(Yield-AsyncGenerator);
 
@@ -342,8 +343,8 @@ void implYield(IRGS& env, bool withKey) {
   auto const suspendOffset = bcOff(env);
   auto const resumeOffset = nextBcOff(env);
   auto const resumeSk = SrcKey(curFunc(env), resumeOffset, ResumeMode::GenIter);
-  auto const data = LdBindAddrData { resumeSk, spOffBCFromFP(env) };
-  auto const resumeAddr = gen(env, LdBindAddr, data);
+  auto const bindData = LdBindAddrData { resumeSk, spOffEmpty(env) + 1 };
+  auto const resumeAddr = gen(env, LdBindAddr, bindData);
   gen(env,
       StArResumeAddr,
       SuspendOffset { suspendOffset },
@@ -380,8 +381,8 @@ void implYield(IRGS& env, bool withKey) {
  * bytecode offset is a jump target from things we aren't thinking about
  * here).
  */
-Type awaitedTypeFromHHBBC(IRGS& env, Offset nextBcOff) {
-  auto pc = curFunc(env)->at(nextBcOff);
+Type awaitedTypeFromHHBBC(IRGS& env, SrcKey nextSk) {
+  auto pc = nextSk.pc();
   if (decode_op(pc) != Op::AssertRATStk) return TInitCell;
   auto const stkLoc = decode_iva(pc);
   if (stkLoc != 0) return TInitCell;
@@ -418,8 +419,8 @@ Type awaitedTypeFromSSATmp(const SSATmp* awaitable) {
   return TInitCell;
 }
 
-Type awaitedType(IRGS& env, SSATmp* awaitable, Offset nextBcOff) {
-  return awaitedTypeFromHHBBC(env, nextBcOff) &
+Type awaitedType(IRGS& env, SSATmp* awaitable, SrcKey nextSk) {
+  return awaitedTypeFromHHBBC(env, nextSk) &
          awaitedTypeFromSSATmp(awaitable);
 }
 
@@ -462,7 +463,7 @@ void emitWHResult(IRGS& env) {
     "we test state for non-zero, success must be zero"
   );
   gen(env, JmpNZero, exitSlow, gen(env, LdWHState, child));
-  auto const awaitedTy = awaitedType(env, child, nextBcOff(env));
+  auto const awaitedTy = awaitedType(env, child, nextSrcKey(env));
   auto const res = gen(env, LdWHResult, awaitedTy, child);
   gen(env, IncRef, res);
   decRef(env, child);
@@ -471,9 +472,8 @@ void emitWHResult(IRGS& env) {
 
 void emitAwait(IRGS& env) {
   auto const suspendOffset = bcOff(env);
-  auto const resumeOffset = nextBcOff(env);
   assertx(curFunc(env)->isAsync());
-  assertx(spOffBCFromFP(env) == spOffEmpty(env) + 1);
+  assertx(spOffBCFromStackBase(env) == spOffEmpty(env) + 1);
 
   if (curFunc(env)->isAsyncGenerator() &&
       resumeMode(env) == ResumeMode::Async) {
@@ -492,7 +492,7 @@ void emitAwait(IRGS& env) {
   auto const child = gen(env, AssertType, TAwaitable, popped);
 
   auto const handleSucceeded = [&] {
-    auto const awaitedTy = awaitedType(env, child, resumeOffset);
+    auto const awaitedTy = awaitedType(env, child, nextSrcKey(env));
     auto const res = gen(env, LdWHResult, awaitedTy, child);
     gen(env, IncRef, res);
     decRef(env, child);
@@ -507,22 +507,21 @@ void emitAwait(IRGS& env) {
       push(env, exception);
       jmpImpl(env, offset);
     } else {
-      hint(env, Block::Hint::Unlikely);
       // There are no more catch blocks in this function, we are at the top
       // level throw
-      auto const spOff = IRSPRelOffsetData { spOffBCFromIRSP(env) };
-      gen(env, EagerSyncVMRegs, spOff, fp(env), sp(env));
+      hint(env, Block::Hint::Unlikely);
       updateMarker(env);
-      gen(env, EnterTCUnwind, EnterTCUnwindData { true }, exception);
+      auto const etcData = EnterTCUnwindData { spOffBCFromIRSP(env), true };
+      gen(env, EnterTCUnwind, etcData, sp(env), fp(env), exception);
     }
   };
   auto const handleNotFinished = [&] {
     if (childIsSWH) {
       gen(env, Unreachable, ASSERT_REASON);
     } else if (resumeMode(env) == ResumeMode::Async) {
-      implAwaitR(env, child, suspendOffset, resumeOffset);
+      implAwaitR(env, child, suspendOffset, nextBcOff(env));
     } else {
-      implAwaitE(env, child, suspendOffset, resumeOffset);
+      implAwaitE(env, child, suspendOffset, nextBcOff(env));
     }
   };
 
@@ -561,7 +560,7 @@ void emitAwait(IRGS& env) {
           [&] (Block* taken) { gen(env, JmpNZero, taken, state); },
           [&] {
             handleSucceeded();
-            gen(env, Jmp, makeExit(env, resumeOffset));
+            gen(env, Jmp, makeExit(env, nextSrcKey(env)));
           },
           [&] { handleFailed(); }
         );
@@ -574,7 +573,7 @@ void emitAwaitAll(IRGS& env, LocalRange locals) {
   auto const suspendOffset = bcOff(env);
   auto const resumeOffset = nextBcOff(env);
   assertx(curFunc(env)->isAsync());
-  assertx(spOffBCFromFP(env) == spOffEmpty(env));
+  assertx(spOffBCFromStackBase(env) == spOffEmpty(env));
 
   if (curFunc(env)->isAsyncGenerator() &&
       resumeMode(env) == ResumeMode::Async) {
@@ -595,7 +594,7 @@ void emitAwaitAll(IRGS& env, LocalRange locals) {
     }
     auto cnt = cns(env, 0);
     for (int i = 0; i < locals.count; ++i) {
-      auto const loc = ldLoc(env, locals.first + i, nullptr, DataTypeSpecific);
+      auto const loc = ldLoc(env, locals.first + i, DataTypeSpecific);
       if (loc->isA(TNull)) continue;
       if (!loc->isA(TObj)) PUNT(Await-NonObject);
       gen(env, JmpZero, exitSlow, gen(env, IsWaitHandle, loc));
@@ -641,13 +640,14 @@ void emitCreateCont(IRGS& env) {
   auto const resumeOffset = nextBcOff(env);
   assertx(resumeMode(env) == ResumeMode::None);
   assertx(curFunc(env)->isGenerator());
+  assertx(spOffBCFromStackBase(env) == spOffEmpty(env));
 
   // Create the Generator object. CreateCont takes care of copying local
   // variables and iterators.
   auto const func = curFunc(env);
   auto const resumeSk = SrcKey(func, resumeOffset, ResumeMode::GenIter);
-  auto const bind_data = LdBindAddrData { resumeSk, spOffBCFromFP(env) + 1 };
-  auto const resumeAddr = gen(env, LdBindAddr, bind_data);
+  auto const bindData = LdBindAddrData { resumeSk, spOffEmpty(env) + 1 };
+  auto const resumeAddr = gen(env, LdBindAddr, bindData);
   auto const cont =
     gen(env,
         curFunc(env)->isAsync() ? CreateAGen : CreateGen,
@@ -669,9 +669,6 @@ void emitCreateCont(IRGS& env) {
 
   // Grab caller info from the ActRec, free the ActRec, and return control to
   // the caller.
-  if (RuntimeOption::EvalHHIRGenerateAsserts) {
-    gen(env, DbgTrashRetVal, fp(env));
-  }
   auto const spAdjust = offsetToReturnSlot(env);
   auto const retData = RetCtrlData { spAdjust, false, AuxUnion{0} };
   gen(env, RetCtrl, retData, sp(env), fp(env), cont);
@@ -682,7 +679,7 @@ void emitContEnter(IRGS& env) {
   assertx(curClass(env)->classof(AsyncGenerator::getClass()) ||
           curClass(env)->classof(Generator::getClass()));
 
-  auto const callBCOffset = bcOff(env) - curFunc(env)->base();
+  auto const callBCOffset = bcOff(env);
   auto const isAsync = curClass(env)->classof(AsyncGenerator::getClass());
   // Load generator's FP and resume address.
   auto const genObj = ldThis(env);

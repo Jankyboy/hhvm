@@ -16,6 +16,7 @@
 
 #include "hphp/runtime/server/http-server.h"
 
+#include "hphp/runtime/base/apc-stats.h"
 #include "hphp/runtime/base/backtrace.h"
 #include "hphp/runtime/base/file-util.h"
 #include "hphp/runtime/base/http-client.h"
@@ -25,8 +26,10 @@
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/debugger/debugger.h"
 #include "hphp/runtime/ext/apc/ext_apc.h"
+#include "hphp/runtime/ext/server/ext_server.h"
 #include "hphp/runtime/server/admin-request-handler.h"
 #include "hphp/runtime/server/http-request-handler.h"
+#include "hphp/runtime/server/memory-stats.h"
 #include "hphp/runtime/server/replay-transport.h"
 #include "hphp/runtime/server/server-stats.h"
 #include "hphp/runtime/server/static-content-cache.h"
@@ -177,14 +180,6 @@ HttpServer::HttpServer() {
     }
   }
 
-  if (RuntimeOption::XboxServerPort != 0) {
-    auto xboxInfo = std::make_shared<XboxServerInfo>();
-    auto satellite = SatelliteServer::Create(xboxInfo);
-    if (satellite) {
-      m_satellites.push_back(std::move(satellite));
-    }
-  }
-
   StaticContentCache::TheCache.load();
 
   m_counterCallback.init(
@@ -200,6 +195,26 @@ HttpServer::HttpServer() {
       auto const sat_requests = getSatelliteRequestCount();
       counters["satellite_inflight_requests"] = sat_requests.first;
       counters["satellite_queued_requests"] = sat_requests.second;
+      auto const uptime = f_server_uptime();
+      counters["uptime"] = uptime;
+
+      // Temporary counter that is available only during a short uptime window.
+      if (uptime > RO::EvalMemTrackStart && uptime < RO::EvalMemTrackEnd) {
+        counters["windowed_rss"] = ProcStatus::adjustedRssKb();
+        counters["windowed_units"] = MemoryStats::Count(AllocKind::Unit);
+        counters["windowed_classes"] = MemoryStats::Count(AllocKind::Class);
+        counters["windowed_funcs"] = MemoryStats::Count(AllocKind::Func);
+        counters["windowed_unit_size"] =
+          MemoryStats::TotalSize(AllocKind::Unit);
+        counters["windowed_class_size"] =
+          MemoryStats::TotalSize(AllocKind::Class);
+        counters["windowed_func_size"] =
+          MemoryStats::TotalSize(AllocKind::Func);
+        auto const& apc = APCStats::getAPCStats();
+        counters["windowed_apc_entries"] = apc.totalEntries();
+        counters["windowed_apc_key_size"] = apc.totalKeySize();
+        counters["windowed_apc_value_size"] = apc.totalValueSize();
+      }
     }
   );
 
@@ -210,6 +225,14 @@ HttpServer::HttpServer() {
 
 // Synchronously stop satellites
 void HttpServer::onServerShutdown() {
+  // Avoid running this multiple times
+  static std::atomic_flag flag = ATOMIC_FLAG_INIT;
+  if (flag.test_and_set()) return;
+
+  SparseHeap::PrepareToStop();
+#ifdef USE_JEMALLOC
+  shutdown_slab_managers();
+#endif
   InitFiniNode::ServerFini();
 
   Eval::Debugger::Stop();
@@ -471,6 +494,8 @@ void HttpServer::runOrExitProcess() {
   EvictFileCache();
 
   waitForServers();
+  // Log APC samples after all requests finish.
+  apc_sample_by_size();
   playShutdownRequest(RuntimeOption::ServerCleanupRequest);
 }
 
@@ -573,15 +598,18 @@ void HttpServer::EvictFileCache() {
   // explicitly advise files out.  But we can do it anyway when we
   // need more free memory, e.g., when a new instance of the server is
   // about to start.
-  advise_out(RuntimeOption::RepoLocalPath);
+  advise_out(RuntimeOption::RepoPath);
   advise_out(RuntimeOption::FileCache);
-  apc_advise_out();
 }
 
 void HttpServer::PrepareToStop() {
   MarkShutdownStat(ShutdownEvent::SHUTDOWN_PREPARE);
   PrepareToStopTime.store(time(nullptr), std::memory_order_release);
   EvictFileCache();
+  SparseHeap::PrepareToStop();
+#ifdef USE_JEMALLOC
+  shutdown_slab_managers();
+#endif
 }
 
 void HttpServer::createPid() {

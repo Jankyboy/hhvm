@@ -2,13 +2,10 @@
 
 <<file:__EnableUnstableFeatures('expression_trees')>>
 
-// Placeholder definitions so we don't get naming errors.
-class Code {}
-
 function foo(): void {
-  $if = Code`($x) ==> { if($x) { return 1; } return 2; }`;
+  $if = Code`(ExampleBool $x) ==> { if($x) { return 1; } return 2; }`;
 
-  $if_else = Code`($x, $y) ==> {
+  $if_else = Code`(ExampleBool $x, ExampleBool $y) ==> {
     if ($x) {
       return 1;
     } else if ($y) {

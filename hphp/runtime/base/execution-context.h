@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EXECUTION_CONTEXT_H_
-#define incl_HPHP_EXECUTION_CONTEXT_H_
+#pragma once
 
 #include "hphp/runtime/base/req-list.h"
 #include "hphp/runtime/base/req-tiny-vector.h"
@@ -34,6 +33,7 @@
 
 #include "hphp/util/lock.h"
 #include "hphp/util/logger.h"
+#include "hphp/util/optional.h"
 #include "hphp/util/rds-local.h"
 #include "hphp/util/thread-local.h"
 
@@ -300,8 +300,8 @@ public:
   void unsetenv(const String& name);
   Array getEnvs() const;
 
-  String getTimeZone() const;
-  void setTimeZone(const String&);
+  String getTimezone() const;
+  void setTimezone(const String&);
 
   bool getThrowAllErrors() const;
 
@@ -323,6 +323,7 @@ public:
   bool hasRequestEventHandlers() const;
 
   const RepoOptions& getRepoOptionsForCurrentFrame() const;
+  const RepoOptions& getRepoOptionsForFrame(int frame) const;
 
   const RepoOptions* getRepoOptionsForRequest() const;
 
@@ -393,8 +394,6 @@ public:
   StringData* getContainingFileName();
   int getLine();
   TypedValue invokeUnit(const Unit* unit, bool callByHPHPInvoke = false);
-  Unit* compileEvalString(StringData* code,
-                                const char* evalFilename = nullptr);
 
   struct EvaluationResult {
     bool failed;
@@ -447,7 +446,7 @@ public:
    * Returns the call frame at the specified depth, intended only
    * for use by the debugger. Use in other contexts may not be safe.
    */
-  ActRec* getFrameAtDepthForDebuggerUnsafe(int frame = 0);
+  ActRec* getFrameAtDepthForDebuggerUnsafe(int frame = 0) const;
   Array getLocalDefinedVariablesDebugger(int frame);
   Variant getEvaledArg(const StringData* val,
                        const String& namespacedName,
@@ -466,40 +465,46 @@ public:
                         const Variant& args_ = init_null_variant,
                         ObjectData* this_ = nullptr,
                         Class* class_ = nullptr,
+                        RuntimeCoeffects providedCoeffects =
+                          RuntimeCoeffects::fixme(),
                         bool dynamic = true,
                         bool checkRefAnnot = false,
                         bool allowDynCallNoPointer = false,
                         Array&& reifiedGenerics = Array());
 
   TypedValue invokeFunc(const CallCtx& ctx,
-                        const Variant& args_);
+                        const Variant& args_,
+                        RuntimeCoeffects providedCoeffects);
 
   TypedValue invokeFuncFew(const Func* f,
                            ThisOrClass thisOrCls,
                            uint32_t numArgs,
                            const TypedValue* argv,
+                           RuntimeCoeffects providedCoeffects,
                            bool dynamic = true,
                            bool allowDynCallNoPointer = false);
 
   TypedValue invokeFuncFew(const Func* f,
-                           ThisOrClass thisOrCls);
+                           ThisOrClass thisOrCls,
+                           RuntimeCoeffects providedCoeffects);
 
   TypedValue invokeFuncFew(const CallCtx& ctx,
                            uint32_t numArgs,
-                           const TypedValue* argv);
+                           const TypedValue* argv,
+                           RuntimeCoeffects providedCoeffects);
 
   TypedValue invokeMethod(
     ObjectData* obj,
     const Func* meth,
-    InvokeArgs args = InvokeArgs(),
-    bool dynamic = true
+    InvokeArgs args,
+    RuntimeCoeffects providedCoeffects
   );
 
   Variant invokeMethodV(
     ObjectData* obj,
     const Func* meth,
-    InvokeArgs args = InvokeArgs(),
-    bool dynamic = true
+    InvokeArgs args,
+    RuntimeCoeffects providedCoeffects
   );
 
   void resumeAsyncFunc(Resumable* resumable, ObjectData* freeObj,
@@ -513,7 +518,9 @@ public:
 
 private:
   TypedValue invokeFuncImpl(const Func* f, ObjectData* thiz, Class* cls,
-                            uint32_t numArgsInclUnpack, Array&& generics,
+                            uint32_t numArgsInclUnpack,
+                            RuntimeCoeffects providedCoeffects,
+                            bool hasGenerics,
                             bool dynamic, bool allowDynCallNoPointer);
 
   struct ExcLoggerHook final : LoggerHook {
@@ -593,6 +600,7 @@ public:
   req::fast_map<const StringData*, FileInfo, string_data_hash, string_data_same>
     m_evaledFiles;
   req::vector<const StringData*> m_evaledFilesOrder;
+  req::fast_set<Unit*> m_touchedUnits;
   int m_lambdaCounter;
   using VMStateVec = req::TinyVector<VMState, 32>;
   VMStateVec m_nestedVMs;
@@ -618,13 +626,15 @@ private:
   ExcLoggerHook m_logger_hook;
   rqtrace::Trace* m_requestTrace{nullptr};
 
-  folly::Optional<RepoOptions> m_requestOptions;
+  Optional<RepoOptions> m_requestOptions;
 
   Array m_debuggerEnv; // variables read/written in the REPL
 public:
   req::vector<ImplicitContext*> m_implicitContexts;
 
   VMParserFrame* m_parserFrame{nullptr};
+
+  bool m_shouldSampleUnitTearing{false};
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -650,5 +660,3 @@ extern rds::local::AliasedRDSLocal<ExecutionContext,
 }
 
 #include "hphp/runtime/base/execution-context-inl.h"
-
-#endif

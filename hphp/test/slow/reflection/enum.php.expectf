@@ -80,8 +80,8 @@ bool(false)
 bool(false)
 bool(false)
 bool(false)
-bool(true)
-darray(2) {
+bool(false)
+dict(2) {
   ["FOO"]=>
   int(2)
   ["BAR"]=>
@@ -92,7 +92,7 @@ bool(true)
 bool(true)
 bool(false)
 bool(false)
-darray(2) {
+dict(2) {
   ["FOO"]=>
   int(2)
   ["BAR"]=>

@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_EXT_ASYNC_MYSQL_H_
-#define incl_EXT_ASYNC_MYSQL_H_
+#pragma once
 
 #include <algorithm>
 #include <memory>
@@ -253,6 +252,7 @@ struct AsyncMysqlQueryResult : AsyncMysqlResult {
   create(std::shared_ptr<am::Operation> op, db::ClientPerfStats values,
          am::QueryResult query_result, bool noIndexUsed);
   Object buildRows(bool as_maps, bool typed_values);
+  Array buildTypedVecMaps();
   static Class* getClass();
   static Object
   newInstance(std::shared_ptr<am::Operation> op, db::ClientPerfStats values,
@@ -438,5 +438,3 @@ struct AsyncMysqlRowIterator {
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif // incl_EXT_ASYNC_MYSQL_H_

@@ -14,19 +14,15 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_MCGEN_TRANSLATE_H_
-#define incl_HPHP_JIT_MCGEN_TRANSLATE_H_
+#pragma once
 
 #include "hphp/runtime/vm/jit/code-cache.h"
 #include "hphp/runtime/vm/jit/types.h"
 
 #include "hphp/util/trace.h"
 
-#include <folly/Optional.h>
-
 namespace HPHP { namespace jit {
 
-struct FPInvOffset;
 struct ProfTransRec;
 struct TransArgs;
 
@@ -36,22 +32,6 @@ struct ProfDataDeserializer;
 namespace tc { struct TransMetaInfo; };
 
 namespace mcgen {
-
-/*
- * Create a new translation based on args.
- *
- * The SrcKey and kind of this translation must be specified in args. The
- * TransID and region may optionally be specified as well. If the kind of region
- * requested is TransOptimize a TransID must be specified.
- *
- * Should the region be absent, an appropriate region for the designated kind
- * will be selected.
- */
-folly::Optional<tc::TransMetaInfo> translate(
-  TransArgs args,
-  FPInvOffset spOff,
-  folly::Optional<CodeCache::View> optView = folly::none
-);
 
 /*
  * True iff retranslateAll is enabled and supported by the current server
@@ -85,5 +65,3 @@ bool retranslateAllComplete();
 CompactVector<Trace::BumpRelease> unbumpFunctions();
 
 }}}
-
-#endif

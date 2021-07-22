@@ -58,11 +58,11 @@ let merge_pos_stats_samples l1 l2 =
 
 let add_sample_pos p samples = merge_pos_stats_samples samples [p]
 
-let incr_reason_stats r p reason_stats =
+let incr_reason_stats (ctx : Provider_context.t) r p reason_stats =
   if sample_rate = 0 || Random.int sample_rate <> 0 then
     reason_stats
   else
-    let reason_pos = Reason.to_pos r in
+    let reason_pos = Reason.to_pos r |> Naming_provider.resolve_position ctx in
     let string_key = Reason.to_constructor_string r in
     let pos_stats_map =
       match SMap.find_opt string_key reason_stats with
@@ -85,11 +85,14 @@ let incr_reason_stats r p reason_stats =
       (Pos.Map.add reason_pos pos_stats pos_stats_map)
       reason_stats
 
-let incr_counter k (r, p, c) =
+let incr_counter (ctx : Provider_context.t) k (r, (p : Aast.pos), c) =
   let v = CLMap.find k c in
   CLMap.add
     k
-    { count = v.count + 1; reason_stats = incr_reason_stats r p v.reason_stats }
+    {
+      count = v.count + 1;
+      reason_stats = incr_reason_stats ctx r p v.reason_stats;
+    }
     c
 
 let merge_pos_stats p1 p2 =
@@ -101,10 +104,10 @@ let merge_pos_stats p1 p2 =
 let merge_reason_stats s1 s2 =
   SMap.merge
     (fun _ s1 s2 ->
-      Option.merge s1 s2 (fun s1 s2 ->
+      Option.merge s1 s2 ~f:(fun s1 s2 ->
           Pos.Map.merge
             (fun _ p1 p2 ->
-              Option.merge p1 p2 (fun p1 p2 -> merge_pos_stats p1 p2))
+              Option.merge p1 p2 ~f:(fun p1 p2 -> merge_pos_stats p1 p2))
             s1
             s2))
     s1
@@ -113,7 +116,7 @@ let merge_reason_stats s1 s2 =
 let merge_and_sum cs1 cs2 =
   CLMap.merge
     (fun _ c1 c2 ->
-      Option.merge c1 c2 (fun c1 c2 ->
+      Option.merge c1 c2 ~f:(fun c1 c2 ->
           {
             count = c1.count + c2.count;
             reason_stats = merge_reason_stats c1.reason_stats c2.reason_stats;
@@ -132,13 +135,14 @@ let rec is_tany env ty =
     let (env, r_opt) = is_tany env h in
     (match r_opt with
     | Some r
-      when List.for_all tl (compose Option.is_some (compose snd (is_tany env)))
-      ->
+      when List.for_all
+             tl
+             ~f:(compose Option.is_some (compose snd (is_tany env))) ->
       (env, Some r)
     | _ -> (env, None))
   | _ -> (env, None)
 
-let level_of_type env fixme_map (pos, ty) =
+let level_of_type env fixme_map ((pos : Aast.pos), ty) =
   let (env, ty) = Tast_env.expand_type env ty in
   match get_node ty with
   | Tobject -> (env, Partial)
@@ -188,7 +192,7 @@ class level_getter fixme_map =
        * typed subexpression. The count is then always incremented.
        *)
       let (pmap, cmap) = super#on_expr env expr in
-      let ((pos, ty), _) = expr in
+      let (ty, pos, _) = expr in
       let (_env, lvl) = level_of_type env fixme_map (pos, ty) in
       let should_update_pmap =
         match lvl with
@@ -212,13 +216,12 @@ class level_getter fixme_map =
   end
 
 let get_levels ctx tast check =
-  match Fixme_provider.get_hh_fixmes check with
-  | Some fixmes ->
-    let lg = new level_getter fixmes in
-    let (pmap, cmap) = lg#go ctx tast in
-    Ok
-      (Pos.Map.fold (fun p ty xs -> (Pos.to_absolute p, ty) :: xs) pmap [], cmap)
-  | None -> Error ()
+  let fixmes =
+    Fixme_provider.get_hh_fixmes check |> Option.value ~default:IMap.empty
+  in
+  let lg = new level_getter fixmes in
+  let (pmap, cmap) = lg#go ctx tast in
+  Ok (Pos.Map.fold (fun p ty xs -> (Pos.to_absolute p, ty) :: xs) pmap [], cmap)
 
 let get_percent counts =
   let nchecked = counts.checked in

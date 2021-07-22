@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_IRLOWER_H_
-#define incl_HPHP_JIT_IRLOWER_H_
+#pragma once
 
 #include "hphp/runtime/vm/jit/code-cache.h"
 #include "hphp/runtime/vm/jit/state-vector.h"
@@ -39,7 +38,6 @@ namespace irlower {
 enum class SyncOptions {
   None,
   Sync,
-  SyncStublogue,
 };
 
 /*
@@ -84,6 +82,11 @@ struct IRLS {
 Vcost computeIRUnitCost(const IRUnit& unit);
 
 /*
+ * Optimize a vunit.
+ */
+void optimize(Vunit& unit, CodeKind kind, bool regAlloc = true);
+
+/*
  * Lower the given HHIR unit to a Vunit, then optimize, regalloc, and return
  * the Vunit. Returns nullptr on failure.
  */
@@ -95,4 +98,3 @@ std::unique_ptr<Vunit> lowerUnit(const IRUnit&,
 
 }}}
 
-#endif

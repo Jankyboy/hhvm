@@ -11,10 +11,6 @@ echo "\n" . '$i=f(): ';
 echo $a[$i=f()][++$i];
 unset($i);
 
-echo "\n" . '${\'i\'}=f(): ';
-echo $a[${'i'}=f()][++${'i'}];
-unset(${'i'});
-
 echo "\n" . '$i[0]=f(): ';
 $i = darray[];
 echo $a[$i[0]=f()][++$i[0]];
@@ -50,6 +46,6 @@ C::$p = darray[];
 echo $a[C::$p[0]=f()][++C::$p[0]];
 
 echo "\n" . 'C::$p->q=f(): ';
-C::$p = new stdclass;
+C::$p = new stdClass;
 echo $a[C::$p->q=f()][++C::$p->q];
 }

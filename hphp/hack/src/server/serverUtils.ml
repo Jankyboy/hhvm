@@ -8,58 +8,45 @@
  *)
 
 open Hh_prelude
-module MC = MonitorConnection
 
 type 'env handle_command_result =
-  (* Command was fully handled, and this is the new environment. *)
   | Done of 'env
-  (* Returned continuation needs to be run with an environment after finished
-   * full check to complete handling of command. The string specifies a reason
-   * why this command needs full recheck (for logging/debugging purposes) *)
-  | Needs_full_recheck of 'env * ('env -> 'env) * string
-  (* Commands that want to modify global state, by modifying file contents.
-   * The boolean indicates whether current recheck should be automatically
-   * restarted after applying the writes. The string specifies a reason why this
-   * command needs writes (for logging/debugging purposes) *)
-  | Needs_writes of 'env * ('env -> 'env) * bool * string
+  | Needs_full_recheck of {
+      env: 'env;
+      finish_command_handling: 'env -> 'env;
+      reason: string;
+    }
+  | Needs_writes of {
+      env: 'env;
+      finish_command_handling: 'env -> 'env;
+      recheck_restart_is_needed: bool;
+      reason: string;
+    }
 
-let wrap try_ f env = try_ env (fun () -> f env)
+let wrap ~try_ f env = try_ env (fun () -> f env)
 
-(* Wrap all the continuations inside result in provided try function *)
-let wrap try_ = function
+let wrap ~try_ = function
   | Done env -> Done env
-  | Needs_full_recheck (env, f, reason) ->
-    Needs_full_recheck (env, wrap try_ f, reason)
-  | Needs_writes (env, f, restart, reason) ->
-    Needs_writes (env, wrap try_ f, restart, reason)
+  | Needs_full_recheck cont ->
+    Needs_full_recheck
+      {
+        cont with
+        finish_command_handling = wrap ~try_ cont.finish_command_handling;
+      }
+  | Needs_writes cont ->
+    Needs_writes
+      {
+        cont with
+        finish_command_handling = wrap ~try_ cont.finish_command_handling;
+      }
 
 let shutdown_client (_ic, oc) =
   let cli = Unix.descr_of_out_channel oc in
   try
     Unix.shutdown cli Unix.SHUTDOWN_ALL;
     Out_channel.close oc
-  with _ -> ()
-
-let hh_monitor_config root =
-  ServerMonitorUtils.
-    {
-      lock_file = ServerFiles.lock_file root;
-      socket_file = ServerFiles.socket_file root;
-      server_log_file = ServerFiles.log_link root;
-      monitor_log_file = ServerFiles.monitor_log_link root;
-    }
-
-let shut_down_server ~tracker root =
-  MC.connect_and_shut_down ~tracker (hh_monitor_config root)
-
-let connect_to_monitor ~tracker ~timeout root =
-  MC.connect_once ~tracker ~timeout (hh_monitor_config root)
-
-let server_progress ~tracker ~timeout root =
-  MC.connect_to_monitor_and_get_server_progress
-    ~tracker
-    ~timeout
-    (hh_monitor_config root)
+  with
+  | _ -> ()
 
 let log_and_get_sharedmem_load_telemetry () : Telemetry.t =
   let telemetry = Telemetry.create () in
@@ -200,7 +187,45 @@ let exit_on_exception (exn : exn) ~(stack : Utils.callstack) =
     Exit.exit Exit_status.Uncaught_exception
 
 let with_exit_on_exception f =
-  try f ()
-  with exn ->
+  try f () with
+  | exn ->
     let stack = Utils.Callstack (Printexc.get_backtrace ()) in
     exit_on_exception exn ~stack
+
+let make_next
+    ?(hhi_filter = FindUtils.is_hack)
+    ~(indexer : unit -> string list)
+    ~(extra_roots : Path.t list) : Relative_path.t list Bucket.next =
+  let next_files_root =
+    Utils.compose (List.map ~f:Relative_path.(create Root)) indexer
+  in
+  let hhi_root = Hhi.get_hhi_root () in
+  let next_files_hhi =
+    Utils.compose
+      (List.map ~f:Relative_path.(create Hhi))
+      (Find.make_next_files ~name:"hhi" ~filter:hhi_filter hhi_root)
+  in
+  let rec concat_next_files l () =
+    match l with
+    | [] -> []
+    | hd :: tl ->
+      begin
+        match hd () with
+        | [] -> concat_next_files tl ()
+        | x -> x
+      end
+  in
+  let next_files_extra =
+    List.map
+      ~f:(fun root ->
+        Utils.compose
+          (List.map ~f:Relative_path.create_detect_prefix)
+          (Find.make_next_files ~filter:FindUtils.file_filter root))
+      extra_roots
+    |> concat_next_files
+  in
+  fun () ->
+    let next =
+      concat_next_files [next_files_hhi; next_files_extra; next_files_root] ()
+    in
+    Bucket.of_list next

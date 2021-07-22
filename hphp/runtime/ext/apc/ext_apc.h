@@ -15,8 +15,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EXT_APC_H_
-#define incl_HPHP_EXT_APC_H_
+#pragma once
 
 #include "hphp/runtime/ext/extension.h"
 #include <set>
@@ -30,11 +29,6 @@ struct apcExtension final : Extension {
   apcExtension() : Extension("apc", "4.0.2") {}
 
   static bool Enable;
-  static bool EnableConstLoad;
-  static bool ForceConstLoadToAPC;
-  static std::string PrimeLibrary;
-  static int LoadThread;
-  static std::set<std::string> CompletionKeys;
   static bool EnableApcSerialize;
   static bool ExpireOnSets;
   static bool AllowObj;
@@ -47,18 +41,12 @@ struct apcExtension final : Extension {
   static double HotLoadFactor;
   static bool HotKeyAllocLow;
   static bool HotMapAllocLow;
-  static std::string PrimeLibraryUpgradeDest;
-  static bool UseFileStorage;
-  static int64_t FileStorageChunkSize;
-  static std::string FileStoragePrefix;
-  static int FileStorageAdviseOutPeriod;
-  static std::string FileStorageFlagKey;
-  static bool FileStorageKeepFileLinked;
   static bool UseUncounted;
   static bool ShareUncounted;
   static bool Stat;
   static bool EnableCLI;
   static bool DeferredExpiration;
+  static uint32_t SizedSampleBytes;
 
   void moduleLoad(const IniSetting::Map& ini, Hdf config) override;
   void moduleInit() override;
@@ -78,14 +66,13 @@ struct apcExtension final : Extension {
 Variant HHVM_FUNCTION(apc_add,
                       const Variant& key_or_array,
                       const Variant& var = uninit_variant,
-                      int64_t ttl = 0);
+                      int64_t ttl = 0,
+                      int64_t bump_ttl = 0);
 Variant HHVM_FUNCTION(apc_store,
                       const Variant& key_or_array,
                       const Variant& var = uninit_variant,
-                      int64_t ttl = 0);
-bool HHVM_FUNCTION(apc_store_as_primed_do_not_use,
-                   const String& key,
-                   const Variant& var);
+                      int64_t ttl = 0,
+                      int64_t bump_ttl = 0);
 TypedValue HHVM_FUNCTION(apc_fetch, const Variant& key, bool& success);
 Variant HHVM_FUNCTION(apc_delete,
                       const Variant& key);
@@ -119,26 +106,6 @@ Array HHVM_FUNCTION(apc_cache_info,
 
 ///////////////////////////////////////////////////////////////////////////////
 // loading APC from archive files
-
-void apc_load(int thread);
-
-// Evict any file-backed APC values from OS page cache.
-void apc_advise_out();
-
-// needed by generated apc archive .cpp files
-void apc_load_impl(struct cache_info *info,
-                   const char **int_keys, long long *int_values,
-                   const char **char_keys, char *char_values,
-                   const char **strings, const char **objects,
-                   const char **thrifts, const char **others);
-void apc_load_impl_compressed(
-  struct cache_info *info,
-  int *int_lens, const char *int_keys, long long *int_values,
-  int *char_lens, const char *char_keys, char *char_values,
-  int *string_lens, const char *strings,
-  int *object_lens, const char *objects,
-  int *thrift_lens, const char *thrifts,
-  int *other_lens, const char *others);
 
 struct apc_rfc1867_data {
   std::string tracking_key;
@@ -179,16 +146,9 @@ static_assert(sizeof(int64_t) == sizeof(long long),
 ///////////////////////////////////////////////////////////////////////////////
 // apc serialization
 
-enum APCSerializeMode {
-  Normal,
-  Prime
-};
-
-String apc_serialize(const_variant_ref value,
-                     APCSerializeMode mode = APCSerializeMode::Normal);
-inline String apc_serialize(const Variant& var,
-                            APCSerializeMode mode = APCSerializeMode::Normal) {
-  return apc_serialize(const_variant_ref{var}, mode);
+String apc_serialize(const_variant_ref value);
+inline String apc_serialize(const Variant& var) {
+  return apc_serialize(const_variant_ref{var});
 }
 Variant apc_unserialize(const char* data, int len);
 String apc_reserialize(const String& str);
@@ -201,8 +161,7 @@ bool apc_dump_prefix(const char *filename,
                      uint32_t count);
 size_t get_const_map_size();
 bool apc_get_random_entries(std::ostream &out, uint32_t count);
+void apc_sample_by_size();
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif // incl_HPHP_EXT_APC_H_

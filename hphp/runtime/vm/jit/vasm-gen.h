@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_VASM_GEN_H_
-#define incl_HPHP_JIT_VASM_GEN_H_
+#pragma once
 
 #include "hphp/runtime/vm/jit/cg-meta.h"
 #include "hphp/runtime/vm/jit/containers.h"
@@ -42,7 +41,7 @@ struct Vreg;
  */
 struct Vout {
   Vout(Vunit& u, Vlabel b,
-       folly::Optional<Vinstr::ir_context> irctx = folly::none)
+       Optional<Vinstr::ir_context> irctx = std::nullopt)
     : m_unit(u)
     , m_block(b)
     , m_irctx ( irctx ? *irctx
@@ -167,13 +166,14 @@ private:
 struct Vauto {
   explicit Vauto(CodeBlock& main, CodeBlock& cold, DataBlock& data,
                  CGMeta& fixups, CodeKind kind = CodeKind::Helper,
-                 bool relocate = false)
+                 bool relocate = false, bool* wasFull = nullptr)
     : m_text{main, cold, data}
     , m_fixups(fixups)
     , m_main{m_unit, m_unit.makeBlock(AreaIndex::Main)}
     , m_cold{m_unit, m_unit.makeBlock(AreaIndex::Cold)}
     , m_kind{kind}
     , m_relocate{relocate}
+    , m_wasFull{wasFull}
   {
     m_unit.entry = Vlabel(this->main());
   }
@@ -192,6 +192,7 @@ private:
   Vout m_cold;
   CodeKind m_kind;
   bool m_relocate;
+  bool* m_wasFull;
 };
 
 namespace detail {
@@ -199,7 +200,8 @@ namespace detail {
   TCA vwrap_impl(CodeBlock& main, CodeBlock& cold, DataBlock& data,
                  CGMeta* meta, GenFunc gen,
                  CodeKind kind = CodeKind::CrossTrace,
-                 bool relocate = true);
+                 bool relocate = true,
+                 bool nullOnFull = false);
 }
 
 /*
@@ -217,10 +219,11 @@ TCA vwrap(CodeBlock& cb, DataBlock& data, CGMeta& meta, GenFunc gen,
                             [&] (Vout& v, Vout&) { gen(v); }, kind, relocate);
 }
 template<class GenFunc>
-TCA vwrap(CodeBlock& cb, DataBlock& data, GenFunc gen, bool relocate = true) {
+TCA vwrap(CodeBlock& cb, DataBlock& data, GenFunc gen,
+          bool relocate = true, bool nullOnFull = false) {
   return detail::vwrap_impl(cb, cb, data, nullptr,
                             [&] (Vout& v, Vout&) { gen(v); },
-                            CodeKind::CrossTrace, relocate);
+                            CodeKind::CrossTrace, relocate, nullOnFull);
 }
 template<class GenFunc>
 TCA vwrap2(CodeBlock& main, CodeBlock& cold, DataBlock& data,
@@ -243,5 +246,3 @@ uint64_t areaWeightFactor(AreaIndex area);
 }}
 
 #include "hphp/runtime/vm/jit/vasm-gen-inl.h"
-
-#endif

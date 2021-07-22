@@ -12,8 +12,6 @@ use naming_special_names_rust::{classes, collections};
 use oxidized_by_ref::pos::Pos;
 use oxidized_by_ref::tany_sentinel::TanySentinel;
 use oxidized_by_ref::{
-    aast_defs::Sid,
-    ast_defs::Id,
     ident,
     typing_defs_flags::{FunParamFlags, FunTypeFlags},
 };
@@ -32,25 +30,25 @@ pub struct TypeBuilder<'a> {
     // This makes more sense than inheriting the position from the use
     // But for now, let's just put none as the position
     // TODO: we might consider creating a SymbolBuilder type
-    id_traversable: Id<'a>,
-    id_keyed_traversable: Id<'a>,
-    id_keyed_container: Id<'a>,
-    id_awaitable: Id<'a>,
-    id_generator: Id<'a>,
-    id_async_generator: Id<'a>,
-    id_async_iterator: Id<'a>,
-    id_async_keyed_iterator: Id<'a>,
-    id_pair: Id<'a>,
-    id_dict: Id<'a>,
-    id_keyset: Id<'a>,
-    id_vec: Id<'a>,
-    id_container: Id<'a>,
-    id_throwable: Id<'a>,
-    id_datetime: Id<'a>,
-    id_datetime_immutable: Id<'a>,
-    id_const_vector: Id<'a>,
-    id_const_collection: Id<'a>,
-    id_collection: Id<'a>,
+    id_traversable: PosId<'a>,
+    id_keyed_traversable: PosId<'a>,
+    id_keyed_container: PosId<'a>,
+    id_awaitable: PosId<'a>,
+    id_generator: PosId<'a>,
+    id_async_generator: PosId<'a>,
+    id_async_iterator: PosId<'a>,
+    id_async_keyed_iterator: PosId<'a>,
+    id_pair: PosId<'a>,
+    id_dict: PosId<'a>,
+    id_keyset: PosId<'a>,
+    id_vec: PosId<'a>,
+    id_container: PosId<'a>,
+    id_throwable: PosId<'a>,
+    id_datetime: PosId<'a>,
+    id_datetime_immutable: PosId<'a>,
+    id_const_vector: PosId<'a>,
+    id_const_collection: PosId<'a>,
+    id_collection: PosId<'a>,
 
     /// The allocator.
     ///
@@ -72,8 +70,8 @@ impl<'a> Arena for TypeBuilder<'a> {
 // Perhaps best is to actually *resolve* well-known classes
 // as though they appear in the source, so we get the position
 // from the definition e.g. in hhi file.
-fn mk_special_id(name: &'static str) -> Id<'static> {
-    Id(Pos::none(), name)
+fn mk_special_id(name: &'static str) -> PosId<'static> {
+    (Pos::none(), name)
 }
 
 impl<'a> TypeBuilder<'a> {
@@ -123,44 +121,69 @@ impl<'a> TypeBuilder<'a> {
 /// All type builders go here
 impl<'a> TypeBuilder<'a> {
     // All type construction should go through here
-    fn mk(&'a self, reason: &'a Reason<'a>, ty_: Ty_<'a>) -> Ty<'a> {
-        Ty::mk(reason, self.alloc(ty_))
+    fn mk(&'a self, reason: &'a Reason<'a>, ty_: Ty_<'a>) -> &'a Ty<'a> {
+        self.alloc(Ty::mk(reason, ty_))
     }
 
-    pub fn any(&'a self, reason: &'a Reason<'a>) -> Ty<'a> {
+    pub fn any(&'a self, reason: &'a Reason<'a>) -> &'a Ty<'a> {
         self.mk(reason, Ty_::Tany(TanySentinel))
     }
-    pub fn prim(&'a self, reason: &'a Reason<'a>, kind: PrimKind<'a>) -> Ty<'a> {
+    pub fn prim(&'a self, reason: &'a Reason<'a>, kind: PrimKind) -> &'a Ty<'a> {
         self.mk(reason, Ty_::Tprim(self.alloc(kind)))
     }
-    pub fn class(&'a self, reason: &'a Reason<'a>, name: Sid<'a>, tys: &'a [Ty<'a>]) -> Ty<'a> {
+
+    pub fn shape(
+        &'a self,
+        reason: &'a Reason<'a>,
+        kind: ShapeKind,
+        map: t_shape_map::TShapeMap<'a, &'a ShapeFieldType<'a>>,
+    ) -> &'a Ty<'a> {
+        self.mk(reason, Ty_::Tshape(self.alloc((kind, map))))
+    }
+
+    pub fn class(
+        &'a self,
+        reason: &'a Reason<'a>,
+        name: PosId<'a>,
+        tys: &'a [&'a Ty<'a>],
+    ) -> &'a Ty<'a> {
         self.mk(
             reason,
             Ty_::Tclass(self.alloc((name, Exact::Nonexact, tys))),
         )
     }
-    pub fn traversable(&'a self, reason: &'a Reason<'a>, ty: Ty<'a>) -> Ty<'a> {
+    pub fn traversable(&'a self, reason: &'a Reason<'a>, ty: &'a Ty<'a>) -> &'a Ty<'a> {
         self.class(
             reason,
             self.id_traversable,
             vec![in &self.bumpalo; ty].into_bump_slice(),
         )
     }
-    pub fn keyed_traversable(&'a self, reason: &'a Reason<'a>, kty: Ty<'a>, vty: Ty<'a>) -> Ty<'a> {
+    pub fn keyed_traversable(
+        &'a self,
+        reason: &'a Reason<'a>,
+        kty: &'a Ty<'a>,
+        vty: &'a Ty<'a>,
+    ) -> &'a Ty<'a> {
         self.class(
             reason,
             self.id_keyed_traversable,
             vec![in &self.bumpalo; kty, vty].into_bump_slice(),
         )
     }
-    pub fn keyed_container(&'a self, reason: &'a Reason<'a>, kty: Ty<'a>, vty: Ty<'a>) -> Ty<'a> {
+    pub fn keyed_container(
+        &'a self,
+        reason: &'a Reason<'a>,
+        kty: &'a Ty<'a>,
+        vty: &'a Ty<'a>,
+    ) -> &'a Ty<'a> {
         self.class(
             reason,
             self.id_keyed_container,
             vec![in &self.bumpalo; kty, vty].into_bump_slice(),
         )
     }
-    pub fn awaitable(&'a self, reason: &'a Reason<'a>, ty: Ty<'a>) -> Ty<'a> {
+    pub fn awaitable(&'a self, reason: &'a Reason<'a>, ty: &'a Ty<'a>) -> &'a Ty<'a> {
         self.class(
             reason,
             self.id_awaitable,
@@ -170,10 +193,10 @@ impl<'a> TypeBuilder<'a> {
     pub fn generator(
         &'a self,
         reason: &'a Reason<'a>,
-        key: Ty<'a>,
-        value: Ty<'a>,
-        send: Ty<'a>,
-    ) -> Ty<'a> {
+        key: &'a Ty<'a>,
+        value: &'a Ty<'a>,
+        send: &'a Ty<'a>,
+    ) -> &'a Ty<'a> {
         self.class(
             reason,
             self.id_generator,
@@ -183,17 +206,17 @@ impl<'a> TypeBuilder<'a> {
     pub fn async_generator(
         &'a self,
         reason: &'a Reason<'a>,
-        key: Ty<'a>,
-        value: Ty<'a>,
-        send: Ty<'a>,
-    ) -> Ty<'a> {
+        key: &'a Ty<'a>,
+        value: &'a Ty<'a>,
+        send: &'a Ty<'a>,
+    ) -> &'a Ty<'a> {
         self.class(
             reason,
             self.id_async_generator,
             vec![in &self.bumpalo; key, value, send].into_bump_slice(),
         )
     }
-    pub fn async_iterator(&'a self, reason: &'a Reason<'a>, ty: Ty<'a>) -> Ty<'a> {
+    pub fn async_iterator(&'a self, reason: &'a Reason<'a>, ty: &'a Ty<'a>) -> &'a Ty<'a> {
         self.class(
             reason,
             self.id_async_iterator,
@@ -203,189 +226,188 @@ impl<'a> TypeBuilder<'a> {
     pub fn async_keyed_iterator(
         &'a self,
         reason: &'a Reason<'a>,
-        kty: Ty<'a>,
-        vty: Ty<'a>,
-    ) -> Ty<'a> {
+        kty: &'a Ty<'a>,
+        vty: &'a Ty<'a>,
+    ) -> &'a Ty<'a> {
         self.class(
             reason,
             self.id_async_keyed_iterator,
             vec![in &self.bumpalo; kty, vty].into_bump_slice(),
         )
     }
-    pub fn pair(&'a self, reason: &'a Reason<'a>, ty1: Ty<'a>, ty2: Ty<'a>) -> Ty<'a> {
+    pub fn pair(&'a self, reason: &'a Reason<'a>, ty1: &'a Ty<'a>, ty2: &'a Ty<'a>) -> &'a Ty<'a> {
         self.class(
             reason,
             self.id_pair,
             vec![in &self.bumpalo; ty1, ty2].into_bump_slice(),
         )
     }
-    pub fn dict(&'a self, reason: &'a Reason<'a>, kty: Ty<'a>, vty: Ty<'a>) -> Ty<'a> {
+    pub fn dict(&'a self, reason: &'a Reason<'a>, kty: &'a Ty<'a>, vty: &'a Ty<'a>) -> &'a Ty<'a> {
         self.class(
             reason,
             self.id_dict,
             vec![in &self.bumpalo; kty, vty].into_bump_slice(),
         )
     }
-    pub fn keyset(&'a self, reason: &'a Reason<'a>, ty: Ty<'a>) -> Ty<'a> {
+    pub fn keyset(&'a self, reason: &'a Reason<'a>, ty: &'a Ty<'a>) -> &'a Ty<'a> {
         self.class(
             reason,
             self.id_keyset,
             vec![in &self.bumpalo; ty].into_bump_slice(),
         )
     }
-    pub fn vec(&'a self, reason: &'a Reason<'a>, ty: Ty<'a>) -> Ty<'a> {
+    pub fn vec(&'a self, reason: &'a Reason<'a>, ty: &'a Ty<'a>) -> &'a Ty<'a> {
         self.class(
             reason,
             self.id_vec,
             vec![in &self.bumpalo; ty].into_bump_slice(),
         )
     }
-    pub fn container(&'a self, reason: &'a Reason<'a>, ty: Ty<'a>) -> Ty<'a> {
+    pub fn container(&'a self, reason: &'a Reason<'a>, ty: &'a Ty<'a>) -> &'a Ty<'a> {
         self.class(
             reason,
             self.id_container,
             vec![in &self.bumpalo; ty].into_bump_slice(),
         )
     }
-    pub fn const_vector(&'a self, reason: &'a Reason<'a>, ty: Ty<'a>) -> Ty<'a> {
+    pub fn const_vector(&'a self, reason: &'a Reason<'a>, ty: &'a Ty<'a>) -> &'a Ty<'a> {
         self.class(
             reason,
             self.id_const_vector,
             vec![in &self.bumpalo; ty].into_bump_slice(),
         )
     }
-    pub fn const_collection(&'a self, reason: &'a Reason<'a>, ty: Ty<'a>) -> Ty<'a> {
+    pub fn const_collection(&'a self, reason: &'a Reason<'a>, ty: &'a Ty<'a>) -> &'a Ty<'a> {
         self.class(
             reason,
             self.id_const_collection,
             vec![in &self.bumpalo; ty].into_bump_slice(),
         )
     }
-    pub fn collection(&'a self, reason: &'a Reason<'a>, ty: Ty<'a>) -> Ty<'a> {
+    pub fn collection(&'a self, reason: &'a Reason<'a>, ty: &'a Ty<'a>) -> &'a Ty<'a> {
         self.class(
             reason,
             self.id_collection,
             vec![in &self.bumpalo; ty].into_bump_slice(),
         )
     }
-    pub fn throwable(&'a self, reason: &'a Reason<'a>) -> Ty<'a> {
+    pub fn throwable(&'a self, reason: &'a Reason<'a>) -> &'a Ty<'a> {
         self.class(
             reason,
             self.id_throwable,
             vec![in &self.bumpalo; ].into_bump_slice(),
         )
     }
-    pub fn datetime(&'a self, reason: &'a Reason<'a>) -> Ty<'a> {
+    pub fn datetime(&'a self, reason: &'a Reason<'a>) -> &'a Ty<'a> {
         self.class(
             reason,
             self.id_datetime,
             vec![in &self.bumpalo].into_bump_slice(),
         )
     }
-    pub fn datetime_immutable(&'a self, reason: &'a Reason<'a>) -> Ty<'a> {
+    pub fn datetime_immutable(&'a self, reason: &'a Reason<'a>) -> &'a Ty<'a> {
         self.class(
             reason,
             self.id_datetime_immutable,
             vec![in &self.bumpalo].into_bump_slice(),
         )
     }
-    pub fn int(&'a self, reason: &'a Reason<'a>) -> Ty<'a> {
+    pub fn int(&'a self, reason: &'a Reason<'a>) -> &'a Ty<'a> {
         self.prim(reason, PrimKind::Tint)
     }
-    pub fn bool(&'a self, reason: &'a Reason<'a>) -> Ty<'a> {
+    pub fn bool(&'a self, reason: &'a Reason<'a>) -> &'a Ty<'a> {
         self.prim(reason, PrimKind::Tbool)
     }
-    pub fn string(&'a self, reason: &'a Reason<'a>) -> Ty<'a> {
+    pub fn string(&'a self, reason: &'a Reason<'a>) -> &'a Ty<'a> {
         self.prim(reason, PrimKind::Tstring)
     }
-    pub fn float(&'a self, reason: &'a Reason<'a>) -> Ty<'a> {
+    pub fn float(&'a self, reason: &'a Reason<'a>) -> &'a Ty<'a> {
         self.prim(reason, PrimKind::Tfloat)
     }
-    pub fn arraykey(&'a self, reason: &'a Reason<'a>) -> Ty<'a> {
+    pub fn arraykey(&'a self, reason: &'a Reason<'a>) -> &'a Ty<'a> {
         self.prim(reason, PrimKind::Tarraykey)
     }
-    pub fn void(&'a self, reason: &'a Reason<'a>) -> Ty<'a> {
+    pub fn void(&'a self, reason: &'a Reason<'a>) -> &'a Ty<'a> {
         self.prim(reason, PrimKind::Tvoid)
     }
-    pub fn null(&'a self, reason: &'a Reason<'a>) -> Ty<'a> {
+    pub fn null(&'a self, reason: &'a Reason<'a>) -> &'a Ty<'a> {
         self.prim(reason, PrimKind::Tnull)
     }
-    pub fn nonnull(&'a self, reason: &'a Reason<'a>) -> Ty<'a> {
+    pub fn nonnull(&'a self, reason: &'a Reason<'a>) -> &'a Ty<'a> {
         self.mk(reason, Ty_::Tnonnull)
     }
-    pub fn dynamic(&'a self, reason: &'a Reason<'a>) -> Ty<'a> {
+    pub fn dynamic(&'a self, reason: &'a Reason<'a>) -> &'a Ty<'a> {
         self.mk(reason, Ty_::Tdynamic)
     }
     /*
-    pub fn object(&'a self, reason: &'a Reason<'a>) -> Ty<'a> {
+    pub fn object(&'a self, reason: &'a Reason<'a>) -> &'a Ty<'a> {
         self.mk(reason, Ty_::Tobject)
     }
     */
-    pub fn tyvar(&'a self, reason: &'a Reason<'a>, v: ident::Ident) -> Ty<'a> {
+    pub fn tyvar(&'a self, reason: &'a Reason<'a>, v: ident::Ident) -> &'a Ty<'a> {
         self.mk(reason, Ty_::Tvar(v))
     }
-    pub fn union(&'a self, reason: &'a Reason<'a>, tys: &'a [Ty<'a>]) -> Ty<'a> {
+    pub fn union(&'a self, reason: &'a Reason<'a>, tys: &'a [&'a Ty<'a>]) -> &'a Ty<'a> {
         self.mk(reason, Ty_::Tunion(tys))
     }
-    pub fn intersection(&'a self, reason: &'a Reason<'a>, tys: &'a [Ty<'a>]) -> Ty<'a> {
+    pub fn intersection(&'a self, reason: &'a Reason<'a>, tys: &'a [&'a Ty<'a>]) -> &'a Ty<'a> {
         self.mk(reason, Ty_::Tintersection(tys))
     }
-    pub fn nothing(&'a self, reason: &'a Reason<'a>) -> Ty<'a> {
+    pub fn nothing(&'a self, reason: &'a Reason<'a>) -> &'a Ty<'a> {
         self.union(reason, &[])
     }
-    pub fn nullable(&'a self, reason: &'a Reason<'a>, ty: Ty<'a>) -> Ty<'a> {
+    pub fn nullable(&'a self, reason: &'a Reason<'a>, ty: &'a Ty<'a>) -> &'a Ty<'a> {
         self.mk(reason, Ty_::Toption(ty))
     }
-    pub fn mixed(&'a self, reason: &'a Reason<'a>) -> Ty<'a> {
+    pub fn mixed(&'a self, reason: &'a Reason<'a>) -> &'a Ty<'a> {
         self.nullable(reason, self.nonnull(reason))
     }
-    pub fn generic(&'a self, reason: &'a Reason<'a>, name: &'a str) -> Ty<'a> {
+    pub fn generic(&'a self, reason: &'a Reason<'a>, name: &'a str) -> &'a Ty<'a> {
         // TODO (T69662957) must fill type args of Tgeneric
         self.mk(reason, Ty_::Tgeneric(self.alloc((name, &[][..]))))
     }
-    pub fn fun(&'a self, reason: &'a Reason<'a>, ft: &'a FunType<'a>) -> Ty<'a> {
+    pub fn fun(&'a self, reason: &'a Reason<'a>, ft: &'a FunType<'a>) -> &'a Ty<'a> {
         self.mk(reason, Ty_::Tfun(ft))
     }
-    pub fn loclty(&'a self, ty: Ty<'a>) -> InternalType<'a> {
+    pub fn loclty(&'a self, ty: &'a Ty<'a>) -> InternalType<'a> {
         InternalType::LoclType(ty)
     }
     pub fn constraintty(&'a self, ty: ConstraintType<'a>) -> InternalType<'a> {
         InternalType::ConstraintType(ty)
     }
-    pub fn funparam(&'a self, type_: Ty<'a>) -> &'a FunParam<'a> {
+    pub fn funparam(&'a self, type_: &'a Ty<'a>) -> &'a FunParam<'a> {
         self.alloc(FunParam {
-            type_: PossiblyEnforcedTy {
+            type_: self.alloc(PossiblyEnforcedTy {
                 type_,
                 // TODO: set this correctly
-                enforced: false,
-            },
+                enforced: Enforcement::Unenforced,
+            }),
             // TODO: set the following fields correctly
             flags: FunParamFlags::empty(),
             name: None,
             pos: Pos::none(),
-            rx_annotation: None,
         })
     }
     pub fn funtype(
         &'a self,
         params: &'a [&'a FunParam<'a>],
-        implicit_params: FunImplicitParams<'a>,
-        ret: Ty<'a>,
+        implicit_params: &'a FunImplicitParams<'a>,
+        ret: &'a Ty<'a>,
     ) -> &'a FunType<'a> {
         self.alloc(FunType {
-            ret: PossiblyEnforcedTy {
+            ret: self.alloc(PossiblyEnforcedTy {
                 type_: ret,
                 // TODO: set this correctly
-                enforced: false,
-            },
+                enforced: Enforcement::Unenforced,
+            }),
             params,
             implicit_params,
             // TODO: set the following fields correctly
             arity: FunArity::Fstandard,
             tparams: &[],
             where_constraints: &[],
-            reactive: Reactivity::Nonreactive,
             flags: FunTypeFlags::empty(),
+            ifc_decl: IfcFunDecl::FDPolicied(Some("#PUBLIC")),
         })
     }
 }
@@ -422,7 +444,7 @@ impl<'a> TypeBuilder<'a> {
         name: &'a str,
         r1: &'a Reason<'a>,
     ) -> &'a Reason<'a> {
-        self.alloc(Reason::Rinstantiate(r0, name, r1))
+        self.alloc(Reason::Rinstantiate(self.alloc((*r0, name, *r1))))
     }
 
     pub fn mk_rtype_variable_generics(
@@ -431,7 +453,9 @@ impl<'a> TypeBuilder<'a> {
         param_name: &'a str,
         fn_name: &'a str,
     ) -> &'a Reason<'a> {
-        self.alloc(Reason::RtypeVariableGenerics(pos, param_name, fn_name))
+        self.alloc(Reason::RtypeVariableGenerics(
+            self.alloc((pos, param_name, fn_name)),
+        ))
     }
 
     pub fn mk_rwitness(&'a self, pos: &'a Pos) -> &'a Reason<'a> {

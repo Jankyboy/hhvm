@@ -4,7 +4,7 @@ function a_hover(): int {
   return b_hover();
 }
 
-# A comment describing b_hover.
+// A comment describing b_hover.
 function b_hover(): int {
   return 42;
 }
@@ -57,4 +57,15 @@ final class GeneratedClass {
 
 function testing_generated_autocomplete(): void {
   GeneratedClass::generatedMethod();
+}
+
+function test_xhp_attribute(): void {
+  <xhp:enum-attribute name="abc" enum-attribute={MyEnum::TYPE_A} />;
+  <xhp:generic id={EntSomething::getId()} />;
+}
+
+// An empty space to add text with textDocument/didChange notifications
+// for testing hover on incomplete/uncompilable hack.
+function testing_area_hover(): void {
+
 }

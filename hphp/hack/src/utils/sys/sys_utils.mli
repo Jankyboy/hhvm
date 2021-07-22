@@ -12,6 +12,9 @@ external is_nfs : string -> bool = "hh_is_nfs"
 
 external is_apple_os : unit -> bool = "hh_sysinfo_is_apple_os"
 
+(** E.g. freopen "file.txt" "a" Unix.stdout will redirect stdout to the file. *)
+external freopen : string -> string -> Unix.file_descr -> unit = "hh_freopen"
+
 (** Option type intead of exception throwing. *)
 val get_env : string -> string option
 
@@ -56,11 +59,11 @@ val split_lines : string -> string list
 (** Returns true if substring occurs somewhere inside str. *)
 val string_contains : string -> string -> bool
 
-val exec_read : string -> string
+val exec_read : string -> string option
 
-val exec_read_lines : ?reverse:bool -> string -> string Hh_core.List.t
+val exec_read_lines : ?reverse:bool -> string -> string list
 
-val collect_paths : (string -> bool) -> string -> string Hh_core.List.t
+val collect_paths : (string -> bool) -> string -> string list
 
 (**
  * Sometimes the user wants to pass a list of paths on the command-line.
@@ -109,9 +112,9 @@ using the `_` env var set by bash, or /proc/self/exe on Linux, but they are
 not portable. *)
 val executable_path : unit -> string
 
-val lines_of_in_channel : in_channel -> string Hh_core.List.t
+val lines_of_in_channel : in_channel -> string list
 
-val lines_of_file : string -> string Hh_core.List.t
+val lines_of_file : string -> string list
 
 val read_file : string -> bytes
 
@@ -205,9 +208,11 @@ type processor_info = {
 
 external processor_info : unit -> processor_info = "hh_processor_info"
 
-(** We implement timers using sigalarm which means selects can be
-interrupted. This is a wrapper around EINTR which continues the select if it
-gets interrupted by a signal *)
+(** Calls Unix.select but ignores EINTR, i.e. retries select with
+    an adjusted timout upon EINTR.
+    We implement timers using sigalarm which means selects can be
+    interrupted. This is a wrapper around EINTR which continues the select if it
+    gets interrupted by a signal *)
 val select_non_intr :
   Unix.file_descr list ->
   Unix.file_descr list ->
@@ -249,5 +254,19 @@ external start_gc_profiling : unit -> unit = "hh_start_gc_profiling" [@@noalloc]
 external get_gc_time : unit -> float * float = "hh_get_gc_time"
 
 module For_test : sig
-  val find_oom_in_dmesg_output : int -> string -> string Hh_core.List.t -> bool
+  val find_oom_in_dmesg_output : int -> string -> string list -> bool
 end
+
+(** This will acquire a reader-lock on the file then read its content.
+Locks in unix are advisory, so this only works if writing is done by
+[protected_write_exn]. If the file doesn't exist, Unix.Unix_error(ENOENT). *)
+val protected_read_exn : string -> string
+
+(** [protected_write_exn file content] will acquire a writer-lock on the file
+then write content. Locks in unix are advisory, so this only works if reading is
+done by [protected_read_exn]. Empty content isn't supported and will fail. *)
+val protected_write_exn : string -> string -> unit
+
+(** As it says, redirects stdout and stderr to this file, which it will
+open in "w" mode. If redirection fails then stdout+stderr are left unchanged.*)
+val redirect_stdout_and_stderr_to_file : string -> unit

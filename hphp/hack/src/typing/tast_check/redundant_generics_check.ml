@@ -7,7 +7,7 @@
  *
  *)
 
-open Core_kernel
+open Hh_prelude
 open Aast
 open Typing_defs
 module Cls = Decl_provider.Class
@@ -15,7 +15,11 @@ module SN = Naming_special_names
 
 let ft_redundant_tparams env root tparams tpenv ty =
   let (positive, negative) =
-    Typing_variance.get_typarams (Tast_env.get_ctx env) root tpenv ty
+    Typing_variance.get_typarams
+      (Tast_env.tast_env_as_typing_env env)
+      root
+      tpenv
+      ty
   in
   List.iter tparams ~f:(fun t ->
       let (pos, name) = t.tp_name in
@@ -51,10 +55,14 @@ let ft_redundant_tparams env root tparams tpenv ty =
            *)
           begin
             match super_bounds with
-            | [] -> Errors.redundant_covariant pos bounds_message "nothing"
+            | [] ->
+              Errors.redundant_covariant
+                (Pos_or_decl.unsafe_to_raw_pos pos)
+                bounds_message
+                "nothing"
             | [(_, t)] ->
               Errors.redundant_covariant
-                pos
+                (Pos_or_decl.unsafe_to_raw_pos pos)
                 bounds_message
                 (Tast_env.print_decl_ty env t)
             | _ -> ()
@@ -88,7 +96,7 @@ let check_redundant_generics_fun env root ft =
     (mk (Reason.Rnone, Tfun ft))
 
 let check_redundant_generics_class env class_name class_type =
-  let root = (Typing_deps.Dep.Class class_name, Some class_type) in
+  let root = (Typing_deps.Dep.Type class_name, Some class_type) in
   let tparams = Cls.tparams class_type in
   let tpenv =
     List.fold_left tparams ~init:SMap.empty ~f:(fun env tp ->
@@ -102,6 +110,12 @@ let check_redundant_generics_class env class_name class_type =
   |> List.filter ~f:(fun (_, meth) -> String.equal meth.ce_origin class_name)
   |> List.iter ~f:(check_redundant_generics_class_method env root tpenv)
 
+let get_tracing_info env =
+  {
+    Decl_counters.origin = Decl_counters.TastCheck;
+    file = Tast_env.get_file env;
+  }
+
 let make_handler ctx =
   let handler =
     object
@@ -109,7 +123,12 @@ let make_handler ctx =
 
       method! at_fun_ env f =
         let fid = snd f.f_name in
-        match Decl_provider.get_fun ctx (snd f.f_name) with
+        match
+          Decl_provider.get_fun
+            ~tracing_info:(get_tracing_info env)
+            ctx
+            (snd f.f_name)
+        with
         | Some { fe_type; _ } ->
           begin
             match get_node fe_type with
@@ -122,7 +141,9 @@ let make_handler ctx =
 
       method! at_class_ env c =
         let cid = snd c.c_name in
-        match Decl_provider.get_class ctx cid with
+        match
+          Decl_provider.get_class ~tracing_info:(get_tracing_info env) ctx cid
+        with
         | None -> ()
         | Some cls -> check_redundant_generics_class env (snd c.c_name) cls
     end

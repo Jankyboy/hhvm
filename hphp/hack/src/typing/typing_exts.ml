@@ -56,7 +56,7 @@ let strip_dynamic t =
   | Tunion [t1; t2] when is_dynamic t2 -> t1
   | _ -> t
 
-let lookup_magic_type (env : env) (class_ : locl_ty) (fname : string) :
+let lookup_magic_type (env : env) use_pos (class_ : locl_ty) (fname : string) :
     env * (locl_fun_params * locl_ty option) option =
   match get_node (strip_dynamic class_) with
   | Tclass ((_, className), _, []) ->
@@ -65,11 +65,10 @@ let lookup_magic_type (env : env) (class_ : locl_ty) (fname : string) :
       (Env.get_class env className >>= fun c -> Env.get_member true env c fname)
       >>= fun { ce_type = (lazy ty); ce_pos = (lazy pos); _ } ->
       match deref ty with
-      | (r, Tfun fty) ->
-        let ety_env = Typing_phase.env_with_self env in
+      | (_, Tfun fty) ->
+        let ety_env = empty_expand_env in
         let instantiation =
-          Typing_phase.
-            { use_pos = Reason.to_pos r; use_name = fname; explicit_targs = [] }
+          Typing_phase.{ use_pos; use_name = fname; explicit_targs = [] }
         in
         Some
           (Typing_phase.localize_ft
@@ -108,7 +107,9 @@ let parse_printf_string env s pos (class_ : locl_ty) : env * locl_fun_params =
     | None -> (env, [])
   and read_modifier env i class_ i0 : env * locl_fun_params =
     let fname = magic_method_name (get_char s i) in
-    let snippet = String.sub s i0 (min (i + 1) (String.length s) - i0) in
+    let snippet =
+      String.sub s ~pos:i0 ~len:(min (i + 1) (String.length s) - i0)
+    in
     let add_reason =
       List.map ~f:(fun p ->
           let et_type =
@@ -117,7 +118,7 @@ let parse_printf_string env s pos (class_ : locl_ty) : env * locl_fun_params =
           in
           { p with fp_type = { p.fp_type with et_type } })
     in
-    match lookup_magic_type env class_ fname with
+    match lookup_magic_type env pos class_ fname with
     | (env, Some (good_args, None)) ->
       let (env, xs) = read_text env (i + 1) in
       (env, add_reason good_args @ xs)
@@ -163,21 +164,21 @@ let rec const_string_of (env : env) (e : Nast.expr) :
     | (_, Left p) -> Left p
   in
   match e with
-  | (_, String s) -> (env, Right s)
+  | (_, _, String s) -> (env, Right s)
   (* It's an invariant that this is going to fail, but look for the best
    * evidence *)
-  | (p, String2 xs) ->
+  | (_, p, String2 xs) ->
     let (env, xs) = mapM const_string_of env (List.rev xs) in
     (env, List.fold_right ~f:glue xs ~init:(Left p))
-  | (_, Binop (Ast_defs.Dot, a, b)) ->
+  | (_, _, Binop (Ast_defs.Dot, a, b)) ->
     let (env, stra) = const_string_of env a in
     let (env, strb) = const_string_of env b in
     (env, glue stra strb)
-  | (p, _) -> (env, Left p)
+  | (_, p, _) -> (env, Left p)
 
 let get_format_string_type_arg t =
   match get_node t with
-  | Tclass ((_, fs), _, [ty]) when SN.Classes.is_format_string fs -> Some ty
+  | Tnewtype (fs, [ty], _) when SN.Classes.is_format_string fs -> Some ty
   | _ -> None
 
 let get_opt_format_string_type_arg t =
@@ -194,29 +195,31 @@ let get_possibly_like_format_string_type_arg t =
 (* Specialize a function type using whatever we can tell about the args *)
 let retype_magic_func (env : env) (ft : locl_fun_type) (el : Nast.expr list) :
     env * locl_fun_type =
-  let rec f env param_types args : env * locl_fun_params option =
+  let rec f env param_types (args : Nast.expr list) :
+      env * locl_fun_params option =
     match (param_types, args) with
-    | ([{ fp_type = { et_type; _ }; _ }], [(_, Null)])
+    | ([{ fp_type = { et_type; _ }; _ }], [(_, _, Null)])
       when is_some (get_opt_format_string_type_arg et_type) ->
       (env, None)
-    | ([({ fp_type = { et_type; _ }; _ } as fp)], arg :: _) ->
+    | ([({ fp_type = { et_type; _ }; _ } as fp)], (arg : Nast.expr) :: _) ->
       begin
         match get_possibly_like_format_string_type_arg et_type with
         | Some type_arg ->
           (match const_string_of env arg with
           | (env, Right str) ->
-            let (env, argl) = parse_printf_string env str (fst arg) type_arg in
+            let (_, pos, _) = arg in
+            let (env, argl) = parse_printf_string env str pos type_arg in
             ( env,
               Some
-                ( {
-                    fp with
-                    fp_type =
-                      {
-                        et_type = mk (get_reason et_type, Tprim Tstring);
-                        et_enforced = false;
-                      };
-                  }
-                :: argl ) )
+                ({
+                   fp with
+                   fp_type =
+                     {
+                       et_type = mk (get_reason et_type, Tprim Tstring);
+                       et_enforced = Unenforced;
+                     };
+                 }
+                 :: argl) )
           | (env, Left pos) ->
             if Partial.should_check_error (Env.get_mode env) 4027 then
               Errors.expected_literal_format_string pos;

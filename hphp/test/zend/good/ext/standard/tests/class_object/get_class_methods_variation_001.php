@@ -10,14 +10,11 @@ function test_error_handler($err_no, $err_msg, $filename, $linenum, $vars) {
     echo "Error: $err_no - $err_msg, $filename($linenum)\n";
 }
 <<__EntryPoint>> function main(): void {
-set_error_handler(fun('test_error_handler'));
+set_error_handler(test_error_handler<>);
 echo "*** Testing get_class_methods() : usage variations ***\n";
 
 // Initialise function arguments not being substituted (if any)
 
-//get an unset variable
-$unset_var = 10;
-unset ($unset_var);
 
 //array of values to iterate over
 $values = varray[
@@ -54,19 +51,15 @@ $values = varray[
       'string',
 
       // object data
-      new stdclass(),
+      new stdClass(),
 
-      // undefined data
-      $undefined_var,
 
-      // unset data
-      $unset_var,
 ];
 
 // loop through each element of the array for class
 
 foreach($values as $value) {
-      echo "\nArg value $value \n";
+      echo "\nArg value ".(string)$value." \n";
       var_dump( get_class_methods($value) );
 };
 

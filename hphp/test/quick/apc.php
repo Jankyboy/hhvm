@@ -9,7 +9,7 @@ function testApc($before) {
     exit(1);
   }
 
-  # fetch.
+  // fetch.
   $after = __hhvm_intrinsics\apc_fetch_no_check("indep");
   var_dump($after);
   if (!$after) {
@@ -17,7 +17,7 @@ function testApc($before) {
     exit(2);
   }
 
-  # cgetm.
+  // cgetm.
   foreach ($before as $k => $v) {
     var_dump($after[$k]);
     if ($after[$k] != $v) {
@@ -32,7 +32,7 @@ function testApc($before) {
     }
   }
 
-  # iterate over the APC array, too
+  // iterate over the APC array, too
   foreach ($after as $k => $v) {
     var_dump($after[$k]);
     if ($after[$k] != $v) {
@@ -42,18 +42,18 @@ function testApc($before) {
     }
   }
 
-  # varrays don't support setStr or general-purpose unset.
+  // varrays don't support setStr or general-purpose unset.
   if (isset($after[0])) {
     $after[] = 'new varray entry';
     var_dump($after);
     return;
   }
 
-  # setM
+  // setM
   $after['newKey'] = varray[];
   var_dump($after);
 
-  # unsetm
+  // unsetm
   foreach($after as $k => $v) {
     unset($after[$k]);
   }
@@ -86,7 +86,7 @@ function testInvalidKeys() {
   // Also check that foreign arrays work for indirect calls
   apc_store('foo', varray["a"]);
   $a = __hhvm_intrinsics\apc_fetch_no_check('foo');
-  $b = call_user_func_array(fun("strtoupper"), $a);
+  $b = call_user_func_array(strtoupper<>, $a);
   var_dump($b);
 
   testKeyTypes();

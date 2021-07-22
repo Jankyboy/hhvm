@@ -70,7 +70,7 @@ RDS_LOCAL(DateGlobals, s_date_globals);
 #define IMPLEMENT_GET_CLASS(cls)                                               \
   Class* cls::getClass() {                                                     \
     if (s_class == nullptr) {                                                  \
-      s_class = Unit::lookupClass(s_className.get());                          \
+      s_class = Class::lookup(s_className.get());                          \
       assertx(s_class);                                                        \
     }                                                                          \
     return s_class;                                                            \
@@ -208,12 +208,12 @@ static const StaticString s_errors("errors");
 Array HHVM_STATIC_METHOD(DateTime, getLastErrors) {
   Array errors = DateTime::getLastErrors();
   Array warnings = DateTime::getLastWarnings();
-  DArrayInit ret(4);
+  DictInit ret(4);
 
-  ret.add(s_warning_count, warnings.size());
-  ret.add(s_warnings, warnings);
-  ret.add(s_error_count, errors.size());
-  ret.add(s_errors, errors);
+  ret.set(s_warning_count, warnings.size());
+  ret.set(s_warnings, warnings);
+  ret.set(s_error_count, errors.size());
+  ret.set(s_errors, errors);
 
   return ret.toArray();
 }
@@ -332,7 +332,7 @@ Array HHVM_METHOD(DateTime, __sleep) {
                  make_tv<KindOfInt64>(zoneType));
   auto const timezone = zone_type_to_string(zoneType, data->m_dt);
   this_->setProp(nullptr, s_timezone.get(), timezone.asTypedValue());
-  return make_varray(s_date, s_timezone_type, s_timezone);
+  return make_vec_array(s_date, s_timezone_type, s_timezone);
 }
 
 void HHVM_METHOD(DateTime, __wakeup) {
@@ -349,14 +349,14 @@ void HHVM_METHOD(DateTime, __wakeup) {
   this_->unsetProp(cls, s_timezone.get());
 }
 
-Array HHVM_METHOD(DateTime, __debuginfo) {
+Array HHVM_METHOD(DateTime, __debugInfo) {
   auto const data = getDateTimeData(this_);
   return data->getDebugInfo();
 }
 
 Array DateTimeData::getDebugInfo() const {
   assertx(m_dt);
-  return make_darray(
+  return make_dict_array(
     s_date, format(s_ISOformat),
     s_timezone_type, m_dt->zoneType(),
     s_timezone, zone_type_to_string(m_dt->zoneType(), m_dt)
@@ -371,7 +371,7 @@ int64_t DateTimeData::getTimestamp(const Object& obj) {
     return getDateTimeData(obj)->getTimestamp();
   }
   assertx(obj->instanceof(SystemLib::s_DateTimeInterfaceClass));
-  Variant result = obj->o_invoke(s_getTimestamp, Array::CreateVArray());
+  Variant result = obj->o_invoke(s_getTimestamp, Array::CreateVec());
   return result.toInt64();
 }
 
@@ -498,7 +498,7 @@ Variant HHVM_STATIC_METHOD(DateTimeZone, listIdentifiers,
   int item_count = tzdb->index_size;
   const timelib_tzdb_index_entry *table = tzdb->index;
 
-  Array ret = Array::CreateVArray();
+  Array ret = Array::CreateVec();
   for (int i = 0; i < item_count; ++i) {
     // This string is what PHP considers as "data" or "info" which is basically
     // the string of "PHP1xx" where xx is country code that uses this timezone.
@@ -537,14 +537,14 @@ req::ptr<TimeZone> DateTimeZoneData::unwrap(const Object& timezone) {
 
 IMPLEMENT_GET_CLASS(DateTimeZoneData)
 
-Array HHVM_METHOD(DateTimeZone, __debuginfo) {
+Array HHVM_METHOD(DateTimeZone, __debugInfo) {
   auto const data = getDateTimeZoneData(this_);
   return data->getDebugInfo();
 }
 
 Array DateTimeZoneData::getDebugInfo() const {
   assertx(m_tz);
-  return make_darray(
+  return make_dict_array(
     s_timezone_type, m_tz->type(),
     s_timezone, m_tz->name()
   );
@@ -954,7 +954,7 @@ static struct DateTimeExtension final : Extension {
     HHVM_ME(DateTime, sub);
     HHVM_ME(DateTime, __sleep);
     HHVM_ME(DateTime, __wakeup);
-    HHVM_ME(DateTime, __debuginfo);
+    HHVM_ME(DateTime, __debugInfo);
     HHVM_STATIC_ME(DateTime, createFromFormat);
     HHVM_STATIC_ME(DateTime, getLastErrors);
 
@@ -1000,7 +1000,7 @@ static struct DateTimeExtension final : Extension {
     HHVM_RCC_INT(DateTimeZone, PER_COUNTRY, DateTimeZoneData::PER_COUNTRY);
 
     HHVM_ME(DateTimeZone, __construct);
-    HHVM_ME(DateTimeZone, __debuginfo);
+    HHVM_ME(DateTimeZone, __debugInfo);
     HHVM_ME(DateTimeZone, getLocation);
     HHVM_ME(DateTimeZone, getName);
     HHVM_ME(DateTimeZone, getOffset);
@@ -1096,7 +1096,7 @@ private:
   }
 
   static std::string dateTimezoneIniGet() {
-    return RID().getTimeZone();
+    return RID().getTimezone();
   }
 } s_date_extension;
 

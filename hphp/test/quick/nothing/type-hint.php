@@ -22,10 +22,10 @@ function main() {
   try_takes_nothing('abc');
   try_takes_nothing(true);
   try_takes_nothing(false);
-  try_takes_nothing(new StdClass());
+  try_takes_nothing(new stdClass());
   try_takes_nothing(null);
 }
 <<__EntryPoint>> function main_entry(): void {
-set_error_handler(fun('my_handler'));
+set_error_handler(my_handler<>);
 main();
 }

@@ -43,17 +43,15 @@ enum class IterNextIndex : uint8_t {
 
   // JIT-only "pointer iteration", designed for good specialized code-gen.
   // In pointer iteration, the iterator has a pointer directly into the base.
-  // We can only use it when the base is guaranteed unchanged during iteration.
   //
-  // This condition is true for non-local iters, and for local iters with the
-  // BaseUnchanged enum value. Almost all iters fall into these two cases.
-  //
-  // We additionally restrict pointer iteration based on the base layout:
-  //   - For PackedArrays, we only do it for value iters. (For key-value iters,
-  //     the position is also the key, so we must materialize it anyway.)
-  //   - Fox MixedArrays, we only use it when the base is free of tombstones.
-  ArrayPackedPointer,
+  // We only use this mode if all the following conditions are met:
+  //  - The array is guaranteed to be unchanged during iteration
+  //  - The array is a MixedArray (a dict or a darray)
+  //  - The array is free of tombstones
   ArrayMixedPointer,
+
+  // Helpers specific to bespoke array-likes.
+  StructDict,
 };
 
 // For iterator specialization, we pack all the information we need to generate
@@ -62,7 +60,7 @@ enum class IterNextIndex : uint8_t {
 // This byte should be 0 for unspecialized iterators, as created by calling the
 // normal IterImpl constructor instead of using a specialized initializer.
 struct IterSpecialization {
-  enum BaseType : uint8_t { Packed = 0, Mixed, Vec, Dict, kNumBaseTypes };
+  enum BaseType : uint8_t { Vec = 0, Dict, kNumBaseTypes };
   enum KeyTypes : uint8_t { ArrayKey = 0, Int, Str, StaticStr, kNumKeyTypes };
 
   // Returns a generic (unspecialized) IterSpecialization value.
@@ -76,8 +74,8 @@ struct IterSpecialization {
   union {
     uint8_t as_byte;
     struct {
-      // `base_type` and `key_types` are 2-bit encodings of the enums above.
-      uint8_t base_type: 2;
+      // `base_type` and `key_types` are bit encodings of the enums above.
+      uint8_t base_type: 1;
       uint8_t key_types: 2;
 
       // When we JIT a specialized iterator, we set `specialized` to true,
@@ -86,6 +84,10 @@ struct IterSpecialization {
       bool specialized: 1;
       bool output_key: 1;
       bool base_const: 1;
+      bool bespoke: 1;
+
+      // A free bit. Maybe we'll need a 2-bit enum for the layout?
+      bool padding: 1;
     };
   };
 };
@@ -115,11 +117,6 @@ std::string show(IterSpecialization::KeyTypes type);
  * type of mutating operations. Apparently, this pattern is somewhat common...
  */
 struct IterImpl {
-  enum Type : uint8_t {
-    TypeArray,
-    TypeIterator  // for objects that implement Iterator or IteratorAggregate
-  };
-
   enum NoInc { noInc = 0 };
   enum Local { local = 0 };
 
@@ -228,9 +225,6 @@ struct IterImpl {
   void setPos(ssize_t newPos) {
     m_pos = newPos;
   }
-  Type getIterType() const {
-    return m_itype;
-  }
 
   // It's valid to call end() on a killed iter, but the iter is otherwise dead.
   // In debug builds, this method will overwrite the iterator with garbage.
@@ -246,12 +240,14 @@ struct IterImpl {
   }
 
   // Used by native code and by the JIT to pack the m_typeFields components.
+  static uint32_t packTypeFields(IterNextIndex index) {
+    return static_cast<uint32_t>(index) << 24;
+  }
   static uint32_t packTypeFields(
-      Type type, IterNextIndex index,
-      IterSpecialization spec = IterSpecialization::generic()) {
-    return static_cast<uint32_t>(spec.as_byte) << 16 |
-           static_cast<uint32_t>(index) << 8 |
-           static_cast<uint32_t>(type);
+      IterNextIndex index, IterSpecialization spec, uint16_t layout) {
+    return static_cast<uint32_t>(index) << 24 |
+           static_cast<uint32_t>(spec.as_byte) << 16 |
+           static_cast<uint32_t>(layout);
   }
 
   // JIT helpers used for specializing iterators.
@@ -297,10 +293,12 @@ private:
   template<IterTypeOp Type>
   friend int64_t new_iter_array_key(Iter*, ArrayData*, TypedValue*,
                                     TypedValue*);
-  template<bool Local>
-  friend int64_t iter_next_packed_pointer(Iter*, TypedValue*, ArrayData*);
   template<bool HasKey, bool Local>
-  friend int64_t iter_next_mixed_pointer(Iter*, TypedValue*, TypedValue*, ArrayData*);
+  friend int64_t iter_next_packed_pointer(
+    Iter*, TypedValue*, TypedValue*, ArrayData*);
+  template<bool HasKey, bool Local>
+  friend int64_t iter_next_mixed_pointer(
+    Iter*, TypedValue*, TypedValue*, ArrayData*);
 
   template <bool incRef = true>
   void arrInit(const ArrayData* arr);
@@ -319,9 +317,9 @@ private:
     m_data = Local ? nullptr : ad;
     setArrayNext(IterNextIndex::Array);
     if (ad != nullptr) {
-      if (ad->hasVanillaPackedLayout()) {
+      if (ad->isVanillaVec()) {
         setArrayNext(IterNextIndex::ArrayPacked);
-      } else if (ad->hasVanillaMixedLayout()) {
+      } else if (ad->isVanillaDict()) {
         setArrayNext(IterNextIndex::ArrayMixed);
       }
       m_pos = ad->iter_begin();
@@ -335,8 +333,7 @@ private:
   void setObject(ObjectData* obj) {
     assertx((intptr_t(obj) & objectBaseTag()) == 0);
     m_obj = (ObjectData*)((intptr_t)obj | objectBaseTag());
-    m_typeFields = packTypeFields(TypeIterator, IterNextIndex::Object);
-    assertx(m_itype == TypeIterator);
+    m_typeFields = packTypeFields(IterNextIndex::Object);
     assertx(m_nextHelperIdx == IterNextIndex::Object);
     assertx(!m_specialization.specialized);
   }
@@ -344,8 +341,7 @@ private:
   // Set the type fields of an array. These fields are packed so that we
   // can set them with a single mov-immediate to the union.
   void setArrayNext(IterNextIndex index) {
-    m_typeFields = packTypeFields(TypeArray, index);
-    assertx(m_itype == TypeArray);
+    m_typeFields = packTypeFields(index);
     assertx(m_nextHelperIdx == index);
     assertx(!m_specialization.specialized);
   }
@@ -359,9 +355,9 @@ private:
   // This field is a union so new_iter_array can set it in one instruction.
   union {
     struct {
-      Type m_itype;
-      IterNextIndex m_nextHelperIdx;
+      uint16_t m_layout;
       IterSpecialization m_specialization;
+      IterNextIndex m_nextHelperIdx;
     };
     uint32_t m_typeFields;
   };

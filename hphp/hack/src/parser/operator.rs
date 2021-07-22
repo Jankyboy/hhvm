@@ -58,11 +58,7 @@ impl Operator {
             OrOperator => 12,
             ExclusiveOrOperator => 13,
             AndOperator => 14,
-            EqualOperator
-            | StrictEqualOperator
-            | PhpNotEqualOperator
-            | NotEqualOperator
-            | StrictNotEqualOperator => 15,
+            EqualOperator | StrictEqualOperator | NotEqualOperator | StrictNotEqualOperator => 15,
             SpaceshipOperator
             | LessThanOperator
             | LessThanOrEqualOperator
@@ -70,7 +66,7 @@ impl Operator {
             | GreaterThanOrEqualOperator => 16,
             LeftShiftOperator | RightShiftOperator => 17,
             AdditionOperator | SubtractionOperator | ConcatenationOperator => 18,
-            MultiplicationOperator | DivisionOperator | RemainderOperator | SuspendOperator => 19,
+            MultiplicationOperator | DivisionOperator | RemainderOperator => 19,
             LogicalNotOperator | NotOperator | UnaryPlusOperator | UnaryMinusOperator => 20,
             InstanceofOperator | IsOperator | AsOperator | NullableAsOperator => 21,
             CastOperator
@@ -78,10 +74,13 @@ impl Operator {
             | PrefixIncrementOperator
             | PrefixDecrementOperator
             | ExponentOperator => 22,
-            PostfixIncrementOperator | PostfixDecrementOperator | AwaitOperator => 23,
+            PostfixIncrementOperator
+            | PostfixDecrementOperator
+            | AwaitOperator
+            | ReadonlyOperator => 23,
             CloneOperator => 24,
             // value 25 is reserved for assignment that appear in expressions
-            FunctionCallOperator => 26,
+            EnumClassLabelOperator | FunctionCallOperator => 26,
             NewOperator => 27,
             MemberSelectionOperator | NullSafeMemberSelectionOperator => 28,
             IndexingOperator => 29,
@@ -99,7 +98,7 @@ impl Operator {
     // must be updated.
     pub fn associativity(&self, _: &ParserEnv) -> Assoc {
         match self {
-            | EqualOperator | StrictEqualOperator | NotEqualOperator | PhpNotEqualOperator
+            | EqualOperator | StrictEqualOperator | NotEqualOperator
             | StrictNotEqualOperator | LessThanOperator | LessThanOrEqualOperator
             | GreaterThanOperator | GreaterThanOrEqualOperator | InstanceofOperator
             | NewOperator | CloneOperator | SpaceshipOperator => Assoc::NotAssociative,
@@ -110,7 +109,7 @@ impl Operator {
             | AdditionOperator | SubtractionOperator | ConcatenationOperator
             | MultiplicationOperator | DivisionOperator | RemainderOperator
             | MemberSelectionOperator | NullSafeMemberSelectionOperator
-            | ScopeResolutionOperator | FunctionCallOperator | IndexingOperator
+            | ScopeResolutionOperator | EnumClassLabelOperator | FunctionCallOperator | IndexingOperator
             | IncludeOperator | IncludeOnceOperator | RequireOperator
             | RequireOnceOperator | IsOperator | AsOperator | NullableAsOperator
                 // eval
@@ -131,13 +130,12 @@ impl Operator {
             | RemainderAssignmentOperator | AndAssignmentOperator
             | OrAssignmentOperator | ExclusiveOrAssignmentOperator
             | LeftShiftAssignmentOperator | RightShiftAssignmentOperator
-            | PrintOperator | SuspendOperator | AwaitOperator => Assoc::RightAssociative,
+            | PrintOperator | AwaitOperator | ReadonlyOperator => Assoc::RightAssociative,
         }
     }
 
     pub fn prefix_unary_from_token(token: TokenKind) -> Operator {
         match token {
-            TokenKind::Suspend => SuspendOperator,
             TokenKind::Await => AwaitOperator,
             TokenKind::Exclamation => LogicalNotOperator,
             TokenKind::Tilde => NotOperator,
@@ -154,6 +152,7 @@ impl Operator {
             TokenKind::Require => RequireOperator,
             TokenKind::Require_once => RequireOnceOperator,
             TokenKind::Print => PrintOperator,
+            TokenKind::Readonly => ReadonlyOperator,
             _ => panic!("not a unary operator"),
         }
     }
@@ -214,7 +213,7 @@ impl Operator {
             | TokenKind::MinusGreaterThan
             | TokenKind::QuestionMinusGreaterThan
             | TokenKind::ColonColon
-            | TokenKind::ColonAt => true,
+            | TokenKind::Hash => true,
             _ => false,
         }
     }
@@ -275,7 +274,7 @@ impl Operator {
             TokenKind::LeftParen => FunctionCallOperator,
             TokenKind::LeftBracket => IndexingOperator,
             TokenKind::LeftBrace => IndexingOperator,
-            TokenKind::ColonAt => ScopeResolutionOperator,
+            TokenKind::Hash => EnumClassLabelOperator,
             _ => panic!("not a trailing operator"),
         }
     }
@@ -352,7 +351,6 @@ impl Operator {
             EqualOperator
             | StrictEqualOperator
             | NotEqualOperator
-            | PhpNotEqualOperator
             | StrictNotEqualOperator
             | LessThanOperator
             | LessThanOrEqualOperator

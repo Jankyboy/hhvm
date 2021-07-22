@@ -31,8 +31,8 @@ foreach ($lefts as $left) {
     var_dump($a);
 
     echo "  . ";
-    $a = $left;
-    var_dump($a .= $right);
+    $a = (string)$left;
+    var_dump($a .= (string)($right));
     var_dump($a);
 
     echo "  / ";
@@ -53,28 +53,38 @@ foreach ($lefts as $left) {
       echo "\n", $e->getMessage(), "\n";
     }
 
+    if (!($left is string && $right is string)) {
+      $l = (int)$left;
+      $right = (int)$right;
+    } else {
+      $l = $left;
+    }
+
     echo "  & ";
-    $a = $left;
+    $a = $l;
     var_dump($a &= $right);
     var_dump($a);
 
     echo "  | ";
-    $a = $left;
+    $a = $l;
     var_dump($a |= $right);
     var_dump($a);
 
     echo "  ^ ";
-    $a = $left;
+    $a = $l;
     var_dump($a ^= $right);
     var_dump($a);
 
+    $l = (int)$left;
+    $right = (int)$right;
+
     echo "  << ";
-    $a = $left;
+    $a = $l;
     var_dump($a <<= $right);
     var_dump($a);
 
     echo "  >> ";
-    $a = $left;
+    $a = $l;
     var_dump($a >>= $right);
     var_dump($a);
   }

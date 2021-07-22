@@ -6,7 +6,7 @@ function main_entry(): void {
 
   echo "Test 1: accessing single nodes from php\n";
   $dom = new domDocument;
-  $dom->loadxml($xmlstr);
+  $dom->loadXML(getXmlStr());
   if(!$dom) {
     echo "Error while parsing the document\n";
     exit;
@@ -44,7 +44,7 @@ function main_entry(): void {
   //$attr = $dom->createAttribute("src", "picture.gif");
   //print_r($attr);
 
-  //$rootnode->set_attributeNode($attr); 
+  //$rootnode->set_attributeNode($attr);
   $attr = $rootnode->setAttribute("src", "picture.gif");
   $attr = $rootnode->getAttribute("src");
   print_r($attr);
@@ -56,7 +56,7 @@ function main_entry(): void {
 
   echo "--------- Remove Attribute Node\n";
   $attr = $rootnode->removeAttribute("src");
-  print "Removed " . $attr . " attributes.\n";
+  print "Removed " . (string)($attr) . " attributes.\n";
 
   echo "--------- attributes of rootnode\n";
   $attrs = $rootnode->attributes;
@@ -75,7 +75,7 @@ function main_entry(): void {
 
   echo "--------- Find element by tagname\n";
   echo "    Using dom\n";
-  $children = $dom->getElementsByTagname("Silly");
+  $children = $dom->getElementsByTagName("Silly");
   print_node_list($children);
 
   echo "    Using elem\n";
@@ -86,7 +86,7 @@ function main_entry(): void {
   print_node($children->item(0));
   $rootnode->removeChild($children->item(0));
   print_node_list($rootnode->childNodes);
-  print $dom->savexml();
+  print $dom->saveXML();
 
   echo "--------- Find element by id\n";
   print ("Not implemented\n");

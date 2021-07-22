@@ -1,10 +1,32 @@
-Linearization for class \Foo:
-[\Foo]
-Linearization for class \Bar:
-[\Bar, \Foo]
-Linearization for class \I:
-[\I(PAT)]
-Linearization for class \I2:
-[\I2(PAT), \I(PAT)]
-Linearization for class \I3:
-[\I3(PAT), \I(PAT), \I2(PAT)]
+Member Linearization \Foo:
+  Foo
+Ancestor Linearization \Foo:
+  Foo
+
+Member Linearization \Bar:
+  Bar
+  Foo
+Ancestor Linearization \Bar:
+  Bar
+  Foo
+
+Member Linearization \I:
+  I (PAT)
+Ancestor Linearization \I:
+  I (PAT)
+
+Member Linearization \I2:
+  I2 (PAT)
+  I (PAT)
+Ancestor Linearization \I2:
+  I2 (PAT)
+  I (PAT)
+
+Member Linearization \I3:
+  I3 (PAT)
+  I (PAT)
+  I2 (PAT)
+Ancestor Linearization \I3:
+  I3 (PAT)
+  I (PAT)
+  I2 (PAT)

@@ -145,6 +145,29 @@ ArrayData* asArray(ObjectData* obj) {
   not_reached();
 }
 
+void replaceArray(ObjectData* obj, ArrayData* ad) {
+  assertx(obj->isCollection());
+  switch (obj->collectionType()) {
+  case CollectionType::ImmVector:
+  case CollectionType::Vector: {
+    auto const collection = static_cast<BaseVector*>(obj);
+    decRefArr(collection->arrayData());
+    return collection->setArrayData(ad);
+  }
+  case CollectionType::ImmMap:
+  case CollectionType::Map:
+  case CollectionType::ImmSet:
+  case CollectionType::Set: {
+    auto const collection = static_cast<HashCollection*>(obj);
+    decRefArr(collection->arrayData()->asArrayData());
+    return collection->setArrayData(MixedArray::asMixed(ad));
+  }
+  case CollectionType::Pair:
+    always_assert(false);
+  }
+  not_reached();
+}
+
 /////////////////////////////////////////////////////////////////////////////
 // Deep Copy
 
@@ -176,15 +199,12 @@ void deepCopy(tv_lval lval) {
     case KindOfString:
     case KindOfResource:
     case KindOfKeyset:
-    case KindOfClsMeth:
     case KindOfRClsMeth:
     case KindOfRFunc:
       return;
 
     case KindOfVec:
-    case KindOfDict:
-    case KindOfDArray:
-    case KindOfVArray: {
+    case KindOfDict: {
       auto& original = val(lval).parr;
       if (!original->isRefCounted()) return;
       auto arr = deepCopyArrayLike(original);
@@ -203,7 +223,7 @@ void deepCopy(tv_lval lval) {
           vec->mutate();
           int64_t i = 0;
           do {
-            deepCopy(vec->dataAt(i));
+            deepCopy(vec->lvalAt(i));
           } while (++i < size);
         }
         return vec;

@@ -58,13 +58,14 @@ size_t addPtr(HeapGraph& g, int from, int to, HeapGraph::PtrKind kind,
   return e;
 }
 
+/*
+ * Add a single root node, using the type scanner to find edges out of it.
+ */
 void addRootNode(HeapGraph& g, const PtrMap<const HeapObject*>& blocks,
                  type_scan::Scanner& scanner,
                  const void* h, size_t size, type_scan::Index ty) {
   auto from = g.nodes.size();
-  g.nodes.push_back(
-    HeapGraph::Node{h, size, true, ty, -1, -1}
-  );
+  g.nodes.push_back(HeapGraph::Node{nullptr, size, true, ty, -1, -1});
   g.root_nodes.push_back(from);
   scanner.scanByIndex(ty, h, size);
   scanner.finish(
@@ -150,9 +151,7 @@ HeapGraph makeHeapGraph(bool include_free) {
         ty = type_scan::kIndexUnknown;
         break;
     }
-    g.nodes.push_back(
-      HeapGraph::Node{h, size, false, ty, -1, -1}
-    );
+    g.nodes.push_back(HeapGraph::Node{h, size, false, ty, -1, -1});
   });
 
   // find root nodes

@@ -14,10 +14,10 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_TYPED_VALUE_H_
-#define incl_HPHP_TYPED_VALUE_H_
+#pragma once
 
 #include "hphp/runtime/base/datatype.h"
+#include "hphp/runtime/base/typed-value.h"
 #include "hphp/runtime/vm/class-meth-data-ref.h"
 #include "hphp/runtime/vm/lazy-class.h"
 #include "hphp/util/type-scan.h"
@@ -36,6 +36,7 @@ struct ArrayData;
 struct MaybeCountable;
 struct ObjectData;
 struct ResourceHdr;
+struct StaticCoeffects;
 struct StringData;
 struct MemoCacheBase;
 struct Func;
@@ -71,23 +72,48 @@ union Value {
 };
 
 struct ConstModifiers {
+  // Note that cgCheckSubClsCns relies on Value being 0.
+  enum class Kind : uint8_t { Value = 0, Type = 1, Context = 2 };
+
   uint32_t rawData;
 
-  static uint32_t constexpr kMask = (uint32_t)-1UL << 2;
+  static uint32_t constexpr kDataShift = 3;
+  static uint32_t constexpr kMask = (uint32_t)-1UL << kDataShift;
+  static uint32_t constexpr kKindMask = (1 << (kDataShift - 1)) - 1;
+  static uint32_t constexpr kAbstractMask = 1 << (kDataShift - 1);
 
   StringData* getPointedClsName() const {
     assertx(use_lowptr);
     return (StringData*)(uintptr_t)(rawData & kMask);
   }
-  bool isAbstract()      const { return rawData & 2; }
-  bool isType()          const { return rawData & 1; }
+  StaticCoeffects getCoeffects() const;
+  bool isAbstract() const { return rawData & kAbstractMask; }
+  Kind kind() const { return static_cast<Kind>(rawData & kKindMask); }
 
-  void setPointedClsName (StringData* clsName) {
+  void setPointedClsName(StringData* clsName) {
     assertx(use_lowptr);
     rawData = (uintptr_t)clsName | (rawData & ~kMask);
   }
-  void setIsAbstract(bool isAbstract) { rawData |= (isAbstract ? 2 : 0); }
-  void setIsType    (bool isType)     { rawData |= (isType ? 1 : 0); }
+  void setCoeffects(StaticCoeffects coeffects);
+  void setIsAbstract(bool isAbstract) {
+    if (isAbstract) {
+      rawData |= kAbstractMask;
+    } else {
+      rawData &= ~kAbstractMask;
+    }
+  }
+  void setKind(Kind kind) {
+    rawData |= (uint32_t(kind) & kKindMask);
+  }
+
+  static const char* show(Kind t) {
+    switch (t) {
+      case Kind::Value:   return "constant";
+      case Kind::Type:    return "type constant";
+      case Kind::Context: return "context constant";
+    }
+    not_reached();
+  }
 };
 
 /*
@@ -145,6 +171,12 @@ static_assert((sizeof(TypedValue) & (kTypedValueAlignMask)) == 0,
 static_assert(sizeof(TypedValue) <= 16, "Don't add big things to AuxUnion");
 
 /*
+ * Used to set m_data when a PreClassEmitter::Const's valOption() is none
+ * to distinguish from constants that have an 86cinit. See tvWriteConstValMissing
+ */
+constexpr int64_t kConstValMissing = -1;
+
+/*
  * Subclass of TypedValue which exposes m_aux accessors.
  */
 struct TypedValueAux : TypedValue {
@@ -153,6 +185,8 @@ struct TypedValueAux : TypedValue {
 
   const int32_t& hash() const { return m_aux.u_hash; }
         int32_t& hash()       { return m_aux.u_hash; }
+
+  bool is_const_val_missing() const { return m_data.num == kConstValMissing; }
 
   const ConstModifiers& constModifiers() const {
     return m_aux.u_constModifiers;
@@ -263,10 +297,6 @@ X(KindOfNull,         void);
 X(KindOfBoolean,      bool);
 X(KindOfInt64,        int64_t);
 X(KindOfDouble,       double);
-X(KindOfDArray,       ArrayData*);
-X(KindOfPersistentDArray,  const ArrayData*);
-X(KindOfVArray,       ArrayData*);
-X(KindOfPersistentVArray,  const ArrayData*);
 X(KindOfVec,          ArrayData*);
 X(KindOfPersistentVec, const ArrayData*);
 X(KindOfDict,         ArrayData*);
@@ -348,6 +378,25 @@ typename std::enable_if<
   return ret;
 }
 
+ALWAYS_INLINE TypedValue make_tv_of_type(Value value, DataType dt) {
+  // GCC does all sorts of unnecessary spills if we attempt to construct a
+  // TypedValue here with an unknown DataType. Explicitly initializing the
+  // AuxUnion doesn't help, either: https://godbolt.org/z/MbG48c
+  //
+  // This C++ code is the only code we've found that results in reasonable
+  // codegen on GCC and that avoids undefined behavior. It simply moves the
+  // value and movzbl's the type.
+  //
+  // GCC issue tracker: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=98335
+  static_assert(sizeof(TypedValue) == 16);
+  static_assert(offsetof(TypedValue, m_data) == 0);
+  static_assert(offsetof(TypedValue, m_type) == 8);
+  __attribute__((__may_alias__)) int64_t raw[2];
+  raw[0] = value.num;
+  raw[1] = int64_t(uint8_t(dt));
+  return *reinterpret_cast<const TypedValue*>(raw);
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 
 /*
@@ -360,5 +409,3 @@ extern const TypedValue immutable_uninit_base;
 ///////////////////////////////////////////////////////////////////////////////
 
 }
-
-#endif

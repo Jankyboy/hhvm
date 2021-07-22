@@ -1,6 +1,22 @@
-Linearization for class \I:
-[\I(PAT)]
-Linearization for class \T:
-[\T(copy_private_members, PAT), \I(consts_only, PAT), \I(PAT)]
-Linearization for class \C:
-[\C, \T(copy_private_members), \I(consts_only), \I]
+Member Linearization \I:
+  I (PAT)
+Ancestor Linearization \I:
+  I (PAT)
+
+Member Linearization \T:
+  T (copy_private_members, PAT)
+  I (consts_only, PAT)
+  I (PAT)
+Ancestor Linearization \T:
+  T (copy_private_members, PAT)
+  I (consts_only, PAT)
+
+Member Linearization \C:
+  C
+  T (copy_private_members)
+  I (consts_only)
+  I
+Ancestor Linearization \C:
+  C
+  T (copy_private_members)
+  I (consts_only)

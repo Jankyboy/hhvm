@@ -35,33 +35,37 @@ type t = {
   popt: ParserOptions.t;
   tcopt: TypecheckerOptions.t;
   backend: Provider_backend.t;
+  deps_mode: Typing_deps_mode.t;
   entries: entries;
 }
 
-let empty_for_tool ~popt ~tcopt ~backend =
-  { popt; tcopt; backend; entries = Relative_path.Map.empty }
+let empty_for_tool ~popt ~tcopt ~backend ~deps_mode =
+  { popt; tcopt; backend; deps_mode; entries = Relative_path.Map.empty }
 
-let empty_for_worker ~popt ~tcopt =
+let empty_for_worker ~popt ~tcopt ~deps_mode =
   {
     popt;
     tcopt;
     backend = Provider_backend.Shared_memory;
+    deps_mode;
     entries = Relative_path.Map.empty;
   }
 
-let empty_for_test ~popt ~tcopt =
+let empty_for_test ~popt ~tcopt ~deps_mode =
   {
     popt;
     tcopt;
     backend = Provider_backend.Shared_memory;
+    deps_mode;
     entries = Relative_path.Map.empty;
   }
 
-let empty_for_debugging ~popt ~tcopt =
+let empty_for_debugging ~popt ~tcopt ~deps_mode =
   {
     popt;
     tcopt;
     backend = Provider_backend.Shared_memory;
+    deps_mode;
     entries = Relative_path.Map.empty;
   }
 
@@ -79,19 +83,22 @@ let make_entry ~(path : Relative_path.t) ~(contents : entry_contents) : entry =
   }
 
 let add_or_overwrite_entry ~(ctx : t) (entry : entry) : t =
-  { ctx with entries = Relative_path.Map.add ctx.entries entry.path entry }
+  {
+    ctx with
+    entries = Relative_path.Map.add ctx.entries ~key:entry.path ~data:entry;
+  }
 
 let add_or_overwrite_entry_contents
     ~(ctx : t) ~(path : Relative_path.t) ~(contents : string) : t * entry =
   let entry = make_entry ~path ~contents:(Provided_contents contents) in
-  (add_or_overwrite_entry ctx entry, entry)
+  (add_or_overwrite_entry ~ctx entry, entry)
 
 let add_entry_if_missing ~(ctx : t) ~(path : Relative_path.t) : t * entry =
   match Relative_path.Map.find_opt ctx.entries path with
   | Some entry -> (ctx, entry)
   | None ->
     let entry = make_entry ~path ~contents:Not_yet_read_from_disk in
-    (add_or_overwrite_entry ctx entry, entry)
+    (add_or_overwrite_entry ~ctx entry, entry)
 
 let get_popt (t : t) : ParserOptions.t = t.popt
 
@@ -101,6 +108,11 @@ let map_tcopt (t : t) ~(f : TypecheckerOptions.t -> TypecheckerOptions.t) : t =
   { t with tcopt = f t.tcopt }
 
 let get_backend (t : t) : Provider_backend.t = t.backend
+
+let get_deps_mode (t : t) : Typing_deps_mode.t = t.deps_mode
+
+let map_deps_mode (t : t) ~(f : Typing_deps_mode.t -> Typing_deps_mode.t) : t =
+  { t with deps_mode = f t.deps_mode }
 
 let get_entries (t : t) : entries = t.entries
 
@@ -114,20 +126,21 @@ let read_file_contents_exn (entry : entry) : string =
        let contents = Sys_utils.cat (Relative_path.to_absolute entry.path) in
        entry.contents <- Contents_from_disk contents;
        contents
-     with e ->
-       (* Be sure to capture the exception and mark the entry contents as
-       [Read_contents_from_disk_failed]. Otherwise, reading the contents may
-       not be idempotent:
+     with
+    | e ->
+      (* Be sure to capture the exception and mark the entry contents as
+         [Read_contents_from_disk_failed]. Otherwise, reading the contents may
+         not be idempotent:
 
-        1) We attempt to read the file from disk, but it doesn't exist, so we
-        raise an exception.
-        2) The file is created on disk.
-        3) We attempt to read the file from disk again. Now it exists, and we
-        return a different value.
-       *)
-       let e = Exception.wrap e in
-       entry.contents <- Read_contents_from_disk_failed e;
-       Exception.reraise e)
+          1) We attempt to read the file from disk, but it doesn't exist, so we
+          raise an exception.
+          2) The file is created on disk.
+          3) We attempt to read the file from disk again. Now it exists, and we
+          return a different value.
+      *)
+      let e = Exception.wrap e in
+      entry.contents <- Read_contents_from_disk_failed e;
+      Exception.reraise e)
   | Raise_exn_on_attempt_to_read ->
     failwith
       (Printf.sprintf
@@ -136,7 +149,8 @@ let read_file_contents_exn (entry : entry) : string =
   | Read_contents_from_disk_failed e -> Exception.reraise e
 
 let read_file_contents (entry : entry) : string option =
-  (try Some (read_file_contents_exn entry) with _ -> None)
+  try Some (read_file_contents_exn entry) with
+  | _ -> None
 
 let get_file_contents_if_present (entry : entry) : string option =
   match entry.contents with
@@ -170,8 +184,8 @@ let unset_is_quarantined_internal () : unit =
       (false, Utils.Callstack (Exception.get_current_callstack_string 99))
   | (false, Utils.Callstack stack) ->
     failwith
-      ( "unset_is_quarantined: but quarantine had already been released at\n"
-      ^ stack )
+      ("unset_is_quarantined: but quarantine had already been released at\n"
+      ^ stack)
 
 let get_telemetry (t : t) : Telemetry.t =
   let telemetry =
@@ -179,7 +193,7 @@ let get_telemetry (t : t) : Telemetry.t =
     |> Telemetry.object_
          ~key:"entries"
          ~value:
-           ( Telemetry.create ()
+           (Telemetry.create ()
            |> Telemetry.int_
                 ~key:"count"
                 ~value:(Relative_path.Map.cardinal t.entries)
@@ -194,14 +208,14 @@ let get_telemetry (t : t) : Telemetry.t =
                          get_file_contents_if_present entry
                          |> Option.value ~default:""
                        in
-                       acc + String.length contents)) )
+                       acc + String.length contents)))
     |> Telemetry.string_
          ~key:"backend"
          ~value:(t.backend |> Provider_backend.t_to_string)
     |> Telemetry.object_ ~key:"SharedMem" ~value:(SharedMem.get_telemetry ())
     (* We get SharedMem telemetry for all providers, not just the SharedMem
-  provider, just in case there are code paths which use SharedMem despite
-  it not being the intended provider. *)
+       provider, just in case there are code paths which use SharedMem despite
+       it not being the intended provider. *)
   in
   match t.backend with
   | Provider_backend.Local_memory lmem ->

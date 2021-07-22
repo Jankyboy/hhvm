@@ -17,18 +17,19 @@
  * ): array;
  */
 function go(bool $ret) {
-  echo "ret = $ret\n\n";
+  $ret__str = (string)($ret);
+  echo "ret = $ret__str\n\n";
 
   $s1 = "hello";
   $s2 = "world";
   $i1 = 10;
   $i2 = 12;
-  $o1 = new stdclass;
+  $o1 = new stdClass;
   $o2 = new Exception;
   $m1 = "mixed";
   $m2 = 42;
-  $out1 = new stdclass;
-  $out2 = varray[1, 2, new stdclass];
+  $out1 = new stdClass;
+  $out2 = varray[1, 2, new stdClass];
   $out3 = "beepboop";
   var_dump(
     "one",
@@ -89,18 +90,19 @@ function go(bool $ret) {
  * ): array;
  */
 function go2(bool $ret) {
-  echo "ret = $ret\n\n";
+  $ret__str = (string)($ret);
+  echo "ret = $ret__str\n\n";
 
   $s1 = "hello";
   $s2 = "world";
   $i1 = 10;
   $i2 = 12;
-  $o1 = new stdclass;
+  $o1 = new stdClass;
   $o2 = new Exception;
   $m1 = "mixed";
   $m2 = 42;
-  $out1 = new stdclass;
-  $out2 = varray[1, 2, new stdclass];
+  $out1 = new stdClass;
+  $out2 = varray[1, 2, new stdClass];
   $out3 = "beepboop";
   var_dump(
     "one",

@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VM_CLASS_EMIT_H_
-#define incl_HPHP_VM_CLASS_EMIT_H_
+#pragma once
 
 #include "hphp/runtime/base/repo-auth-type.h"
 #include "hphp/runtime/base/array-data.h"
@@ -23,7 +22,6 @@
 #include "hphp/runtime/vm/class.h"
 #include "hphp/runtime/vm/func.h"
 #include "hphp/runtime/vm/func-emitter.h"
-#include "hphp/runtime/vm/repo-helpers.h"
 
 #include <vector>
 
@@ -60,7 +58,6 @@ struct PreClassEmitter {
   struct Prop {
     Prop()
       : m_name(nullptr)
-      , m_mangledName(nullptr)
       , m_attrs(AttrNone)
       , m_userType(nullptr)
       , m_docComment(nullptr)
@@ -81,7 +78,6 @@ struct PreClassEmitter {
     ~Prop();
 
     const StringData* name() const { return m_name; }
-    const StringData* mangledName() const { return m_mangledName; }
     Attr attrs() const { return m_attrs; }
     const StringData* userType() const { return m_userType; }
     const TypeConstraint& typeConstraint() const { return m_typeConstraint; }
@@ -108,12 +104,10 @@ struct PreClassEmitter {
     friend PreClassEmitter;
     void updateAfterDeserialize(const PreClassEmitter* pce) {
       m_repoAuthType.resolveArray(pce->ue());
-      m_mangledName = PreClass::manglePropName(pce->name(), m_name, m_attrs);
     }
 
   private:
     LowStringPtr m_name;
-    LowStringPtr m_mangledName;
     Attr m_attrs;
     LowStringPtr m_userType;
     LowStringPtr m_docComment;
@@ -125,18 +119,29 @@ struct PreClassEmitter {
   };
 
   struct Const {
+    using CoeffectsVec = std::vector<LowStringPtr>;
+
     Const()
       : m_name(nullptr)
       , m_typeConstraint(nullptr)
       , m_val(make_tv<KindOfUninit>())
       , m_phpCode(nullptr)
-      , m_typeconst(false)
+      , m_coeffects({})
+      , m_kind(ConstModifiers::Kind::Value)
+      , m_isAbstract(false)
+      , m_fromTrait(false)
     {}
     Const(const StringData* n, const StringData* typeConstraint,
           const TypedValue* val, const StringData* phpCode,
-          const bool typeconst)
-      : m_name(n), m_typeConstraint(typeConstraint), m_phpCode(phpCode),
-        m_typeconst(typeconst) {
+          const CoeffectsVec&& coeffects, const ConstModifiers::Kind kind,
+          const bool isAbstract, const bool fromTrait)
+      : m_name(n)
+      , m_typeConstraint(typeConstraint)
+      , m_phpCode(phpCode)
+      , m_coeffects(coeffects)
+      , m_kind(kind)
+      , m_isAbstract(isAbstract)
+      , m_fromTrait(fromTrait) {
       if (!val) {
         m_val.reset();
       } else {
@@ -148,31 +153,38 @@ struct PreClassEmitter {
     const StringData* name() const { return m_name; }
     const StringData* typeConstraint() const { return m_typeConstraint; }
     const TypedValue& val() const { return m_val.value(); }
-    const folly::Optional<TypedValue>& valOption() const { return m_val; }
+    const Optional<TypedValue>& valOption() const { return m_val; }
     const StringData* phpCode() const { return m_phpCode; }
-    bool isAbstract()       const { return !m_val.has_value(); }
-    bool isTypeconst() const { return m_typeconst; }
+    bool isAbstract() const { return m_isAbstract; }
+    const CoeffectsVec& coeffects() const { return m_coeffects; }
+    ConstModifiers::Kind kind() const { return m_kind; }
+    bool isFromTrait() const { return m_fromTrait; }
 
     template<class SerDe> void serde(SerDe& sd) {
       sd(m_name)
         (m_val)
         (m_phpCode)
-        (m_typeconst);
+        (m_coeffects)
+        (m_kind)
+        (m_isAbstract)
+        (m_fromTrait);
     }
 
    private:
     LowStringPtr m_name;
     LowStringPtr m_typeConstraint;
-    folly::Optional<TypedValue> m_val;
+    Optional<TypedValue> m_val;
     LowStringPtr m_phpCode;
-    bool m_typeconst;
+    CoeffectsVec m_coeffects;
+    ConstModifiers::Kind m_kind;
+    bool m_isAbstract;
+    bool m_fromTrait;
   };
 
-  typedef IndexedStringMap<Prop, true, Slot> PropMap;
-  typedef IndexedStringMap<Const, true, Slot> ConstMap;
+  typedef IndexedStringMap<Prop, Slot> PropMap;
+  typedef IndexedStringMap<Const, Slot> ConstMap;
 
-  PreClassEmitter(UnitEmitter& ue, Id id, const std::string& name,
-                  PreClass::Hoistable hoistable);
+  PreClassEmitter(UnitEmitter& ue, Id id, const std::string& name);
   ~PreClassEmitter();
 
 
@@ -185,8 +197,6 @@ struct PreClassEmitter {
   const StringData* name() const { return m_name; }
   Attr attrs() const { return m_attrs; }
   void setAttrs(Attr attrs) { m_attrs = attrs; }
-  void setHoistable(PreClass::Hoistable h) { m_hoistable = h; }
-  PreClass::Hoistable hoistability() const { return m_hoistable; }
   void setEnumBaseTy(TypeConstraint ty) { m_enumBaseTy = ty; }
   const TypeConstraint& enumBaseTy() const { return m_enumBaseTy; }
   Id id() const { return m_id; }
@@ -216,6 +226,10 @@ struct PreClassEmitter {
   const std::vector<LowStringPtr>& interfaces() const {
     return m_interfaces;
   }
+  void addEnumInclude(const StringData* n);
+  const std::vector<LowStringPtr>& enumIncludes() const {
+    return m_enumIncludes;
+  }
   bool addMethod(FuncEmitter* method);
   void renameMethod(const StringData* oldName, const StringData *newName);
   bool addProperty(const StringData* n,
@@ -229,11 +243,19 @@ struct PreClassEmitter {
                    UserAttributeMap);
   bool addConstant(const StringData* n, const StringData* typeConstraint,
                    const TypedValue* val, const StringData* phpCode,
-                   const bool typeConst = false,
-                   const Array& typeStructure = Array{});
+                   const ConstModifiers::Kind kind =
+                    ConstModifiers::Kind::Value,
+                   const bool fromTrait = false,
+                   const Array& typeStructure = Array{},
+                   const bool isAbstract = false);
+  bool addContextConstant(const StringData* n,
+                          Const::CoeffectsVec&& coeffects,
+                          const bool isAbstract, const bool fromTrait = false);
   bool addAbstractConstant(const StringData* n,
                            const StringData* typeConstraint,
-                           const bool typeConst = false);
+                           const ConstModifiers::Kind kind =
+                             ConstModifiers::Kind::Value,
+                           const bool fromTrait = false);
   void addUsedTrait(const StringData* traitName);
   void addClassRequirement(const PreClass::ClassRequirement req) {
     m_requirements.push_back(req);
@@ -257,8 +279,6 @@ struct PreClassEmitter {
     m_userAttributes = std::move(map);
   }
   UserAttributeMap userAttributes() const { return m_userAttributes; }
-
-  void commit(RepoTxn& txn) const; // throws(RepoExc)
 
   PreClass* create(Unit& unit) const;
 
@@ -290,11 +310,11 @@ struct PreClassEmitter {
   LowStringPtr m_docComment;
   TypeConstraint m_enumBaseTy;
   Id m_id;
-  PreClass::Hoistable m_hoistable;
   Slot m_ifaceVtableSlot{kInvalidSlot};
   int m_memoizeInstanceSerial{0};
 
   std::vector<LowStringPtr> m_interfaces;
+  std::vector<LowStringPtr> m_enumIncludes;
   std::vector<LowStringPtr> m_usedTraits;
   std::vector<PreClass::ClassRequirement> m_requirements;
   std::vector<PreClass::TraitPrecRule> m_traitPrecRules;
@@ -306,31 +326,5 @@ struct PreClassEmitter {
   ConstMap::Builder m_constMap;
 };
 
-struct PreClassRepoProxy : RepoProxy {
-  friend struct PreClass;
-  friend struct PreClassEmitter;
-
-  explicit PreClassRepoProxy(Repo& repo);
-  ~PreClassRepoProxy();
-  void createSchema(int repoId, RepoTxn& txn); // throws(RepoExc)
-
-  struct InsertPreClassStmt : public RepoProxy::Stmt {
-    InsertPreClassStmt(Repo& repo, int repoId) : Stmt(repo, repoId) {}
-    void insert(const PreClassEmitter& pce, RepoTxn& txn, int64_t unitSn,
-                Id preClassId, const StringData* name,
-                PreClass::Hoistable hoistable); // throws(RepoExc)
-  };
-
-  struct GetPreClassesStmt : public RepoProxy::Stmt {
-    GetPreClassesStmt(Repo& repo, int repoId) : Stmt(repo, repoId) {}
-    void get(UnitEmitter& ue); // throws(RepoExc)
-  };
-
-  InsertPreClassStmt insertPreClass[RepoIdCount];
-  GetPreClassesStmt getPreClasses[RepoIdCount];
-};
-
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif

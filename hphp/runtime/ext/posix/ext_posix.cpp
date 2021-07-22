@@ -34,6 +34,7 @@
 #include <pwd.h>
 
 #include <folly/container/Array.h>
+#include <folly/system/Pid.h>
 #include <folly/String.h>
 
 #include "hphp/runtime/base/array-init.h"
@@ -194,12 +195,12 @@ static Variant php_posix_group_to_array(group* gr) {
   // Invalid user.
   if (gr == nullptr) return false;
 
-  auto members = Array::CreateVArray();
+  auto members = Array::CreateVec();
   for (int count=0; gr->gr_mem[count] != NULL; count++) {
     members.append(String(gr->gr_mem[count], CopyString));
   }
 
-  return make_darray(
+  return make_dict_array(
     s_name, String(gr->gr_name, CopyString),
     s_passwd, String(gr->gr_passwd, CopyString),
     s_members, members,
@@ -240,7 +241,7 @@ Variant HHVM_FUNCTION(posix_getgroups) {
     return false;
   }
 
-  VArrayInit ret(result);
+  VecInit ret(result);
   for (int i = 0; i < result; i++) {
     ret.append((int)gidlist[i]);
   }
@@ -271,7 +272,7 @@ int64_t HHVM_FUNCTION(posix_getpgrp) {
 }
 
 int64_t HHVM_FUNCTION(posix_getpid) {
-  return getpid();
+  return folly::get_cached_pid();
 }
 
 int64_t HHVM_FUNCTION(posix_getppid) {
@@ -282,7 +283,7 @@ static Variant php_posix_passwd_to_array(passwd* pw) {
   // Invalid user.
   if (pw == nullptr) return false;
 
-  return make_darray(
+  return make_dict_array(
     s_name,   String(pw->pw_name,   CopyString),
     s_passwd, String(pw->pw_passwd, CopyString),
     s_uid,    (int)pw->pw_uid,
@@ -375,7 +376,7 @@ constexpr auto limits = folly::make_array<std::pair<int, const char *>>(
 } // namespace
 
 Variant HHVM_FUNCTION(posix_getrlimit) {
-  DArrayInit ret{2 * limits.size()};
+  DictInit ret{2 * limits.size()};
   for (auto const l : limits) {
     if (!posix_addlimit(l.first, l.second, ret)) {
       return false;
@@ -523,7 +524,7 @@ Variant HHVM_FUNCTION(posix_times) {
     return false;
   }
 
-  return make_darray(
+  return make_dict_array(
     s_ticks,  (int)ticks,        /* clock ticks */
     s_utime,  (int)t.tms_utime,  /* user time */
     s_stime,  (int)t.tms_stime,  /* system time */
@@ -562,13 +563,13 @@ Variant HHVM_FUNCTION(posix_uname) {
     return false;
   }
 
-  return make_darray(
+  return make_dict_array(
     s_sysname,      String(u.sysname,    CopyString)
     , s_nodename,   String(u.nodename,   CopyString)
     , s_release,    String(u.release,    CopyString)
     , s_version,    String(u.version,    CopyString)
     , s_machine,    String(u.machine,    CopyString)
-#if defined(_GNU_SOURCE)
+#if defined(_GNU_SOURCE) && defined(__linux__)
     , s_domainname, String(u.domainname, CopyString)
 #endif
   );

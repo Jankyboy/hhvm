@@ -6,16 +6,24 @@
  *
  *)
 
-open Core_kernel
+open Hh_prelude
 open Format
 open Ifc_types
 module Env = Ifc_env
 module Logic = Ifc_logic
 module Utils = Ifc_utils
+module T = Typing_defs
+
+let ifc_error_to_string (e : ifc_error_ty) : string =
+  match e with
+  | LiftError s -> "LiftError: " ^ s
+  | FlowInference s -> "FlowInference: " ^ s
 
 let comma_sep fmt () = fprintf fmt ",@ "
 
 let blank_sep fmt () = fprintf fmt "@ "
+
+let newline_sep fmt () = fprintf fmt "@,"
 
 let rec list pp_sep pp fmt = function
   | [] -> ()
@@ -40,15 +48,24 @@ let show_policy = function
 
 let policy fmt p = fprintf fmt "%s" (show_policy p)
 
+let array_kind fmt = function
+  | Avec -> fprintf fmt "vec"
+  | Adict -> fprintf fmt "dict"
+  | Akeyset -> fprintf fmt "keyset"
+
 let rec ptype fmt ty =
   let list' sep l =
     let pp_sep fmt () = fprintf fmt "%s@ " sep in
     fprintf fmt "(@[<hov2>%a@])" (list pp_sep ptype) l
   in
   match ty with
+  | Tnull p -> fprintf fmt "null<%a>" policy p
   | Tprim p
-  | Tgeneric p ->
+  | Tgeneric p
+  | Tdynamic p ->
     fprintf fmt "<%a>" policy p
+  | Tnonnull (pself, plump) ->
+    fprintf fmt "nonnull<%a,%a>" policy pself policy plump
   | Ttuple tl -> list' "," tl
   | Tunion [] -> fprintf fmt "nothing"
   | Tunion tl -> list' " |" tl
@@ -56,6 +73,19 @@ let rec ptype fmt ty =
   | Tclass { c_name; c_self; c_lump } ->
     fprintf fmt "%s<@[<hov2>%a,@ %a@]>" c_name policy c_self policy c_lump
   | Tfun fn -> fun_ fmt fn
+  | Tcow_array { a_key; a_value; a_length; a_kind } ->
+    fprintf fmt "%a" array_kind a_kind;
+    fprintf fmt "<%a => %a; |%a|>" ptype a_key ptype a_value policy a_length
+  | Tshape { sh_kind; sh_fields } ->
+    let field fmt { sft_policy; sft_optional; sft_ty } =
+      if sft_optional then fprintf fmt "?";
+      fprintf fmt "<%a, %a>" policy sft_policy ptype sft_ty
+    in
+    fprintf fmt "shape(";
+    Typing_defs.TShapeMap.pp field fmt sh_fields;
+    (match sh_kind with
+    | Closed_shape -> fprintf fmt ")"
+    | Open_shape ty -> fprintf fmt ", <%a>)" ptype ty)
 
 (* Format: <pc, self>(arg1, arg2, ...): ret [exn] *)
 and fun_ fmt fn =
@@ -68,13 +98,23 @@ let fun_proto fmt fp =
   fprintf fmt "%s%a" fp.fp_name fun_ fp.fp_type
 
 let prop =
+  let is_symmetric = function
+    | (Cflow (_, a, b), Cflow (_, c, d)) -> equal_policy a d && equal_policy b c
+    | _ -> false
+  in
+  let equate a b =
+    if Policy.compare a b <= 0 then
+      `q (a, b)
+    else
+      `q (b, a)
+  in
   let rec conjuncts = function
-    | Cconj (Cflow (_, a, b), Cflow (_, c, d))
-      when equal_policy a d && equal_policy b c ->
-      [`q (a, b)]
-    | Cflow (_, a, (Pbot _ as b))
-    | Cflow (_, (Ptop _ as b), a) ->
-      [`q (a, b)]
+    | Cconj ((Cflow (_, a, b) as f1), Cconj ((Cflow _ as f2), prop))
+      when is_symmetric (f1, f2) ->
+      equate a b :: conjuncts prop
+    | Cconj ((Cflow (_, a, b) as f1), (Cflow _ as f2)) when is_symmetric (f1, f2)
+      ->
+      [equate a b]
     | Cconj (cl, cr) -> conjuncts cl @ conjuncts cr
     | Ctrue -> []
     | c -> [`c c]
@@ -120,28 +160,17 @@ let prop =
     | [`c (Chole (_, fp))] -> fprintf fmt "@[<h>{%a}@]" fun_proto fp
     | l ->
       let pp = list comma_sep (fun fmt c -> aux b fmt [c]) in
-      fprintf fmt "[@[<hov>%a@]]" pp l
+      fprintf fmt "@[<hov>%a@]" pp l
   in
   (fun fmt c -> aux 0 fmt (conjuncts c))
 
-let locals fmt env =
-  let pp_lenv fmt lenv =
-    pp_open_vbox fmt 0;
-    fprintf
-      fmt
-      "@[<hov2>lvars:@ %a@]"
-      (LMap.make_pp Local_id.pp ptype)
-      lenv.le_vars;
-    let policy_set fmt s = list comma_sep policy fmt (PCSet.elements s) in
-    if not (PCSet.is_empty lenv.le_pc) then
-      fprintf fmt "@,@[<hov2>pc: @[<hov>%a@]@]" policy_set lenv.le_pc;
-    pp_close_box fmt ()
-  in
-  let pp_lenv_opt fmt = function
-    | Some lenv -> pp_lenv fmt lenv
-    | None -> fprintf fmt "<empty>"
-  in
-  pp_lenv_opt fmt (Env.get_lenv_opt env Typing_cont_key.Next)
+let cont fmt k =
+  pp_open_vbox fmt 0;
+  fprintf fmt "@[<hov2>%a@]" (LMap.make_pp Local_id.pp ptype) k.k_vars;
+  let policy_set fmt s = list comma_sep policy fmt (PSet.elements s) in
+  if not (PSet.is_empty k.k_pc) then
+    fprintf fmt "@,@[<hov2>pc: @[<hov>%a@]@]" policy_set k.k_pc;
+  pp_close_box fmt ()
 
 let renv fmt renv =
   pp_open_vbox fmt 0;
@@ -152,11 +181,37 @@ let renv fmt renv =
   pp_close_box fmt ()
 
 let env fmt env =
+  let rec flatten = function
+    | Cconj (p1, p2) -> flatten p1 @ flatten p2
+    | prop -> [prop]
+  in
+  let rec group_by_line =
+    let has_same_pos p1 p2 =
+      Option.equal Pos.equal (unique_pos_of_prop p1) (unique_pos_of_prop p2)
+    in
+    function
+    | [] -> []
+    | prop :: props ->
+      let (group, rest) = List.partition_tf ~f:(has_same_pos prop) props in
+      let pos_opt = unique_pos_of_prop prop in
+      let prop = Logic.conjoin (prop :: group) in
+      (pos_opt, prop) :: group_by_line rest
+  in
+  let group fmt (pos_opt, p) =
+    match pos_opt with
+    | Some pos -> fprintf fmt "@[<hov2>%a@ %a@]" Pos.pp pos prop p
+    | None -> fprintf fmt "@[<hov2>[no pos]@ %a@]" prop p
+  in
+  let groups = list newline_sep group in
+
   pp_open_vbox fmt 0;
-  fprintf fmt "@[<hov2>Deps:@ %a@]" SSet.pp env.e_deps;
-  fprintf fmt "@,Locals:@,  %a@." locals env;
-  let p = Logic.conjoin env.e_acc in
-  fprintf fmt "@,Constraints:@,  @[<v>%a@]" prop p;
+  fprintf fmt "@[<hov2>Deps:@ %a@]" SSet.pp (Env.get_deps env);
+  let props = List.concat_map ~f:flatten (Env.get_constraints env) in
+  let prop_groups =
+    let compare (pos1, _) (pos2, _) = Option.compare Pos.compare pos1 pos2 in
+    group_by_line props |> List.sort ~compare
+  in
+  fprintf fmt "@,Constraints:@,  @[<v>%a@]" groups prop_groups;
   pp_close_box fmt ()
 
 let class_decl fmt { cd_policied_properties = props; _ } =
@@ -166,25 +221,12 @@ let class_decl fmt { cd_policied_properties = props; _ } =
   let properties fmt = list comma_sep policied_property fmt in
   fprintf fmt "{ policied_props = [@[<hov>%a@]] }" properties props
 
-let fun_decl fmt decl =
-  let kind =
-    match decl.fd_kind with
-    | FDGovernedBy (Some policy) -> show_policy policy
-    | FDGovernedBy None -> "implicit"
-    | FDInferFlows -> "infer"
-  in
-  fprintf fmt "{ kind = %s }" kind
-
 let decl_env fmt de =
   let handle_class name decl =
     fprintf fmt "class %s: %a@ " name class_decl decl
   in
-  let handle_fun name decl =
-    fprintf fmt "function %s: %a@ " name fun_decl decl
-  in
   fprintf fmt "Decls:@.  @[<v>";
   SMap.iter handle_class de.de_class;
-  SMap.iter handle_fun de.de_fun;
   fprintf fmt "@]"
 
 let implicit_violation fmt (l, r) =

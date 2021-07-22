@@ -10,7 +10,7 @@
 (* Note: While Pos.string prints out positions as closed intervals, pos_start
  * and pos_end actually form a half-open interval (i.e. pos_end points to the
  * character *after* the last character of the relevant lexeme.) *)
-type 'a pos [@@deriving eq, ord]
+type 'a pos [@@deriving eq, ord, show]
 
 (** The underlying type used to construct Pos instances.
  *
@@ -21,7 +21,7 @@ type t = Relative_path.t pos [@@deriving eq]
 
 val pp : Format.formatter -> t -> unit
 
-type absolute = string pos [@@deriving eq]
+type absolute = string pos [@@deriving eq, ord, show]
 
 val none : t
 
@@ -39,13 +39,24 @@ val end_line : 'a pos -> int
 
 val end_line_column : 'a pos -> int * int
 
-(* This returns a closed interval that's incorrect for multi-line spans. *)
+(** Return line number, beginning of line character number and character number of start position. *)
+val line_beg_offset : t -> int * int * int
+
+(** For spans over just one line, return the line number, start column and end column.
+    This returns a closed interval.
+    Undefined for multi-line spans. *)
 val info_pos : 'a pos -> int * int * int
 
-(* This returns a closed interval. *)
+(** Return start line, end line, start column and end column.
+    This returns a closed interval. *)
 val info_pos_extended : 'a pos -> int * int * int * int
 
+(** Return start character number and end character number. *)
 val info_raw : 'a pos -> int * int
+
+(** Return start line, start column, end line and end column.
+    This returns a half-open interval. *)
+val destruct_range : 'a pos -> int * int * int * int
 
 val length : 'a pos -> int
 
@@ -64,10 +75,12 @@ val multiline_string_no_file : 'a pos -> string
 (* This returns a closed interval. *)
 val json : absolute -> Hh_json.json
 
+val json_no_filename : absolute -> Hh_json.json
+
 (* This returns a half-open interval. *)
 val multiline_json : absolute -> Hh_json.json
 
-val line_beg_offset : t -> int * int * int
+val multiline_json_no_filename : 'a pos -> Hh_json.json
 
 val inside : 'a pos -> int -> int -> bool
 
@@ -92,8 +105,10 @@ val make_from : 'a -> 'a pos
 
 val btw_nocheck : 'a pos -> 'a pos -> 'a pos
 
-(* Fill in the gap "between" first position and second position.
- * Not valid if from different files or second position precedes first *)
+val is_hhi : t -> bool
+
+(** Fill in the gap "between" first position and second position.
+    Not valid if from different files or second position precedes first *)
 val btw : t -> t -> t
 
 (* Symmetric version of above: order doesn't matter *)
@@ -110,9 +125,6 @@ val to_relative : absolute -> t
 val to_relative_string : t -> string pos
 
 val get_text_from_pos : content:string -> 'a pos -> string
-
-(* This returns a half-open interval. *)
-val destruct_range : 'a pos -> int * int * int * int
 
 (* Advance the ending position by one character *)
 val advance_one : 'a pos -> 'a pos

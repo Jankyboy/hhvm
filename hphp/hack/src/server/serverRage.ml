@@ -7,13 +7,13 @@
  *
  *)
 
-open Hh_core
+open Hh_prelude
 
 let go (_genv : ServerEnv.genv) (env : ServerEnv.env) : ServerRageTypes.result =
   let open ServerRageTypes in
   let open ServerEnv in
   (* Gather up the contents of all files that hh_server believes are in the
-    IDE different from what's on disk *)
+     IDE different from what's on disk *)
   let unsaved_items =
     ServerFileSync.get_unsaved_changes env
     |> Relative_path.Map.map ~f:fst
@@ -38,9 +38,9 @@ let go (_genv : ServerEnv.genv) (env : ServerEnv.env) : ServerRageTypes.result =
       | ServerEnv.Not_paused -> "hh"
       | ServerEnv.Paused _ -> "hh --pause"
       | ServerEnv.Resumed -> "hh --resume")
-      ( Relative_path.Set.elements env.ServerEnv.disk_needs_parsing
+      (Relative_path.Set.elements env.ServerEnv.disk_needs_parsing
       |> List.map ~f:Relative_path.to_absolute
-      |> String.concat "\n" )
+      |> String.concat ~sep:"\n")
   in
 
   (* include current state of diagnostics on client, as we know it *)
@@ -50,20 +50,22 @@ let go (_genv : ServerEnv.genv) (env : ServerEnv.env) : ServerRageTypes.result =
     | (Some _, None) -> "?? diagnostics subscription but no client ??"
     | (None, Some _) -> "?? client but no diagnostics subscription ??"
     | (Some sub, Some client) ->
-      let (is_truncated, count) =
+      let (_is_truncated, count) =
         Diagnostic_subscription.get_pushed_error_length sub
       in
-      let (_sub, errors) = Diagnostic_subscription.pop_errors sub env.errorl in
+      let (_sub, errors, is_truncated) =
+        Diagnostic_subscription.pop_errors sub ~global_errors:env.errorl
+      in
       Printf.sprintf
-        ( "client_has_message: %b\nide_needs_parsing: %b\n"
+        ("client_has_message: %b\nide_needs_parsing: %b\n"
         ^^ "error_count: %d\nerrors_in_client: %d\nis_truncated: %b\n"
-        ^^ "error_files_to_push: %s\n" )
+        ^^ "error_files_to_push: %s\n")
         (ClientProvider.client_has_message client)
         (not (Relative_path.Set.is_empty env.ide_needs_parsing))
         (Errors.count env.errorl)
         count
-        is_truncated
-        (errors |> SMap.keys |> String.concat ",")
+        (Option.is_some is_truncated)
+        (errors |> SMap.keys |> String.concat ~sep:",")
   in
 
   (* that's it! *)
@@ -73,6 +75,7 @@ let go (_genv : ServerEnv.genv) (env : ServerEnv.env) : ServerRageTypes.result =
       pids_data
       paused_data
       subscription_data
-      (List.map unsaved_items ~f:(fun item -> item.title) |> String.concat "\n")
+      (List.map unsaved_items ~f:(fun item -> item.title)
+      |> String.concat ~sep:"\n")
   in
   { title = "status"; data } :: unsaved_items

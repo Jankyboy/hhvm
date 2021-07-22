@@ -7,65 +7,56 @@ namespace __hhvm_intrinsics {
  *
  * @return void
  */
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function trigger_oom(bool $oom): void;
 
 /**
  * Return the given value. This function is purposefully not optimized. It can
  * be used to hide information about values from the optimizer for unit testing.
  */
-<<__Native, __HipHopSpecific, __ProvenanceSkipFrame>>
+<<__Native, __ProvenanceSkipFrame>>
 function launder_value(mixed $value): mixed;
 
 /*
  * Builtins for testing array-ish builtin typehints.
  */
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function dummy_varray_builtin(varray $x): varray;
 
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function dummy_darray_builtin(darray $x): darray;
 
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function dummy_kindofdarray_builtin(): mixed;
 
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function dummy_kindofvarray_builtin(): mixed;
 
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function dummy_varr_or_darr_builtin(varray_or_darray $x): varray_or_darray;
 
-<<__Native, __HipHopSpecific>>
-function dummy_arraylike_builtin(arraylike $x): arraylike;
+<<__Native>>
+function dummy_arraylike_builtin(AnyArray $x): AnyArray;
 
-<<__Native, __HipHopSpecific>>
-function dummy_cast_to_kindofarray(arraylike $value): mixed;
-
-<<__Native, __HipHopSpecific>>
-function dummy_cast_to_kindofdarray(arraylike $value): mixed;
-
-<<__Native, __HipHopSpecific>>
-function dummy_cast_to_kindofvarray(arraylike $value): mixed;
-
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function dummy_dict_builtin(dict $x): dict;
 
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function dummy_array_await(): Awaitable;
 
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function dummy_darray_await(): Awaitable;
 
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function dummy_dict_await(): Awaitable;
 
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function create_class_pointer(string $name): mixed;
 
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function create_clsmeth_pointer(string $cls, string $meth): mixed;
 
-<<__Native, __HipHopSpecific>>
+<<__Native>>
 function dummy_lots_inout(inout $p1, inout $p2, inout $p3, inout $p4,
                           inout $p1, inout $p2, inout $p3, inout $p4,
                           inout $p1, inout $p2, inout $p3, inout $p4): mixed;
@@ -177,5 +168,14 @@ function is_unit_loaded(string $path): bool;
  */
 <<__Native>>
 function drain_unit_prefetcher(): void;
+
+/*
+ * Return information about the current contents of the non-repo Unit
+ * cache and per-hash Unit cache. Due to the nature of the caches this
+ * information may be out of date immediately. Only really meant for
+ * Unit tests.
+ */
+<<__Native>>
+function non_repo_unit_cache_info(): dict;
 
 }

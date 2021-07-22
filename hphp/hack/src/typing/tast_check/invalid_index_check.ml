@@ -13,6 +13,7 @@ open Typing_defs
 module Env = Tast_env
 module TCO = TypecheckerOptions
 module MakeType = Typing_make_type
+module SN = Naming_special_names
 open String.Replace_polymorphic_compare
 
 let should_enforce env = TCO.disallow_invalid_arraykey (Env.get_tcopt env)
@@ -34,13 +35,13 @@ let rec array_get ~array_pos ~expr_pos ~index_pos env array_ty index_ty =
     | Some _ -> ()
     | None ->
       if
-        ( Env.can_subtype env ty_have (MakeType.dynamic (get_reason ty_have))
+        (Env.can_subtype env ty_have (MakeType.dynamic (get_reason ty_have))
         (* Terrible heuristic to agree with legacy: if we inferred `nothing` for
          * the key type of the array, just let it pass *)
         || Env.can_subtype
              env
              ty_expect
-             (MakeType.nothing (get_reason ty_expect)) )
+             (MakeType.nothing (get_reason ty_expect)))
         (* If the key is not even an arraykey, we've already produced an error *)
         || (not (Env.can_subtype env ty_have (MakeType.arraykey Reason.Rnone)))
            && should_enforce env
@@ -52,18 +53,18 @@ let rec array_get ~array_pos ~expr_pos ~index_pos env array_ty index_ty =
         let ty_expect_str = Env.print_error_ty env ty_expect in
         let ty_have_str = Env.print_error_ty env ty_have in
         Errors.index_type_mismatch
-          ( (expr_pos, Reason.string_of_ureason reason)
-            :: Typing_reason.to_string
-                 ("This is " ^ ty_expect_str)
-                 (get_reason ty_expect)
+          (expr_pos, Reason.string_of_ureason reason)
+          (Typing_reason.to_string
+             ("This is " ^ ty_expect_str)
+             (get_reason ty_expect)
           @ Typing_reason.to_string
               ("It is incompatible with " ^ ty_have_str)
-              (get_reason ty_have) )
+              (get_reason ty_have))
   in
   let (_, ety) = Env.expand_type env array_ty in
   match get_node ety with
   | Tunion tyl ->
-    List.iter tyl (fun ty ->
+    List.iter tyl ~f:(fun ty ->
         array_get ~array_pos ~expr_pos ~index_pos env ty index_ty)
   | Tdarray (key_ty, _) -> type_index env index_ty key_ty Reason.index_array
   | Tclass ((_, cn), _, key_ty :: _)
@@ -71,6 +72,7 @@ let rec array_get ~array_pos ~expr_pos ~index_pos env array_ty index_ty =
          || cn = SN.Collections.cConstMap
          || cn = SN.Collections.cImmMap
          || cn = SN.Collections.cKeyedContainer
+         || cn = SN.Collections.cAnyArray
          || cn = SN.Collections.cDict
          || cn = SN.Collections.cKeyset ->
     type_index env index_ty key_ty (Reason.index_class cn)
@@ -103,9 +105,9 @@ let index_visitor =
      * We want to check rvalue e.g. $y = $x[3], or $z[$x[3]] = 5
      * But not lvalue e.g. $x[3] = 5 or list ($x[3], $w) = e;
      *)
-    method! on_expr (env, is_lvalue) (((p, _), expr) as e) =
+    method! on_expr (env, is_lvalue) ((_, p, expr) as e) =
       match expr with
-      | Array_get ((((p1, ty1), _) as e1), Some (((p2, ty2), _) as e2)) ->
+      | Array_get (((ty1, p1, _) as e1), Some ((ty2, p2, _) as e2)) ->
         if not is_lvalue then
           array_get ~array_pos:p1 ~expr_pos:p ~index_pos:p2 env ty1 ty2;
         this#on_expr (env, false) e1;

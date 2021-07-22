@@ -10,7 +10,8 @@
 (*****************************************************************************)
 (* Adds a new file or directory to the environment *)
 (*****************************************************************************)
-open Hh_core
+open Hh_prelude
+module Set = Stdlib.Set
 open DfindEnv
 open DfindMaybe
 
@@ -36,20 +37,21 @@ let get_files path dir_handle =
   try
     while true do
       let file = Unix.readdir dir_handle in
-      if file = "." || file = ".." then
+      if String.(file = "." || file = "..") then
         ()
       else
         let path = Filename.concat path file in
         paths := SSet.add path !paths
     done;
     assert false
-  with _ -> !paths
+  with
+  | _ -> !paths
 
 (* Gets rid of the '/' or '\' at the end of a directory name *)
 let normalize path =
   let size = String.length path in
-  if Char.escaped path.[size - 1] = Filename.dir_sep then
-    String.sub path 0 (size - 1)
+  if String.equal (Char.escaped path.[size - 1]) Filename.dir_sep then
+    String.sub path ~pos:0 ~len:(size - 1)
   else
     path
 
@@ -86,13 +88,14 @@ let blacklist =
 
 let is_blacklisted path =
   try
-    List.iter blacklist (fun re ->
+    List.iter blacklist ~f:(fun re ->
         if Str.string_match re path 0 then
           raise Exit
         else
           ());
     false
-  with Exit -> true
+  with
+  | Exit -> true
 
 let rec add_file links env path =
   let path = normalize path in
@@ -127,19 +130,21 @@ and add_new_file links env path =
       call (wrap Unix.opendir) path >>= fun dir_handle ->
       let files = get_files path dir_handle in
       SSet.iter (fun x -> ignore (add_file links env x)) files;
-      (try Unix.closedir dir_handle with _ -> ());
+      (try Unix.closedir dir_handle with
+      | _ -> ());
       let prev_files =
-        (try SMap.find path env.dirs with Not_found -> SSet.empty)
+        match SMap.find_opt path env.dirs with
+        | Some files -> files
+        | None -> SSet.empty
       in
       let prev_files = SSet.union files prev_files in
       let files =
         SSet.fold
           begin
             fun file all_files ->
-            try
-              let sub_dir = SMap.find file env.dirs in
-              SSet.union sub_dir all_files
-            with Not_found -> SSet.add file all_files
+            match SMap.find_opt file env.dirs with
+            | Some sub_dir -> SSet.union sub_dir all_files
+            | None -> SSet.add file all_files
           end
           files
           prev_files

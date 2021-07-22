@@ -4,7 +4,7 @@
 // LICENSE file in the "hack" directory of this source tree.
 
 use std::borrow::{Borrow, Cow};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryInto;
 use std::ffi::{OsStr, OsString};
@@ -29,17 +29,6 @@ macro_rules! trivial_from_in_impl {
 }
 
 const WORD_SIZE: usize = std::mem::size_of::<Value<'_>>();
-
-fn expect_block_with_size_and_tag<'a>(
-    value: Value<'a>,
-    size: usize,
-    tag: u8,
-) -> Result<block::Block<'a>, FromError> {
-    let block = from::expect_block(value)?;
-    from::expect_block_size(block, size)?;
-    from::expect_block_tag(block, tag)?;
-    Ok(block)
-}
 
 impl ToOcamlRep for () {
     fn to_ocamlrep<'a, A: Allocator>(&self, _alloc: &'a A) -> OpaqueValue<'a> {
@@ -194,7 +183,7 @@ impl ToOcamlRep for f64 {
 
 impl FromOcamlRep for f64 {
     fn from_ocamlrep(value: Value<'_>) -> Result<Self, FromError> {
-        let block = expect_block_with_size_and_tag(value, 1, block::DOUBLE_TAG)?;
+        let block = from::expect_block_with_size_and_tag(value, 1, block::DOUBLE_TAG)?;
         Ok(f64::from_bits(block[0].0 as u64))
     }
 }
@@ -254,6 +243,30 @@ impl<T: ToOcamlRep> ToOcamlRep for RefCell<T> {
     }
 }
 
+impl<T: Copy + ToOcamlRep> ToOcamlRep for Cell<T> {
+    fn to_ocamlrep<'a, A: Allocator>(&self, alloc: &'a A) -> OpaqueValue<'a> {
+        let mut block = alloc.block_with_size(1);
+        alloc.set_field(&mut block, 0, alloc.add(&self.get()));
+        block.build()
+    }
+}
+
+impl<T: FromOcamlRep> FromOcamlRep for Cell<T> {
+    fn from_ocamlrep(value: Value<'_>) -> Result<Self, FromError> {
+        let block = from::expect_tuple(value, 1)?;
+        let value: T = from::field(block, 0)?;
+        Ok(Cell::new(value))
+    }
+}
+
+impl<'a, T: FromOcamlRepIn<'a>> FromOcamlRepIn<'a> for Cell<T> {
+    fn from_ocamlrep_in(value: Value<'_>, alloc: &'a Bump) -> Result<Self, FromError> {
+        let block = from::expect_tuple(value, 1)?;
+        let value: T = from::field_in(block, 0, alloc)?;
+        Ok(Cell::new(value))
+    }
+}
+
 impl<T: FromOcamlRep> FromOcamlRep for RefCell<T> {
     fn from_ocamlrep(value: Value<'_>) -> Result<Self, FromError> {
         let block = from::expect_tuple(value, 1)?;
@@ -289,7 +302,7 @@ impl<T: FromOcamlRep> FromOcamlRep for Option<T> {
             let _ = from::expect_nullary_variant(value, 0)?;
             Ok(None)
         } else {
-            let block = expect_block_with_size_and_tag(value, 1, 0)?;
+            let block = from::expect_block_with_size_and_tag(value, 1, 0)?;
             Ok(Some(from::field(block, 0)?))
         }
     }
@@ -301,7 +314,7 @@ impl<'a, T: FromOcamlRepIn<'a>> FromOcamlRepIn<'a> for Option<T> {
             let _ = from::expect_nullary_variant(value, 0)?;
             Ok(None)
         } else {
-            let block = expect_block_with_size_and_tag(value, 1, 0)?;
+            let block = from::expect_block_with_size_and_tag(value, 1, 0)?;
             Ok(Some(from::field_in(block, 0, alloc)?))
         }
     }
@@ -482,7 +495,7 @@ fn btree_map_from_ocamlrep<K: FromOcamlRep + Ord, V: FromOcamlRep>(
         let _ = from::expect_nullary_variant(value, 0)?;
         return Ok(());
     }
-    let block = expect_block_with_size_and_tag(value, 5, 0)?;
+    let block = from::expect_block_with_size_and_tag(value, 5, 0)?;
     btree_map_from_ocamlrep(map, block[0])?;
     let key: K = from::field(block, 1)?;
     let val: V = from::field(block, 2)?;
@@ -504,7 +517,7 @@ where
         let _ = from::expect_nullary_variant(value, 0)?;
         return Ok(());
     }
-    let block = expect_block_with_size_and_tag(value, 5, 0)?;
+    let block = from::expect_block_with_size_and_tag(value, 5, 0)?;
     vec_from_ocaml_map_in(block[0], vec, alloc)?;
     let key: K = from::field_in(block, 1, alloc)?;
     let val: V = from::field_in(block, 2, alloc)?;
@@ -570,7 +583,7 @@ fn btree_set_from_ocamlrep<T: FromOcamlRep + Ord>(
         let _ = from::expect_nullary_variant(value, 0)?;
         return Ok(());
     }
-    let block = expect_block_with_size_and_tag(value, 4, 0)?;
+    let block = from::expect_block_with_size_and_tag(value, 4, 0)?;
     btree_set_from_ocamlrep(set, block[0])?;
     set.insert(from::field(block, 1)?);
     btree_set_from_ocamlrep(set, block[2])?;
@@ -586,7 +599,7 @@ pub fn vec_from_ocaml_set_in<'a, T: FromOcamlRepIn<'a> + Ord>(
         let _ = from::expect_nullary_variant(value, 0)?;
         return Ok(());
     }
-    let block = expect_block_with_size_and_tag(value, 4, 0)?;
+    let block = from::expect_block_with_size_and_tag(value, 4, 0)?;
     vec_from_ocaml_set_in(block[0], vec, alloc)?;
     vec.push(from::field_in(block, 1, alloc)?);
     vec_from_ocaml_set_in(block[2], vec, alloc)?;

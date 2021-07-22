@@ -4,15 +4,8 @@
  * Source code: ext/standard/math.c
  */
 
-// get a class
-class classA
-{
-}
 <<__EntryPoint>> function main(): void {
 echo "*** Testing floor() : usage variations ***\n";
-//get an unset variable
-$unset_var = 10;
-unset ($unset_var);
 
 // heredoc string
 $heredoc = <<<EOT
@@ -45,17 +38,8 @@ $inputs = varray[
        'abcxyz}',
        $heredoc,
 
-       // object data
-/*13*/ new classA(),
-
-       // undefined data
-/*14*/ @$undefined_var,
-
-       // unset data
-/*15*/ @$unset_var,
-
        // resource variable
-/*16*/ $fp
+/*14*/ $fp
 ];
 
 // loop through each element of $inputs to check the behaviour of floor()

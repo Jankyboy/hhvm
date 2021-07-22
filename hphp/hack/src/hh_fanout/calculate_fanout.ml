@@ -6,7 +6,7 @@
  *
  *)
 
-open Core_kernel
+open Hh_prelude
 
 module Detail_level = struct
   type t =
@@ -92,7 +92,7 @@ let get_symbol_edges_for_file_info (file_info : FileInfo.t) : symbol_edge list =
       make_edges
         ~symbol_type:FileInfo.Class
         ~ids:file_info.FileInfo.classes
-        ~f:(fun name -> Typing_deps.Dep.Class name);
+        ~f:(fun name -> Typing_deps.Dep.Type name);
       make_edges
         ~symbol_type:FileInfo.Fun
         ~ids:file_info.FileInfo.funs
@@ -104,22 +104,25 @@ let get_symbol_edges_for_file_info (file_info : FileInfo.t) : symbol_edge list =
       make_edges
         ~symbol_type:FileInfo.Typedef
         ~ids:file_info.FileInfo.typedefs
-        ~f:(fun name -> Typing_deps.Dep.Class name);
+        ~f:(fun name -> Typing_deps.Dep.Type name);
       make_edges
         ~symbol_type:FileInfo.RecordDef
         ~ids:file_info.FileInfo.record_defs
-        ~f:(fun name -> Typing_deps.Dep.Class name);
+        ~f:(fun name -> Typing_deps.Dep.Type name);
     ]
 
 let file_info_to_dep_set
     ~(detail_level : Detail_level.t)
+    ~(deps_mode : Typing_deps_mode.t)
     (naming_table : Naming_table.t)
     (file_info : FileInfo.t) : Typing_deps.DepSet.t * changed_symbol list =
   List.fold
     (get_symbol_edges_for_file_info file_info)
-    ~init:(Typing_deps.DepSet.empty, [])
+    ~init:(Typing_deps.(DepSet.make deps_mode), [])
     ~f:(fun (dep_set, changed_symbols) symbol_edge ->
-      let symbol_dep = Typing_deps.Dep.make symbol_edge.symbol_dep in
+      let symbol_dep =
+        Typing_deps.(Dep.make (hash_mode deps_mode) symbol_edge.symbol_dep)
+      in
       let dep_set = Typing_deps.DepSet.add dep_set symbol_dep in
       let changed_symbol =
         match detail_level with
@@ -128,15 +131,19 @@ let file_info_to_dep_set
         | Detail_level.High ->
           let outgoing_edges =
             symbol_dep
-            |> Typing_deps.DepSet.singleton
-            |> Typing_deps.add_all_deps
+            |> Typing_deps.DepSet.singleton deps_mode
+            |> Typing_deps.add_all_deps deps_mode
           in
           {
             symbol_edge;
             num_outgoing_edges =
               Some (Typing_deps.DepSet.cardinal outgoing_edges);
             outgoing_files =
-              Some (Naming_table.get_dep_set_files naming_table outgoing_edges);
+              Some
+                (Naming_table.get_64bit_dep_set_files
+                   naming_table
+                   deps_mode
+                   outgoing_edges);
           }
       in
       let changed_symbols = changed_symbol :: changed_symbols in
@@ -148,6 +155,7 @@ dependencies that can be traversed to find the fanout of the changes to those
 symbols. *)
 let calculate_dep_set_for_path
     ~(detail_level : Detail_level.t)
+    ~(deps_mode : Typing_deps_mode.t)
     ~(old_naming_table : Naming_table.t)
     ~(new_naming_table : Naming_table.t)
     ~(path : Relative_path.t)
@@ -155,28 +163,33 @@ let calculate_dep_set_for_path
     Typing_deps.DepSet.t * explanation =
   let (old_deps, old_symbols) =
     Naming_table.get_file_info old_naming_table path
-    |> Option.map ~f:(file_info_to_dep_set ~detail_level old_naming_table)
-    |> Option.value ~default:(Typing_deps.DepSet.empty, [])
+    |> Option.map
+         ~f:(file_info_to_dep_set ~detail_level ~deps_mode old_naming_table)
+    |> Option.value ~default:(Typing_deps.(DepSet.make deps_mode), [])
   in
   let (new_deps, new_symbols) =
     match delta with
     | Naming_sqlite.Modified new_file_info ->
-      file_info_to_dep_set ~detail_level new_naming_table new_file_info
-    | Naming_sqlite.Deleted -> (Typing_deps.DepSet.empty, [])
+      file_info_to_dep_set
+        ~detail_level
+        ~deps_mode
+        new_naming_table
+        new_file_info
+    | Naming_sqlite.Deleted -> (Typing_deps.(DepSet.make deps_mode), [])
   in
 
   (* NB: could be optimized by constructing sets or by not using polymorphic
-  equality. *)
+     equality. *)
   let (modified_symbols, removed_symbols) =
     List.partition_tf old_symbols ~f:(fun old_symbol ->
         List.exists new_symbols ~f:(fun new_symbol ->
-            old_symbol.symbol_edge = new_symbol.symbol_edge))
+            Poly.(old_symbol.symbol_edge = new_symbol.symbol_edge)))
   in
   let added_symbols =
     List.filter new_symbols ~f:(fun new_symbol ->
         not
           (List.exists old_symbols ~f:(fun old_symbol ->
-               old_symbol.symbol_edge = new_symbol.symbol_edge)))
+               Poly.(old_symbol.symbol_edge = new_symbol.symbol_edge))))
   in
 
   let explanation = { removed_symbols; modified_symbols; added_symbols } in
@@ -184,6 +197,7 @@ let calculate_dep_set_for_path
 
 let go
     ~(detail_level : Detail_level.t)
+    ~(deps_mode : Typing_deps_mode.t)
     ~(old_naming_table : Naming_table.t)
     ~(new_naming_table : Naming_table.t)
     ~(file_deltas : Naming_sqlite.file_deltas)
@@ -193,23 +207,24 @@ let go
   let (fanout_dependencies, explanations) =
     Relative_path.Set.fold
       input_files
-      ~init:(Typing_deps.DepSet.empty, Relative_path.Map.empty)
+      ~init:(Typing_deps.(DepSet.make deps_mode), Relative_path.Map.empty)
       ~f:(fun path (fanout_dependencies, explanations) ->
         let delta =
           match Relative_path.Map.find_opt file_deltas path with
           | Some delta -> delta
           | None ->
             failwith
-              ( "Input path %s was not in the map of `file_deltas`. "
+              ("Input path %s was not in the map of `file_deltas`. "
               ^ "This is an internal invariant failure -- please report it. "
               ^ "This means that we can't process it, "
               ^ "as we haven't calculated its `FileInfo.t`. "
               ^ "The caller should have included any elements in `input_files` "
-              ^ "when performing the calculation of `file_deltas`." )
+              ^ "when performing the calculation of `file_deltas`.")
         in
         let (file_deps, explanation) =
           calculate_dep_set_for_path
             ~detail_level
+            ~deps_mode
             ~old_naming_table
             ~new_naming_table
             ~path
@@ -219,12 +234,14 @@ let go
           Typing_deps.DepSet.union fanout_dependencies file_deps
         in
         ( fanout_dependencies,
-          Relative_path.Map.add explanations path explanation ))
+          Relative_path.Map.add explanations ~key:path ~data:explanation ))
   in
 
   (* We have the dependencies -- now traverse the dependency graph to get
-  their dependents. *)
-  let fanout_dependents = Typing_deps.add_all_deps fanout_dependencies in
+     their dependents. *)
+  let fanout_dependents =
+    Typing_deps.add_all_deps deps_mode fanout_dependencies
+  in
 
   let calculate_dep_set_telemetry =
     Telemetry.duration ~start_time calculate_dep_set_telemetry
@@ -233,7 +250,10 @@ let go
   let calculate_fanout_telemetry = Telemetry.create () in
   let start_time = Unix.gettimeofday () in
   let fanout_files =
-    Naming_table.get_dep_set_files new_naming_table fanout_dependents
+    Naming_table.get_64bit_dep_set_files
+      new_naming_table
+      deps_mode
+      fanout_dependents
   in
 
   let calculate_fanout_telemetry =

@@ -16,7 +16,9 @@
 
 #include "hphp/runtime/vm/jit/translator-runtime.h"
 
+#include "hphp/runtime/base/datatype.h"
 #include "hphp/runtime/base/array-common.h"
+#include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/autoload-handler.h"
 #include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/base/collections.h"
@@ -83,7 +85,7 @@ void setNewElem(tv_lval base, TypedValue val) {
 }
 
 void setNewElemVec(tv_lval base, TypedValue val) {
-  HPHP::SetNewElemVecMove(base, &val);
+  HPHP::SetNewElemVec(base, &val);
 }
 
 void setNewElemDict(tv_lval base, TypedValue val) {
@@ -93,17 +95,15 @@ void setNewElemDict(tv_lval base, TypedValue val) {
 //////////////////////////////////////////////////////////////////////
 
 ArrayData* addNewElemVec(ArrayData* vec, TypedValue v) {
-  assertx(vec->hasVanillaPackedLayout());
-  auto out = PackedArray::Append(vec, v);
-  if (vec != out) decRefArr(vec);
-  return out;
+  assertx(vec->isVanillaVec());
+  tvIncRefGen(v);
+  return PackedArray::AppendMove(vec, v);
 }
 
 ArrayData* addNewElemKeyset(ArrayData* keyset, TypedValue v) {
-  assertx(keyset->isKeysetKind());
-  auto out = SetArray::Append(keyset, v);
-  if (keyset != out) decRefArr(keyset);
-  return out;
+  assertx(keyset->isVanillaKeyset());
+  tvIncRefGen(v);
+  return SetArray::AppendMove(keyset, v);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -150,58 +150,6 @@ ArrayData* convObjToKeysetHelper(ObjectData* obj) {
   return a;
 }
 
-ArrayData* convArrLikeToVArrHelper(ArrayData* adIn) {
-  auto a = adIn->toVArray(adIn->cowCheck());
-  assertx(a->isVArray());
-  if (a != adIn) decRefArr(adIn);
-  return a;
-}
-
-ArrayData* convArrLikeToDArrHelper(ArrayData* adIn) {
-  auto a = adIn->toDArray(adIn->cowCheck());
-  assertx(a->isDArray());
-  if (a != adIn) decRefArr(adIn);
-  return a;
-}
-
-ArrayData* convClsMethToVArrHelper(ClsMethDataRef clsmeth) {
-  raiseClsMethConvertWarningHelper("varray");
-  auto a = make_varray(clsmeth->getClsStr(), clsmeth->getFuncStr()).detach();
-  decRefClsMeth(clsmeth);
-  return a;
-}
-
-ArrayData* convClsMethToVecHelper(ClsMethDataRef clsmeth) {
-  raiseClsMethConvertWarningHelper("vec");
-  auto a = make_vec_array(clsmeth->getClsStr(), clsmeth->getFuncStr()).detach();
-  decRefClsMeth(clsmeth);
-  return a;
-}
-
-ArrayData* convClsMethToDArrHelper(ClsMethDataRef clsmeth) {
-  raiseClsMethConvertWarningHelper("darray");
-  auto a = make_darray(
-    0, clsmeth->getClsStr(), 1, clsmeth->getFuncStr()).detach();
-  decRefClsMeth(clsmeth);
-  return a;
-}
-
-ArrayData* convClsMethToDictHelper(ClsMethDataRef clsmeth) {
-  raiseClsMethConvertWarningHelper("dict");
-  auto a = make_dict_array(
-    0, clsmeth->getClsStr(), 1, clsmeth->getFuncStr()).detach();
-  decRefClsMeth(clsmeth);
-  return a;
-}
-
-ArrayData* convClsMethToKeysetHelper(ClsMethDataRef clsmeth) {
-  raiseClsMethConvertWarningHelper("keyset");
-  auto a = make_keyset_array(
-    clsmeth->getClsStr(), clsmeth->getFuncStr()).detach();
-  decRefClsMeth(clsmeth);
-  return a;
-}
-
 double convObjToDblHelper(const ObjectData* o) {
   return o->toDouble();
 }
@@ -232,33 +180,14 @@ StringData* convObjToStrHelper(ObjectData* o) {
   return o->invokeToString().detach();
 }
 
-StringData* convResToStrHelper(ResourceHdr* r) {
-  // toString() returns a counted String; detach() it to move ownership
-  // of the count to the caller
-  return r->data()->o_toString().detach();
-}
-
 void raiseUndefProp(ObjectData* base, const StringData* name) {
   base->raiseUndefProp(name);
 }
 
-void raiseClsMethPropConvertNotice(const TypeConstraint* tc,
-                                   bool isSProp,
-                                   const Class* cls,
-                                   const StringData* name) {
-  raise_notice(
-    "class_meth Compat: %s '%s::%s' declared as type %s, clsmeth "
-    "assigned",
-    isSProp ? "Static property" : "Property",
-    cls->name()->data(),
-    name->data(),
-    tc->displayName().c_str()
-  );
-}
-
-void raiseUndefVariable(StringData* nm) {
-  raise_notice(Strings::UNDEFINED_VARIABLE, nm->data());
-  decRefStr(nm);
+void throwUndefVariable(StringData* nm) {
+  SCOPE_EXIT { decRefStr(nm); };
+  SystemLib::throwUndefinedVariableExceptionObject(
+    folly::sformat("Undefined variable: {}", nm->data()));
 }
 
 void raise_error_sd(const StringData *msg) {
@@ -428,12 +357,6 @@ TypedValue getDefaultIfMissing(TypedValue tv, TypedValue def) {
   return tv.is_init() ? tv : def;
 }
 
-NEVER_INLINE
-TypedValue arrayIdxSSlow(ArrayData* a, StringData* key, TypedValue def) {
-  assertx(a->isPHPArrayType());
-  return getDefaultIfMissing(a->get(key), def);
-}
-
 ALWAYS_INLINE
 TypedValue doScan(const MixedArray* arr, StringData* key, TypedValue def) {
   assertx(key->isStatic());
@@ -449,58 +372,41 @@ TypedValue doScan(const MixedArray* arr, StringData* key, TypedValue def) {
 
 }
 
-TypedValue arrayIdxI(ArrayData* a, int64_t key, TypedValue def) {
-  assertx(a->isPHPArrayType());
-  return getDefaultIfMissing(a->get(key), def);
-}
-
-TypedValue arrayIdxS(ArrayData* a, StringData* key, TypedValue def) {
-  assertx(a->isPHPArrayType());
-  if (!a->isMixedKind()) return arrayIdxSSlow(a, key, def);
-  return dictIdxS(a, key, def);
-}
-
-TypedValue arrayIdxScan(ArrayData* a, StringData* key, TypedValue def) {
-  assertx(a->isPHPArrayType());
-  if (!a->isMixedKind()) return arrayIdxSSlow(a, key, def);
-  return dictIdxScan(a, key, def);
-}
-
 // This helper may also be used when we know we have a MixedArray in the JIT.
 TypedValue dictIdxI(ArrayData* a, int64_t key, TypedValue def) {
-  assertx(a->hasVanillaMixedLayout());
+  assertx(a->isVanillaDict());
   return getDefaultIfMissing(MixedArray::NvGetInt(a, key), def);
 }
 
 // This helper is also used for MixedArrays.
 NEVER_INLINE
 TypedValue dictIdxS(ArrayData* a, StringData* key, TypedValue def) {
-  assertx(a->hasVanillaMixedLayout());
+  assertx(a->isVanillaDict());
   return getDefaultIfMissing(MixedArray::NvGetStr(a, key), def);
 }
 
 // This helper is also used for MixedArrays.
 NEVER_INLINE
 TypedValue dictIdxScan(ArrayData* a, StringData* key, TypedValue def) {
-  assertx(a->hasVanillaMixedLayout());
+  assertx(a->isVanillaDict());
   auto const ad = MixedArray::asMixed(a);
   if (!ad->keyTypes().mustBeStaticStrs()) return dictIdxS(a, key, def);
   return doScan(ad, key, def);
 }
 
 TypedValue keysetIdxI(ArrayData* a, int64_t key, TypedValue def) {
-  assertx(a->isKeysetKind());
+  assertx(a->isVanillaKeyset());
   return getDefaultIfMissing(SetArray::NvGetInt(a, key), def);
 }
 
 TypedValue keysetIdxS(ArrayData* a, StringData* key, TypedValue def) {
-  assertx(a->isKeysetKind());
+  assertx(a->isVanillaKeyset());
   return getDefaultIfMissing(SetArray::NvGetStr(a, key), def);
 }
 
 template <bool isFirst>
 TypedValue vecFirstLast(ArrayData* a) {
-  assertx(a->isVecKind() || a->isPackedKind());
+  assertx(a->isVanillaVec());
   auto const size = a->size();
   if (UNLIKELY(size == 0)) return make_tv<KindOfNull>();
   return PackedArray::NvGetInt(a, isFirst ? 0 : size - 1);
@@ -526,13 +432,29 @@ template TypedValue arrFirstLast<false, true>(ArrayData*);
 TypedValue* getSPropOrNull(const Class* cls,
                            const StringData* name,
                            Class* ctx,
+                           bool* roProp,
                            bool ignoreLateInit,
-                           bool disallowConst) {
+                           bool writeMode,
+                           bool mustBeMutable,
+                           bool mustBeReadOnly,
+                           bool checkROCOW) {
   auto const lookup = ignoreLateInit
     ? cls->getSPropIgnoreLateInit(ctx, name)
     : cls->getSProp(ctx, name);
-  if (disallowConst && UNLIKELY(lookup.constant)) {
+  if (writeMode && UNLIKELY(lookup.constant)) {
     throw_cannot_modify_static_const_prop(cls->name()->data(), name->data());
+  }
+  if (lookup.readonly) {
+    if (checkROCOW && (!isRefcountedType(lookup.val->m_type) ||
+      hasPersistentFlavor(lookup.val->m_type))) {
+      assertx(roProp);
+      *roProp = true;
+    } else if (mustBeMutable || checkROCOW) {
+      throw_must_be_mutable(cls->name()->data(), name->data());
+    }
+  }
+  if (mustBeReadOnly && UNLIKELY(!lookup.readonly)) {
+    throw_cannot_write_non_readonly_prop(cls->name()->data(), name->data());
   }
   if (UNLIKELY(!lookup.val || !lookup.accessible)) return nullptr;
 
@@ -542,9 +464,14 @@ TypedValue* getSPropOrNull(const Class* cls,
 TypedValue* getSPropOrRaise(const Class* cls,
                             const StringData* name,
                             Class* ctx,
+                            bool* roProp,
                             bool ignoreLateInit,
-                            bool disallowConst) {
-  auto sprop = getSPropOrNull(cls, name, ctx, ignoreLateInit, disallowConst);
+                            bool writeMode,
+                            bool mustBeMutable,
+                            bool mustBeReadOnly,
+                            bool checkROCOW) {
+  auto sprop = getSPropOrNull(cls, name, ctx, roProp, ignoreLateInit, writeMode,
+                              mustBeMutable, mustBeReadOnly, checkROCOW);
   if (UNLIKELY(!sprop)) {
     raise_error("Invalid static property access: %s::%s",
                 cls->name()->data(), name->data());
@@ -599,10 +526,6 @@ int64_t switchStringHelper(StringData* s, int64_t base, int64_t nTargets) {
       case KindOfDict:
       case KindOfPersistentKeyset:
       case KindOfKeyset:
-      case KindOfPersistentDArray:
-      case KindOfDArray:
-      case KindOfPersistentVArray:
-      case KindOfVArray:
       case KindOfObject:
       case KindOfResource:
       case KindOfRFunc:
@@ -661,7 +584,8 @@ const Func* loadClassCtor(Class* cls, Class* ctx) {
   const Func* f = cls->getCtor();
   if (UNLIKELY(!(f->attrs() & AttrPublic))) {
     UNUSED auto func =
-      lookupMethodCtx(cls, nullptr, ctx, CallType::CtorMethod, true);
+      lookupMethodCtx(cls, nullptr, ctx, CallType::CtorMethod,
+                      MethodLookupErrorOptions::RaiseOnNotFound);
     assertx(func == f);
   }
   return f;
@@ -670,7 +594,8 @@ const Func* loadClassCtor(Class* cls, Class* ctx) {
 const Func* lookupClsMethodHelper(const Class* cls, const StringData* methName,
                                   ObjectData* obj, const Class* ctx) {
   const Func* f;
-  auto const res = lookupClsMethod(f, cls, methName, obj, ctx, true);
+  auto const res = lookupClsMethod(f, cls, methName, obj, ctx,
+                                   MethodLookupErrorOptions::RaiseOnNotFound);
 
   if (res == LookupResult::MethodFoundWithThis) {
     // Handled by interpreter.
@@ -687,60 +612,12 @@ const Func* lookupClsMethodHelper(const Class* cls, const StringData* methName,
 
 //////////////////////////////////////////////////////////////////////
 
-namespace {
-
-std::string formatArgumentErrMsg(const Func* func, const char* amount,
-                                 uint32_t expected, uint32_t got) {
-  return folly::sformat(
-    "{}() expects {} {} parameter{}, {} given",
-    func->fullName()->data(),
-    amount,
-    expected,
-    expected == 1 ? "" : "s",
-    got
-  );
+TypedValue lookupClsCns(const Class* cls, const StringData* cnsName) {
+  return cls->clsCnsGet(cnsName);
 }
 
-}
-
-void throwMissingArgument(const Func* func, int got) {
-  auto const expected = func->numRequiredParams();
-  assertx(got < expected);
-  auto const amount = expected < func->numParams() ? "at least" : "exactly";
-  auto const errMsg = formatArgumentErrMsg(func, amount, expected, got);
-  SystemLib::throwRuntimeExceptionObject(Variant(errMsg));
-}
-
-void raiseTooManyArguments(const Func* func, int got) {
-  assertx(!func->hasVariadicCaptureParam());
-
-  if (!RuntimeOption::EvalWarnOnTooManyArguments && !func->isCPPBuiltin()) {
-    return;
-  }
-
-  auto const total = func->numNonVariadicParams();
-  assertx(got > total);
-  auto const amount = func->numRequiredParams() < total ? "at most" : "exactly";
-  auto const errMsg = formatArgumentErrMsg(func, amount, total, got);
-
-  if (RuntimeOption::EvalWarnOnTooManyArguments > 1 || func->isCPPBuiltin()) {
-    SystemLib::throwRuntimeExceptionObject(Variant(errMsg));
-  } else {
-    raise_warning(errMsg);
-  }
-}
-
-void raiseTooManyArgumentsPrologue(const Func* func, ArrayData* unpackArgs) {
-  SCOPE_EXIT { decRefArr(unpackArgs); };
-  if (unpackArgs->empty()) return;
-  auto const got = func->numNonVariadicParams() + unpackArgs->size();
-  raiseTooManyArguments(func, got);
-}
-
-//////////////////////////////////////////////////////////////////////
-
-Class* lookupClsRDS(const StringData* name) {
-  return NamedEntity::get(name)->getCachedClass();
+int lookupClsCtxCns(const Class* cls, const StringData* cnsName) {
+  return cls->clsCtxCnsGet(cnsName, true)->value();
 }
 
 bool methodExistsHelper(Class* cls, StringData* meth) {
@@ -796,7 +673,7 @@ void throwAsTypeStructExceptionHelper(ArrayData* a, TypedValue c) {
     throwTypeStructureDoesNotMatchTVException(
       givenType, expectedType, errorKey);
   }
-  raise_error("Invalid bytecode sequence: Instruction must throw");
+  always_assert(false && "Invalid bytecode sequence: Instruction must throw");
 }
 
 ArrayData* errorOnIsAsExpressionInvalidTypesHelper(ArrayData* a) {
@@ -808,6 +685,77 @@ ArrayData* recordReifiedGenericsAndGetTSList(ArrayData* tsList) {
   auto const mangledName = makeStaticString(mangleReifiedGenericsName(tsList));
   auto result = addToReifiedGenericsTable(mangledName, tsList);
   return result;
+}
+
+const StaticString s_classname("classname");
+const StaticString s_kind("kind");
+const StaticString s_type_structure_non_existant_class(
+  "hh\\__internal\\type_structure_non_existant_class");
+
+ArrayData* loadClsTypeCnsHelper(
+  const Class* cls, const StringData* name, bool no_throw_on_undefined
+) {
+  auto const getFake = [&] {
+    DictInit arr(2);
+    arr.set(s_kind,
+            Variant(static_cast<uint8_t>(TypeStructure::Kind::T_class)));
+    arr.set(s_classname,
+            Variant(s_type_structure_non_existant_class));
+    auto result = arr.create();
+    ArrayData::GetScalarArray(&result);
+    return result;
+  };
+  TypedValue typeCns;
+  if (no_throw_on_undefined) {
+    try {
+      typeCns = cls->clsCnsGet(name, ConstModifiers::Kind::Type);
+    } catch (Exception& e) {
+      return getFake();
+    } catch (Object& e) {
+      return getFake();
+    }
+  } else {
+    typeCns = cls->clsCnsGet(name, ConstModifiers::Kind::Type);
+  }
+  if (typeCns.m_type == KindOfUninit) {
+    if (no_throw_on_undefined) {
+      return getFake();
+    } else {
+      if (cls->hasTypeConstant(name, true)) {
+        raise_error("Type constant %s::%s is abstract",
+                    cls->name()->data(), name->data());
+      } else {
+        raise_error("Non-existent type constant %s::%s",
+                    cls->name()->data(), name->data());
+      }
+    }
+  }
+
+  assertx(isArrayLikeType(typeCns.m_type));
+  assertx(typeCns.m_data.parr->isDictType());
+  assertx(typeCns.m_data.parr->isStatic());
+  return typeCns.m_data.parr;
+}
+
+StringData* loadClsTypeCnsClsNameHelper(const Class* cls,
+                                        const StringData* name) {
+  auto const ts = loadClsTypeCnsHelper(cls, name, false);
+  auto const classname_field = ts->get(s_classname.get());
+  if (classname_field.is_init()) {
+    assertx(isStringType(classname_field.type()));
+    return classname_field.val().pstr;
+  }
+  raise_error("Type constant %s::%s does not have a 'classname' field",
+              cls->name()->data(), name->data());
+}
+
+
+void raiseCoeffectsCallViolationHelper(const Func* callee,
+                                       uint64_t providedCoeffects,
+                                       uint64_t requiredCoeffects) {
+  raiseCoeffectsCallViolation(callee,
+                              RuntimeCoeffects::fromValue(providedCoeffects),
+                              RuntimeCoeffects::fromValue(requiredCoeffects));
 }
 
 void throwOOBException(TypedValue base, TypedValue key) {
@@ -858,16 +806,10 @@ TypedValue incDecElem(tv_lval base, TypedValue key, IncDecOp op) {
 }
 
 tv_lval elemVecIU(tv_lval base, int64_t key) {
-  assertx(tvIsVecOrVArray(base));
+  assertx(tvIsVec(base));
   return ElemUVec<KeyType::Int>(base, key);
 }
 
-}
-
-//////////////////////////////////////////////////////////////////////
-
-uintptr_t tlsBaseNoInline() {
-  return tlsBase();
 }
 
 //////////////////////////////////////////////////////////////////////

@@ -7,32 +7,29 @@
  *
  *)
 
-open Hh_core
+open Hh_prelude
 open Delta
 open Typing_defs
-open Typing_env_types
 open Aast
 module ETast = Tast
 module Nast = Aast
 module C = Typing_continuations
-module Env = Typing_env
 module Phase = Typing_phase
 module Partial = Partial_provider
 
-(** This happens, for example, when there are gotos *)
 exception Cant_check
 
 exception Not_implemented
 
 let expect_ty_equal
-    env ((pos, ty) : Pos.t * locl_ty) (expected_ty : locl_phase ty_) =
+    env (pos : Pos.t) (ty : locl_ty) (expected_ty : locl_phase ty_) =
   let expected_ty = mk (Reason.none, expected_ty) in
   if not @@ ty_equal ~normalize_lists:true ty expected_ty then
     let actual_ty = Typing_print.debug env ty in
     let expected_ty = Typing_print.debug env expected_ty in
     Errors.unexpected_ty_in_tast pos ~actual_ty ~expected_ty
 
-let refine ((_p, cond_ty), cond_expr) _cond_is_true gamma =
+let refine (cond_ty, _, cond_expr) _cond_is_true gamma =
   let cond_ty_ = get_node cond_ty in
   let is_refinement_fun fun_name =
     match fun_name with
@@ -49,11 +46,13 @@ let refine ((_p, cond_ty), cond_expr) _cond_is_true gamma =
     | _ -> false
   in
   match cond_expr with
-  | Call ((_, Id (_, id)), [], _, None) when is_refinement_fun id ->
+  | Call ((_, _, Id (_, id)), [], _, None) when is_refinement_fun id ->
     raise Not_implemented
   | Call
-      ((_, Class_const ((_, CI (_, "\\HH\\Shapes")), (_, "keyExists"))), _, _, _)
-    ->
+      ( (_, _, Class_const ((_, _, CI (_, "\\HH\\Shapes")), (_, "keyExists"))),
+        _,
+        _,
+        _ ) ->
     raise Not_implemented
   | Is _
   | As _
@@ -65,10 +64,10 @@ let refine ((_p, cond_ty), cond_expr) _cond_is_true gamma =
   | _ when equal_locl_ty_ cond_ty_ (Tprim Nast.Tbool) -> gamma
   | _ -> raise Not_implemented
 
-let check_assign (_lty, lvalue) ty gamma =
+let check_assign (_lty, _, lvalue) p ty gamma =
   match lvalue with
   | Lvar (_, lid) ->
-    let gamma_updates = add_to_gamma lid ty empty_gamma in
+    let gamma_updates = add_to_gamma lid p ty empty_gamma in
     (gamma, gamma_updates)
   | _ -> raise Not_implemented
 
@@ -82,8 +81,8 @@ let check_assign (_lty, lvalue) ty gamma =
  * TODO write a proper accumulator visitor `accum` inheriting from iter and
  * using an `acc` mutable variable, then here inherit from `accum` instead of
  * `iter`. *)
-let check_expr env (expr : ETast.expr) (gamma : gamma) : gamma =
-  let expect_ty_equal = expect_ty_equal env in
+let check_expr env ((_, p, _) as expr : ETast.expr) (gamma : gamma) : gamma =
+  let expect_ty_equal = expect_ty_equal env p in
   let expr_checker =
     object (self)
       inherit [_] Aast.iter as super
@@ -92,7 +91,7 @@ let check_expr env (expr : ETast.expr) (gamma : gamma) : gamma =
 
       method gamma () = gamma
 
-      method! on_expr env ((ty, expr) as texpr) =
+      method! on_expr env ((ty, _, expr) as texpr) =
         match expr with
         | True
         | False ->
@@ -109,10 +108,10 @@ let check_expr env (expr : ETast.expr) (gamma : gamma) : gamma =
           expect_ty_equal ty expected_ty
         | _ -> (* TODO *) super#on_expr env texpr
 
-      method! on_Binop env bop expr1 ((ty2, _) as expr2) =
+      method! on_Binop env bop expr1 ((ty2, p2, _) as expr2) =
         match bop with
         | Ast_defs.Eq None ->
-          let (gamma_, updates) = check_assign expr1 ty2 gamma in
+          let (gamma_, updates) = check_assign expr1 p2 ty2 gamma in
           gamma <- gamma_;
           self#on_expr env expr2;
           gamma <- update_gamma gamma updates
@@ -132,7 +131,7 @@ let check_expr env (expr : ETast.expr) (gamma : gamma) : gamma =
 
       method! on_Class_const env class_id const_name =
         match (class_id, const_name) with
-        | ((_, CI (_, "\\HH\\Shapes")), (_, "removeKey")) ->
+        | ((_, _, CI (_, "\\HH\\Shapes")), (_, "removeKey")) ->
           raise Not_implemented
         | _ -> super#on_Class_const env class_id const_name
 
@@ -179,6 +178,7 @@ let rec check_stmt env (stmt : ETast.stmt) (gamma : gamma) : delta =
     let gamma2 = refine cond false gamma in
     let delta2 = check_block env block2 gamma2 in
     union env delta1 delta2
+  | Yield_break
   | Do _
   | While _
   | For _
@@ -188,8 +188,6 @@ let rec check_stmt env (stmt : ETast.stmt) (gamma : gamma) : delta =
   | Using _
   | Awaitall _ ->
     raise Not_implemented
-  | Goto _
-  | GotoLabel _
   | Block _
   | Markup _
   | AssertEnv _ ->
@@ -220,26 +218,26 @@ let check_func_body env (body : ETast.func_body) gamma =
 let localize env hint =
   match hint with
   | None -> failwith "There should be a hint in strict mode."
-  | Some decl_ty ->
-    let ty = Decl_hint.hint env.decl_env decl_ty in
-    let (_env, ty) = Phase.localize ~ety_env:(Phase.env_with_self env) env ty in
-    ty
+  | Some hint ->
+    let pos = fst hint in
+    let (_env, ty) =
+      Phase.localize_hint_no_subst env ~ignore_errors:false hint
+    in
+    (pos, ty)
 
 let gamma_from_params env (params : ETast.fun_param list) =
   let add_param_to_gamma gamma param =
     if not (List.is_empty param.param_user_attributes) then
       raise Not_implemented;
     let name = make_local_id param.param_name in
-    let ty = localize env (hint_of_type_hint param.param_type_hint) in
-    (* TODO can we avoid this? *)
-    let reas_ty_to_pos_reas_ty ty = (get_pos ty, ty) in
-    let ty = reas_ty_to_pos_reas_ty ty in
-    add_to_gamma name ty gamma
+    let (pos, ty) = localize env @@ hint_of_type_hint param.param_type_hint in
+    add_to_gamma name pos ty gamma
   in
   List.fold ~init:empty_gamma ~f:add_param_to_gamma params
 
-let check_fun env (f : ETast.fun_def) =
-  if not (Partial.should_check_error f.f_mode 4291) then
+let check_fun env (fd : ETast.fun_def) =
+  let f = fd.fd_fun in
+  if not (Partial.should_check_error fd.fd_mode 4291) then
     ()
   else
     let gamma = gamma_from_params env f.f_params in

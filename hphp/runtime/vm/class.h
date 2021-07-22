@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VM_CLASS_H_
-#define incl_HPHP_VM_CLASS_H_
+#pragma once
 
 #include "hphp/runtime/base/attr.h"
 #include "hphp/runtime/base/datatype.h"
@@ -68,6 +67,7 @@ struct Class;
 struct ClassInfo;
 struct EnumValues;
 struct Func;
+struct RuntimeCoeffects;
 struct StringData;
 struct c_Awaitable;
 
@@ -90,10 +90,16 @@ struct StaticPropData {
   TypedValue val;
 };
 
-enum class ClsCnsLookup {
-  NoTypes,
-  IncludeTypes,
-  IncludeTypesPartial
+/*
+ * Class kinds---classes, interfaces, traits, and enums.
+ *
+ * "Normal class" refers to any classes that are not interfaces, traits, enums.
+ */
+enum class ClassKind {
+  Class = AttrNone,
+  Interface = AttrInterface,
+  Trait = AttrTrait,
+  Enum = AttrEnum
 };
 
 using ClassPtr = AtomicSharedLowPtr<Class>;
@@ -102,11 +108,7 @@ using ClassPtr = AtomicSharedLowPtr<Class>;
 // compatible signatures.
 using ObjReleaseFunc = BuiltinDtorFunction;
 
-using ObjectProps = std::conditional_t<
-  wide_tv_val,
-  tv_layout::Tv7Up,
-  tv_layout::TvArray
->;
+using ObjectProps = tv_layout::Tv7Up;
 
 /*
  * Class represents the full definition of a user class in a given request
@@ -226,8 +228,19 @@ struct Class : AtomicCountable {
     StringData* pointedClsName;
 #endif
 
-    bool isAbstract() const { return val.constModifiers().isAbstract(); }
-    bool isType()     const { return val.constModifiers().isType(); }
+    bool isAbstractAndUninit() const {
+      return val.constModifiers().isAbstract() && !val.is_init() && val.is_const_val_missing();
+    }
+    bool isAbstract() const {
+      return val.constModifiers().isAbstract();
+    }
+    void concretize() {
+      // Type constant is abstract and has a default
+      assertx(isAbstract() && val.is_init());
+      val.constModifiers().setIsAbstract(false);
+    }
+
+    ConstModifiers::Kind kind() const { return val.constModifiers().kind(); }
 
     StringData* getPointedClsName() const {
 #ifndef USE_LOWPTR
@@ -376,11 +389,12 @@ struct Class : AtomicCountable {
   /*
    * Container types.
    */
-  using MethodMap         = FixedStringMap<Slot, false, Slot>;
-  using MethodMapBuilder  = FixedStringMapBuilder<Func*, Slot, false, Slot>;
-  using InterfaceMap      = IndexedStringMap<LowPtr<Class>, true, int>;
+  using MethodMap         = FixedStringMap<Slot, Slot>;
+  using MethodMapBuilder  = FixedStringMapBuilder<Func*, Slot, Slot>;
+  using InterfaceMap      = IndexedStringMap<LowPtr<Class>, int>;
+  using IncludedEnumMap   = IndexedStringMap<LowPtr<Class>, int>;
   using RequirementMap    = IndexedStringMap<
-                              const PreClass::ClassRequirement*, true, int>;
+                              const PreClass::ClassRequirement*, int>;
   using TraitAliasVec     = vm_vector<PreClass::TraitAliasRule::NamePair>;
 
   /*
@@ -464,6 +478,13 @@ private:
    * case we bypassed the zombie state).
    */
   void releaseRefs();
+
+  /*
+   * Unbind any static prop RDS handles. Doing so before destroying a Class is
+   * necessary because we identify and dedupe these handles by a Symbol that
+   * includes the Class* as part of the key.
+   */
+  void releaseSProps();
 
 public:
   /*
@@ -566,6 +587,11 @@ public:
   Class* parent() const;
 
   /*
+   * A hash for this class that will remain constant across process restarts.
+   */
+  size_t stableHash() const;
+
+  /*
    * Uncounted String names of this class and of its parent.
    */
   StrNR nameStr() const;
@@ -612,7 +638,7 @@ public:
   /*
    * If the class is called dynamically should we sample the calls?
    */
-  folly::Optional<int64_t> dynConstructSampleRate() const;
+  Optional<int64_t> dynConstructSampleRate() const;
 
 
   /////////////////////////////////////////////////////////////////////////////
@@ -774,6 +800,19 @@ public:
   Slot lookupReifiedInitProp() const;
 
   /*
+   * Returns whether this closure class that uses coeffects prop
+   * to carry its coeffects
+   * Requires this to be a closure class
+   */
+  bool hasClosureCoeffectsProp() const;
+
+  /*
+   * Returns the coeffects prop's slot.
+   * @requires: hasClosureCoeffectsProp()
+   */
+  Slot getCoeffectsProp() const;
+
+  /*
    * The RepoAuthType of the declared instance property or static property at
    * `index' in the corresponding table.
    */
@@ -795,19 +834,6 @@ public:
    * Whether this class forbids the use of dynamic (non-declared) properties.
    */
   bool forbidsDynamicProps() const;
-
-  /*
-   * Return true, and set the m_serialized flag, iff this Class hasn't
-   * been serialized yet (see prof-data-serialize.cpp).
-   *
-   * Not thread safe - caller is responsible for any necessary locking.
-   */
-  bool serialize() const;
-
-  /*
-   * Return true if this class was already serialized.
-   */
-  bool wasSerialized() const;
 
   /////////////////////////////////////////////////////////////////////////////
   // Property initialization.                                           [const]
@@ -914,7 +940,6 @@ public:
    */
   rds::Handle sPropHandle(Slot index) const;
   rds::Link<StaticPropData, rds::Mode::NonNormal> sPropLink(Slot index) const;
-  rds::Link<bool, rds::Mode::NonLocal> sPropInitLink() const;
 
   /*
    * Get the PropInitVec for the current request.
@@ -947,12 +972,14 @@ public:
     Slot slot;
     bool accessible;
     bool constant;
+    bool readonly;
   };
 
   struct PropSlotLookup {
     Slot slot;
     bool accessible;
     bool constant;
+    bool readonly;
   };
 
   /*
@@ -1020,16 +1047,25 @@ public:
                        bool includeAbs = false) const;
 
   /*
+   * Returns the runtime coeffect value of the class context constant.
+   * When failIsFatal is set, raises an error if the context constant
+   * is not defined, is abstract or is a type/value constant.
+   */
+  Optional<RuntimeCoeffects>
+  clsCtxCnsGet(const StringData* name, bool failIsFatal) const;
+
+  /*
    * Look up the actual value of a class constant.  Perform dynamic
    * initialization if necessary.
    *
-   * Return a TypedValue containing KindOfUninit if this class has no such constant.
+   * If resolve not is set, then returns an unresolved structure.
    *
-   * The returned TypedValue is guaranteed not to hold a reference counted object (it
-   * may, however, be KindOfString for a static string).
+   * Return a TypedValue containing KindOfUninit if this class has no
+   * such constant.
    */
   TypedValue clsCnsGet(const StringData* clsCnsName,
-                 ClsCnsLookup what = ClsCnsLookup::NoTypes) const;
+                       ConstModifiers::Kind what = ConstModifiers::Kind::Value,
+                       bool resolve = true) const;
 
   /*
    * Look up a class constant's TypedValue if it doesn't require dynamic
@@ -1044,22 +1080,16 @@ public:
    * need to run 86cinit code to determine their value at runtime.
    */
   const TypedValue* cnsNameToTV(const StringData* clsCnsName,
-                          Slot& clsCnsInd,
-                          ClsCnsLookup what = ClsCnsLookup::NoTypes) const;
-
-  /*
-   * Provide the current runtime type of this class constant.
-   *
-   * This has predictive value for the translator.
-   */
-  DataType clsCnsType(const StringData* clsCnsName) const;
+                                Slot& clsCnsInd,
+                                ConstModifiers::Kind what
+                                  = ConstModifiers::Kind::Value) const;
 
   /*
    * Get the slot for a constant with name, which can optionally be abstract and
    * either must be or must not be a type constant.
    */
-  Slot clsCnsSlot(
-    const StringData* name, bool wantTypeCns, bool allowAbstract) const;
+  Slot clsCnsSlot(const StringData* name, ConstModifiers::Kind want,
+                  bool allowAbstract) const;
 
 
   /////////////////////////////////////////////////////////////////////////////
@@ -1075,6 +1105,12 @@ public:
    * traits.
    */
   const InterfaceMap& allInterfaces() const;
+
+  /*
+   * All enums directly or transitively included by this enum
+   */
+  const bool hasIncludedEnums() const;
+  const IncludedEnumMap& allIncludedEnums() const;
 
   /*
    * Start and end offsets in m_methods of methods that come from used traits.
@@ -1166,6 +1202,11 @@ public:
   // Closure subclasses.
 
   /*
+   * Is this a subclass of Closure?
+   */
+  bool isClosureClass() const;
+
+  /*
    * Is this a scoped subclass of Closure?
    */
   bool isScopedClosure() const;
@@ -1250,10 +1291,9 @@ public:
   // Avoiding adding methods to this section.
 
   /*
-   * Whether this class can be made persistent---i.e., if AttrPersistent is set
-   * and all parents, interfaces, and traits for this class are persistent.
+   * Verify that the AttrPersistent is set correctly.
    */
-  bool verifyPersistent() const;
+  void verifyPersistence() const;
 
   /*
    * Set the instance bits on this class.
@@ -1270,7 +1310,7 @@ public:
   /*
    * Get the underlying enum base type if this is an enum.
    *
-   * A return of folly::none represents the `mixed' type.
+   * A return of std::nullopt represents the `mixed' type.
    */
   MaybeDataType enumBaseTy() const;
 
@@ -1332,6 +1372,80 @@ public:
   }
 
   /////////////////////////////////////////////////////////////////////////////
+  // Lookup.                                                           [static]
+
+  /*
+   * Define a new Class from `preClass' for this request.
+   *
+   * Raises a fatal error in various conditions (e.g., Class already defined,
+   * parent Class not defined, etc.) if `failIsFatal' is set).
+   *
+   * Also always fatals if a type alias already exists in this request with the
+   * same name as that of `preClass', regardless of the value of `failIsFatal'.
+   */
+  static Class* def(const PreClass* preClass, bool failIsFatal = true);
+
+  /*
+   * Define a closure from preClass. Closures have unique names, so unlike
+   * defClass, this is a one time operation.
+   */
+  static Class* defClosure(const PreClass* preClass);
+
+  /*
+   * Look up the Class in this request with name `name', or with the name
+   * mapped to the NamedEntity `ne'.
+   *
+   * Return nullptr if the class is not yet defined in this request.
+   */
+  static Class* lookup(const NamedEntity* ne);
+  static Class* lookup(const StringData* name);
+
+  /*
+   * Finds a class which is guaranteed to be unique in the specified
+   * context. The class has not necessarily been loaded in the
+   * current request.
+   *
+   * Return nullptr if there is no such class.
+   */
+  static const Class* lookupUniqueInContext(const NamedEntity* ne,
+                                            const Class* ctx,
+                                            const Unit* unit);
+  static const Class* lookupUniqueInContext(const StringData* name,
+                                            const Class* ctx,
+                                            const Unit* unit);
+
+  /*
+   * Look up, or autoload and define, the Class in this request with name
+   * `name', or with the name mapped to the NamedEntity `ne'.
+   *
+   * @requires: NamedEntity::get(name) == ne
+   */
+  static Class* load(const NamedEntity* ne, const StringData* name);
+  static Class* load(const StringData* name);
+
+  /*
+   * Autoload the Class with name `name' and bind it `ne' in this request.
+   *
+   * @requires: NamedEntity::get(name) == ne
+   */
+  static Class* loadMissing(const NamedEntity* ne, const StringData* name);
+
+  /*
+   * Same as lookupClass(), but if `tryAutoload' is set, call and return
+   * loadMissingClass().
+   */
+  static Class* get(const NamedEntity* ne, const StringData* name,
+                    bool tryAutoload);
+  static Class* get(const StringData* name, bool tryAutoload);
+
+  /*
+   * Whether a Class with name `name' of type `kind' has been defined in this
+   * request, autoloading it if `autoload' is set.
+   */
+  static bool exists(const StringData* name,
+                          bool autoload, ClassKind kind);
+
+  /////////////////////////////////////////////////////////////////////////////
   // ExtraData.
 
 private:
@@ -1356,6 +1470,8 @@ private:
      * methods are present.
      */
     rds::Handle* m_handles{nullptr};
+
+    VMCompactVector<std::pair<rds::Symbol, rds::Handle>> m_symbols;
   };
 
   struct ExtraData {
@@ -1453,6 +1569,16 @@ private:
      * check.
      */
     mutable rds::Link<bool, rds::Mode::Normal> m_checkedPropInitialValues;
+
+    /*
+     * List of enums included by an enum class
+     */
+    mutable IncludedEnumMap m_includedEnums;
+
+    /*
+     * List of enums included directly by this class
+     */
+    mutable VMCompactVector<ClassPtr> m_declIncludedEnums;
   };
 
   /*
@@ -1464,9 +1590,9 @@ private:
   // Internal types.
 
 private:
-  using ConstMap = IndexedStringMap<Const,true,Slot>;
-  using PropMap  = IndexedStringMap<Prop,true,Slot>;
-  using SPropMap = IndexedStringMap<SProp,true,Slot>;
+  using ConstMap = IndexedStringMap<Const,Slot>;
+  using PropMap  = IndexedStringMap<Prop,Slot>;
+  using SPropMap = IndexedStringMap<SProp,Slot>;
 
   /////////////////////////////////////////////////////////////////////////////
   // Private methods.
@@ -1518,6 +1644,7 @@ private:
                              Slot& staticSerializationIdx,
                              std::vector<bool>& staticSerializationVisited);
   void addTraitPropInitializers(std::vector<const Func*>&, Attr which);
+  void importTraitConsts(ConstMap::Builder& constMap);
 
   void checkInterfaceMethods();
   void checkInterfaceConstraints();
@@ -1536,6 +1663,7 @@ private:
   void setFuncVec(MethodMapBuilder& builder);
   void setRequirements();
   void setEnumType();
+  void setIncludedEnums();
   void checkRequirementConstraints() const;
   void raiseUnsatisfiedRequirement(const PreClass::ClassRequirement*) const;
   void setNativeDataInfo();
@@ -1550,6 +1678,8 @@ private:
   void initLSBMemoHandles();
   void checkPropTypeRedefinitions() const;
   void checkPropInitialValues() const;
+
+  void setupSProps();
 
   /////////////////////////////////////////////////////////////////////////////
   // Friendship.
@@ -1663,6 +1793,7 @@ private:
    * reinitialized.
    */
   mutable rds::Link<bool, rds::Mode::NonLocal> m_sPropCacheInit;
+
   mutable rds::Link<
     StaticPropData,
     rds::Mode::NonNormal
@@ -1716,10 +1847,6 @@ private:
 
   bool m_needsInitThrowable : 1;
   bool m_hasDeepInitProps : 1;
-  /*
-   * Whether this class has been serialized yet.
-   */
-  mutable bool m_serialized : 1;
 
   // NB: 7 bits available here (in USE_LOWPTR builds).
 
@@ -1747,7 +1874,7 @@ private:
    * Indexed by the _physical_ index of the property within an object, not its
    * logical Slot.
    */
-  PropInitVec m_declPropInit;
+  mutable PropInitVec m_declPropInit;
 
   MaybeDataType m_enumBaseTy;
   /*
@@ -1793,23 +1920,13 @@ extern Mutex g_classesMutex;
 
 ///////////////////////////////////////////////////////////////////////////////
 
-/*
- * Class kinds---classes, interfaces, traits, and enums.
- *
- * "Normal class" refers to any classes that are not interfaces, traits, enums.
- */
-enum class ClassKind {
-  Class = AttrNone,
-  Interface = AttrInterface,
-  Trait = AttrTrait,
-  Enum = AttrEnum
-};
-
 Attr classKindAsAttr(ClassKind kind);
 
 bool isTrait(const Class* cls);
 bool isInterface(const Class* cls);
 bool isEnum(const Class* cls);
+bool isEnumClass(const Class* cls);
+bool isAnyEnum(const Class* cls);
 bool isAbstract(const Class* cls);
 bool isNormalClass(const Class* cls);
 
@@ -1829,11 +1946,11 @@ bool classHasPersistentRDS(const Class* cls);
  */
 const StringData* classToStringHelper(const Class* cls);
 
+std::vector<Class*> prioritySerializeClasses();
+
 ///////////////////////////////////////////////////////////////////////////////
 }
 
 #define incl_HPHP_VM_CLASS_INL_H_
 #include "hphp/runtime/vm/class-inl.h"
 #undef incl_HPHP_VM_CLASS_INL_H_
-
-#endif // incl_HPHP_VM_CLASS_H_

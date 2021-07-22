@@ -18,7 +18,6 @@ type env = {
    * until we can properly set up saved states to surface parse errors during
    * typechecking properly. *)
   show_all_errors: bool;
-  lower_coroutines: bool;
   fail_open: bool;
   parser_options: ParserOptions.t;
 }
@@ -30,10 +29,10 @@ type 'aast result_ = {
   lowpri_errors: (Pos.t * string) list;
   syntax_errors: Full_fidelity_syntax_error.t list;
   errors: Errors.error list;
-  lint_errors: Relative_path.t Lint.t list;
+  lint_errors: Pos.t Lint.t list;
 }
 
-type result = (Pos.t, unit, unit, unit) Aast.program result_
+type result = (unit, unit, unit) Aast.program result_
 
 type tast_result = Tast.program result_
 

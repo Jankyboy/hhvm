@@ -26,8 +26,6 @@
 #include "hphp/util/arch.h"
 #include "hphp/util/assertions.h"
 
-#include <folly/Optional.h>
-
 #include <cstdlib>
 
 TRACE_SET_MOD(vasm);
@@ -55,7 +53,6 @@ struct Env {
 bool isMultiword(int64_t imm) {
   switch (arch()) {
   case Arch::X64:
-  case Arch::PPC64:
     break;
   case Arch::ARM:
     uint64_t val = std::abs(imm);
@@ -66,17 +63,17 @@ bool isMultiword(int64_t imm) {
 }
 
 // candidate around +/- uimm12
-folly::Optional<int> reuseCandidate(Env& env, int64_t p, Vreg& reg) {
+Optional<int> reuseCandidate(Env& env, int64_t p, Vreg& reg) {
   for (auto const& elem : env.immStateVec) {
     if (!elem.base.isValid()) continue;
     int64_t q = elem.val.q();
     if (((p >= q) && (p < (q + 4095))) ||
         ((p < q) && (q < (p + 4095)))) {
       reg = elem.base;
-      return folly::make_optional(safe_cast<int>(p - q));
+      return make_optional(safe_cast<int>(p - q));
     }
   }
-  return folly::none;
+  return std::nullopt;
 }
 
 template <typename Inst>

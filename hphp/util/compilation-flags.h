@@ -13,10 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_COMPILATION_FLAGS_H_
-#define incl_HPHP_COMPILATION_FLAGS_H_
-
-#include "hphp/util/wide-tv-val-def.h"
+#pragma once
 
 namespace HPHP {
 
@@ -57,22 +54,6 @@ constexpr bool use_tsan =
 #endif
   ;
 
-constexpr bool one_bit_refcount =
-#ifdef ONE_BIT_REFCOUNT
-  true
-#else
-  false
-#endif
-  ;
-
-constexpr bool wide_tv_val =
-#ifdef HHVM_WIDE_TV_VAL
-  true
-#else
-  false
-#endif
-  ;
-
 constexpr bool facebook =
 #ifdef FACEBOOK
   true
@@ -85,4 +66,3 @@ constexpr bool facebook =
 
 }
 
-#endif

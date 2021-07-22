@@ -14,13 +14,12 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_ACT_REC_H_
-#define incl_HPHP_ACT_REC_H_
+#pragma once
 
 #include "hphp/runtime/base/types.h"
 #include "hphp/runtime/base/typed-value.h"
+#include "hphp/runtime/vm/coeffects.h"
 #include "hphp/runtime/vm/func.h"
-#include "hphp/runtime/vm/rx.h"
 #include "hphp/util/compact-tagged-ptrs.h"
 
 /*
@@ -61,36 +60,21 @@ struct Unit;
  * state.
  */
 struct ActRec {
-#if defined(__powerpc64__)
-  ActRec* m_sfp;         // Previous hardware frame pointer/ActRec.
-  uint32_t m_savedCR;    // PPC64's sign flags (CR)
-  uint32_t m_reserved;   // Reserved word as on ABI
-  uint64_t m_savedRip;   // In-TC address to return to.
-  uint64_t m_savedToc;   // TOC save doubleword
-#else // X64 style
   // This pair of uint64_t's must be the first two elements in the structure
   // so that the pointer to the ActRec can also be used for RBP chaining.
   // Note that ActRecs are also native frames, so this is an implicit machine
   // dependency.
   ActRec* m_sfp;       // Previous hardware frame pointer/ActRec
   uint64_t m_savedRip; // native (in-TC) return address
-#endif
-#ifdef USE_LOWPTR
-  LowPtr<const Func> m_func;
-#else
   FuncId m_funcId;
-#endif
-  uint32_t m_thrash_DONT_USE1;
   // bit 0: LocalsDecRefd
   // bit 1: AsyncEagerRet
   // bits 2-31: bc offset of call opcode from caller func entry
   uint32_t m_callOffAndFlags;
-  uint32_t m_numArgs;
   union {
     ObjectData* m_thisUnsafe; // This.
     Class* m_clsUnsafe;       // Late bound class.
   };
-  uint64_t m_thrash_DONT_USE2;
 
   TYPE_SCAN_CUSTOM_FIELD(m_thisUnsafe) {
     if (func()->implCls()) scanner.scan(m_thisUnsafe);
@@ -103,6 +87,9 @@ struct ActRec {
     // It's used by the unwinder to know that an ActRec has been partially torn
     // down (locals freed).
     LocalsDecRefd,
+
+    // Indicates whether this frame is inlined.
+    IsInlined,
 
     // Async eager return was requested.
     AsyncEagerRet,
@@ -157,11 +144,6 @@ struct ActRec {
    */
   bool skipFrame() const;
 
-  /*
-   * Whether this frame is inlined.
-   */
-  bool isInlined() const;
-
   /////////////////////////////////////////////////////////////////////////////
   // Flags, call offset, number of args.
 
@@ -169,6 +151,7 @@ struct ActRec {
    * Raw flags accessors.
    */
   bool localsDecRefd() const;
+  bool isInlined() const;
   bool isAsyncEagerReturn() const;
 
   /*
@@ -185,16 +168,6 @@ struct ActRec {
    * Combine offset with flags.
    */
   static uint32_t encodeCallOffsetAndFlags(Offset offset, uint32_t flags);
-
-  /*
-   * Number of arguments passed for this invocation.
-   */
-  int32_t numArgs() const;
-
-  /*
-   * Set the number of arguments.
-   */
-  void setNumArgs(uint32_t numArgs);
 
   /*
    * Flags setters.
@@ -278,12 +251,13 @@ struct ActRec {
   void trashThis();
 
   /////////////////////////////////////////////////////////////////////////////
+
   /*
-   * Get the minimum possible effective level of reactivity.
-   *
-   * Doesn't return precise level as conditional reactivity is not tracked yet.
+   * Returns the ambient and required coeffects of the function respectively
    */
-  RxLevel rxMinLevel() const;
+  RuntimeCoeffects coeffects() const;
+  RuntimeCoeffects requiredCoeffects() const;
+  RuntimeCoeffects providedCoeffectsForCall(bool isCtor) const;
 
   /*
    * address to teleport the return value after destroying this actrec.
@@ -299,11 +273,7 @@ static_assert(offsetof(ActRec, m_sfp) == 0,
 /*
  * Size in bytes of the target architecture's call frame.
  */
-#ifdef USE_LOWPTR
-constexpr auto kNativeFrameSize = offsetof(ActRec, m_func);
-#else
 constexpr auto kNativeFrameSize = offsetof(ActRec, m_funcId);
-#endif
 static_assert(kNativeFrameSize % sizeof(TypedValue) == 0, "");
 
 /*
@@ -324,4 +294,3 @@ bool isReturnHelper(void* address);
 
 #include "hphp/runtime/vm/act-rec-inl.h"
 
-#endif

@@ -15,8 +15,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EXT_STRING_H_
-#define incl_HPHP_EXT_STRING_H_
+#pragma once
 
 #include "hphp/zend/zend-html.h"
 #include "hphp/runtime/ext/std/ext_std_misc.h"
@@ -357,9 +356,11 @@ Variant HHVM_FUNCTION(soundex,
 Variant HHVM_FUNCTION(metaphone,
                       const String& str,
                       int phones = 0);
+bool HHVM_FUNCTION(HH_str_number_coercible,
+                   const String& str);
+Variant HHVM_FUNCTION(HH_str_to_numeric,
+                      const String& str);
 
 ///////////////////////////////////////////////////////////////////////////////
 
 }
-
-#endif

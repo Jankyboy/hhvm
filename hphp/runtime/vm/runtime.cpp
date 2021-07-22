@@ -15,6 +15,7 @@
 */
 #include "hphp/runtime/vm/runtime.h"
 #include "hphp/runtime/base/execution-context.h"
+#include "hphp/runtime/base/coeffects-config.h"
 #include "hphp/runtime/server/source-root-info.h"
 #include "hphp/runtime/base/zend-string.h"
 #include "hphp/runtime/base/mixed-array.h"
@@ -24,7 +25,6 @@
 #include "hphp/runtime/ext/std/ext_std_closure.h"
 #include "hphp/runtime/ext/generator/ext_generator.h"
 #include "hphp/runtime/vm/bytecode.h"
-#include "hphp/runtime/vm/repo.h"
 #include "hphp/util/trace.h"
 #include "hphp/util/text-util.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
@@ -32,6 +32,7 @@
 #include "hphp/runtime/ext/string/ext_string.h"
 
 #include <folly/tracing/StaticTracepoint.h>
+#include <folly/Random.h>
 
 namespace HPHP {
 
@@ -42,7 +43,7 @@ TRACE_SET_MOD(runtime);
  */
 void print_string(StringData* s) {
   g_context->write(s->data(), s->size());
-  TRACE(1, "t-x64 output(str): (%p) %43s\n", s->data(),
+  TRACE(2, "t-x64 output(str): (%p) %43s\n", s->data(),
         escapeStringForCPP(s->data(), s->size()).data());
   decRefStr(s);
 }
@@ -186,8 +187,16 @@ void throwArrayIndexException(const ArrayData* ad, const int64_t index) {
 }
 
 void throwArrayKeyException(const ArrayData* ad, const StringData* key) {
-  assertx(ad->isDArray() || ad->isDictType());
+  assertx(ad->isDictType());
   throwOOBArrayKeyException(key, ad);
+}
+
+void throwMustBeReadOnlyException(const Class* cls, const StringData* propName) {
+  throw_cannot_write_non_readonly_prop(cls->name()->data(), propName->data());
+}
+
+void throwMustBeMutableException(const Class* cls, const StringData* propName) {
+  throw_must_be_mutable(cls->name()->data(), propName->data());
 }
 
 std::string formatParamInOutMismatch(const char* fname, uint32_t index,
@@ -230,23 +239,126 @@ void throwInvalidUnpackArgs() {
     "Only containers may be unpacked");
 }
 
-void raiseRxCallViolation(const ActRec* caller, const Func* callee) {
-  assertx(RuntimeOption::EvalPureEnforceCalls > 0);
-  auto const callerIsPure = caller->func()->rxLevel() == RxLevel::Pure;
-  auto const errMsg = folly::sformat(
-    "Call to {} '{}' from {} '{}' violates {} constraints.",
-    rxLevelToString(callee->rxLevel()),
-    callee->fullName()->data(),
-    rxLevelToString(caller->rxMinLevel()),
-    caller->func()->fullName()->data(),
-    callerIsPure ? "purity" : "reactivity"
+namespace {
+
+std::string formatArgumentErrMsg(const Func* func, const char* amount,
+                                 uint32_t expected, uint32_t got) {
+  return folly::sformat(
+    "{}() expects {} {} parameter{}, {} given",
+    func->fullNameWithClosureName(),
+    amount,
+    expected,
+    expected == 1 ? "" : "s",
+    got
   );
-  if (RuntimeOption::EvalRxEnforceCalls >= 2 ||
-      (callerIsPure && RuntimeOption::EvalPureEnforceCalls >= 2)) {
-    SystemLib::throwBadMethodCallExceptionObject(errMsg);
+}
+
+}
+
+void throwMissingArgument(const Func* func, int got) {
+  auto const expected = func->numRequiredParams();
+  assertx(got < expected);
+  auto const amount = expected < func->numParams() ? "at least" : "exactly";
+  auto const errMsg = formatArgumentErrMsg(func, amount, expected, got);
+  SystemLib::throwRuntimeExceptionObject(Variant(errMsg));
+}
+
+void raiseTooManyArguments(const Func* func, int got) {
+  assertx(!func->hasVariadicCaptureParam());
+
+  if (!RuntimeOption::EvalWarnOnTooManyArguments && !func->isCPPBuiltin()) {
+    return;
+  }
+
+  auto const total = func->numNonVariadicParams();
+  assertx(got > total);
+  auto const amount = func->numRequiredParams() < total ? "at most" : "exactly";
+  auto const errMsg = formatArgumentErrMsg(func, amount, total, got);
+
+  if (RuntimeOption::EvalWarnOnTooManyArguments > 1 || func->isCPPBuiltin()) {
+    SystemLib::throwRuntimeExceptionObject(Variant(errMsg));
   } else {
     raise_warning(errMsg);
   }
+}
+
+void raiseTooManyArgumentsPrologue(const Func* func, ArrayData* unpackArgs) {
+  SCOPE_EXIT { decRefArr(unpackArgs); };
+  if (unpackArgs->empty()) return;
+  auto const got = func->numNonVariadicParams() + unpackArgs->size();
+  raiseTooManyArguments(func, got);
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void raiseCoeffectsCallViolation(const Func* callee,
+                                 RuntimeCoeffects provided,
+                                 RuntimeCoeffects required) {
+  assertx(CoeffectsConfig::enabled());
+  auto const callerName = [&] {
+    VMRegAnchor _;
+    if (!vmfp()) {
+      // VM is entering to the first frame
+      return String{makeStaticString("[vm-entry]")};
+    }
+    String result;
+    walkStack([&] (const ActRec* fp, Offset) {
+      assertx(fp);
+      auto const func = fp->func();
+      assertx(func);
+      if (func->hasCoeffectRules() &&
+          func->getCoeffectRules().size() == 1 &&
+          func->getCoeffectRules()[0].isCaller()) {
+        return false; // keep going
+      }
+      result = func->fullNameWithClosureName();
+      return true;
+    });
+    assertx(!result.isNull());
+    return result;
+  }();
+
+  auto const errMsg = folly::sformat(
+    "Call to {}() requires [{}] coeffects but {}() provided [{}]",
+    callee->fullNameWithClosureName(),
+    required.toString(),
+    callerName,
+    provided.toString()
+  );
+
+  FTRACE_MOD(Trace::coeffects, 1, "{}\n {:016b} -> {:016b}\n",
+             errMsg, provided.value(), required.value());
+
+  assertx(!provided.canCall(required));
+  if (provided.canCallWithWarning(required)) {
+    auto const coinflip = []{
+      auto const rate = RO::EvalCoeffectViolationWarningSampleRate;
+      return rate > 0 && folly::Random::rand32(rate) == 0;
+    }();
+    if (!coinflip) return;
+    raise_warning(errMsg);
+  } else {
+    SystemLib::throwBadMethodCallExceptionObject(errMsg);
+  }
+}
+
+void raiseCoeffectsFunParamTypeViolation(TypedValue tv,
+                                         int32_t paramIdx) {
+  auto const errMsg =
+    folly::sformat("Coeffect rule requires parameter at position {} to be a "
+                   "closure object, function/method pointer or null but "
+                   "{} given",
+                   paramIdx + 1, describe_actual_type(&tv));
+  raise_warning(errMsg);
+}
+
+void raiseCoeffectsFunParamCoeffectRulesViolation(const Func* f) {
+  assertx(f);
+  auto const errMsg =
+    folly::sformat("Function/method pointer to {}() contains polymorphic "
+                   "coeffects but is used as a coeffect rule",
+                   f->fullNameWithClosureName());
+  raise_warning(errMsg);
 }
 
 //////////////////////////////////////////////////////////////////////

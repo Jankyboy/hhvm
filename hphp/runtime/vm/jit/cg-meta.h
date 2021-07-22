@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_JIT_CODE_GEN_FIXUPS_H_
-#define incl_HPHP_JIT_CODE_GEN_FIXUPS_H_
+#pragma once
 
 #include "hphp/runtime/base/backtrace.h"
 
@@ -110,11 +109,6 @@ struct CGMeta {
   std::multimap<TCA,std::pair<Alignment,AlignContext>> alignments;
 
   /*
-   * Addresses of any allocated service request stubs.
-   */
-  std::vector<TCA> reusedStubs;
-
-  /*
    * Address immediates in the generated code.
    *
    * Also contains the addresses of any mcprep{} instructions that were emitted.
@@ -127,7 +121,7 @@ struct CGMeta {
    * pools/veneers.  This metadata is kept around so the relocator can properly
    * adjust or remove the jump to keep it pointing directly after the Vunit.
    */
-  folly::Optional<TCA> fallthru;
+  Optional<TCA> fallthru;
 
   /*
    * Code addresses of interest to other code.
@@ -141,8 +135,8 @@ struct CGMeta {
   std::set<TCA*> codePointers;
 
   /*
-   * Smash targets of fallback{} and fallbackcc{} instructions (e.g.,
-   * REQ_RETRANSLATE service requests).
+   * Smash targets of fallback{} and fallbackcc{} instructions, currently
+   * pointing to the StubType::Retranslate service request stub).
    *
    * These always correspond to the initial SrcKey of the current IR unit---
    * see cgReqRetranslate().
@@ -162,15 +156,26 @@ struct CGMeta {
   jit::fast_map<TCA,PrologueID> smashableCallData;
 
   /*
-   * Extra data kept for smashable jumps/jccs.  Used to pre-smash jumps/jccs
-   * before code is published.
+   * List of cross-translation smashable binds, populated by bindjmp, bindjcc,
+   * bindaddr, fallback and fallbackcc instructions.
+   *
+   * In vasm_emit(), we lower these service request instructions to their inline
+   * functionality (e.g., a smashable jump), and add a record here so that we
+   * can emit the requisite stub and patch in its address after the rest of the
+   * unit is emitted. These stubs are emitted separately because they are not
+   * truly part of the unit and might be shared across use sites. It is also
+   * impossible to emit a code while emitting a code into the same section.
+   *
+   * Before the code is published, retranslate all uses this list to pre-smash
+   * binds to targets that were also translated.
    */
-  enum class JumpKind { Bindjmp, Bindjcc, Fallback, Fallbackcc };
-  struct JumpData {
-    SrcKey   sk;
-    JumpKind kind;
+  struct BindData {
+    IncomingBranch smashable;
+    SrcKey sk;
+    SBInvOffset spOff;
+    bool fallback;
   };
-  jit::fast_map<TCA,JumpData> smashableJumpData;
+  std::vector<BindData> smashableBinds;
 
   /*
    * Debug-only map from bytecode to machine code address.
@@ -187,7 +192,7 @@ const uint64_t* addrForLiteral(uint64_t val);
 /*
  * Look up a TCA-to-landingpad mapping.
  */
-folly::Optional<TCA> getCatchTrace(CTCA ip);
+Optional<TCA> getCatchTrace(CTCA ip);
 
 /*
  * Return the number of registered catch traces
@@ -215,7 +220,7 @@ void poolLiteral(CodeBlock& cb, CGMeta& meta, uint64_t val, uint8_t width,
 
 void addVeneer(CGMeta& meta, TCA source, TCA target);
 
-folly::Optional<IStack> inlineStackAt(CTCA addr);
+Optional<IStack> inlineStackAt(CTCA addr);
 IFrame getInlineFrame(IFrameID id);
 void eraseInlineStack(CTCA addr);
 void eraseInlineStacksInRange(CTCA start, CTCA end);
@@ -243,4 +248,3 @@ private:
 };
 }
 
-#endif

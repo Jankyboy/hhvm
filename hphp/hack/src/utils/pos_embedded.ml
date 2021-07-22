@@ -27,22 +27,21 @@ type 'a pos =
       pos_start: File_pos_large.t;
       pos_end: File_pos_large.t;
     }
+  | Pos_tiny of {
+      pos_file: 'a;
+      pos_span: Pos_span_tiny.t;
+    }
   | Pos_from_reason of 'a pos
-[@@deriving eq, show, ord]
+[@@deriving eq, show]
 
 type t = Relative_path.t pos [@@deriving eq, show]
 
-type absolute = string pos [@@deriving eq, show, ord]
+type absolute = string pos [@@deriving eq, show]
 
 [@@@warning "+32"]
 
 let none =
-  Pos_small
-    {
-      pos_file = Relative_path.default;
-      pos_start = File_pos_small.dummy;
-      pos_end = File_pos_small.dummy;
-    }
+  Pos_tiny { pos_file = Relative_path.default; pos_span = Pos_span_tiny.dummy }
 
 let rec pp fmt pos =
   if equal pos none then
@@ -65,6 +64,7 @@ let rec pp fmt pos =
           Format.pp_print_int fmt @@ (File_pos_large.column pos_end + 1)
         else
           File_pos_large.pp fmt pos_end
+      | Pos_tiny { pos_span; pos_file = _ } -> Pos_span_tiny.pp fmt pos_span
       | Pos_from_reason p -> pp fmt p
     end;
     Format.pp_print_string fmt "]"
@@ -72,11 +72,13 @@ let rec pp fmt pos =
 
 let rec filename p =
   match p with
-  | Pos_small { pos_file; _ } -> pos_file
-  | Pos_large { pos_file; _ } -> pos_file
+  | Pos_small { pos_file; _ }
+  | Pos_large { pos_file; _ }
+  | Pos_tiny { pos_file; _ } ->
+    pos_file
   | Pos_from_reason p -> filename p
 
-(* This returns a closed interval that's incorrect for multi-line spans. *)
+(** This returns a closed interval that's incorrect for multi-line spans. *)
 let rec info_pos p =
   match p with
   | Pos_small { pos_start; pos_end; _ } ->
@@ -85,9 +87,9 @@ let rec info_pos p =
     let end_offset = File_pos_small.offset pos_end in
     let end_ = end_offset - bol in
     (* To represent the empty interval, pos_start and pos_end are equal because
-      end_offset is exclusive. Here, it's best for error messages to the user if
-      we print characters N to N (highlighting a single character) rather than characters
-      N to (N-1), which is very unintuitive.
+       end_offset is exclusive. Here, it's best for error messages to the user if
+       we print characters N to N (highlighting a single character) rather than characters
+       N to (N-1), which is very unintuitive.
     *)
     let end_ =
       if start = end_ + 1 then
@@ -102,9 +104,9 @@ let rec info_pos p =
     let end_offset = File_pos_large.offset pos_end in
     let end_ = end_offset - bol in
     (* To represent the empty interval, pos_start and pos_end are equal because
-      end_offset is exclusive. Here, it's best for error messages to the user if
-      we print characters N to N (highlighting a single character) rather than characters
-      N to (N-1), which is very unintuitive.
+       end_offset is exclusive. Here, it's best for error messages to the user if
+       we print characters N to N (highlighting a single character) rather than characters
+       N to (N-1), which is very unintuitive.
     *)
     let end_ =
       if start = end_ + 1 then
@@ -113,6 +115,17 @@ let rec info_pos p =
         end_
     in
     (line, start, end_)
+  | Pos_tiny { pos_span = span; pos_file = _ } ->
+    let line = Pos_span_tiny.start_line_number span in
+    let start_column = Pos_span_tiny.start_column span + 1 in
+    let end_column = Pos_span_tiny.end_column span in
+    let end_column =
+      if start_column = end_column + 1 then
+        start_column
+      else
+        end_column
+    in
+    (line, start_column, end_column)
   | Pos_from_reason p -> info_pos p
 
 (* This returns a closed interval. *)
@@ -125,6 +138,9 @@ let rec info_pos_extended p =
   | Pos_large { pos_end; _ } ->
     let (line_end, _, _) = File_pos_large.line_column_beg pos_end in
     (line_begin, line_end, start, end_)
+  | Pos_tiny { pos_span; pos_file = _ } ->
+    let line_end = Pos_span_tiny.end_line_number pos_span in
+    (line_begin, line_end, start, end_)
   | Pos_from_reason p -> info_pos_extended p
 
 let rec info_raw p =
@@ -133,6 +149,9 @@ let rec info_raw p =
     (File_pos_small.offset pos_start, File_pos_small.offset pos_end)
   | Pos_large { pos_start; pos_end; _ } ->
     (File_pos_large.offset pos_start, File_pos_large.offset pos_end)
+  | Pos_tiny { pos_span; pos_file = _ } ->
+    ( Pos_span_tiny.start_character_number pos_span,
+      Pos_span_tiny.end_character_number pos_span )
   | Pos_from_reason p -> info_raw p
 
 let rec length p =
@@ -141,41 +160,57 @@ let rec length p =
     File_pos_small.offset pos_end - File_pos_small.offset pos_start
   | Pos_large { pos_start; pos_end; _ } ->
     File_pos_large.offset pos_end - File_pos_large.offset pos_start
+  | Pos_tiny { pos_span; pos_file = _ } ->
+    Pos_span_tiny.end_character_number pos_span
+    - Pos_span_tiny.start_character_number pos_span
   | Pos_from_reason p -> length p
 
 let rec start_cnum p =
   match p with
   | Pos_small { pos_start; _ } -> File_pos_small.offset pos_start
   | Pos_large { pos_start; _ } -> File_pos_large.offset pos_start
+  | Pos_tiny { pos_span; _ } -> Pos_span_tiny.start_character_number pos_span
   | Pos_from_reason p -> start_cnum p
 
 let rec end_cnum p =
   match p with
   | Pos_small { pos_end; _ } -> File_pos_small.offset pos_end
   | Pos_large { pos_end; _ } -> File_pos_large.offset pos_end
+  | Pos_tiny { pos_span; _ } -> Pos_span_tiny.end_character_number pos_span
   | Pos_from_reason p -> end_cnum p
 
 let rec line p =
   match p with
   | Pos_small { pos_start; _ } -> File_pos_small.line pos_start
   | Pos_large { pos_start; _ } -> File_pos_large.line pos_start
+  | Pos_tiny { pos_span; _ } -> Pos_span_tiny.start_line_number pos_span
   | Pos_from_reason p -> line p
 
 let rec end_line p =
   match p with
   | Pos_small { pos_end; _ } -> File_pos_small.line pos_end
   | Pos_large { pos_end; _ } -> File_pos_large.line pos_end
+  | Pos_tiny { pos_span; _ } -> Pos_span_tiny.end_line_number pos_span
   | Pos_from_reason p -> end_line p
 
 (* This returns a closed interval. *)
 let string t =
   let (line, start, end_) = info_pos t in
-  Printf.sprintf
-    "File %S, line %d, characters %d-%d:"
-    (String.strip (filename t))
-    line
-    start
-    end_
+  let path = filename t in
+
+  let hhi_path =
+    try Relative_path.path_of_prefix Relative_path.Hhi with
+    | Invalid_argument _ ->
+      (* .hhi path hasn't been set (e.g. when running tests). *)
+      ""
+  in
+  (* Strip temporary .hhi directories from the path shown. *)
+  let path =
+    match String.chop_prefix path ~prefix:hhi_path with
+    | Some file_path -> file_path
+    | None -> path
+  in
+  Printf.sprintf "File %S, line %d, characters %d-%d:" path line start end_
 
 (* Some positions, like those in buffers sent by IDE/created by unit tests might
  * not have a file specified.
@@ -196,6 +231,15 @@ let json pos =
       ("char_end", Hh_json.int_ end_);
     ]
 
+let json_no_filename pos =
+  let (line, start, end_) = info_pos pos in
+  Hh_json.JSON_Object
+    [
+      ("line", Hh_json.int_ line);
+      ("char_start", Hh_json.int_ start);
+      ("char_end", Hh_json.int_ end_);
+    ]
+
 (*
  * !!! Be careful !!!
  * This method returns zero-based column numbers, but one-based line numbers.
@@ -205,12 +249,17 @@ let rec line_column p =
   match p with
   | Pos_small { pos_start; _ } -> File_pos_small.line_column pos_start
   | Pos_large { pos_start; _ } -> File_pos_large.line_column pos_start
+  | Pos_tiny { pos_span; _ } ->
+    ( Pos_span_tiny.start_line_number pos_span,
+      Pos_span_tiny.start_column pos_span )
   | Pos_from_reason p -> line_column p
 
 let rec end_line_column p =
   match p with
   | Pos_small { pos_end; _ } -> File_pos_small.line_column pos_end
   | Pos_large { pos_end; _ } -> File_pos_large.line_column pos_end
+  | Pos_tiny { pos_span; _ } ->
+    (Pos_span_tiny.end_line_number pos_span, Pos_span_tiny.end_column pos_span)
   | Pos_from_reason p -> end_line_column p
 
 let inside p line char_pos =
@@ -247,19 +296,39 @@ let overlaps pos1 pos2 =
   && end1 > start2
   && start1 < end2
 
+let is_hhi pos = Relative_path.is_hhi (Relative_path.prefix (filename pos))
+
+let rec compress p =
+  match p with
+  | Pos_tiny _ -> p
+  | Pos_small { pos_file; pos_start; pos_end } ->
+    (match
+       Pos_span_tiny.make
+         ~pos_start:(File_pos_small.as_large_pos pos_start)
+         ~pos_end:(File_pos_small.as_large_pos pos_end)
+     with
+    | None -> p
+    | Some pos_span -> Pos_tiny { pos_file; pos_span })
+  | Pos_large { pos_file; pos_start; pos_end } ->
+    (match Pos_span_tiny.make ~pos_start ~pos_end with
+    | Some pos_span -> Pos_tiny { pos_file; pos_span }
+    | None ->
+      (match File_pos_small.of_large_pos pos_start with
+      | None -> p
+      | Some pos_start ->
+        (match File_pos_small.of_large_pos pos_end with
+        | None -> p
+        | Some pos_end -> Pos_small { pos_file; pos_start; pos_end })))
+  | Pos_from_reason p -> Pos_from_reason (compress p)
+
 let make_from_lexing_pos pos_file pos_start pos_end =
-  match
-    ( File_pos_small.of_lexing_pos pos_start,
-      File_pos_small.of_lexing_pos pos_end )
-  with
-  | (Some pos_start, Some pos_end) -> Pos_small { pos_file; pos_start; pos_end }
-  | (_, _) ->
-    Pos_large
-      {
-        pos_file;
-        pos_start = File_pos_large.of_lexing_pos pos_start;
-        pos_end = File_pos_large.of_lexing_pos pos_end;
-      }
+  compress
+  @@ Pos_large
+       {
+         pos_file;
+         pos_start = File_pos_large.of_lexing_pos pos_start;
+         pos_end = File_pos_large.of_lexing_pos pos_end;
+       }
 
 let make file (lb : b) =
   let pos_start = lexeme_start_p lb in
@@ -267,24 +336,22 @@ let make file (lb : b) =
   make_from_lexing_pos file pos_start pos_end
 
 let make_from file =
-  let pos = File_pos_small.dummy in
-  Pos_small { pos_file = file; pos_start = pos; pos_end = pos }
-
-let small_to_large_file_pos p =
-  let (lnum, col, bol) = File_pos_small.line_column_beg p in
-  File_pos_large.of_lnum_bol_cnum lnum bol (bol + col)
+  Pos_tiny { pos_file = file; pos_span = Pos_span_tiny.dummy }
 
 let rec as_large_pos p =
   match p with
+  | Pos_tiny { pos_file; pos_span } ->
+    let (pos_start, pos_end) = Pos_span_tiny.as_large_span pos_span in
+    Pos_large { pos_file; pos_start; pos_end }
   | Pos_small { pos_file; pos_start; pos_end } ->
     Pos_large
       {
         pos_file;
-        pos_start = small_to_large_file_pos pos_start;
-        pos_end = small_to_large_file_pos pos_end;
+        pos_start = File_pos_small.as_large_pos pos_start;
+        pos_end = File_pos_small.as_large_pos pos_end;
       }
+  | Pos_large _ -> p
   | Pos_from_reason p -> Pos_from_reason (as_large_pos p)
-  | _ -> p
 
 let rec btw_nocheck x1 x2 =
   match (x1, x2) with
@@ -294,11 +361,17 @@ let rec btw_nocheck x1 x2 =
     Pos_large { pos_file; pos_start; pos_end }
   | (Pos_small { pos_file; pos_start; _ }, Pos_large { pos_end; _ }) ->
     Pos_large
-      { pos_file; pos_start = small_to_large_file_pos pos_start; pos_end }
+      { pos_file; pos_start = File_pos_small.as_large_pos pos_start; pos_end }
   | (Pos_large { pos_file; pos_start; _ }, Pos_small { pos_end; _ }) ->
-    Pos_large { pos_file; pos_start; pos_end = small_to_large_file_pos pos_end }
+    Pos_large
+      { pos_file; pos_start; pos_end = File_pos_small.as_large_pos pos_end }
   | (Pos_from_reason p1, p2) -> btw_nocheck p1 p2
   | (p1, Pos_from_reason p2) -> btw_nocheck p1 p2
+  | (Pos_tiny _, _)
+  | (_, Pos_tiny _) ->
+    let p1 = as_large_pos x1 in
+    let p2 = as_large_pos x2 in
+    btw_nocheck p1 p2 |> compress
 
 let rec set_file pos_file pos =
   match pos with
@@ -306,6 +379,7 @@ let rec set_file pos_file pos =
     Pos_small { pos_file; pos_start; pos_end }
   | Pos_large { pos_start; pos_end; _ } ->
     Pos_large { pos_file; pos_start; pos_end }
+  | Pos_tiny { pos_span; pos_file = _ } -> Pos_tiny { pos_file; pos_span }
   | Pos_from_reason p -> Pos_from_reason (set_file pos_file p)
 
 let set_from_reason pos =
@@ -384,44 +458,54 @@ let rec merge x1 x2 =
   | (Pos_from_reason p1, Pos_from_reason p2) -> Pos_from_reason (merge p1 p2)
   | (Pos_from_reason p1, p2) -> Pos_from_reason (merge p1 p2)
   | (p1, Pos_from_reason p2) -> Pos_from_reason (merge p1 p2)
-  | (_, _) -> merge (as_large_pos x1) (as_large_pos x2)
+  | (_, _) -> merge (as_large_pos x1) (as_large_pos x2) |> compress
 
 let rec last_char p =
   if equal p none then
     none
   else
-    match p with
+    (match p with
     | Pos_small { pos_start = _; pos_end; pos_file } ->
       Pos_small { pos_start = pos_end; pos_end; pos_file }
     | Pos_large { pos_start = _; pos_end; pos_file } ->
       Pos_large { pos_start = pos_end; pos_end; pos_file }
-    | Pos_from_reason p -> last_char p
+    | Pos_tiny { pos_span; pos_file } ->
+      let (_pos_start, pos_end) = Pos_span_tiny.as_large_span pos_span in
+      Pos_large { pos_file; pos_start = pos_end; pos_end }
+    | Pos_from_reason p -> last_char p)
+    |> compress
 
 let rec first_char_of_line p =
   if equal p none then
     none
   else
-    match p with
+    (match p with
     | Pos_small { pos_start; pos_end = _; pos_file } ->
-      let start = File_pos_small.set_column 0 pos_start in
+      let start = File_pos_small.set_column_unchecked 0 pos_start in
       Pos_small { pos_start = start; pos_end = start; pos_file }
     | Pos_large { pos_start; pos_end = _; pos_file } ->
       let start = File_pos_large.set_column 0 pos_start in
       Pos_large { pos_start = start; pos_end = start; pos_file }
-    | Pos_from_reason p -> first_char_of_line p
+    | Pos_tiny { pos_span; pos_file } ->
+      let (pos_start, _pos_end) = Pos_span_tiny.as_large_span pos_span in
+      let start = File_pos_large.set_column 0 pos_start in
+      Pos_large { pos_file; pos_start = start; pos_end = start }
+    | Pos_from_reason p -> first_char_of_line p)
+    |> compress
 
 let to_relative_string p = set_file (Relative_path.suffix (filename p)) p
 
 let get_text_from_pos ~content pos =
   let pos_length = length pos in
   let offset = start_cnum pos in
-  String.sub content offset pos_length
+  String.sub content ~pos:offset ~len:pos_length
 
-(* Compare by filename, then tie-break by start position, and finally by the
- * end position
- *)
-let compare (x : t) (y : t) =
-  let r = Relative_path.compare (filename x) (filename y) in
+(** Compare by filename, then tie-break by start position, and finally by the
+    end position *)
+let compare_pos :
+    type file. (file -> file -> int) -> file pos -> file pos -> int =
+ fun compare_files x y ->
+  let r = compare_files (filename x) (filename y) in
   if r <> 0 then
     r
   else
@@ -433,6 +517,10 @@ let compare (x : t) (y : t) =
     else
       xend - yend
 
+let compare = compare_pos Relative_path.compare
+
+let compare_absolute = compare_pos String.compare
+
 (* This returns a half-open interval. *)
 let destruct_range (p : 'a pos) : int * int * int * int =
   let (line_start, col_start_minus1) = line_column p in
@@ -442,14 +530,14 @@ let destruct_range (p : 'a pos) : int * int * int * int =
 let rec advance_one (p : 'a pos) : 'a pos =
   match p with
   | Pos_small { pos_file; pos_start; pos_end } ->
-    Pos_small
-      {
-        pos_file;
-        pos_start;
-        pos_end =
-          (let column = File_pos_small.column pos_end in
-           File_pos_small.set_column (column + 1) pos_end);
-      }
+    let end_column = File_pos_small.column pos_end in
+    (match File_pos_small.set_column (end_column + 1) pos_end with
+    | Some pos_end -> Pos_small { pos_file; pos_start; pos_end }
+    | None ->
+      let pos_start = File_pos_small.as_large_pos pos_start in
+      let pos_end = File_pos_small.as_large_pos pos_end in
+      let pos_end = File_pos_large.set_column (end_column + 1) pos_end in
+      Pos_large { pos_file; pos_start; pos_end })
   | Pos_large { pos_file; pos_start; pos_end } ->
     Pos_large
       {
@@ -459,6 +547,7 @@ let rec advance_one (p : 'a pos) : 'a pos =
           (let column = File_pos_large.column pos_end in
            File_pos_large.set_column (column + 1) pos_end);
       }
+  | Pos_tiny _ -> p |> as_large_pos |> advance_one |> compress
   | Pos_from_reason p -> Pos_from_reason (advance_one p)
 
 (* This function is used when we have captured a position that includes
@@ -467,15 +556,18 @@ let rec advance_one (p : 'a pos) : 'a pos =
 let rec shrink_by_one_char_both_sides (p : 'a pos) : 'a pos =
   match p with
   | Pos_small { pos_file; pos_start; pos_end } ->
-    let new_pos_start =
-      let column = File_pos_small.column pos_start in
-      File_pos_small.set_column (column + 1) pos_start
-    in
-    let new_pos_end =
+    let pos_end =
       let column = File_pos_small.column pos_end in
-      File_pos_small.set_column (column - 1) pos_end
+      File_pos_small.set_column_unchecked (column - 1) pos_end
     in
-    Pos_small { pos_file; pos_start = new_pos_start; pos_end = new_pos_end }
+    let start_column = File_pos_small.column pos_start in
+    (match File_pos_small.set_column (start_column + 1) pos_start with
+    | None ->
+      let pos_start = File_pos_small.as_large_pos pos_start in
+      let pos_start = File_pos_large.set_column (start_column + 1) pos_start in
+      let pos_end = File_pos_small.as_large_pos pos_end in
+      Pos_large { pos_file; pos_start; pos_end }
+    | Some pos_start -> Pos_small { pos_file; pos_start; pos_end })
   | Pos_large { pos_file; pos_start; pos_end } ->
     let new_pos_start =
       let column = File_pos_large.column pos_start in
@@ -486,6 +578,7 @@ let rec shrink_by_one_char_both_sides (p : 'a pos) : 'a pos =
       File_pos_large.set_column (column - 1) pos_end
     in
     Pos_large { pos_file; pos_start = new_pos_start; pos_end = new_pos_end }
+  | Pos_tiny _ -> p |> as_large_pos |> shrink_by_one_char_both_sides |> compress
   | Pos_from_reason p -> Pos_from_reason (shrink_by_one_char_both_sides p)
 
 (* This returns a half-open interval. *)
@@ -522,47 +615,52 @@ let multiline_json t =
       ("char_end", Hh_json.int_ (char_end - 1));
     ]
 
+let multiline_json_no_filename t =
+  let (line_start, char_start, line_end, char_end) = destruct_range t in
+  Hh_json.JSON_Object
+    [
+      ("line_start", Hh_json.int_ line_start);
+      ("char_start", Hh_json.int_ char_start);
+      ("line_end", Hh_json.int_ line_end);
+      ("char_end", Hh_json.int_ (char_end - 1));
+    ]
+
 let rec line_beg_offset p =
   match p with
   | Pos_small { pos_start; _ } -> File_pos_small.line_beg_offset pos_start
   | Pos_large { pos_start; _ } -> File_pos_large.line_beg_offset pos_start
+  | Pos_tiny { pos_span; _ } ->
+    let (pos_start, _pos_end) = Pos_span_tiny.as_large_span pos_span in
+    File_pos_large.line_beg_offset pos_start
   | Pos_from_reason p -> line_beg_offset p
 
 let rec end_line_beg_offset p =
   match p with
   | Pos_small { pos_end; _ } -> File_pos_small.line_beg_offset pos_end
   | Pos_large { pos_end; _ } -> File_pos_large.line_beg_offset pos_end
+  | Pos_tiny { pos_span; _ } ->
+    let (_pos_start, pos_end) = Pos_span_tiny.as_large_span pos_span in
+    File_pos_large.line_beg_offset pos_end
   | Pos_from_reason p -> end_line_beg_offset p
 
 let make_from_lnum_bol_cnum ~pos_file ~pos_start ~pos_end =
   let (lnum_start, bol_start, cnum_start) = pos_start in
   let (lnum_end, bol_end, cnum_end) = pos_end in
-  match
-    ( File_pos_small.of_lnum_bol_cnum
-        ~pos_lnum:lnum_start
-        ~pos_bol:bol_start
-        ~pos_cnum:cnum_start,
-      File_pos_small.of_lnum_bol_cnum
-        ~pos_lnum:lnum_end
-        ~pos_bol:bol_end
-        ~pos_cnum:cnum_end )
-  with
-  | (Some pos_start, Some pos_end) -> Pos_small { pos_file; pos_start; pos_end }
-  | (_, _) ->
-    Pos_large
-      {
-        pos_file;
-        pos_start =
-          File_pos_large.of_lnum_bol_cnum
-            ~pos_lnum:lnum_start
-            ~pos_bol:bol_start
-            ~pos_cnum:cnum_start;
-        pos_end =
-          File_pos_large.of_lnum_bol_cnum
-            ~pos_lnum:lnum_end
-            ~pos_bol:bol_end
-            ~pos_cnum:cnum_end;
-      }
+  compress
+  @@ Pos_large
+       {
+         pos_file;
+         pos_start =
+           File_pos_large.of_lnum_bol_cnum
+             ~pos_lnum:lnum_start
+             ~pos_bol:bol_start
+             ~pos_cnum:cnum_start;
+         pos_end =
+           File_pos_large.of_lnum_bol_cnum
+             ~pos_lnum:lnum_end
+             ~pos_bol:bol_end
+             ~pos_cnum:cnum_end;
+       }
 
 let pessimize_enabled pos pessimize_coefficient =
   let path = filename pos in

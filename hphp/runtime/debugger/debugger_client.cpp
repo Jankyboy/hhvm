@@ -73,13 +73,14 @@ static boost::scoped_ptr<DebuggerClient> debugger_client;
 const StaticString
   s_name("name"),
   s_cmds("cmds"),
+  s_wordwrap("wordwrap"),
   s_hhvm_never_save_config("hhvm.never_save_config");
 
 static String wordwrap(const String& str, int width /* = 75 */,
                        const String& wordbreak /* = "\n" */,
                        bool cut /* = false */) {
-  Array args = make_varray(str, width, wordbreak, cut);
-  return vm_call_user_func("wordwrap", args).toString();
+  Array args = make_vec_array(str, width, wordbreak, cut);
+  return vm_call_user_func(Func::lookup(s_wordwrap.get()), args).toString();
 }
 
 struct DebuggerExtension final : Extension {
@@ -562,33 +563,17 @@ bool DebuggerClient::connect(const std::string &host, int port) {
   return connectRemote(host, port);
 }
 
-bool DebuggerClient::connectRPC(const std::string &host, int port) {
-  TRACE(2, "DebuggerClient::connectRPC\n");
-  assertx(!m_machines.empty());
-  auto local = m_machines[0];
-  assertx(local->m_name == LocalPrompt);
-  local->m_rpcHost = host;
-  local->m_rpcPort = port;
-  switchMachine(local);
-  m_rpcHost = "rpc:" + host;
-  usageLogEvent("RPC connect", m_rpcHost);
-  return !local->m_interrupting;
-}
-
 bool DebuggerClient::disconnect() {
   TRACE(2, "DebuggerClient::disconnect\n");
   assertx(!m_machines.empty());
   auto local = m_machines[0];
   assertx(local->m_name == LocalPrompt);
-  local->m_rpcHost.clear();
-  local->m_rpcPort = 0;
   switchMachine(local);
   return !local->m_interrupting;
 }
 
 void DebuggerClient::switchMachine(std::shared_ptr<DMachineInfo> machine) {
   TRACE(2, "DebuggerClient::switchMachine\n");
-  m_rpcHost.clear();
   machine->m_initialized = false; // even if m_machine == machine
 
   if (m_machine != machine) {
@@ -717,9 +702,6 @@ std::string DebuggerClient::getPrompt() {
     return "";
   }
   auto name = &m_machine->m_name;
-  if (!m_rpcHost.empty()) {
-    name = &m_rpcHost;
-  }
   if (m_inputState == TakingCode) {
     std::string prompt = " ";
     for (unsigned i = 2; i < name->size() + 2; i++) {
@@ -1091,11 +1073,6 @@ char* DebuggerClient::getCompletion(const char* text, int state) {
 // machine is at an interrupt.
 bool DebuggerClient::initializeMachine() {
   TRACE(2, "DebuggerClient::initializeMachine\n");
-  // set/clear intercept for RPC thread
-  if (!m_machines.empty() && m_machine == m_machines[0]) {
-    CmdMachine::UpdateIntercept(*this, m_machine->m_rpcHost,
-                                m_machine->m_rpcPort);
-  }
 
   // upload breakpoints
   if (!m_breakpoints.empty()) {
@@ -1135,7 +1112,6 @@ DebuggerCommandPtr DebuggerClient::eventLoop(EventLoopKind loopKind,
                                              int expectedCmd,
                                              const char *caller) {
   TRACE(2, "DebuggerClient::eventLoop\n");
-  ARRPROV_USE_RUNTIME_LOCATION();
   if (loopKind == NestedWithExecution) {
     // Some callers have caused the server to start executing more PHP, so
     // update the machine/client state accordingly.
@@ -2474,11 +2450,11 @@ void DebuggerClient::loadConfig() {
       return true;
     },
     [this]() {
-      ArrayInit ret(m_macros.size(), ArrayInit::Map{});
+      DictInit ret(m_macros.size());
       for (auto& macro : m_macros) {
-        ArrayInit ret_macro(2, ArrayInit::Map{});
+        DictInit ret_macro(2);
         ret_macro.set(s_name, macro->m_name);
-        VArrayInit ret_cmds(macro->m_cmds.size());
+        VecInit ret_cmds(macro->m_cmds.size());
         for (auto& cmd : macro->m_cmds) {
           ret_cmds.append(cmd);
         }

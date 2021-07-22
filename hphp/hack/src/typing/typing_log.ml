@@ -38,8 +38,8 @@ let lnewline () =
     cprint
       ~out_channel:!out_channel
       ~color_mode:Color_Auto
-      ( (Normal White, String.make (2 * !indentLevel) ' ')
-      :: List.rev ((Normal White, "\n") :: !logBuffer) );
+      ((Normal White, String.make (2 * !indentLevel) ' ')
+       :: List.rev ((Normal White, "\n") :: !logBuffer));
     Out_channel.flush !out_channel;
     accumulatedLength := 0;
     logBuffer := []
@@ -74,11 +74,14 @@ let lastenv =
     (Env.empty
        (Provider_context.empty_for_debugging
           ~popt:ParserOptions.default
-          ~tcopt:TypecheckerOptions.default)
+          ~tcopt:TypecheckerOptions.default
+          ~deps_mode:Typing_deps_mode.SQLiteMode)
        Relative_path.default
-       None)
+       ~droot:None)
 
 let iterations : int Pos.Map.t ref = ref Pos.Map.empty
+
+let iterations_decl : int Pos_or_decl.Map.t ref = ref Pos_or_decl.Map.empty
 
 (* Universal representation of a delta between values
  *)
@@ -111,6 +114,16 @@ let rec compute_value_delta (oldval : value) (newval : value) : delta =
       Unchanged
     else
       Updated newval
+  | (Type t1, Type t2) ->
+    if equal_internal_type t1 t2 then
+      Unchanged
+    else
+      Updated newval
+  | (SubtypeProp p1, SubtypeProp p2) ->
+    if Typing_logic.equal_subtype_prop p1 p2 then
+      Unchanged
+    else
+      Updated newval
   | (Set s1, Set s2) ->
     let added = SSet.diff s2 s1 in
     let removed = SSet.diff s1 s2 in
@@ -119,7 +132,7 @@ let rec compute_value_delta (oldval : value) (newval : value) : delta =
     else
       Set_delta { added; removed }
   | (List l1, List l2) ->
-    if List.equal l1 l2 equal_value then
+    if List.equal equal_value l1 l2 then
       Unchanged
     else
       Updated newval
@@ -181,7 +194,7 @@ let log_sset s =
   | s :: ss ->
     lprintf (Normal Green) "{";
     lprintf (Normal Green) "%s" s;
-    List.iter ss (fun s -> lprintf (Normal Green) ",%s" s);
+    List.iter ss ~f:(fun s -> lprintf (Normal Green) ",%s" s);
     lprintf (Normal Green) "}"
 
 let rec log_value env value =
@@ -191,15 +204,15 @@ let rec log_value env value =
     lprintf
       (Normal Green)
       "%s"
-      ( if b then
+      (if b then
         "true"
       else
-        "false" )
+        "false")
   | List [] -> lprintf (Normal Green) "[]"
   | List (v :: vs) ->
     lprintf (Normal Green) "[";
     log_value env v;
-    List.iter vs (fun v ->
+    List.iter vs ~f:(fun v ->
         lprintf (Normal Green) ",";
         log_value env v);
     lprintf (Normal Green) "]"
@@ -279,19 +292,19 @@ let decl_type_as_value env ty = Atom (Typing_print.debug_decl env ty)
 
 let possibly_enforced_type_as_value env et =
   Atom
-    ( if et.et_enforced then
-      "enforced "
-    else
-      "" ^ Typing_print.debug env et.et_type )
+    ((match et.et_enforced with
+     | Enforced -> "enforced "
+     | PartiallyEnforced _ -> "partially enforced "
+     | Unenforced -> "")
+    ^ Typing_print.debug env et.et_type)
 
 let return_info_as_value env return_info =
   let Typing_env_return_info.
         {
           return_type;
           return_disposable;
-          return_mutable;
           return_explicit;
-          return_void_to_rx;
+          return_dynamically_callable;
         } =
     return_info
   in
@@ -299,9 +312,8 @@ let return_info_as_value env return_info =
     [
       ("return_type", possibly_enforced_type_as_value env return_type);
       ("return_disposable", Bool return_disposable);
-      ("return_mutable", Bool return_mutable);
       ("return_explicit", Bool return_explicit);
-      ("return_void_to_rx", Bool return_void_to_rx);
+      ("return_dynamically_callable", Bool return_dynamically_callable);
     ]
 
 let local_id_map_as_value f m =
@@ -333,6 +345,7 @@ let rec tparam_info_as_value env tpinfo =
           reified;
           enforceable;
           newable;
+          require_dynamic;
           parameters;
         } =
     tpinfo
@@ -344,6 +357,7 @@ let rec tparam_info_as_value env tpinfo =
       ("reified", reify_kind_as_value reified);
       ("enforceable", bool_as_value enforceable);
       ("newable", bool_as_value newable);
+      ("require_dynamic", bool_as_value require_dynamic);
       ("parameters", named_tparam_info_list_as_value env parameters);
     ]
 
@@ -386,7 +400,8 @@ let continuations_map_as_value f m =
        m
        SMap.empty)
 
-let local_as_value env (ty, _pos, _expr_id) = type_as_value env ty
+let local_as_value env (ty, _pos, expr_id) =
+  Atom (Printf.sprintf "%s [expr_id=%d]" (Typing_print.debug env ty) expr_id)
 
 let per_cont_env_as_value env per_cont_env =
   continuations_map_as_value
@@ -410,15 +425,43 @@ let log_position p ?function_name f =
   else
     indentEnv
       ~color:(Bold Yellow)
-      ( Pos.string (Pos.to_absolute p)
-      ^ ( if Int.equal n 1 then
+      ((Pos.string @@ Pos.to_absolute p)
+      ^ (if Int.equal n 1 then
           ""
         else
-          "[" ^ string_of_int n ^ "]" )
+          "[" ^ string_of_int n ^ "]")
       ^
       match function_name with
       | None -> ""
-      | Some n -> " {" ^ n ^ "}" )
+      | Some n -> " {" ^ n ^ "}")
+      f
+
+let log_pos_or_decl p ?function_name f =
+  let n =
+    match Pos_or_decl.Map.find_opt p !iterations_decl with
+    | None ->
+      iterations_decl := Pos_or_decl.Map.add p 1 !iterations_decl;
+      1
+    | Some n ->
+      iterations_decl := Pos_or_decl.Map.add p (n + 1) !iterations_decl;
+      n + 1
+  in
+  (* If we've hit this many iterations then something must have gone wrong
+   * so let's not bother spewing to the log *)
+  if n > 10000 then
+    ()
+  else
+    indentEnv
+      ~color:(Bold Yellow)
+      (Pos_or_decl.show_as_absolute_file_line_characters p
+      ^ (if Int.equal n 1 then
+          ""
+        else
+          "[" ^ string_of_int n ^ "]")
+      ^
+      match function_name with
+      | None -> ""
+      | Some n -> " {" ^ n ^ "}")
       f
 
 let log_subtype_prop env message prop =
@@ -426,18 +469,12 @@ let log_subtype_prop env message prop =
   lprintf (Tty.Normal Tty.Green) "%s" (Typing_print.subtype_prop env prop);
   lnewline ()
 
-let local_mutability_as_value local_mutability =
-  local_id_map_as_value
-    (fun m -> Atom (Typing_mutability_env.to_string m))
-    local_mutability
-
 let fun_kind_to_string k =
   match k with
   | Ast_defs.FSync -> "normal"
   | Ast_defs.FAsync -> "async"
   | Ast_defs.FGenerator -> "generator"
   | Ast_defs.FAsyncGenerator -> "async generator"
-  | Ast_defs.FCoroutine -> "coroutine"
 
 let val_kind_to_string k =
   match k with
@@ -445,52 +482,12 @@ let val_kind_to_string k =
   | Lval -> "lval"
   | LvalSubexpr -> "lval subexpression"
 
-let rec reactivity_to_string env r =
-  let from_decl opt_ty prefix =
-    prefix
-    ^
-    match opt_ty with
-    | None -> ""
-    | Some ty -> " " ^ Typing_print.debug_decl env ty
-  in
-  match r with
-  | Nonreactive -> "normal"
-  | Local opt_ty -> from_decl opt_ty "local"
-  | Shallow opt_ty -> from_decl opt_ty "shallow"
-  | Reactive opt_ty -> from_decl opt_ty "reactive"
-  | Pure opt_ty -> from_decl opt_ty "pure"
-  | MaybeReactive r -> "maybereactive " ^ reactivity_to_string env r
-  | RxVar opt_r ->
-    "rxvar"
-    ^
-    (match opt_r with
-    | None -> ""
-    | Some r -> " " ^ reactivity_to_string env r)
-  | Cipp s ->
-    "cipp"
-    ^
-    (match s with
-    | None -> ""
-    | Some s -> "(" ^ s ^ ")")
-  | CippLocal s ->
-    "cipp_local"
-    ^
-    (match s with
-    | None -> ""
-    | Some s -> "(" ^ s ^ ")")
-  | CippGlobal -> "cipp_global"
-
 let lenv_as_value env lenv =
-  let { per_cont_env; local_using_vars; local_reactive; local_mutability } =
-    lenv
-  in
+  let { per_cont_env; local_using_vars } = lenv in
   make_map
     [
       ("per_cont_env", per_cont_env_as_value env per_cont_env);
-      ("local_mutability", local_mutability_as_value local_mutability);
       ("local_using_vars", local_id_set_as_value local_using_vars);
-      ( "local_reactive",
-        string_as_value (reactivity_to_string env local_reactive) );
     ]
 
 let param_as_value env (ty, _pos, mode) =
@@ -510,21 +507,28 @@ let genv_as_value env genv =
     static;
     val_kind;
     fun_kind;
-    fun_mutable;
+    fun_is_ctor;
     file = _;
+    this_module;
+    this_internal;
   } =
     genv
   in
   make_map
-    ( [
-        ("return", return_info_as_value env return);
-        ("params", local_id_map_as_value (param_as_value env) params);
-        ( "condition_types",
-          smap_as_value (decl_type_as_value env) condition_types );
-        ("static", bool_as_value static);
-        ("val_kind", string_as_value (val_kind_to_string val_kind));
-        ("fun_kind", string_as_value (fun_kind_to_string fun_kind));
-      ]
+    ([
+       ("return", return_info_as_value env return);
+       ("params", local_id_map_as_value (param_as_value env) params);
+       ( "condition_types",
+         smap_as_value (decl_type_as_value env) condition_types );
+       ("static", bool_as_value static);
+       ("val_kind", string_as_value (val_kind_to_string val_kind));
+       ("fun_kind", string_as_value (fun_kind_to_string fun_kind));
+       ("fun_is_ctor", bool_as_value fun_is_ctor);
+       ("this_internal", bool_as_value this_internal);
+     ]
+    @ (match this_module with
+      | Some this_module -> [("this_module", string_as_value this_module)]
+      | None -> [])
     @ (match parent with
       | Some (parent_id, parent_ty) ->
         [
@@ -532,18 +536,25 @@ let genv_as_value env genv =
           ("parent_ty", decl_type_as_value env parent_ty);
         ]
       | None -> [])
-    @ (match self with
-      | Some (self_id, self_ty) ->
-        [
-          ("self_id", string_as_value self_id);
-          ("self_ty", type_as_value env self_ty);
-        ]
-      | None -> [])
     @
-    match fun_mutable with
-    | None -> []
-    | Some pm ->
-      [("fun_mutable", string_as_value (Pp_type.show_param_mutability pm))] )
+    match self with
+    | Some (self_id, self_ty) ->
+      [
+        ("self_id", string_as_value self_id);
+        ("self_ty", type_as_value env self_ty);
+      ]
+    | None -> [])
+
+let fun_tast_info_as_map = function
+  | None -> make_map []
+  | Some r ->
+    let open Tast in
+    let { has_implicit_return; named_body_is_unsafe } = r in
+    make_map
+      [
+        ("has_implicit_return", bool_as_value has_implicit_return);
+        ("named_body_is_unsafe", bool_as_value named_body_is_unsafe);
+      ]
 
 let env_as_value env =
   let {
@@ -552,16 +563,20 @@ let env_as_value env =
     lenv;
     genv;
     decl_env = _;
+    tracing_info = _;
     in_loop;
     in_try;
     in_case;
+    in_expr_tree;
     inside_constructor;
-    global_tpenv;
+    in_support_dynamic_type_method_check;
+    tpenv;
     log_levels = _;
     allow_wildcards;
     inference_env;
     big_envs = _;
     pessimize = _;
+    fun_tast_info;
   } =
     env
   in
@@ -574,11 +589,15 @@ let env_as_value env =
       ("in_loop", bool_as_value in_loop);
       ("in_try", bool_as_value in_try);
       ("in_case", bool_as_value in_case);
+      ("in_expr_tree", bool_as_value in_expr_tree);
       ("inside_constructor", bool_as_value inside_constructor);
-      ("global_tpenv", tpenv_as_value env global_tpenv);
+      ( "in_support_dynamic_type_method_check",
+        bool_as_value in_support_dynamic_type_method_check );
+      ("tpenv", tpenv_as_value env tpenv);
       ("allow_wildcards", bool_as_value allow_wildcards);
       ( "inference_env",
         Typing_inference_env.Log.inference_env_as_value inference_env );
+      ("fun_tast_info", fun_tast_info_as_map fun_tast_info);
     ]
 
 let log_env_diff p ?function_name old_env new_env =
@@ -590,10 +609,10 @@ let log_env_diff p ?function_name old_env new_env =
   | _ -> log_position p ?function_name (fun () -> log_delta new_env d)
 
 (* Log the environment: local_types, subst, tenv and tpenv *)
-let hh_show_env p env =
+let hh_show_env ?function_name p env =
   let old_env = !lastenv in
   lastenv := env;
-  log_env_diff p old_env env
+  log_env_diff ?function_name p old_env env
 
 let hh_show_full_env p env =
   let empty_env =
@@ -608,15 +627,11 @@ let _ =
 (* Log the type of an expression *)
 let hh_show p env ty =
   let s1 = Pr.with_blank_tyvars (fun () -> Pr.debug env ty) in
-  let s2_opt = Typing_print.constraints_for_type env ty in
+  let s2 = Typing_print.constraints_for_type env ty in
   log_position p (fun () ->
       lprintf (Normal Green) "%s" s1;
-      lnewline ();
-      match s2_opt with
-      | None -> ()
-      | Some s2 ->
-        lprintf (Normal Green) "%s" s2;
-        lnewline ())
+      if String.( <> ) s2 "" then lprintf (Normal Green) " %s" s2;
+      lnewline ())
 
 (* Simple type of possible log data *)
 type log_structure =
@@ -632,9 +647,9 @@ let log_with_level env key ~level log_f =
     ()
 
 let log_types p env items =
-  log_position p (fun () ->
+  log_pos_or_decl p (fun () ->
       let rec go items =
-        List.iter items (fun item ->
+        List.iter items ~f:(fun item ->
             match item with
             | Log_head (message, items) ->
               indentEnv ~color:(Normal Yellow) message (fun () -> go items)
@@ -656,17 +671,29 @@ let log_types p env items =
       in
       go items)
 
+let log_escape ?(level = 1) p env msg vars =
+  log_with_level env "escape" ~level (fun () ->
+      log_pos_or_decl p (fun () ->
+          indentEnv ~color:(Normal Yellow) msg (fun () -> ());
+          if not (List.is_empty vars) then (
+            lnewline ();
+            List.iter vars ~f:(lprintf (Normal Green) "%s ")
+          )))
+
 let log_global_inference_env p env global_tvenv =
   log_position p (fun () ->
       log_value env @@ Inf.Log.global_inference_env_as_value global_tvenv)
 
 let log_prop level p message env prop =
-  log_with_level env "prop" level (fun () ->
+  log_with_level env "prop" ~level (fun () ->
       log_position p (fun () -> log_subtype_prop env message prop))
 
 let log_new_tvar env p tvar message =
-  log_with_level env "prop" 2 (fun () ->
-      log_types p env [Log_head (message, [Log_type ("type variable", tvar)])])
+  log_with_level env "prop" ~level:2 (fun () ->
+      log_types
+        (Pos_or_decl.of_raw_pos p)
+        env
+        [Log_head (message, [Log_type ("type variable", tvar)])])
 
 let log_tparam_instantiation env p tparam_name tvar =
   let message =
@@ -683,17 +710,13 @@ let log_new_tvar_for_new_object env p tvar cname tparam =
   in
   log_new_tvar env p tvar message
 
-let log_new_tvar_for_tconst env p tvar tconstid tvar_for_tconst =
+let log_new_tvar_for_tconst env (p, tvar) (_p, tconstid) tvar_for_tconst =
   let message =
     Printf.sprintf "Creating new type var for #%d::%s" tvar tconstid
   in
   log_new_tvar env p tvar_for_tconst message
 
-let log_new_tvar_for_pu_access env p tvar tid tvar_for_pu_access =
-  let message = Printf.sprintf "Creating new type var for #%d::%s" tvar tid in
-  log_new_tvar env p tvar_for_pu_access message
-
-let log_new_tvar_for_tconst_access env p tvar class_name tconst =
+let log_new_tvar_for_tconst_access env p tvar class_name (_p, tconst) =
   let message =
     Printf.sprintf
       "Creating type var with the same constraints as %s::%s"
@@ -703,7 +726,7 @@ let log_new_tvar_for_tconst_access env p tvar class_name tconst =
   log_new_tvar env p tvar message
 
 let log_intersection ~level env r ty1 ty2 ~inter_ty =
-  log_with_level env "inter" level (fun () ->
+  log_with_level env "inter" ~level (fun () ->
       log_types
         (Reason.to_pos r)
         env
@@ -729,16 +752,20 @@ let log_type_access ~level root (p, type_const_name) (env, result_ty) =
       ] );
   (env, result_ty)
 
-let log_localize ~level (decl_ty : decl_ty) (env, result_ty) =
+let log_localize ~level ety_env (decl_ty : decl_ty) (env, result_ty) =
   ( log_with_level env "localize" ~level @@ fun () ->
-    let pos = Reason.to_pos @@ get_reason result_ty in
     log_types
-      pos
+      (get_pos result_ty)
       env
       [
         Log_head
           ( "Localizing",
             [
+              Log_head
+                ( Printf.sprintf
+                    "expand_visible_newtype: %b"
+                    ety_env.expand_visible_newtype,
+                  [] );
               Log_decl_type ("decl type", decl_ty);
               Log_type ("result", result_ty);
             ] );

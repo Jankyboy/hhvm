@@ -16,9 +16,9 @@ let enforce_no_body m =
   | _ -> Errors.abstract_body (fst m.m_name)
 
 let check_interface c =
-  List.iter c.c_uses (fun (p, _) -> Errors.interface_use_trait p);
+  List.iter c.c_uses ~f:(fun (p, _) -> Errors.interface_use_trait p);
 
-  let (statics, vars) = split_vars c in
+  let (statics, vars) = split_vars c.c_vars in
   begin
     match vars with
     | hd :: _ ->
@@ -36,11 +36,11 @@ let check_interface c =
   end;
 
   (* make sure interfaces do not contain partially abstract type constants *)
-  List.iter c.c_typeconsts (fun tc ->
-      if
-        Option.is_some tc.c_tconst_constraint && Option.is_some tc.c_tconst_type
-      then
-        Errors.interface_with_partial_typeconst (fst tc.c_tconst_name));
+  List.iter c.c_typeconsts ~f:(fun tc ->
+      match tc.c_tconst_kind with
+      | TCPartiallyAbstract _ ->
+        Errors.interface_with_partial_typeconst (fst tc.c_tconst_name)
+      | _ -> ());
 
   (* make sure that interfaces only have empty public methods *)
   List.iter ~f:enforce_no_body c.c_methods

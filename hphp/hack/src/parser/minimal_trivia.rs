@@ -7,7 +7,7 @@
 use ocamlrep_derive::{FromOcamlRep, ToOcamlRep};
 
 use crate::lexable_trivia::{LexableTrivia, LexableTrivium};
-use crate::source_text::SourceText;
+use crate::trivia_factory::SimpleTriviaFactory;
 use crate::trivia_kind::TriviaKind;
 
 #[derive(Debug, Clone, FromOcamlRep, ToOcamlRep, PartialEq)]
@@ -21,12 +21,6 @@ pub type MinimalTrivia = Vec<MinimalTrivium>;
 impl LexableTrivia for MinimalTrivia {
     type Trivium = MinimalTrivium;
 
-    fn new() -> Self {
-        Vec::new()
-    }
-    fn from_slice(trivia: &[Self::Trivium]) -> Self {
-        trivia.to_vec()
-    }
     fn is_empty(&self) -> bool {
         self.is_empty()
     }
@@ -52,59 +46,65 @@ impl LexableTrivium for MinimalTrivium {
         self.width
     }
 
-    fn make_whitespace(_source: &SourceText, _offset: usize, width: usize) -> Self {
+    fn make_whitespace(_offset: usize, width: usize) -> Self {
         Self {
             kind: TriviaKind::WhiteSpace,
             width,
         }
     }
 
-    fn make_eol(_source: &SourceText, _offset: usize, width: usize) -> Self {
+    fn make_eol(_offset: usize, width: usize) -> Self {
         Self {
             kind: TriviaKind::EndOfLine,
             width,
         }
     }
 
-    fn make_single_line_comment(_source: &SourceText, _offset: usize, width: usize) -> Self {
+    fn make_single_line_comment(_offset: usize, width: usize) -> Self {
         Self {
             kind: TriviaKind::SingleLineComment,
             width,
         }
     }
 
-    fn make_fallthrough(_source: &SourceText, _offset: usize, width: usize) -> Self {
+    fn make_fallthrough(_offset: usize, width: usize) -> Self {
         Self {
             kind: TriviaKind::FallThrough,
             width,
         }
     }
 
-    fn make_fix_me(_source: &SourceText, _offset: usize, width: usize) -> Self {
+    fn make_fix_me(_offset: usize, width: usize) -> Self {
         Self {
             kind: TriviaKind::FixMe,
             width,
         }
     }
 
-    fn make_ignore_error(_source: &SourceText, _offset: usize, width: usize) -> Self {
+    fn make_ignore_error(_offset: usize, width: usize) -> Self {
         Self {
             kind: TriviaKind::IgnoreError,
             width,
         }
     }
 
-    fn make_extra_token_error(_source: &SourceText, _offset: usize, width: usize) -> Self {
+    fn make_extra_token_error(_offset: usize, width: usize) -> Self {
         Self {
             kind: TriviaKind::ExtraTokenError,
             width,
         }
     }
 
-    fn make_delimited_comment(_source: &SourceText, _offset: usize, width: usize) -> Self {
+    fn make_delimited_comment(_offset: usize, width: usize) -> Self {
         Self {
             kind: TriviaKind::DelimitedComment,
             width,
         }
+    }
+}
+
+impl SimpleTriviaFactory for MinimalTrivia {
+    fn make() -> Self {
+        vec![]
     }
 }

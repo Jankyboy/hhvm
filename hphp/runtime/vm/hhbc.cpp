@@ -26,9 +26,12 @@
 #include "hphp/runtime/base/stats.h"
 #include "hphp/runtime/base/zend-string.h"
 #include "hphp/runtime/vm/class-meth-data-ref.h"
+#include "hphp/runtime/vm/func-emitter.h"
 #include "hphp/runtime/vm/hhbc-codec.h"
+#include "hphp/runtime/vm/member-key.h"
 #include "hphp/runtime/vm/repo-global-data.h"
 #include "hphp/runtime/vm/unit.h"
+#include "hphp/runtime/vm/unit-emitter.h"
 #include "hphp/runtime/vm/unwind.h"
 #include "hphp/util/text-util.h"
 
@@ -129,22 +132,23 @@ int immSize(Op op, ArgType type, PC immPC) {
   }
 
   if (type == KA) {
+    // 1 byte for member code, 1 byte for readonly op
     switch (decode_raw<MemberCode>(pc)) {
       case MW:
         return 1;
       case MEC: case MPC:
-        return 1 + encoded_iva_size(decode_raw<uint8_t>(pc));
+        return 2 + encoded_iva_size(decode_raw<uint8_t>(pc));
       case MEL: case MPL: {
         auto nextPC = pc;
         auto const nameSize = encoded_iva_size(decode_raw<uint8_t>(pc));
         nextPC += nameSize;
         auto const locSize = encoded_iva_size(decode_raw<uint8_t>(nextPC));
-        return 1 + nameSize + locSize;
+        return 2 + nameSize + locSize;
       }
       case MEI:
-        return 1 + sizeof(int64_t);
+        return 2 + sizeof(int64_t);
       case MET: case MPT: case MQT:
-        return 1 + sizeof(Id);
+        return 2 + sizeof(Id);
     }
     not_reached();
   }
@@ -378,7 +382,7 @@ OffsetList instrJumpTargets(PC instrs, Offset pos) {
 }
 
 OffsetSet instrSuccOffsets(PC opc, const Func* func) {
-  auto const bcStart = func->unit()->entry();
+  auto const bcStart = func->entry();
   auto const offsets = instrJumpTargets(bcStart, opc - bcStart);
   OffsetSet offsetsSet{offsets.begin(), offsets.end()};
 
@@ -425,8 +429,6 @@ int instrNumPops(PC pc) {
 #define MFINAL -3
 #define C_MFINAL(n) -10 - (n)
 #define CUMANY -3
-#define CMANY_U3 C_MFINAL(3)
-#define CALLNATIVE -5
 #define FCALL(nin, nobj) -20 - (nin)
 #define CMANY -3
 #define SMANY -1
@@ -442,8 +444,6 @@ int instrNumPops(PC pc) {
 #undef MFINAL
 #undef C_MFINAL
 #undef CUMANY
-#undef CMANY_U3
-#undef CALLNATIVE
 #undef FCALL
 #undef CMANY
 #undef SMANY
@@ -454,19 +454,15 @@ int instrNumPops(PC pc) {
   // For most instructions, we know how many values are popped based
   // solely on the opcode
   if (n >= 0) return n;
-  // NewPackedArray and some final member operations specify how
-  // many values are popped in their first immediate
+  // Some final member operations specify how many values are popped in their
+  // first immediate.
   if (n == -3) return getImm(pc, 0).u_IVA;
-  // FCallBuiltin pops numArgs and numOut uninit values
-  if (n == -5) {
-    return getImm(pc, 0).u_IVA + getImm(pc, 2).u_IVA;
-  }
   // FCall* opcodes pop number of opcode specific inputs, unpack, numArgs,
-  // 3 cells/uninits reserved for ActRec and (numRets - 1) uninit values.
+  // 2 cells/uninits reserved for ActRec and (numRets - 1) uninit values.
   if (n <= -20) {
     auto const fca = getImm(pc, 0).u_FCA;
     auto const nin = -n - 20;
-    return nin + fca.numInputs() + 2 + fca.numRets;
+    return nin + fca.numInputs() + (kNumActRecCells - 1) + fca.numRets;
   }
   // Other final member operations pop their first immediate + n
   if (n <= -10) return getImm(pc, 0).u_IVA - n - 10;
@@ -493,9 +489,7 @@ int instrNumPushes(PC pc) {
 #define FOUR(...) 4
 #define FIVE(...) 5
 #define SIX(...) 6
-#define CMANY -2
 #define FCALL -1
-#define CALLNATIVE -3
 #define O(name, imm, pop, push, flags) push,
     OPCODES
 #undef NOV
@@ -505,18 +499,12 @@ int instrNumPushes(PC pc) {
 #undef FOUR
 #undef FIVE
 #undef SIX
-#undef CMANY
 #undef FCALL
-#undef CALLNATIVE
 #undef O
   };
   auto const op = peek_op(pc);
   int n = numberOfPushes[size_t(op)];
 
-  // FCallBuiltin pushes numOut + 1 return values
-  if (n == -3) return getImm(pc, 2).u_IVA + 1;
-  // The PopFrame opcode push all arguments onto the stack
-  if (n == -2) return getImm(pc, 0).u_IVA;
   // The FCall* opcodes pushes all return values onto the stack
   if (n == -1) return getImm(pc, 0).u_FCA.numRets;
 
@@ -553,13 +541,6 @@ FlavorDesc fcallFlavor(PC op, uint32_t i) {
   return UV;
 }
 
-FlavorDesc fcallBuiltinFlavor(PC op, uint32_t i) {
-  assertx(i < getImm(op, 0).u_IVA + getImm(op, 2).u_IVA);
-  auto const nargs = getImm(op, 0).u_IVA;
-  if (i < nargs) return CUV;
-  return UV;
-}
-
 }
 
 /**
@@ -576,8 +557,6 @@ FlavorDesc instrInputFlavor(PC op, uint32_t idx) {
 #define MFINAL return manyFlavor(op, idx, CV);
 #define C_MFINAL(n) return manyFlavor(op, idx, CV);
 #define CUMANY return manyFlavor(op, idx, CUV);
-#define CMANY_U3 return manyFlavor(op, idx, CUV);
-#define CALLNATIVE return fcallBuiltinFlavor(op, idx);
 #define FCALL(nin, nobj) return fcallFlavor<nin, nobj>(op, idx);
 #define CMANY return manyFlavor(op, idx, CV);
 #define SMANY return manyFlavor(op, idx, CV);
@@ -596,8 +575,6 @@ FlavorDesc instrInputFlavor(PC op, uint32_t idx) {
 #undef MFINAL
 #undef C_MFINAL
 #undef CUMANY
-#undef CMANY_U3
-#undef CALLNATIVE
 #undef FCALL
 #undef CMANY
 #undef SMANY
@@ -607,15 +584,10 @@ FlavorDesc instrInputFlavor(PC op, uint32_t idx) {
 void staticArrayStreamer(const ArrayData* ad, std::string& out) {
   if (ad->isLegacyArray()) out += "legacy_";
 
+  assertx(ad->isVecType() || ad->isDictType() || ad->isKeysetType());
   if (ad->isVecType()) out += "vec(";
-  else if (ad->isDictType()) out += "dict(";
-  else if (ad->isKeysetType()) out += "keyset(";
-  else {
-    assertx(ad->isPHPArrayType());
-    if (ad->isVArray()) out += "varray(";
-    else if (ad->isDArray()) out += "darray(";
-    else out += "array(";
-  }
+  if (ad->isDictType()) out += "dict(";
+  if (ad->isKeysetType()) out += "keyset(";
 
   if (!ad->empty()) {
     bool comma = false;
@@ -638,14 +610,6 @@ void staticArrayStreamer(const ArrayData* ad, std::string& out) {
     }
   }
   out += ")";
-
-  if (ad->hasProvenanceData() && RuntimeOption::EvalArrayProvenance) {
-    out += " [";
-    if (auto const tag = arrprov::getTag(ad)) {
-      out += tag.toString();
-    }
-    out += "]";
-  }
 }
 
 void staticStreamer(const TypedValue* tv, std::string& out) {
@@ -672,10 +636,6 @@ void staticStreamer(const TypedValue* tv, std::string& out) {
     case KindOfLazyClass:
       out += tv->m_data.plazyclass.name()->data();
       return;
-    case KindOfPersistentDArray:
-    case KindOfDArray:
-    case KindOfPersistentVArray:
-    case KindOfVArray:
     case KindOfPersistentVec:
     case KindOfVec:
     case KindOfPersistentDict:
@@ -1023,6 +983,12 @@ static const char* SpecialClsRef_names[] = {
 #undef REF
 };
 
+static const char* ReadOnlyOp_names[] = {
+#define OP(x) #x,
+  READONLY_OPS
+#undef OP
+};
+
 template<class T, size_t Sz>
 const char* subopToNameImpl(const char* (&arr)[Sz], T opcode, int off) {
   static_assert(
@@ -1041,19 +1007,19 @@ bool subopValidImpl(const char* (&/*arr*/)[Sz], T op, int off) {
 }
 
 template<class T, size_t Sz>
-folly::Optional<T> nameToSubopImpl(const char* (&arr)[Sz],
+Optional<T> nameToSubopImpl(const char* (&arr)[Sz],
   const char* str, int off) {
   for (auto i = size_t{0}; i < Sz; ++i) {
     if (!strcmp(str, arr[i])) return static_cast<T>(i + off);
   }
-  return folly::none;
+  return std::nullopt;
 }
 
 namespace {
 template<class T> struct NameToSubopHelper;
 }
 
-template<class T> folly::Optional<T> nameToSubop(const char* str) {
+template<class T> Optional<T> nameToSubop(const char* str) {
   return NameToSubopHelper<T>::conv(str);
 }
 
@@ -1066,12 +1032,12 @@ template<class T> folly::Optional<T> nameToSubop(const char* str) {
   }                                                                \
   namespace {                                                      \
   template<> struct NameToSubopHelper<subop> {                     \
-    static folly::Optional<subop> conv(const char* str) {          \
+    static Optional<subop> conv(const char* str) {          \
       return nameToSubopImpl<subop>(subop##_names, str, off);      \
     }                                                              \
   };                                                               \
   }                                                                \
-  template folly::Optional<subop> nameToSubop(const char*);
+  template Optional<subop> nameToSubop(const char*);
 
 // Not all subops start indexing at 0
 /*Subop Name      Numerically first value */
@@ -1096,6 +1062,7 @@ X(CudOp,          static_cast<int>(CudOp::IgnoreIter))
 X(SpecialClsRef,  static_cast<int>(SpecialClsRef::Self))
 X(IsLogAsDynamicCallOp,
                   static_cast<int>(IsLogAsDynamicCallOp::LogAsDynamicCall))
+X(ReadOnlyOp,     static_cast<int>(ReadOnlyOp::Any))
 #undef X
 
 //////////////////////////////////////////////////////////////////////
@@ -1134,7 +1101,6 @@ bool instrIsNonCallControlFlow(Op opcode) {
     case OpAwaitAll:
     case OpYield:
     case OpYieldK:
-    case OpFCallBuiltin:
       return false;
 
     default:

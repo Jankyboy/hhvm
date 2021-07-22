@@ -34,14 +34,13 @@ namespace HPHP {
 
 PreClass::PreClass(Unit* unit, int line1, int line2, const StringData* n,
                    Attr attrs, const StringData* parent, const StringData* docComment,
-                   Id id, Hoistable hoistable)
+                   Id id)
   : m_unit(unit)
   , m_namedEntity(NamedEntity::get(n))
   , m_line1(line1)
   , m_line2(line2)
   , m_id(id)
   , m_attrs(attrs)
-  , m_hoistable(hoistable)
   , m_name(n)
   , m_parent(parent)
   , m_docComment(docComment)
@@ -94,11 +93,6 @@ void PreClass::prettyPrint(std::ostream &out) const {
   if (m_attrs & AttrFinal) { out << "final "; }
   if (m_attrs & AttrInterface) { out << "interface "; }
   out << m_name->data();
-  if (m_hoistable == MaybeHoistable) {
-    out << " (maybe-hoistable)";
-  } else if (m_hoistable == AlwaysHoistable) {
-    out << " (always-hoistable)";
-  }
   if (m_attrs & AttrNoOverride){ out << " (nooverride)"; }
   if (m_attrs & AttrUnique)     out << " (unique)";
   if (m_attrs & AttrPersistent) out << " (persistent)";
@@ -239,20 +233,36 @@ void PreClass::Prop::prettyPrint(std::ostream& out,
 
 PreClass::Const::Const(const StringData* name,
                        const TypedValueAux& val,
-                       const StringData* phpCode)
+                       const StringData* phpCode,
+                       const bool fromTrait)
   : m_name(name)
   , m_val(val)
   , m_phpCode(phpCode)
+  , m_fromTrait(fromTrait)
 {}
 
 void PreClass::Const::prettyPrint(std::ostream& out,
                                   const PreClass* preClass) const {
-  if (isType()) {
-    out << "Type ";
+  switch (kind()) {
+    case ConstModifiers::Kind::Value:
+      break;
+    case ConstModifiers::Kind::Type:
+      out << "Type ";
+      break;
+    case ConstModifiers::Kind::Context:
+      out << "Context ";
+      break;
   }
-  if (isAbstract()) {
+  if (isAbstractAndUninit()) {
     out << "Constant (abstract) "
         << preClass->name()->data() << "::" << m_name->data()
+        << std::endl;
+    return;
+  }
+  if (kind() == ConstModifiers::Kind::Context) {
+    out << "Constant "
+        << preClass->name()->data() << "::" << m_name->data()
+        << " " << coeffects().toString()
         << std::endl;
     return;
   }
@@ -265,6 +275,11 @@ void PreClass::Const::prettyPrint(std::ostream& out,
     out << " = " << ss;
   }
   out << std::endl;
+}
+
+StaticCoeffects PreClass::Const::coeffects() const {
+  assertx(kind() == ConstModifiers::Kind::Context);
+  return m_val.constModifiers().getCoeffects();
 }
 
 ///////////////////////////////////////////////////////////////////////////////

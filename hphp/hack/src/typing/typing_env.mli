@@ -11,6 +11,10 @@ open Decl_provider
 open Typing_defs
 module TPEnv = Type_parameter_env
 
+type class_or_typedef_result =
+  | ClassResult of Typing_classes_heap.Api.t
+  | TypedefResult of Typing_defs.typedef_type
+
 val simplify_unions_ref : (env -> locl_ty -> env * locl_ty) ref
 
 val show_env : env -> string
@@ -21,20 +25,54 @@ val get_tcopt : env -> TypecheckerOptions.t
 
 val map_tcopt : env -> f:(TypecheckerOptions.t -> TypecheckerOptions.t) -> env
 
+val get_deps_mode : env -> Typing_deps_mode.t
+
 val get_ctx : env -> Provider_context.t
 
-val fresh_type : env -> Pos.t -> env * locl_ty
+val get_tracing_info : env -> Decl_counters.tracing_info option
 
-(** Same as fresh_type but takes a specific reason as parameter. *)
-val fresh_type_reason :
-  ?variance:Ast_defs.variance -> env -> Reason.t -> env * locl_ty
+(** Functions related to type variable scopes *)
 
-val fresh_invariant_type_var : env -> Pos.t -> env * locl_ty
+(**
+  Open a new "type variable" scope and record this in the environment.
+  Within this scope, you can
+  - generate fresh type variables, using [fresh_type_X] functions
+  - query the currently fresh type variables, using [get_current_tyvars]
+  - close the scope
 
+  The usual usage pattern within type inference is:
+
+  1. Open a type variable scope using [open_tyvars] before checking an AST node.
+
+  2. Check the AST node; generate fresh type variables as necessary; make calls
+     to subtyping functions such as [Typing_ops.sub_type] that will record constraints
+     on those type variables.
+
+  3. Call [set_tyvar_variance] on the type of the expression to correctly set the
+     variance of the type variables.
+
+  4. Call [Typing_solver.close_tyvars_and_solve] to solve type variables that can
+     be solved immediately, and close the type variable scope.
+*)
 val open_tyvars : env -> Pos.t -> env
 
+(** Generate a fresh type variable type with variance not yet recorded *)
+val fresh_type : env -> Pos.t -> env * locl_ty
+
+(** Generate a fresh type variable type with optional variance and
+    the given reason information *)
+val fresh_type_reason :
+  ?variance:Ast_defs.variance -> env -> Pos.t -> Reason.t -> env * locl_ty
+
+(** Generate a fresh type variable type that is assumed to be invariant, so
+    it won't be solved automatically at the end of the scope *)
+val fresh_type_invariant : env -> Pos.t -> env * locl_ty
+
+(** What type variables are fresh in the current scope? *)
 val get_current_tyvars : env -> Ident.t list
 
+(** Close the current type variable scope.
+    You might want to call [Typing_solver.close_tyvars_and_solve] instead. *)
 val close_tyvars : env -> env
 
 val add : env -> ?tyvar_pos:Pos.t -> int -> locl_ty -> env
@@ -54,52 +92,73 @@ val expand_type : env -> locl_ty -> env * locl_ty
 
 val expand_internal_type : env -> internal_type -> env * internal_type
 
-val get_shape_field_name : Ast_defs.shape_field_name -> string
+val get_shape_field_name : tshape_field_name -> string
 
-val get_shape_field_name_pos : Ast_defs.shape_field_name -> Pos.t
+val get_shape_field_name_pos : tshape_field_name -> Pos_or_decl.t
 
 val empty :
+  ?origin:Decl_counters.origin ->
   ?mode:FileInfo.mode ->
   Provider_context.t ->
   Relative_path.t ->
   droot:Typing_deps.Dep.dependent Typing_deps.Dep.variant option ->
   env
 
-val is_typedef : env -> typedef_key -> bool
+val is_typedef : env -> type_key -> bool
 
-val get_enum : env -> class_key -> class_decl option
+val is_typedef_visible :
+  env -> ?expand_visible_newtype:bool -> typedef_type -> bool
 
-val is_enum : env -> class_key -> bool
+val get_enum : env -> type_key -> class_decl option
 
-val get_enum_constraint : env -> class_key -> decl_ty option
+val is_enum : env -> type_key -> bool
 
-val add_wclass : env -> string -> unit
+val is_enum_class : env -> type_key -> bool
 
-val get_class : env -> class_key -> class_decl option
+val get_enum_constraint : env -> type_key -> decl_ty option
 
-val get_class_dep : env -> class_key -> class_decl option
+(** Register the constructor of the class with the given name as a dependency
+    of the class being checked. *)
+val make_depend_on_constructor : env -> type_key -> unit
 
+(** Get class declaration from the appropriate backend and add dependency. *)
+val get_class : env -> type_key -> class_decl option
+
+val get_class_dep : env -> type_key -> class_decl option
+
+(** Get function declaration from the appropriate backend and add dependency. *)
 val get_fun : env -> Decl_provider.fun_key -> Decl_provider.fun_decl option
 
-val get_typedef : env -> typedef_key -> typedef_decl option
+(** Get type alias declaration from the appropriate backend and add dependency. *)
+val get_typedef : env -> type_key -> typedef_decl option
 
+val get_class_or_typedef : env -> type_key -> class_or_typedef_result option
+
+(** Get class constant declaration from the appropriate backend and add dependency. *)
 val get_const : env -> class_decl -> string -> class_const option
 
+(** Get class constants declaration from the appropriate backend and add dependency. *)
+val consts : env -> class_decl -> (string * class_const) list
+
+(** Get type constant declaration from the appropriate backend and add dependency. *)
 val get_typeconst : env -> class_decl -> string -> typeconst_type option
 
-val get_pu_enum : env -> class_decl -> string -> pu_enum_type option
-
+(** Get global constant declaration from the appropriate backend and add dependency. *)
 val get_gconst : env -> gconst_key -> gconst_decl option
 
+(** Get static member declaration of a class from the appropriate backend and add dependency. *)
 val get_static_member : bool -> env -> class_decl -> string -> class_elt option
 
 val suggest_static_member :
-  bool -> class_decl -> string -> (Pos.t * string) option
+  bool -> class_decl -> string -> (Pos_or_decl.t * string) option
 
+(** Get class member declaration from the appropriate backend and add dependency. *)
 val get_member : bool -> env -> class_decl -> string -> class_elt option
 
-val suggest_member : bool -> class_decl -> string -> (Pos.t * string) option
+val suggest_member :
+  bool -> class_decl -> string -> (Pos_or_decl.t * string) option
 
+(** Get class constructor declaration from the appropriate backend and add dependency. *)
 val get_construct : env -> class_decl -> class_elt option * consistent_kind
 
 val get_return : env -> Typing_env_return_info.t
@@ -124,13 +183,24 @@ val clear_params : env -> env
 
 val with_env : env -> (env -> env * 'a) -> env * 'a
 
+val with_origin : env -> Decl_counters.origin -> (env -> env * 'a) -> env * 'a
+
+val with_origin2 :
+  env -> Decl_counters.origin -> (env -> env * 'a * 'b) -> env * 'a * 'b
+
+val with_in_expr_tree : env -> bool -> (env -> env * 'a * 'b) -> env * 'a * 'b
+
+val is_in_expr_tree : env -> bool
+
+val set_in_expr_tree : env -> bool -> env
+
 val is_static : env -> bool
 
 val get_val_kind : env -> Typing_defs.val_kind
 
 val get_self_ty : env -> locl_ty option
 
-val get_self : env -> locl_ty
+val get_self_class_type : env -> (pos_id * exact * locl_ty list) option
 
 val get_self_id : env -> string option
 
@@ -146,7 +216,40 @@ val get_fn_kind : env -> Ast_defs.fun_kind
 
 val get_file : env -> Relative_path.t
 
+val get_current_decl_and_file : env -> Pos_or_decl.ctx
+
+(** Check that the position is in the current decl and if it is, resolve
+    it with the current file. *)
+val fill_in_pos_filename_if_in_current_decl :
+  env -> Pos_or_decl.t -> Pos.t option
+
+(** This will check that the first position of the given reasons is in the
+    current decl and if yes use it as primary error position. If no,
+    it will error at a default position in the current file and log the failed
+    assertion.
+    This also sets the error code to the code for unification error
+    if none is provided. *)
+val unify_error_assert_primary_pos_in_current_decl :
+  env -> Errors.error_from_reasons_callback
+
+(** This will check that the first position of the given reasons is in the
+    current decl and if yes use it as primary error position. If no,
+    it will error at a default position in the current file and log the failed
+    assertion.
+    This also sets the error code to the code for invalid type hint error
+    if none is provided. *)
+val invalid_type_hint_assert_primary_pos_in_current_decl :
+  env -> Errors.error_from_reasons_callback
+
 val set_fn_kind : env -> Ast_defs.fun_kind -> env
+
+val set_module : env -> string option -> env
+
+val set_internal : env -> bool -> env
+
+val get_module : env -> string option
+
+val get_internal : env -> bool
 
 val set_self : env -> string -> locl_ty -> env
 
@@ -162,7 +265,7 @@ val get_mode : env -> FileInfo.mode
 
 val is_strict : env -> bool
 
-val is_decl : env -> bool
+val is_hhi : env -> bool
 
 val get_allow_solve_globals : env -> bool
 
@@ -196,13 +299,11 @@ end
 
 val tany : env -> locl_phase ty_
 
-val decl_tany : env -> decl_phase ty_
-
 val next_cont_opt : env -> Typing_per_cont_env.per_cont_entry option
 
 val all_continuations : env -> Typing_continuations.t list
 
-val set_local : env -> Local_id.t -> locl_ty -> Pos.t -> env
+val set_local : ?immutable:bool -> env -> Local_id.t -> locl_ty -> Pos.t -> env
 
 val is_using_var : env -> Local_id.t -> bool
 
@@ -235,7 +336,7 @@ val get_tpenv : env -> TPEnv.t
 val get_global_tpenv : env -> TPEnv.t
 
 val get_pos_and_kind_of_generic :
-  env -> string -> (Pos.t * Typing_kinding_defs.kind) option
+  env -> string -> (Pos_or_decl.t * Typing_kinding_defs.kind) option
 
 val get_lower_bounds : env -> string -> locl_ty list -> TPEnv.tparam_bounds
 
@@ -246,6 +347,8 @@ val get_reified : env -> string -> Aast.reify_kind
 val get_enforceable : env -> string -> bool
 
 val get_newable : env -> string -> bool
+
+val get_require_dynamic : env -> string -> bool
 
 val add_upper_bound :
   ?intersect:(locl_ty -> locl_ty list -> locl_ty list) ->
@@ -265,13 +368,11 @@ val get_equal_bounds : env -> string -> locl_ty list -> TPEnv.tparam_bounds
 
 val get_tparams : env -> locl_ty -> SSet.t
 
+val add_lower_bound_global : env -> string -> locl_ty -> env
+
 val add_upper_bound_global : env -> string -> locl_ty -> env
 
 val env_with_tpenv : env -> TPEnv.t -> env
-
-val env_with_mut : env -> Typing_mutability_env.mutability_env -> env
-
-val get_env_mutability : env -> Typing_mutability_env.mutability_env
 
 val env_with_global_tpenv : env -> TPEnv.t -> env
 
@@ -349,17 +450,11 @@ val extract_global_inference_env : env -> env * Typing_inference_env.t_global
 
 val get_tyvar_eager_solve_fail : env -> Ident.t -> bool
 
-val get_tyvar_type_const : env -> int -> Aast.sid -> (Aast.sid * locl_ty) option
+val get_tyvar_type_const : env -> int -> pos_id -> (pos_id * locl_ty) option
 
-val get_tyvar_pu_access : env -> int -> Aast.sid -> (Aast.sid * locl_ty) option
+val set_tyvar_type_const : env -> int -> pos_id -> locl_ty -> env
 
-val get_tyvar_pu_accesses : env -> int -> (Aast.sid * locl_ty) SMap.t
-
-val set_tyvar_type_const : env -> int -> Aast.sid -> locl_ty -> env
-
-val set_tyvar_pu_access : env -> int -> Aast.sid -> locl_ty -> env
-
-val get_tyvar_type_consts : env -> int -> (Aast.sid * locl_ty) SMap.t
+val get_tyvar_type_consts : env -> int -> (pos_id * locl_ty) SMap.t
 
 val initialize_tyvar_as_in :
   as_in:Typing_inference_env.t_global -> env -> int -> env
@@ -369,13 +464,14 @@ val copy_tyvar_from_genv_to_env :
 
 val get_all_tyvars : env -> Ident.t list
 
-val error_if_reactive_context : env -> (unit -> unit) -> unit
+val fresh_param_name : env -> string -> env * string
 
 val add_fresh_generic_parameter_by_kind :
-  env -> string -> Typing_kinding_defs.kind -> env * string
+  env -> Pos_or_decl.t -> string -> Typing_kinding_defs.kind -> env * string
 
 val add_fresh_generic_parameter :
   env ->
+  Pos_or_decl.t ->
   string ->
   reified:Aast.reify_kind ->
   enforceable:bool ->
@@ -388,32 +484,21 @@ val get_tpenv_size : env -> int
 
 val get_tpenv_tparams : env -> SSet.t
 
-val set_env_reactive : env -> reactivity -> env
-
 val set_env_function_pos : env -> Pos.t -> env
 
 val set_env_pessimize : env -> env
 
-val env_local_reactive : env -> bool
+val fun_is_constructor : env -> bool
 
-val add_mutable_var :
-  env -> Local_id.t -> Typing_mutability_env.mutability -> env
+val set_fun_is_constructor : env -> bool -> env
 
-val local_is_mutable : include_borrowed:bool -> env -> Local_id.t -> bool
-
-val function_is_mutable : env -> param_mutability option
-
-val set_fun_mutable : env -> param_mutability option -> env
+val set_fun_tast_info : env -> Tast.fun_tast_info -> env
 
 val env_with_locals : env -> Typing_per_cont_env.t -> env
 
 val reinitialize_locals : env -> env
 
-val anon :
-  local_env ->
-  env ->
-  (env -> env * Tast.expr * locl_ty) ->
-  env * Tast.expr * locl_ty
+val closure : env -> (env -> env * 'a) -> env * 'a
 
 val in_try : env -> (env -> env * 'a) -> env * 'a
 

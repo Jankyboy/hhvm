@@ -73,18 +73,18 @@ function getprotobynumber(int $number);
 function getservbyname(string $service, string $protocol);
 <<__PHPStdLib>>
 function getservbyport(int $port, string $protocol);
-<<__PHPStdLib, __Pure>>
-function inet_ntop(string $in_addr);
-<<__PHPStdLib, __Pure>>
-function inet_ntop_folly(string $in_addr): ?string;
-<<__PHPStdLib, __Pure>>
-function inet_ntop_nullable(string $in_addr): ?string;
-<<__PHPStdLib, __Pure>>
-function inet_pton(string $address);
-<<__PHPStdLib, __Pure>>
-function ip2long(string $ip_address);
-<<__PHPStdLib, __Pure>>
-function long2ip(string $proper_address);
+<<__PHPStdLib>>
+function inet_ntop(string $in_addr)[];
+<<__PHPStdLib>>
+function inet_ntop_folly(string $in_addr)[]: ?string;
+<<__PHPStdLib>>
+function inet_ntop_nullable(string $in_addr)[]: ?string;
+<<__PHPStdLib>>
+function inet_pton(string $address)[];
+<<__PHPStdLib>>
+function ip2long(string $ip_address)[];
+<<__PHPStdLib>>
+function long2ip(string $proper_address)[];
 <<__PHPStdLib>>
 function dns_check_record($host, $type = null);
 <<__PHPStdLib>>

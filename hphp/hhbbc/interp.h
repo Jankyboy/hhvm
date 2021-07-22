@@ -13,14 +13,11 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HHBBC_INTERP_H_
-#define incl_HHBBC_INTERP_H_
+#pragma once
 
 #include <functional>
 #include <vector>
 #include <bitset>
-
-#include <folly/Optional.h>
 
 #include "hphp/hhbbc/bc.h"
 #include "hphp/hhbbc/context.h"
@@ -33,6 +30,7 @@ namespace HPHP { namespace HHBBC {
 struct PropertiesInfo;
 struct CollectedInfo;
 struct State;
+struct StateMutationUndo;
 struct StepFlags;
 struct Bytecode;
 struct ISS;
@@ -60,7 +58,7 @@ struct RunFlags {
    * If this is not none, the interpreter executed a return in this
    * block, with this type.
    */
-  folly::Optional<Type> returned;
+  Optional<Type> returned;
 
   /*
    * If returned is set, and the returned value was a parameter,
@@ -69,6 +67,8 @@ struct RunFlags {
    */
   LocalId retParam{NoLocalId};
   BlockUpdateInfo updateInfo;
+
+  bool noThrow{true};
 };
 
 //////////////////////////////////////////////////////////////////////
@@ -145,7 +145,7 @@ struct StepFlags {
    * If this is not none, the interpreter executed a return on this
    * step, with this type.
    */
-  folly::Optional<Type> returned;
+  Optional<Type> returned;
 
   /*
    * If returned is set, and the returned value was a parameter,
@@ -168,6 +168,7 @@ struct Interp {
   const BlockId bid;
   const php::Block* blk;
   State& state;
+  StateMutationUndo* undo = nullptr;
 };
 
 /*
@@ -205,17 +206,15 @@ void default_dispatch(ISS&, const Bytecode&);
 /*
  * Can this call be converted to an FCallBuiltin
  */
-bool can_emit_builtin(ISS& env, const php::Func* func, const FCallArgs& fca);
-
-void finish_builtin(ISS& env, const php::Func* func, const FCallArgs& fca);
+bool optimize_builtin(ISS& env, const php::Func* func, const FCallArgs& fca);
 
 bool handle_function_exists(ISS& env, const Type& name);
 
-folly::Optional<Type>
+Optional<Type>
 const_fold(ISS& env, uint32_t nArgs, uint32_t numExtraInputs,
            const php::Func& phpFunc, bool variadicsPacked);
 
-folly::Optional<Type> thisType(const Index& index, Context ctx);
+Optional<Type> thisType(const Index& index, Context ctx);
 
 /*
  * Extracts name from the type either by using a reified name specialization or
@@ -226,5 +225,3 @@ SString getNameFromType(const Type& t);
 //////////////////////////////////////////////////////////////////////
 
 }}
-
-#endif

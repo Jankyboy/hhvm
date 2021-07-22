@@ -418,8 +418,7 @@ const StaticString
   s_class("class"),
   s_clsmeth("clsmeth"),
   s_rclsmeth("rclsmeth"),
-  s_record("record"),
-  s_lclass("lazy class");
+  s_record("record");
 
 StaticString getDataTypeString(DataType t, bool isLegacy) {
   switch (t) {
@@ -436,10 +435,6 @@ StaticString getDataTypeString(DataType t, bool isLegacy) {
     case KindOfDict:       return isLegacy ? s_darray : s_dict;
     case KindOfPersistentKeyset:
     case KindOfKeyset:     return s_keyset;
-    case KindOfPersistentDArray:
-    case KindOfDArray:     return s_darray;
-    case KindOfPersistentVArray:
-    case KindOfVArray:     return s_varray;
     case KindOfObject:     return s_object;
     case KindOfResource:   return s_resource;
     case KindOfRFunc:      return s_rfunc;
@@ -448,7 +443,7 @@ StaticString getDataTypeString(DataType t, bool isLegacy) {
     case KindOfClsMeth:    return s_clsmeth;
     case KindOfRClsMeth:   return s_rclsmeth;
     case KindOfRecord:     return s_record;
-    case KindOfLazyClass:      return s_lclass;
+    case KindOfLazyClass:  return s_class;
   }
   not_reached();
 }

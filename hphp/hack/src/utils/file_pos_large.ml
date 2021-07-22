@@ -7,6 +7,7 @@
  *
  *)
 
+(* See documentation in mli file *)
 type t = {
   pos_lnum: int;
   pos_bol: int;
@@ -18,6 +19,11 @@ let pp fmt pos =
   Format.pp_print_int fmt pos.pos_lnum;
   Format.pp_print_string fmt ":";
   Format.pp_print_int fmt (pos.pos_cnum - pos.pos_bol + 1)
+
+let show : t -> string =
+ fun pos ->
+  pp Format.str_formatter pos;
+  Format.flush_str_formatter ()
 
 let compare : t -> t -> int = compare
 

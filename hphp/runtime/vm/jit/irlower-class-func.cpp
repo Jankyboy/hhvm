@@ -55,6 +55,17 @@ void cgLdClsName(IRLS& env, const IRInstruction* inst) {
                dst, sizeof(LowStringPtr));
 }
 
+void cgLdLazyCls(IRLS& env, const IRInstruction* inst) {
+  auto const dst = dstLoc(env, inst, 0).reg();
+  auto const src = srcLoc(env, inst, 0).reg();
+  auto& v = vmain(env);
+
+  auto const preclass = v.makeReg();
+  v << load{src[Class::preClassOff()], preclass};
+  emitLdLowPtr(v, preclass[PreClass::nameOffset()],
+               dst, sizeof(LowStringPtr));
+}
+
 void cgLdLazyClsName(IRLS& env, const IRInstruction* inst) {
   auto const dst = dstLoc(env, inst, 0).reg();
   auto const lazyClsData = srcLoc(env, inst, 0).reg();
@@ -62,7 +73,11 @@ void cgLdLazyClsName(IRLS& env, const IRInstruction* inst) {
   v << copy{lazyClsData, dst};
 }
 
-IMPL_OPCODE_CALL(MethodExists)
+void cgMethodExists(IRLS& env, const IRInstruction* inst) {
+  auto const args = argGroup(env, inst).ssa(0).ssa(1);
+  cgCallHelper(vmain(env), env, CallSpec::direct(methodExistsHelper),
+               callDest(env, inst), SyncOptions::None, args);
+}
 
 void cgLdClsMethod(IRLS& env, const IRInstruction* inst) {
   auto const dst = dstLoc(env, inst, 0).reg();
@@ -137,6 +152,7 @@ void cgLdClsInitData(IRLS& env, const IRInstruction* inst) {
   auto const handle = v.makeReg();
   auto const vec = v.makeReg();
   v << loadzlq{cls[offset], handle};
+  markRDSAccess(v, handle);
   v << load{Vreg(rvmtl())[handle], vec};
   v << load{vec[Class::PropInitVec::dataOff()], dst};
 }
@@ -226,33 +242,23 @@ void cgFuncHasAttr(IRLS& env, const IRInstruction* inst) {
   v << setcc{CC_NZ, sf, dst};
 }
 
-void cgIsClsDynConstructible(IRLS& env, const IRInstruction* inst) {
+void cgClassHasAttr(IRLS& env, const IRInstruction* inst) {
   auto const cls = srcLoc(env, inst, 0).reg();
   auto const dst = dstLoc(env, inst, 0).reg();
-  auto& v = vmain(env);
+  auto const attr = inst->extra<AttrData>()->attr;
 
+  auto& v = vmain(env);
   auto const sf = v.makeReg();
-  v << testlim{
-    static_cast<int32_t>(AttrDynamicallyConstructible),
-    cls[Class::attrCopyOff()],
-    sf
-  };
+  v << testlim{attr, cls[Class::attrCopyOff()], sf};
   v << setcc{CC_NZ, sf, dst};
 }
 
-void cgLdFuncRxLevel(IRLS& env, const IRInstruction* inst) {
+///////////////////////////////////////////////////////////////////////////////
+
+void cgLdFuncRequiredCoeffects(IRLS& env, const IRInstruction* inst) {
   auto const func = srcLoc(env, inst, 0).reg();
   auto const dst = dstLoc(env, inst, 0).reg();
-  auto& v = vmain(env);
-
-  static_assert(AttrRxLevel0 == (1u << 14), "");
-  static_assert(AttrRxLevel1 == (1u << 15), "");
-  static_assert(AttrRxLevel2 == (1u << 16), "");
-  auto const attrs = v.makeReg();
-  auto const shifted = v.makeReg();
-  v << loadzlq{func[Func::attrsOff()], attrs};
-  v << shrqi{14, attrs, shifted, v.makeReg()};
-  v << andqi{7, shifted, dst, v.makeReg()};
+  vmain(env) << loadzwq{func[Func::requiredCoeffectsOff()], dst};
 }
 
 ///////////////////////////////////////////////////////////////////////////////

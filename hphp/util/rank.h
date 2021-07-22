@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_RANK_H_
-#define incl_HPHP_RANK_H_
+#pragma once
 
 #include <limits.h>
 
@@ -53,6 +52,8 @@ enum Rank {
   RankUnitCache,
   RankStatCacheNode = RankUnitCache,
 
+  RankUnitHashCache,
+
   RankInstanceBitsInit,
 
   RankTreadmill,
@@ -80,5 +81,3 @@ extern void insertRank(Rank r);
 #endif
 
 }
-
-#endif

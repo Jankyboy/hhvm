@@ -17,7 +17,6 @@
 #include "hphp/runtime/vm/jit/type.h"
 
 #include "hphp/runtime/base/bespoke-array.h"
-#include "hphp/runtime/base/bespoke-layout.h"
 #include "hphp/runtime/base/repo-auth-type-array.h"
 #include "hphp/runtime/base/tv-type.h"
 #include "hphp/runtime/vm/jit/guard-constraint.h"
@@ -72,26 +71,22 @@ constexpr Type::bits_t Type::kClsSpecBits;
 // Vanilla array-spec manipulation.
 
 Type Type::narrowToVanilla() const {
-  if (!supports(SpecKind::Array)) return *this;
-  if (supports(SpecKind::Class) || supports(SpecKind::Record)) return *this;
-  auto const newSpec = arrSpec().narrowToVanilla();
-  if (newSpec == ArraySpec::Bottom()) return TBottom;
-  return Type(*this, newSpec);
+  return narrowToLayout(ArrayLayout::Vanilla());
 }
 
-Type Type::narrowToBespokeLayout(BespokeLayout layout) const {
+Type Type::narrowToLayout(ArrayLayout layout) const {
   if (!supports(SpecKind::Array)) return *this;
   if (supports(SpecKind::Class) || supports(SpecKind::Record)) return *this;
-  auto const newSpec = arrSpec().narrowToBespokeLayout(layout);
-  if (newSpec == ArraySpec::Bottom()) return TBottom;
-  return Type(*this, newSpec);
+  auto const spec = arrSpec().narrowToLayout(layout);
+  if (spec == ArraySpec::Bottom()) return TBottom;
+  return Type(*this, spec);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 
 const ArrayData* Type::arrLikeVal() const {
   assertx(hasConstVal(TArrLike));
-  assertx(subtypeOfAny(TArr, TVec, TDict, TKeyset));
+  assertx(subtypeOfAny(TVec, TDict, TKeyset));
   return reinterpret_cast<const ArrayData*>(m_extra);
 }
 
@@ -122,26 +117,12 @@ std::string Type::constValString() const {
     return folly::format("\"{}\"", escapeStringForCPP(str->data(),
                                                       str->size())).str();
   }
-  if (*this <= TStaticArr) {
-    if (m_arrVal->empty()) {
-      return m_arrVal->isVArray() ? "varray[]" :
-             m_arrVal->isDArray() ? "darray[]" : "array()";
-    }
-    auto const format = m_arrVal->isVArray() ? "varray({})" :
-                        m_arrVal->isDArray() ? "darray({})" : "array({})";
-    return folly::format(format, m_arrVal).str();
-  }
-  if (*this <= TStaticVec) {
-    if (m_vecVal->empty()) return "vec[]";
-    return folly::format("Vec({})", m_vecVal).str();
-  }
-  if (*this <= TStaticDict) {
-    if (m_dictVal->empty()) return "dict[]";
-    return folly::format("Dict({})", m_dictVal).str();
-  }
-  if (*this <= TStaticKeyset) {
-    if (m_keysetVal->empty()) return "keyset[]";
-    return folly::format("Keyset({})", m_keysetVal).str();
+  if (*this <= TArrLike) {
+    auto const type = getDataTypeString(m_arrVal->toDataType());
+    auto const layout = arrSpec().layout().describe();
+    return m_arrVal->empty()
+      ? folly::sformat("{}[]={}", type, layout)
+      : folly::sformat("{}({})={}", type, m_arrVal, layout);
   }
   if (*this <= TFunc) {
     return folly::format("Func({})", m_funcVal->fullName()->data()).str();
@@ -369,6 +350,13 @@ enum TypeKey : uint8_t {
   RecSub,
   RecExact,
 };
+
+TypeKey getTypeKey(const Type& t) {
+  return t.hasConstVal() ? TypeKey::Const :
+    t.clsSpec() ? (t.clsSpec().exact() ? TypeKey::ClsExact : TypeKey::ClsSub) :
+    t.recSpec() ? (t.recSpec().exact() ? TypeKey::RecExact : TypeKey::RecSub) :
+    t.arrSpec() ? TypeKey::ArrSpec : TypeKey::None;
+}
 }
 
 void Type::serialize(ProfDataSerializer& ser) const {
@@ -385,11 +373,7 @@ void Type::serialize(ProfDataSerializer& ser) const {
   Type t = *this;
   if (t.maybe(TNullptr)) t = t - TNullptr;
 
-  auto const key = m_hasConstVal ? TypeKey::Const :
-    t.clsSpec() ? (t.clsSpec().exact() ? TypeKey::ClsExact : TypeKey::ClsSub) :
-    t.recSpec() ? (t.recSpec().exact() ? TypeKey::RecExact : TypeKey::RecSub) :
-    t.arrSpec() ? TypeKey::ArrSpec : TypeKey::None;
-
+  auto const key = getTypeKey(t);
   write_raw(ser, key);
 
   if (key == TypeKey::Const) {
@@ -400,7 +384,7 @@ void Type::serialize(ProfDataSerializer& ser) const {
     if (t < TArrLike) {
       return write_array(ser, t.m_arrVal);
     }
-    if (use_lowptr && (t <= TClsMeth)) {
+    if (t <= TClsMeth) {
       return write_clsmeth(ser, t.m_clsmethVal);
     }
     assertx(t.subtypeOfAny(TBool, TInt, TDbl));
@@ -414,7 +398,9 @@ void Type::serialize(ProfDataSerializer& ser) const {
     return write_record(ser, t.recSpec().rec());
   }
   if (key == TypeKey::ArrSpec) {
-    return write_raw(ser, t.m_extra);
+    auto const arrSpec = t.arrSpec();
+    write_layout(ser, arrSpec.layout());
+    return write_array_rat(ser, arrSpec.type());
   }
 }
 
@@ -450,7 +436,7 @@ Type Type::deserialize(ProfDataDeserializer& ser) {
         t.m_arrVal = read_array(ser);
         return t;
       }
-      if (use_lowptr && (t <= TClsMeth)) {
+      if (t <= TClsMeth) {
         t.m_clsmethVal = read_clsmeth(ser);
         return t;
       }
@@ -476,15 +462,68 @@ Type Type::deserialize(ProfDataDeserializer& ser) {
       }
     } else {
       assertx(key == TypeKey::ArrSpec);
-      read_raw(ser, t.m_extra);
-      if (auto const arr = t.m_arrSpec.type()) {
-        t.m_arrSpec.setType(ser.remap(arr));
-      }
+      auto const layout = read_layout(ser);
+      auto const type = read_array_rat(ser);
+      t.m_arrSpec = ArraySpec{layout, type};
     }
     return t;
   }();
   ITRACE_MOD(Trace::hhbc, 2, "Type: {}\n", ret.toString());
   return ret;
+}
+
+size_t Type::stableHash() const {
+  // Base hash
+  auto const hash = hash_int64_pair(
+    m_bits.hash(),
+    ((static_cast<uint64_t>(m_ptr) << sizeof(m_mem) * CHAR_BIT) |
+     static_cast<uint64_t>(m_mem)) ^ m_hasConstVal
+  );
+
+  // Specialization data
+  Type t = *this;
+  auto const key = getTypeKey(t);
+  auto const extra = [&] () -> size_t {
+    if (key == TypeKey::Const) {
+      if (t <= TCls) return t.m_clsVal->stableHash();
+      if (t <= TLazyCls) return t.m_lclsVal.name()->hashStatic();
+      if (t <= TFunc) return t.m_funcVal->stableHash();
+      if (t <= TStaticStr) return t.m_strVal->hashStatic();
+      if (t < TArrLike) {
+        return internal_serialize(
+          VarNR(const_cast<ArrayData*>(t.m_arrVal))
+        ).get()->hash();
+      }
+      if (t <= TClsMeth) {
+        auto const cls = t.m_clsmethVal->getCls();
+        auto const func = t.m_clsmethVal->getFunc();
+        return (cls ? cls->stableHash() : 0 ) ^ (func ? func->stableHash() : 0);
+      }
+      if (t.subtypeOfAny(TBool, TInt, TDbl)) return t.m_extra;
+    }
+    if (key == TypeKey::ClsSub || key == TypeKey::ClsExact) {
+      auto const cls = t.clsSpec().cls();
+      return cls ? cls->stableHash() : 0;
+    }
+    if (key == TypeKey::RecSub || key == TypeKey::RecExact) {
+      auto const rec = t.recSpec().rec();
+      return rec ? rec->stableHash() : 0;
+    }
+    if (key == TypeKey::ArrSpec) {
+      auto const spec = t.arrSpec();
+      return folly::hash::hash_combine(
+        spec.layout().toUint16(),
+        spec.type() ? spec.type()->id() : 0
+      );
+    }
+    return 0;
+  }();
+
+  return folly::hash::hash_combine(
+    hash,
+    key,
+    extra
+  );
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -534,14 +573,10 @@ Type::bits_t Type::bitsFromDataType(DataType outer) {
     case KindOfPersistentVec    : return kPersistentVec;
     case KindOfPersistentDict   : return kPersistentDict;
     case KindOfPersistentKeyset : return kPersistentKeyset;
-    case KindOfPersistentDArray : return kPersistentDArr;
-    case KindOfPersistentVArray : return kPersistentVArr;
 
     case KindOfVec              : return kVec;
     case KindOfDict             : return kDict;
     case KindOfKeyset           : return kKeyset;
-    case KindOfDArray           : return kDArr;
-    case KindOfVArray           : return kVArr;
 
     case KindOfResource         : return kRes;
     case KindOfObject           : return kObj;
@@ -569,10 +604,6 @@ DataType Type::toDataType() const {
   if (*this <= TDbl)         return KindOfDouble;
   if (*this <= TPersistentStr) return KindOfPersistentString;
   if (*this <= TStr)         return KindOfString;
-  if (*this <= TPersistentVArr) return KindOfPersistentVArray;
-  if (*this <= TVArr)         return KindOfVArray;
-  if (*this <= TPersistentDArr) return KindOfPersistentDArray;
-  if (*this <= TDArr)         return KindOfDArray;
   if (*this <= TPersistentVec) return KindOfPersistentVec;
   if (*this <= TVec)         return KindOfVec;
   if (*this <= TPersistentDict) return KindOfPersistentDict;
@@ -622,13 +653,11 @@ Type Type::specialize(TypeSpec spec) const {
 
 Type Type::modified() const {
   auto t = unspecialize();
-  if (t.maybe(TVArr))   t |= TVArr;
-  if (t.maybe(TDArr))   t |= TDArr;
   if (t.maybe(TVec))    t |= TVec;
   if (t.maybe(TDict))   t |= TDict;
   if (t.maybe(TKeyset)) t |= TKeyset;
   if (t.maybe(TStr))    t |= TStr;
-  auto const spec = ArraySpec(ArraySpec::LayoutTag::Vanilla);
+  auto const spec = ArraySpec(ArrayLayout::Vanilla());
   return arrSpec().vanilla() ? Type(t, spec) : t;
 }
 
@@ -640,12 +669,8 @@ static bool arrayFitsSpec(const ArrayData* arr, ArraySpec spec) {
   if (spec == ArraySpec::Top()) return true;
   if (spec == ArraySpec::Bottom()) return false;
 
-  if (spec.vanilla() && !arr->isVanilla()) {
+  if (!(ArrayLayout::FromArray(arr) <= spec.layout())) {
     return false;
-  } else if (auto const layout = spec.bespokeLayout()) {
-    if (arr->isVanilla()) return false;
-    auto const bad = BespokeArray::asBespoke(arr);
-    if (bad->layout() != *layout) return false;
   }
 
   if (!spec.type()) return true;
@@ -921,12 +946,7 @@ Type typeFromTV(tv_rval tv, const Class* ctx) {
   auto const result = Type(dt_modulo_persistence(type(tv)));
 
   if (isArrayLikeType(type(tv))) {
-    if (val(tv).parr->isVanilla()) {
-      return result.narrowToVanilla();
-    } else {
-      auto const bad = BespokeArray::asBespoke(val(tv).parr);
-      return result.narrowToBespokeLayout(bad->layout());
-    }
+    return allowBespokeArrayLikes() ? result : result.narrowToVanilla();
   }
 
   return result;
@@ -987,6 +1007,12 @@ Type typeFromRAT(RepoAuthType ty, const Class* ctx) {
     case T::OptUncArrKeyCompat:
       return TInt | TPersistentStr | TCls | TLazyCls | TInitNull;
 
+    case T::UninitBool:     return TBool      | TUninit;
+    case T::UninitInt:      return TInt       | TUninit;
+    case T::UninitStr:      return TStr       | TUninit;
+    case T::UninitSStr:     return TStaticStr | TUninit;
+    case T::UninitObj:      return TObj       | TUninit;
+
     case T::Uninit:         return TUninit;
     case T::InitNull:       return TInitNull;
     case T::Null:           return TNull;
@@ -1014,8 +1040,12 @@ Type typeFromRAT(RepoAuthType ty, const Class* ctx) {
       return TInt | TPersistentStr | TCls | TLazyCls;
     case T::ArrKeyCompat:
       return TInt | TStr | TCls | TLazyCls;
+    case T::Num:            return TInt | TDbl;
+    case T::OptNum:         return TInitNull | TInt | TDbl;
+    case T::InitPrim:       return TInitNull | TBool | TInt | TDbl;
     case T::InitUnc:        return TUncountedInit;
     case T::Unc:            return TUncounted;
+    case T::NonNull:        return TNonNull;
     case T::InitCell:       return TInitCell;
 
 #define X(A, B, C)                                                      \
@@ -1031,8 +1061,6 @@ Type typeFromRAT(RepoAuthType ty, const Class* ctx) {
         }                                                               \
       }()
 
-    case T::SArr:           return X(TStaticArr, StaticArray, StaticArray);
-    case T::Arr:            return X(TArr, Array, CountedArray);
     case T::SVec:           return X(TStaticVec, StaticVec, StaticVec);
     case T::Vec:            return X(TVec, Vec, CountedVec);
     case T::SDict:          return X(TStaticDict, StaticDict, StaticDict);
@@ -1041,10 +1069,6 @@ Type typeFromRAT(RepoAuthType ty, const Class* ctx) {
     case T::Keyset:         return X(TKeyset, Keyset, Keyset);
     case T::VecCompat:      return X(TVec, Vec, CountedVec) | TClsMeth;
 
-    case T::OptSArr:        return X(TStaticArr, StaticArray, StaticArray)
-                                   | TInitNull;
-    case T::OptArr:         return X(TArr, Array, CountedArray)
-                                   | TInitNull;
     case T::OptSVec:        return X(TStaticVec, StaticVec, StaticVec)
                                    | TInitNull;
     case T::OptVec:         return X(TVec, Vec, CountedVec)
@@ -1059,38 +1083,31 @@ Type typeFromRAT(RepoAuthType ty, const Class* ctx) {
                                    | TInitNull;
     case T::OptVecCompat:   return X(TVec, Vec, CountedVec)
                                    | TClsMeth | TInitNull;
-    case T::ArrCompat:      return X(TArr, Array, CountedArray) | TClsMeth;
-    case T::OptArrCompat:   return X(TArr, Array, CountedArray)
-                                   | TClsMeth | TInitNull;
 
-    case T::SVArr:          return X(TStaticVArr, StaticVArr, StaticVArr);
-    case T::VArr:           return X(TVArr, VArr, CountedVArr);
-    case T::OptSVArr:       return X(TStaticVArr, StaticVArr, StaticVArr)
-                                   | TInitNull;
-    case T::OptVArr:        return X(TVArr, VArr, CountedVArr)
-                                   | TInitNull;
-    case T::SDArr:          return X(TStaticDArr, StaticDArr, StaticDArr);
-    case T::DArr:           return X(TDArr, DArr, CountedDArr);
-    case T::OptSDArr:       return X(TStaticDArr, StaticDArr, StaticDArr)
-                                   | TInitNull;
-    case T::OptDArr:        return X(TDArr, DArr, CountedDArr)
-                                   | TInitNull;
-    case T::VArrCompat:     return X(TVArr, VArr, CountedVArr)
-                                   | TClsMeth;
-    case T::OptVArrCompat:  return X(TVArr, VArr, CountedVArr)
-                                   | TClsMeth | TInitNull;
+    // If these have specializations, its not clear which type to
+    // apply them to. Ignore them for now.
+    case T::ArrLike:          return TArrLike;
+    case T::OptArrLike:       return TArrLike | TInitNull;
+    case T::SArrLike:         return TStaticArrLike;
+    case T::OptSArrLike:      return TStaticArrLike | TInitNull;
+    case T::ArrLikeCompat:    return TArrLike | TClsMeth;
+    case T::OptArrLikeCompat: return TArrLike | TClsMeth | TInitNull;
 
 #undef X
 
     case T::SubObj:
     case T::ExactObj:
     case T::OptSubObj:
-    case T::OptExactObj: {
+    case T::OptExactObj:
+    case T::UninitSubObj:
+    case T::UninitExactObj: {
       auto base = TObj;
 
-      if (auto const cls = Unit::lookupUniqueClassInContext(ty.clsName(),
-                                                            ctx, nullptr)) {
-        if (ty.tag() == T::ExactObj || ty.tag() == T::OptExactObj) {
+      if (auto const cls = Class::lookupUniqueInContext(ty.clsName(),
+                                                        ctx, nullptr)) {
+        if (ty.tag() == T::ExactObj ||
+            ty.tag() == T::OptExactObj ||
+            ty.tag() == T::UninitExactObj) {
           base = Type::ExactObj(cls);
         } else {
           base = Type::SubObj(cls);
@@ -1098,6 +1115,8 @@ Type typeFromRAT(RepoAuthType ty, const Class* ctx) {
       }
       if (ty.tag() == T::OptSubObj || ty.tag() == T::OptExactObj) {
         base |= TInitNull;
+      } else if (ty.tag() == T::UninitSubObj || ty.tag() == T::UninitExactObj) {
+        base |= TUninit;
       }
       return base;
     }
@@ -1108,7 +1127,7 @@ Type typeFromRAT(RepoAuthType ty, const Class* ctx) {
     case T::OptExactCls: {
       auto base = TCls;
 
-      if (auto const cls = Unit::lookupUniqueClassInContext(ty.clsName(),
+      if (auto const cls = Class::lookupUniqueInContext(ty.clsName(),
                                                             ctx, nullptr)) {
         if (ty.tag() == T::ExactCls || ty.tag() == T::OptExactCls) {
           base = Type::ExactCls(cls);
@@ -1128,7 +1147,7 @@ Type typeFromRAT(RepoAuthType ty, const Class* ctx) {
     case T::OptExactRecord: {
       auto base = TRecord;
 
-      if (auto const rec = Unit::lookupUniqueRecDesc(ty.recordName())) {
+      if (auto const rec = RecordDesc::lookupUnique(ty.recordName())) {
         if (ty.tag() == T::ExactRecord || ty.tag() == T::OptExactRecord) {
           base = Type::ExactRecord(rec);
         } else {
@@ -1174,11 +1193,9 @@ Type typeFromPropTC(const HPHP::TypeConstraint& tc,
       case A::Nonnull:    return TInitCell - TInitNull;
       case A::Number:     return TInt | TDbl;
       case A::ArrayKey:   return TInt | TStr;
-      case A::VArray:     return TVArr;
-      case A::DArray:     return TDArr;
-      case A::VArrOrDArr: return TVArr | TDArr;
       case A::VecOrDict:  return TVec | TDict;
       case A::ArrayLike:  return TArrLike;
+      case A::Classname:  return TStr | TCls | TLazyCls;
       case A::This:
         always_assert(propCls != nullptr);
         return (isSProp && !tc.couldSeeMockObject())
@@ -1209,7 +1226,7 @@ Type typeFromPropTC(const HPHP::TypeConstraint& tc,
     };
 
     bool persistent = false;
-    if (auto const alias = Unit::lookupTypeAlias(tc.typeName(), &persistent)) {
+    if (auto const alias = TypeAlias::lookup(tc.typeName(), &persistent)) {
       if (persistent && !alias->invalid) {
         auto ty = [&]{
           if (alias->klass) return handleCls(alias->klass);
@@ -1221,7 +1238,7 @@ Type typeFromPropTC(const HPHP::TypeConstraint& tc,
     }
 
     if (auto const cls =
-          Unit::lookupUniqueClassInContext(tc.typeName(), ctx, nullptr)) {
+          Class::lookupUniqueInContext(tc.typeName(), ctx, nullptr)) {
       return handleCls(cls);
     }
 
@@ -1243,8 +1260,6 @@ Type negativeCheckType(Type srcType, Type typeParam) {
   auto tmp = srcType - typeParam;
   if (typeParam.maybe(TPersistent)) {
     if (tmp.maybe(TCountedStr)) tmp |= TStr;
-    if (tmp.maybe(TCountedVArr)) tmp |= TVArr;
-    if (tmp.maybe(TCountedDArr)) tmp |= TDArr;
     if (tmp.maybe(TCountedVec)) tmp |= TVec;
     if (tmp.maybe(TCountedDict)) tmp |= TDict;
     if (tmp.maybe(TCountedKeyset)) tmp |= TKeyset;
@@ -1261,13 +1276,16 @@ Type relaxType(Type t, DataTypeCategory cat) {
     case DataTypeGeneric:
       return TCell;
 
-    case DataTypeCountness:
-      return !t.maybe(TCounted) ? TUncounted : t.unspecialize();
+    case DataTypeIterBase:
+      if (t <= TUninit) return TUninit;
+      if (t <= TUncountedInit) return TUncountedInit;
+      if (t <= TArrLike) return TArrLike;
+      return t.unspecialize();
 
     case DataTypeCountnessInit:
       if (t <= TUninit) return TUninit;
-      return (!t.maybe(TCounted) && !t.maybe(TUninit))
-        ? TUncountedInit : t.unspecialize();
+      if (t <= TUncountedInit) return TUncountedInit;
+      return t.unspecialize();
 
     case DataTypeSpecific:
       return t.unspecialize();
@@ -1285,12 +1303,12 @@ Type relaxToConstraint(Type t, const GuardConstraint& gc) {
   if (!gc.isSpecialized()) return relaxType(t, gc.category);
 
   assertx(t.isSpecialized());
-  assertx(gc.wantClass() + gc.wantVanillaArray() + gc.wantRecord() == 1);
+  assertx(gc.wantClass() + gc.isArrayLayoutSensitive() + gc.wantRecord() == 1);
 
   // NOTE: This second check here causes us to guard to specific classes where
   // we could guard to superclasses and unify multiple regions. Rethink it.
   if (gc.wantClass()) return t;
-  assertx(gc.wantVanillaArray());
+  assertx(gc.isArrayLayoutSensitive());
   assertx(allowBespokeArrayLikes());
   return t.arrSpec().vanilla() ? t.unspecialize().narrowToVanilla() : t;
 }
@@ -1301,12 +1319,9 @@ Type relaxToGuardable(Type ty) {
 
   // We don't support guarding on counted-ness or static-ness, so widen
   // subtypes of any maybe-countable types to the full type.
-  if (ty <= TVArr) return TVArr;
-  if (ty <= TDArr) return TDArr;
   if (ty <= TVec) return TVec;
   if (ty <= TDict) return TDict;
   if (ty <= TKeyset) return TKeyset;
-
   if (ty <= TArrLike) return TArrLike;
 
   // We can guard on StaticStr but not CountedStr.

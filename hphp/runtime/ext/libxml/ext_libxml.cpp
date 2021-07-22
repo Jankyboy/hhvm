@@ -666,9 +666,9 @@ Array HHVM_FUNCTION(libxml_get_errors) {
   xmlErrorVec* error_list = &rl_libxml_request_data->m_errors;
   const auto length = error_list->size();
   if (!length) {
-    return empty_varray();
+    return empty_vec_array();
   }
-  VArrayInit ret(length);
+  VecInit ret(length);
   for (int64_t i = 0; i < length; i++) {
     ret.append(create_libxmlerror(error_list->at(i)));
   }
@@ -796,7 +796,7 @@ struct LibXMLExtension final : Extension {
 
       loadSystemlib();
 
-      s_LibXMLError_class = Unit::lookupClass(s_LibXMLError.get());
+      s_LibXMLError_class = Class::lookup(s_LibXMLError.get());
 
       // Set up callbacks to support stream wrappers for reading and writing
       // xml files and loading external entities.

@@ -10,7 +10,6 @@
 (* cf: typing_env_types_sig.mli - These files should be the same *)
 open Hh_prelude
 open Typing_defs
-module ITySet = Internal_type_set
 
 type locl_ty = Typing_defs.locl_ty
 
@@ -29,9 +28,6 @@ let pp_local_env _ _ = Printf.printf "%s\n" "<local_env>"
 (* Local environment includes types of locals and bounds on type parameters. *)
 type local_env = {
   per_cont_env: Typing_per_cont_env.t;
-  local_mutability: Typing_mutability_env.mutability_env;
-  (* Whether current environment is reactive *)
-  local_reactive: reactivity;
   (* Local variables that were assigned in a `using` clause *)
   local_using_vars: local_id_set_t;
 }
@@ -60,14 +56,19 @@ type env = {
   in_loop: bool;
   in_try: bool;
   in_case: bool;
+  in_expr_tree: bool;
   inside_constructor: bool;
+  in_support_dynamic_type_method_check: bool;
+  tracing_info: Decl_counters.tracing_info option;
   (* A set of constraints that are global to a given method *)
-  global_tpenv: Type_parameter_env.t;
+  tpenv: Type_parameter_env.t;
   log_levels: int SMap.t;
   inference_env: Typing_inference_env.t;
   allow_wildcards: bool;
   big_envs: (Pos.t * env) list ref;
   pessimize: bool;
+  (* This is only filled in after type-checking the function in question *)
+  fun_tast_info: Tast.fun_tast_info option;
 }
 
 and genv = {
@@ -88,8 +89,8 @@ and genv = {
   static: bool;
   fun_kind: Ast_defs.fun_kind;
   val_kind: Typing_defs.val_kind;
-  fun_mutable: param_mutability option;
+  fun_is_ctor: bool;
   file: Relative_path.t;
+  this_module: string option;
+  this_internal: bool;
 }
-
-let env_reactivity env = env.lenv.local_reactive

@@ -1,1 +1,1 @@
--vEval.ForbidDivisionByZero=true
+-vEval.NoticeOnCoerceForMath=0

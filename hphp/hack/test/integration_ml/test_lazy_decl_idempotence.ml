@@ -58,11 +58,13 @@ let test () =
   let memory_cap = None in
   let check_info =
     {
-      Typing_check_service.init_id = "";
+      Typing_service_types.init_id = "";
       recheck_id = Some "";
       profile_log = false;
       profile_type_check_twice = false;
       profile_type_check_duration_threshold = 0.;
+      profile_type_check_memory_threshold_mb = 0;
+      profile_decling = Typing_service_types.DeclingOff;
     }
   in
   let delegate_state = Typing_service_delegate.default in
@@ -75,6 +77,8 @@ let test () =
       empty
       [bar_path]
       ~memory_cap
+      ~longlived_workers:false
+      ~remote_execution:None
       ~check_info
   in
   Test.assert_errors errors "";
@@ -87,6 +91,8 @@ let test () =
       empty
       [bar_path]
       ~memory_cap
+      ~longlived_workers:false
+      ~remote_execution:None
       ~check_info
   in
   Test.assert_errors errors "";
@@ -100,6 +106,8 @@ let test () =
       empty
       [foo_path]
       ~memory_cap
+      ~longlived_workers:false
+      ~remote_execution:None
       ~check_info
   in
   Test.assert_errors errors expected_errors;
@@ -112,6 +120,8 @@ let test () =
       empty
       [foo_path]
       ~memory_cap
+      ~longlived_workers:false
+      ~remote_execution:None
       ~check_info
   in
   Test.assert_errors errors expected_errors;

@@ -16,6 +16,39 @@ open Output
 open State
 open Convert_longident
 open Convert_type
+open Rust_type
+
+let is_by_ref () =
+  match Configuration.mode () with
+  | Configuration.ByRef -> true
+  | Configuration.ByBox -> false
+
+let rust_de_field_attr (tys : Rust_type.t list) : string =
+  let contains_ref = List.exists ~f:Rust_type.contains_ref tys in
+  (* deserialize a type contains any Cell causes a compilation error, see T90211775 *)
+  let contains_cell =
+    List.exists
+      ~f:(fun t ->
+        Rust_type.type_name_and_params t
+        |> fst
+        |> String.is_suffix ~suffix:"::Cell")
+      tys
+  in
+  if contains_ref || (is_by_ref () && List.exists ~f:Rust_type.is_var tys) then
+    if contains_cell then
+      "#[serde(skip)]"
+    else
+      let borrow =
+        if contains_ref then
+          ", borrow"
+        else
+          ""
+      in
+      sprintf
+        "#[serde(deserialize_with = \"arena_deserializer::arena\" %s)]"
+        borrow
+  else
+    ""
 
 let default_implements () =
   match Configuration.mode () with
@@ -37,92 +70,138 @@ let default_derives () =
       (None, "Ord");
       (None, "PartialEq");
       (None, "PartialOrd");
+      (Some "no_pos_hash", "NoPosHash");
+      (Some "eq_modulo_pos", "EqModuloPos");
       (Some "ocamlrep_derive", "ToOcamlRep");
       (Some "serde", "Serialize");
+      (Some "serde", "Deserialize");
     ]
 
-let derive_copy ty =
-  (* By default, we will derive Copy only for enums whose variants all have no
-     arguments. But there are some other small types for which implementing Copy is
-     convenient. We whitelist them here. *)
-  match Configuration.mode () with
-  | Configuration.ByRef ->
-    (match ty with
-    | "aast::Expr"
-    | "aast::Expr_"
-    | "aast::UserAttribute"
-    | "ast_defs::Id"
-    | "nast::FuncBodyAnn"
-    | "typing_cont_key::TypingContKey"
-    | "typing_defs_core::ConstraintType"
-    | "typing_defs_core::InternalType"
-    | "typing_defs_core::Ty"
-    | "typing_defs_core::Ty_" ->
-      true
-    | _ -> false)
-  | Configuration.ByBox -> false
+let derive_copy ty = Convert_type.is_copy (Rust_type.rust_simple_type ty)
+
+let is_by_box () = not (is_by_ref ())
 
 let additional_derives ty : (string option * string) list =
-  ( if derive_copy ty then
+  (if derive_copy ty then
     [(None, "Copy")]
   else
-    [] )
+    [])
   @
   match ty with
-  | "typing_tyvar_occurrences::TypingTyvarOccurrences" -> [(None, "Default")]
-  | "tast::SavedEnv" -> [(None, "Default")]
-  | "type_parameter_env::TypeParameterEnv" -> [(None, "Default")]
-  | "typing_inference_env::TypingInferenceEnv" -> [(None, "Default")]
-  | "aast::EmitId" when Configuration.(mode () = ByBox) ->
-    [(None, "Copy"); (Some "ocamlrep_derive", "FromOcamlRepIn")]
-  | "aast::XhpAttrInfo" when Configuration.(mode () = ByBox) ->
+  | "aast::EmitId" when is_by_box () ->
     [(None, "Copy"); (Some "ocamlrep_derive", "FromOcamlRepIn")]
   | _ -> []
 
-let derive_blacklist ty =
-  let is_by_ref =
-    match Configuration.mode () with
-    | Configuration.ByRef -> true
-    | Configuration.ByBox -> false
-  in
-  match ty with
-  (* A custom implementation of Ord for Error_ matches the sorting behavior of
+module DeriveSkipLists : sig
+  val skip_derive : ty:string -> trait:string -> bool
+end = struct
+  let skip_list_for_ty ty =
+    let is_by_ref = is_by_ref () in
+    match ty with
+    (* A custom implementation of Ord for Error_ matches the sorting behavior of
        errors in OCaml. *)
-  | "errors::Error_" -> ["Ord"; "PartialOrd"]
-  (* GlobalOptions contains a couple floats, which only implement PartialEq
+    | "errors::Error_" -> ["Ord"; "PartialOrd"]
+    (* GlobalOptions contains a couple floats, which only implement PartialEq
        and PartialOrd, and do not implement Hash. *)
-  | "global_options::GlobalOptions" -> ["Eq"; "Hash"; "Ord"]
-  (* And GlobalOptions is used in Genv which is used in Env. We
-   * don't care about comparison or hashing on environments *)
-  | "typing_env_types::Env" -> ["Eq"; "Hash"; "Ord"]
-  | "typing_env_types::Genv" -> ["Eq"; "Hash"; "Ord"]
-  | "ast_defs::Id" when is_by_ref -> ["Debug"]
-  | "errors::Errors" when is_by_ref -> ["Debug"]
-  | "typing_defs_core::Ty" when is_by_ref ->
-    ["Eq"; "PartialEq"; "Ord"; "PartialOrd"]
-  | "typing_defs_core::Ty_" when is_by_ref -> ["Debug"]
-  | "typing_defs_core::ConstraintType" when is_by_ref ->
-    ["Eq"; "PartialEq"; "Ord"; "PartialOrd"]
-  | _ -> []
+    | "global_options::GlobalOptions" ->
+      ["Eq"; "EqModuloPos"; "Hash"; "NoPosHash"; "Ord"]
+    (* And GlobalOptions is used in Genv which is used in Env. We
+     * don't care about comparison or hashing on environments *)
+    | "typing_env_types::Env" ->
+      ["Eq"; "EqModuloPos"; "Hash"; "NoPosHash"; "Ord"]
+    | "typing_env_types::Genv" ->
+      ["Eq"; "EqModuloPos"; "Hash"; "NoPosHash"; "Ord"]
+    | "ast_defs::Id" when is_by_ref -> ["Debug"]
+    | "errors::Errors" when is_by_ref -> ["Debug"]
+    | "typing_defs_core::Ty" when is_by_ref ->
+      ["Eq"; "PartialEq"; "Ord"; "PartialOrd"]
+    | "typing_defs_core::Ty_" when is_by_ref -> ["Debug"]
+    | "typing_defs_core::ConstraintType" when is_by_ref ->
+      ["Eq"; "PartialEq"; "Ord"; "PartialOrd"]
+    | _ -> []
+
+  let skip_list_for_trait trait =
+    match trait with
+    | "EqModuloPos" ->
+      [
+        "scoured_comments::*";
+        "pos_or_decl::*";
+        "namespace_env::*";
+        "file_info::NameType";
+        "file_info::Pos";
+        "file_info::FileInfo";
+        "file_info::Names";
+        "file_info::SavedNames";
+        "file_info::Saved";
+        "file_info::Diff";
+        "aast::*";
+        "nast::*";
+        "tast::*";
+        "full_fidelity_parser_env::*";
+        "typing_env_types::*";
+        "typing_tyvar_occurrences::*";
+        "typing_per_cont_env::*";
+        "typing_inference_env::*";
+        "typing_kinding_defs::*";
+        "type_parameter_env::*";
+        "typing_fake_members::*";
+        "typing_defs_core::HasMember";
+        "typing_defs_core::Destructure";
+        "typing_defs_core::DestructureKind";
+        "typing_defs_core::ConstraintType_";
+        "typing_defs_core::ConstraintType";
+        "typing_defs_core::InternalType";
+      ]
+    | _ -> []
+
+  let is_in_ty_skip_list ~ty ~trait =
+    List.mem (skip_list_for_ty ty) trait ~equal:String.equal
+
+  let is_in_trait_skip_list ~ty ~trait =
+    let path_ty = String.split ty ~on:':' in
+    List.exists (skip_list_for_trait trait) ~f:(fun skip_ty ->
+        (* if skip_ty is like "SomeTy" then treat it as unqualified
+         * and skip if any type like "some_path::SomeTy" is in the
+         * skip list. Otherwise, just compare the fully qualified types,
+         * modulo "*". *)
+        match String.split skip_ty ~on:':' with
+        | [skip_ty] ->
+          (match List.last path_ty with
+          | None -> false
+          | Some ty -> String.equal ty skip_ty)
+        | path_skip_ty ->
+          List.equal
+            (fun node skip_node ->
+              String.equal node skip_node || String.equal "*" skip_node)
+            path_ty
+            path_skip_ty)
+
+  let skip_derive ~ty ~trait =
+    is_in_ty_skip_list ~ty ~trait || is_in_trait_skip_list ~ty ~trait
+end
 
 let derived_traits ty =
   let ty = sprintf "%s::%s" (curr_module_name ()) ty in
-  let blacklist = derive_blacklist ty in
   default_derives ()
-  |> List.filter ~f:(fun (_, derive) ->
-         not (List.mem blacklist derive ~equal:( = )))
+  |> List.filter ~f:(fun (_, trait) ->
+         not (DeriveSkipLists.skip_derive ~ty ~trait))
   |> List.append (additional_derives ty)
 
 let blacklisted_types =
   [
     ("aast_defs", "LocalIdMap");
     ("aast_defs", "ByteString");
+    ("decl_defs", "Lin");
     ("decl_defs", "Linearization");
+    ("decl_defs", "MroElement");
+    ("errors", "FinalizedError");
     ("errors", "Marker");
     ("errors", "MarkedMessage");
     ("errors", "PositionGroup");
     ("typing_defs", "ExpandEnv");
     ("typing_defs", "PhaseTy");
+    ("typing_reason", "DeclPhase");
+    ("typing_reason", "LoclPhase");
   ]
 
 (* HACK: ignore anything beginning with the "decl" or "locl" prefix, since the
@@ -150,6 +229,8 @@ let tuple_aliases =
     ("ast_defs", "Pstring");
     ("ast_defs", "PositionedByteString");
     ("errors", "Message");
+    ("file_info", "Id");
+    ("typing_reason", "PosId");
   ]
 
 (*
@@ -163,8 +244,10 @@ let box_variant () =
   | Configuration.ByBox -> [])
   @ [("aast", "Expr_"); ("aast", "Stmt_"); ("aast", "Def")]
 
+let equal_s2 = [%derive.eq: string * string]
+
 let should_box_variant ty =
-  List.mem (box_variant ()) (curr_module_name (), ty) ~equal:( = )
+  List.mem (box_variant ()) (curr_module_name (), ty) ~equal:equal_s2
 
 (* When should_box_variant returns true, we will switch to boxing the fields of
    each variant by default. Some fields are small enough not to need boxing,
@@ -172,15 +255,28 @@ let should_box_variant ty =
    unnecessary indirections. The rule of thumb I'm using here is that the size
    should be two words or less (the size of a slice). *)
 let unbox_field ty =
+  let open String in
+  let is_copy = Convert_type.is_copy ty in
+  let ty = Rust_type.rust_type_to_string ty in
   ty = "String"
   || ty = "bstr::BString"
-  || String.is_prefix ty ~prefix:"Vec<"
-  || String.is_prefix ty ~prefix:"Block<"
-  || String.is_prefix ty ~prefix:"&'a "
+  || is_prefix ty ~prefix:"Vec<"
+  || is_prefix ty ~prefix:"Block<"
+  || is_prefix ty ~prefix:"&'a "
+  || is_prefix ty ~prefix:"Option<&'a "
+  || is_prefix ty ~prefix:"std::cell::Cell<&'a "
+  || is_prefix ty ~prefix:"std::cell::RefCell<&'a "
   ||
   match Configuration.mode () with
   | Configuration.ByRef ->
-    ty = "tany_sentinel::TanySentinel" || ty = "ident::Ident" || ty = "Ty<'a>"
+    ty = "tany_sentinel::TanySentinel"
+    || ty = "ident::Ident"
+    || ty = "ConditionTypeName<'a>"
+    || ty = "ConstraintType<'a>"
+    || (is_prefix ty ~prefix:"Option<" && is_copy)
+    || (is_prefix ty ~prefix:"std::cell::Cell<" && is_copy)
+    || (is_prefix ty ~prefix:"std::cell::RefCell<" && is_copy)
+    || Convert_type.is_primitive ty []
   | Configuration.ByBox -> false
 
 let add_rcoc = [("aast", "Nsenv")]
@@ -189,25 +285,28 @@ let should_add_rcoc ty =
   match Configuration.mode () with
   | Configuration.ByRef -> false
   | Configuration.ByBox ->
-    List.mem add_rcoc (curr_module_name (), ty) ~equal:( = )
+    List.mem add_rcoc (curr_module_name (), ty) ~equal:equal_s2
 
 let blacklisted ty_name =
   let ty = (curr_module_name (), ty_name) in
-  List.mem blacklisted_types ty ~equal:( = )
+  List.mem blacklisted_types ty ~equal:equal_s2
   || List.exists blacklisted_type_prefixes ~f:(fun (mod_name, prefix) ->
-         mod_name = curr_module_name () && String.is_prefix ty_name ~prefix)
+         String.equal mod_name (curr_module_name ())
+         && String.is_prefix ty_name ~prefix)
 
 let rename ty_name =
-  List.find renamed_types ~f:(fun (x, _) -> x = (curr_module_name (), ty_name))
+  List.find renamed_types ~f:(fun (x, _) ->
+      equal_s2 x (curr_module_name (), ty_name))
   |> Option.value_map ~f:snd ~default:ty_name
 
 let should_use_alias_instead_of_tuple_struct ty_name =
-  List.mem tuple_aliases (curr_module_name (), ty_name) ~equal:( = )
+  let equal = [%derive.eq: string * string] in
+  List.mem tuple_aliases (curr_module_name (), ty_name) ~equal
 
-let doc_comment_of_attribute attr =
-  match attr with
+let doc_comment_of_attribute { attr_name; attr_payload; _ } =
+  match (attr_name, attr_payload) with
   | ({ txt = "ocaml.doc"; _ }, PStr structure_items) ->
-    List.find_map structure_items (fun structure_item ->
+    List.find_map structure_items ~f:(fun structure_item ->
         match structure_item.pstr_desc with
         | Pstr_eval
             ({ pexp_desc = Pexp_constant (Pconst_string (doc, _)); _ }, _) ->
@@ -244,7 +343,10 @@ let convert_doc_comment doc =
              was_in_code_block
          in
          let line =
-           if now_in_code_block && was_in_code_block && lstripped = no_asterisk
+           if
+             now_in_code_block
+             && was_in_code_block
+             && String.equal lstripped no_asterisk
            then
              sprintf "///%s\n" original_line
            else
@@ -262,31 +364,18 @@ let doc_comment_of_attribute_list attrs =
 
 let type_param (ct, _) = core_type ct
 
-let type_params ?bound name params =
-  if List.is_empty params then
+let type_params name params =
+  let params = List.map ~f:type_param params in
+  let lifetime =
     match Configuration.mode () with
     | Configuration.ByRef ->
       if Configuration.owned_type name then
-        ""
+        []
       else
-        "<'a>"
-    | Configuration.ByBox -> ""
-  else
-    let bound =
-      match bound with
-      | None -> ""
-      | Some bound -> ": " ^ bound
-    in
-    let params =
-      params |> map_and_concat ~f:(fun tp -> type_param tp ^ bound) ~sep:", "
-    in
-    match Configuration.mode () with
-    | Configuration.ByRef ->
-      if Configuration.owned_type name then
-        sprintf "<%s>" params
-      else
-        sprintf "<'a, %s>" params
-    | Configuration.ByBox -> sprintf "<%s>" params
+        [Rust_type.lifetime "a"]
+    | Configuration.ByBox -> []
+  in
+  (lifetime, params)
 
 let record_label_declaration ?(pub = false) ?(prefix = "") ld =
   let doc = doc_comment_of_attribute_list ld.pld_attributes in
@@ -300,9 +389,15 @@ let record_label_declaration ?(pub = false) ?(prefix = "") ld =
     ld.pld_name.txt |> String.chop_prefix_exn ~prefix |> convert_field_name
   in
   let ty = core_type ld.pld_type in
-  sprintf "%s%s%s: %s,\n" doc pub name ty
+  sprintf
+    "%s%s%s %s: %s,\n"
+    doc
+    (rust_de_field_attr [ty])
+    pub
+    name
+    (rust_type_to_string ty)
 
-let record_declaration ?(pub = false) labels =
+let declare_record_arguments ?(pub = false) labels =
   let prefix =
     labels |> List.map ~f:(fun ld -> ld.pld_name.txt) |> common_prefix_of_list
   in
@@ -310,48 +405,52 @@ let record_declaration ?(pub = false) labels =
      fields x_bar and x_baz, we want to remove x_, not x_ba). *)
   let prefix =
     let idx = ref (String.length prefix) in
-    while !idx > 0 && prefix.[!idx - 1] <> '_' do
+    while !idx > 0 && Char.(prefix.[!idx - 1] <> '_') do
       idx := !idx - 1
     done;
-    String.sub prefix 0 !idx
+    String.sub prefix ~pos:0 ~len:!idx
   in
   labels
   |> map_and_concat ~f:(record_label_declaration ~pub ~prefix)
   |> sprintf "{\n%s}"
 
-let constructor_arguments ?(box_fields = false) = function
-  | Pcstr_tuple types ->
-    if not box_fields then
-      tuple types
-    else (
-      match types with
-      | [] -> ""
-      | [ty] ->
-        let ty = core_type ty in
+let declare_constructor_arguments ?(box_fields = false) types : Rust_type.t list
+    =
+  if not box_fields then
+    if List.is_empty types then
+      []
+    else
+      List.map ~f:core_type types
+  else
+    match types with
+    | [] -> []
+    | [ty] ->
+      let ty = core_type ty in
+      let ty =
         if unbox_field ty then
-          sprintf "(%s)" ty
-        else (
+          ty
+        else
           match Configuration.mode () with
-          | Configuration.ByRef -> sprintf "(&'a %s)" ty
-          | Configuration.ByBox -> sprintf "(Box<%s>)" ty
-        )
-      | _ ->
-        (match Configuration.mode () with
-        | Configuration.ByRef -> sprintf "(&'a %s)" (tuple types)
-        | Configuration.ByBox -> sprintf "(Box<%s>)" (tuple types))
-    )
-  | Pcstr_record labels -> record_declaration labels
+          | Configuration.ByRef -> rust_ref (lifetime "a") ty
+          | Configuration.ByBox -> rust_type "Box" [] [ty]
+      in
+      [ty]
+    | _ ->
+      (match Configuration.mode () with
+      | Configuration.ByRef ->
+        let tys = tuple ~seen_indirection:true types in
+        [rust_ref (lifetime "a") tys]
+      | Configuration.ByBox -> [rust_type "Box" [] [tuple types]])
 
 let variant_constructor_declaration ?(box_fields = false) cd =
   let doc = doc_comment_of_attribute_list cd.pcd_attributes in
   let name = convert_type_name cd.pcd_name.txt in
-  let args = constructor_arguments ~box_fields cd.pcd_args in
   let discriminant =
     (* If we see the [@value 42] attribute, assume it's for ppx_deriving enum,
        and that all the variants are zero-argument (i.e., assume this is a
        C-like enum and provide custom discriminant values). *)
-    List.find_map cd.pcd_attributes (fun attr ->
-        match attr with
+    List.find_map cd.pcd_attributes ~f:(fun { attr_name; attr_payload; _ } ->
+        match (attr_name, attr_payload) with
         | ( { txt = "value"; _ },
             PStr
               [
@@ -371,7 +470,26 @@ let variant_constructor_declaration ?(box_fields = false) cd =
         | _ -> None)
     |> Option.value ~default:""
   in
-  sprintf "%s%s%s%s,\n" doc name args discriminant
+  match cd.pcd_args with
+  | Pcstr_tuple types ->
+    let tys = declare_constructor_arguments ~box_fields types in
+    sprintf
+      "%s%s%s%s%s,\n"
+      doc
+      (rust_de_field_attr tys)
+      name
+      (if List.is_empty tys then
+        ""
+      else
+        map_and_concat ~sep:"," ~f:rust_type_to_string tys |> sprintf "(%s)")
+      discriminant
+  | Pcstr_record labels ->
+    sprintf
+      "%s%s%s%s,\n"
+      doc
+      name
+      (declare_record_arguments labels)
+      discriminant
 
 let ctor_arg_len (ctor_args : constructor_arguments) : int =
   match ctor_args with
@@ -379,8 +497,48 @@ let ctor_arg_len (ctor_args : constructor_arguments) : int =
   | Pcstr_record x -> List.length x
 
 let type_declaration name td =
+  let tparam_list =
+    match (td.ptype_params, td.ptype_name.txt) with
+    (* HACK: eliminate tparam from `type _ ty_` and phase-parameterized types *)
+    | ([({ ptyp_desc = Ptyp_any; _ }, _)], "ty_")
+    | ([({ ptyp_desc = Ptyp_var "phase"; _ }, _)], _)
+    | ([({ ptyp_desc = Ptyp_var "ty"; _ }, _)], _)
+      when String.(
+             curr_module_name () = "typing_defs_core"
+             || curr_module_name () = "typing_defs") ->
+      []
+    | ([({ ptyp_desc = Ptyp_any; _ }, _)], "t_")
+      when String.(curr_module_name () = "typing_reason") ->
+      []
+    | (tparams, _) -> tparams
+  in
+  let (lifetime, tparams) = type_params name tparam_list in
+  let serde_attr =
+    if List.is_empty lifetime || List.is_empty tparams then
+      ""
+    else
+      let bounds =
+        map_and_concat
+          ~sep:", "
+          ~f:(fun v ->
+            sprintf
+              "%s: 'de + arena_deserializer::DeserializeInArena<'de>"
+              (Rust_type.rust_type_to_string v))
+          tparams
+      in
+      sprintf "#[serde(bound(deserialize = \"%s\" ))]" bounds
+  in
   let doc = doc_comment_of_attribute_list td.ptype_attributes in
-  let attrs_and_vis ~force_derive_copy =
+  let attrs_and_vis ~all_nullary ~force_derive_copy =
+    if
+      force_derive_copy
+      && Configuration.is_known (Configuration.copy_type name) false
+    then
+      failwith
+        (Printf.sprintf
+           "Type %s::%s can implement Copy but is not specified in the copy_types file. Please add it."
+           (curr_module_name ())
+           name);
     let additional_derives =
       if force_derive_copy then
         [(None, "Copy")]
@@ -390,10 +548,14 @@ let type_declaration name td =
     let derive_attr =
       let traits = derived_traits name @ additional_derives in
       let traits =
+        if all_nullary then
+          (Some "ocamlrep_derive", "FromOcamlRep") :: traits
+        else
+          traits
+      in
+      let traits =
         if force_derive_copy then
-          (Some "ocamlrep_derive", "FromOcamlRep")
-          :: (Some "ocamlrep_derive", "FromOcamlRepIn")
-          :: traits
+          (Some "ocamlrep_derive", "FromOcamlRepIn") :: traits
         else
           traits
       in
@@ -406,20 +568,18 @@ let type_declaration name td =
       |> String.concat ~sep:", "
       |> sprintf "#[derive(%s)]"
     in
-    doc ^ derive_attr ^ "\npub"
+    doc ^ derive_attr ^ serde_attr ^ "\npub"
   in
-  let tparam_list =
-    match (td.ptype_params, td.ptype_name.txt) with
-    (* HACK: eliminate tparam from `type _ ty_` and phase-parameterized types *)
-    | ([({ ptyp_desc = Ptyp_any; _ }, _)], "ty_")
-    | ([({ ptyp_desc = Ptyp_var "phase"; _ }, _)], _)
-    | ([({ ptyp_desc = Ptyp_var "ty"; _ }, _)], _)
-      when curr_module_name () = "typing_defs_core"
-           || curr_module_name () = "typing_defs" ->
-      []
-    | (tparams, _) -> tparams
+  let deserialize_in_arena_macro ~force_derive_copy =
+    if is_by_ref () || force_derive_copy || String.equal name "EmitId" then
+      let lts = List.map lifetime ~f:(fun _ -> Rust_type.lifetime "arena") in
+      sprintf
+        "arena_deserializer::impl_deserialize_in_arena!(%s%s);\n"
+        name
+        (type_params_to_string lts tparams)
+    else
+      ""
   in
-  let tparams = type_params name tparam_list in
   let implements ~force_derive_copy =
     let traits = implements_traits name in
     let traits =
@@ -435,13 +595,12 @@ let type_declaration name td =
            Option.iter m ~f:(fun m -> add_extern_use (m ^ "::" ^ trait));
            trait)
     |> List.map ~f:(fun trait ->
-           let tparams_with_bound = type_params name tparam_list ~bound:trait in
            sprintf
              "\nimpl%s %s for %s%s {}"
-             tparams_with_bound
+             (type_params_to_string ~bound:trait lifetime tparams)
              trait
              name
-             tparams)
+             (type_params_to_string lifetime tparams))
     |> String.concat ~sep:""
   in
   match (td.ptype_kind, td.ptype_manifest) with
@@ -474,21 +633,27 @@ let type_declaration name td =
       raise (Skip_type_decl "polymorphic variants not supported")
     | Ptyp_constr ({ txt = Lident "t"; _ }, []) ->
       (* In the case of `type t = prefix * string ;; type relative_path = t`, we
-       have already defined a RelativePath type because we renamed t in the
-       first declaration to the name of the module. We can just skip the second
-       declaration introducing the alias. *)
+         have already defined a RelativePath type because we renamed t in the
+         first declaration to the name of the module. We can just skip the second
+         declaration introducing the alias. *)
       let mod_name_as_type = convert_type_name (curr_module_name ()) in
-      if name = mod_name_as_type then
+      if String.equal name mod_name_as_type then
         raise
           (Skip_type_decl
-             ( "it is an alias to type t, which was already renamed to "
-             ^ mod_name_as_type ))
+             ("it is an alias to type t, which was already renamed to "
+             ^ mod_name_as_type))
       else
-        sprintf "%spub type %s%s = %s;" doc name tparams mod_name_as_type
+        sprintf
+          "%spub type %s = %s;"
+          doc
+          (rust_type name lifetime tparams |> rust_type_to_string)
+          mod_name_as_type
     | Ptyp_constr ({ txt = id; _ }, targs) ->
       let id = longident_to_string id in
       let ty_name = id |> String.split ~on:':' |> List.last_exn in
-      if List.length td.ptype_params = List.length targs && self () = ty_name
+      if
+        List.length td.ptype_params = List.length targs
+        && String.(self () = ty_name)
       then (
         add_ty_reexport id;
         raise (Skip_type_decl ("it is a re-export of " ^ id))
@@ -496,57 +661,84 @@ let type_declaration name td =
         let ty = core_type ty in
         if should_add_rcoc name then
           sprintf
-            "%spub type %s%s = ocamlrep::rc::RcOc<%s>;"
+            "%spub type %s = ocamlrep::rc::RcOc<%s>;"
             doc
-            name
-            tparams
-            ty
+            (rust_type name lifetime tparams |> rust_type_to_string)
+            (rust_type_to_string ty)
         else
-          sprintf "%spub type %s%s = %s;" doc name tparams ty
+          sprintf
+            "%spub type %s = %s;"
+            doc
+            (rust_type name lifetime tparams |> rust_type_to_string)
+            (deref ty |> rust_type_to_string)
     | _ ->
       if should_use_alias_instead_of_tuple_struct name then
-        sprintf "%spub type %s%s = %s;" doc name tparams (core_type ty)
+        let ty = core_type ty |> deref |> rust_type_to_string in
+        sprintf
+          "%spub type %s = %s;"
+          doc
+          (rust_type name lifetime tparams |> rust_type_to_string)
+          ty
       else
         let ty =
           match ty.ptyp_desc with
-          | Ptyp_tuple tys -> tuple tys ~pub:true
-          | _ -> sprintf "(pub %s)" @@ core_type ty
+          | Ptyp_tuple tys ->
+            map_and_concat
+              ~f:(fun ty ->
+                core_type ty |> fun t ->
+                sprintf
+                  "%s pub %s"
+                  (rust_de_field_attr [t])
+                  (rust_type_to_string t))
+              ~sep:","
+              tys
+            |> sprintf "(%s)"
+          | _ -> core_type ty |> rust_type_to_string |> sprintf "(pub %s)"
         in
         sprintf
-          "%s struct %s%s %s;%s"
-          (attrs_and_vis ~force_derive_copy:false)
-          name
-          tparams
+          "%s struct %s %s;%s\n%s"
+          (attrs_and_vis ~all_nullary:false ~force_derive_copy:false)
+          (rust_type name lifetime tparams |> rust_type_to_string)
           ty
-          (implements ~force_derive_copy:false))
+          (implements ~force_derive_copy:false)
+          (deserialize_in_arena_macro ~force_derive_copy:false))
   (* Variant types, including GADTs. *)
   | (Ptype_variant ctors, None) ->
     let all_nullary =
-      List.for_all ctors (fun c -> 0 = ctor_arg_len c.pcd_args)
+      List.for_all ctors ~f:(fun c -> 0 = ctor_arg_len c.pcd_args)
     in
-    let should_box_variant = should_box_variant name in
+    let force_derive_copy =
+      if is_by_ref () then
+        true
+      else
+        all_nullary
+    in
+    let box_fields =
+      if is_by_ref () then
+        true
+      else
+        should_box_variant name
+    in
     let ctors =
-      map_and_concat
-        ctors
-        (variant_constructor_declaration ~box_fields:should_box_variant)
+      map_and_concat ctors ~f:(variant_constructor_declaration ~box_fields)
     in
     sprintf
-      "%s enum %s%s {\n%s}%s"
-      (attrs_and_vis ~force_derive_copy:all_nullary)
-      name
-      tparams
+      "%s enum %s {\n%s}%s\n%s"
+      (attrs_and_vis ~all_nullary ~force_derive_copy)
+      (rust_type name lifetime tparams |> rust_type_to_string)
       ctors
-      (implements ~force_derive_copy:all_nullary)
+      (implements ~force_derive_copy)
+      (deserialize_in_arena_macro ~force_derive_copy)
   (* Record types. *)
   | (Ptype_record labels, None) ->
-    let labels = record_declaration labels ~pub:true in
+    let labels = declare_record_arguments labels ~pub:true in
     sprintf
-      "%s struct %s%s %s%s"
-      (attrs_and_vis ~force_derive_copy:false)
-      name
-      tparams
+      "%s struct %s %s%s\n%s"
+      (attrs_and_vis ~all_nullary:false ~force_derive_copy:false)
+      (rust_type name lifetime tparams |> rust_type_to_string)
       labels
       (implements ~force_derive_copy:false)
+      (deserialize_in_arena_macro ~force_derive_copy:false)
   (* `type foo`; an abstract type with no specified implementation. This doesn't
      mean much outside of an .mli, I don't think. *)
   | (Ptype_abstract, None) ->
@@ -557,7 +749,7 @@ let type_declaration name td =
 let type_declaration td =
   let name = td.ptype_name.txt in
   let name =
-    if name = "t" then
+    if String.equal name "t" then
       curr_module_name ()
     else
       name
@@ -573,6 +765,8 @@ let type_declaration td =
       log "Not converting type %s::%s: re-exporting instead" mod_name name;
       add_decl name (sprintf "pub use %s;" extern_type)
     | None ->
-      (try with_self name (fun () -> add_decl name (type_declaration name td))
-       with Skip_type_decl reason ->
-         log "Not converting type %s::%s: %s" mod_name name reason)
+      (try
+         with_self name (fun () -> add_decl name (type_declaration name td))
+       with
+      | Skip_type_decl reason ->
+        log "Not converting type %s::%s: %s" mod_name name reason)

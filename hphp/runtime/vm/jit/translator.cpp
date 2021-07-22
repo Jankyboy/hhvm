@@ -54,6 +54,7 @@
 #include "hphp/runtime/vm/jit/irgen-bespoke.h"
 #include "hphp/runtime/vm/jit/irgen-control.h"
 #include "hphp/runtime/vm/jit/irgen-exit.h"
+#include "hphp/runtime/vm/jit/irgen-internal.h"
 #include "hphp/runtime/vm/jit/irgen-interpone.h"
 #include "hphp/runtime/vm/jit/irgen.h"
 #include "hphp/runtime/vm/jit/normalized-instruction.h"
@@ -92,8 +93,6 @@ static const struct {
                     DontGuardStack1,  None,         OutNone         }},
   { OpPopU2,       {StackTop2|
                     DontGuardAny,     Stack1,       OutSameAsInput1 }},
-  { OpPopFrame,    {StackN|
-                    DontGuardAny,     StackN,       OutUnknown      }},
   { OpPopL,        {Stack1|Local,     Local,        OutNone         }},
   { OpDup,         {Stack1,           StackTop2,    OutSameAsInput1 }},
 
@@ -106,17 +105,14 @@ static const struct {
   { OpInt,         {None,             Stack1,       OutInt64        }},
   { OpDouble,      {None,             Stack1,       OutDouble       }},
   { OpString,      {None,             Stack1,       OutStringImm    }},
-  { OpArray,       {None,             Stack1,       OutArrayImm     }},
+  { OpLazyClass,   {None,             Stack1,       OutLazyClass    }},
   { OpDict,        {None,             Stack1,       OutDictImm      }},
   { OpKeyset,      {None,             Stack1,       OutKeysetImm    }},
   { OpVec,         {None,             Stack1,       OutVecImm       }},
   { OpNewDictArray,   {None,          Stack1,       OutDict         }},
-  { OpNewStructDArray,{StackN,        Stack1,       OutDArray       }},
   { OpNewStructDict,  {StackN,        Stack1,       OutDict         }},
   { OpNewVec,         {StackN,        Stack1,       OutVec          }},
   { OpNewKeysetArray, {StackN,        Stack1,       OutKeyset       }},
-  { OpNewVArray,   {StackN,           Stack1,       OutVArray       }},
-  { OpNewDArray,   {None,             Stack1,       OutDArray       }},
   { OpAddElemC,    {StackTop3,        Stack1,       OutModifiedInput3 }},
   { OpAddNewElemC, {StackTop2,        Stack1,       OutModifiedInput2 }},
   { OpNewCol,      {None,             Stack1,       OutObject       }},
@@ -126,10 +122,12 @@ static const struct {
   { OpCnsE,        {None,             Stack1,       OutCns          }},
   { OpClsCns,      {Stack1,           Stack1,       OutUnknown      }},
   { OpClsCnsD,     {None,             Stack1,       OutUnknown      }},
+  { OpClsCnsL,     {Stack1|Local,     Stack1,       OutUnknown      }},
   { OpFile,        {None,             Stack1,       OutString       }},
   { OpDir,         {None,             Stack1,       OutString       }},
   { OpMethod,      {None,             Stack1,       OutString       }},
   { OpClassName,   {Stack1,           Stack1,       OutString       }},
+  { OpLazyClassFromClass, {Stack1,    Stack1,       OutLazyClass    }},
   { OpFuncCred,    {None,             Stack1,       OutObject       }},
 
   /*** 3. Operator instructions ***/
@@ -150,7 +148,6 @@ static const struct {
   { OpMod,         {StackTop2,        Stack1,       OutUnknown      }},
   { OpPow,         {StackTop2,        Stack1,       OutUnknown      }},
   /* Logical ops */
-  { OpXor,         {StackTop2,        Stack1,       OutBoolean      }},
   { OpNot,         {Stack1,           Stack1,       OutBoolean      }},
   { OpSame,        {StackTop2,        Stack1,       OutBoolean      }},
   { OpNSame,       {StackTop2,        Stack1,       OutBoolean      }},
@@ -176,8 +173,6 @@ static const struct {
   { OpCastDict,    {Stack1,           Stack1,       OutDict         }},
   { OpCastKeyset,  {Stack1,           Stack1,       OutKeyset       }},
   { OpCastVec,     {Stack1,           Stack1,       OutVec          }},
-  { OpCastVArray,  {Stack1,           Stack1,       OutVArray        }},
-  { OpCastDArray,  {Stack1,           Stack1,       OutDArray        }},
   { OpDblAsBits,   {Stack1,           Stack1,       OutInt64        }},
   { OpInstanceOf,  {StackTop2,        Stack1,       OutBoolean      }},
   { OpInstanceOfD, {Stack1,           Stack1,       OutPredBool     }},
@@ -186,7 +181,7 @@ static const struct {
   { OpThrowAsTypeStructException,
                    {StackTop2,        None,         OutNone         }},
   { OpCombineAndResolveTypeStruct,
-                   {StackN,           Stack1,       OutDArray       }},
+                   {StackN,           Stack1,       OutDict         }},
   { OpSelect,      {StackTop3,        Stack1,       OutUnknown      }},
   { OpPrint,       {Stack1,           Stack1,       OutInt64        }},
   { OpClone,       {Stack1,           Stack1,       OutObject       }},
@@ -284,8 +279,6 @@ static const struct {
                    {Stack1,           StackN,       OutUnknown      }},
   { OpFCallObjMethodD,
                    {None,             StackN,       OutUnknown      }},
-  { OpFCallBuiltin,{BStackN|DontGuardAny,
-                                      StackN,       OutUnknown      }},
 
   /*** 11. Iterator instructions ***/
 
@@ -310,8 +303,6 @@ static const struct {
   { OpThis,        {None,             Stack1,       OutThisObject   }},
   { OpBareThis,    {None,             Stack1,       OutUnknown      }},
   { OpCheckThis,   {This,             None,         OutNone         }},
-  { OpInitThisLoc,
-                   {None,             Local,        OutUnknown      }},
   { OpChainFaults, {StackTop2,        Stack1,       OutObject       }},
   { OpVerifyParamType,
                    {Local,            Local,        OutUnknown      }},
@@ -324,20 +315,22 @@ static const struct {
   { OpVerifyRetNonNullC,
                    {Stack1,           Stack1,       OutSameAsInput1  }},
   { OpVerifyOutType,
-                   {Stack1,           Stack1,       OutSameAsInput1  }},
+                   {Stack1,           Stack1,       OutUnknown      }},
   { OpOODeclExists,
                    {StackTop2,        Stack1,       OutBoolean      }},
   { OpSelf,        {None,             Stack1,       OutClass        }},
   { OpParent,      {None,             Stack1,       OutClass        }},
   { OpLateBoundCls,{None,             Stack1,       OutClass        }},
   { OpRecordReifiedGeneric,
-                   {Stack1,           Stack1,       OutVArray       }},
+                   {Stack1,           Stack1,       OutVec          }},
   { OpCheckReifiedGenericMismatch,
                    {Stack1,           None,         OutNone         }},
   { OpNativeImpl,  {None,             None,         OutNone         }},
   { OpCreateCl,    {BStackN,          Stack1,       OutObject       }},
   { OpIdx,         {StackTop3,        Stack1,       OutUnknown      }},
   { OpArrayIdx,    {StackTop3,        Stack1,       OutUnknown      }},
+  { OpArrayMarkLegacy,   {StackTop2,  Stack1,       OutUnknown      }},
+  { OpArrayUnmarkLegacy, {StackTop2,  Stack1,       OutUnknown      }},
   { OpCheckProp,   {None,             Stack1,       OutBoolean      }},
   { OpInitProp,    {Stack1,           None,         OutNone         }},
   { OpSilence,     {Local|DontGuardAny,
@@ -355,7 +348,7 @@ static const struct {
   { OpResolveMethCaller,
                    {None,             Stack1,       OutFunc         }},
   { OpResolveObjMethod,
-                   {StackTop2,        Stack1,       OutVArray       }},
+                   {StackTop2,        Stack1,       OutVec          }},
   { OpResolveClsMethod,
                    {Stack1,           Stack1,       OutClsMeth      }},
   { OpResolveClsMethodD,
@@ -371,7 +364,6 @@ static const struct {
 
   // TODO (T61651936): ResolveClass may return a classptr or a string
   { OpResolveClass,{None,             Stack1,       OutUnknown      }},
-  { OpLazyClass,   {None,             Stack1,       OutLazyClass    }},
 
   /*** 14. Generator instructions ***/
 
@@ -406,7 +398,8 @@ static const struct {
                                       Stack1,       OutUnknown      }},
   { OpSetM,        {Stack1|BStackN|MBase|MKey,
                                       Stack1,       OutUnknown      }},
-  { OpSetRangeM,   {BStackN|MBase,    None,         OutNone         }},
+  { OpSetRangeM,   {StackTop3|BStackN|MBase,
+                                      None,         OutNone         }},
   { OpIncDecM,     {BStackN|MBase|MKey,
                                       Stack1,       OutUnknown      }},
   { OpSetOpM,      {Stack1|BStackN|MBase|MKey,
@@ -481,7 +474,7 @@ int64_t getStackPopped(PC pc) {
     case Op::FCallObjMethodD: {
       auto const fca = getImm(pc, 0).u_FCA;
       auto const nin = countOperands(getInstrInfo(op).in);
-      return nin + fca.numInputs() + kNumActRecCells - 1 + fca.numRets;
+      return nin + fca.numInputs() + (kNumActRecCells - 1) + fca.numRets;
     }
 
     case Op::QueryM:
@@ -489,24 +482,19 @@ int64_t getStackPopped(PC pc) {
     case Op::UnsetM:
     case Op::NewVec:
     case Op::NewKeysetArray:
-    case Op::NewVArray:
     case Op::ConcatN:
     case Op::CombineAndResolveTypeStruct:
     case Op::CreateCl:
       return getImm(pc, 0).u_IVA;
 
-    case Op::FCallBuiltin:
-      return getImm(pc, 0).u_IVA + getImm(pc, 2).u_IVA;
-
-    case Op::PopFrame:
-      return getImm(pc, 0).u_IVA + 3;
-
     case Op::SetM:
     case Op::SetOpM:
       return getImm(pc, 0).u_IVA + 1;
 
+    case Op::SetRangeM:
+      return getImm(pc, 0).u_IVA + 3;
+
     case Op::NewRecord:
-    case Op::NewStructDArray:
     case Op::NewStructDict:
       return getImmVector(pc).size();
 
@@ -535,10 +523,6 @@ int64_t getStackPushed(PC pc) {
     case Op::FCallObjMethod:
     case Op::FCallObjMethodD:
       return getImm(pc, 0).u_FCA.numRets;
-    case Op::FCallBuiltin:
-      return getImm(pc, 2).u_IVA + 1;
-    case Op::PopFrame:
-      return getImm(pc, 0).u_IVA;
     default:
       break;
   }
@@ -656,10 +640,42 @@ size_t memberKeyImmIdx(Op op) {
 #undef FCA
 #undef O
 
+unsigned localRangeImmIdx(Op op) {
+  switch (op) {
+    case Op::AwaitAll:
+    case Op::MemoSet:
+    case Op::MemoSetEager:
+      return 0;
+    case Op::MemoGet:
+      return 1;
+    case Op::MemoGetEager:
+      return 2;
+    default:
+      always_assert_flog("op {} doesn't have LocalRange!\n", opcodeToName(op));
+      return -1;
+  }
+}
+
+uint32_t getLocalOperand(const NormalizedInstruction& ni) {
+  auto const idx = localImmIdx(ni.op());
+  auto const argu = ni.imm[idx];
+  switch (immType(ni.op(), idx)) {
+    case ArgType::LA:
+      return argu.u_LA;
+    case ArgType::NLA:
+      return argu.u_NLA.id;
+    case ArgType::ILA:
+      return argu.u_ILA;
+    default:
+      always_assert(false);
+  }
+  not_reached();
+}
+
 /*
  * Get location metadata for the inputs of `ni'.
  */
-InputInfoVec getInputs(const NormalizedInstruction& ni, FPInvOffset bcSPOff) {
+InputInfoVec getInputs(const NormalizedInstruction& ni, SBInvOffset bcSPOff) {
   InputInfoVec inputs;
   if (isAlwaysNop(ni)) return inputs;
 
@@ -693,13 +709,13 @@ InputInfoVec getInputs(const NormalizedInstruction& ni, FPInvOffset bcSPOff) {
   if (flags & StackI) {
     inputs.emplace_back(Location::Stack {
       BCSPRelOffset{safe_cast<int32_t>(ni.imm[0].u_IVA)}.
-        to<FPInvOffset>(bcSPOff)
+        to<SBInvOffset>(bcSPOff)
     });
   }
   if (flags & StackI2) {
     inputs.emplace_back(Location::Stack {
       BCSPRelOffset{safe_cast<int32_t>(ni.imm[1].u_IVA)}.
-        to<FPInvOffset>(bcSPOff)
+        to<SBInvOffset>(bcSPOff)
     });
   }
 
@@ -708,12 +724,9 @@ InputInfoVec getInputs(const NormalizedInstruction& ni, FPInvOffset bcSPOff) {
       switch (ni.op()) {
       case Op::NewVec:
       case Op::NewKeysetArray:
-      case Op::NewVArray:
       case Op::CombineAndResolveTypeStruct:
       case Op::ConcatN:
         return ni.imm[0].u_IVA;
-      case Op::PopFrame:
-        return ni.imm[0].u_IVA + 3;
       default:
         return ni.immVec.numStackValues();
       }
@@ -742,7 +755,7 @@ InputInfoVec getInputs(const NormalizedInstruction& ni, FPInvOffset bcSPOff) {
 
     if (fca.hasGenerics()) inputs.emplace_back(Location::Stack { stackOff-- });
     if (fca.hasUnpack()) inputs.emplace_back(Location::Stack { stackOff-- });
-    stackOff -= fca.numArgs + 2;
+    stackOff -= fca.numArgs + (kNumActRecCells - 1);
 
     switch (ni.op()) {
       case Op::FCallCtor:
@@ -757,26 +770,13 @@ InputInfoVec getInputs(const NormalizedInstruction& ni, FPInvOffset bcSPOff) {
   }
 
   if (flags & Local) {
-    auto const loc = [&]() {
-      auto const idx = localImmIdx(ni.op());
-      auto const argu = ni.imm[idx];
-      switch (immType(ni.op(), idx)) {
-        case ArgType::LA:
-          return argu.u_LA;
-        case ArgType::NLA:
-          return argu.u_NLA.id;
-        case ArgType::ILA:
-          return argu.u_ILA;
-        default:
-          always_assert(false);
-      }
-    }();
+    auto const loc = getLocalOperand(ni);
     SKTRACE(1, sk, "getInputs: local %d\n", loc);
-    inputs.emplace_back(Location::Local { uint32_t(loc) });
+    inputs.emplace_back(Location::Local{loc});
   }
 
   if (flags & LocalRange) {
-    auto const& range = ni.imm[1].u_LAR;
+    auto const& range = ni.imm[localRangeImmIdx(ni.op())].u_LAR;
     SKTRACE(1, sk, "getInputs: localRange %d+%d\n",
             range.first, range.count);
     for (int i = 0; i < range.count; ++i) {
@@ -794,7 +794,7 @@ InputInfoVec getInputs(const NormalizedInstruction& ni, FPInvOffset bcSPOff) {
       case MEC:
       case MPC:
         inputs.emplace_back(Location::Stack {
-          BCSPRelOffset{int32_t(mk.iva)}.to<FPInvOffset>(bcSPOff)
+          BCSPRelOffset{int32_t(mk.iva)}.to<SBInvOffset>(bcSPOff)
         });
         break;
       case MW:
@@ -824,6 +824,40 @@ InputInfoVec getInputs(const NormalizedInstruction& ni, FPInvOffset bcSPOff) {
   return inputs;
 }
 
+/*
+ * Get the list of output locals written by the `ni' instruction.
+ */
+jit::fast_set<uint32_t> getLocalOutputs(const NormalizedInstruction& ni) {
+  fast_set<uint32_t> locals;
+  auto const op = ni.op();
+
+  if (isIteratorOp(op)) {
+    auto const ita = ni.imm[0].u_ITA;
+    locals.insert(ita.valId);
+    if (ita.hasKey()) locals.insert(ita.keyId);
+  } else {
+    auto const info = getInstrInfo(op);
+    if (info.out & Local) {
+      auto const id = getLocalOperand(ni);
+      locals.insert(id);
+    }
+    if (info.out & LocalRange) {
+      auto const& range = ni.imm[localRangeImmIdx(op)].u_LAR;
+      for (unsigned i = 0; i < range.count; ++i) {
+        locals.insert(range.first + i);
+      }
+    }
+    if (info.out & MKey) {
+      auto const mk = ni.imm[memberKeyImmIdx(op)].u_KA;
+      if (mk.mcode == MEL || mk.mcode == MPL) {
+        locals.insert(mk.local.id);
+      }
+    }
+  }
+
+  return locals;
+}
+
 bool dontGuardAnyInputs(const NormalizedInstruction& ni) {
   switch (ni.op()) {
   case Op::IterNext:
@@ -835,8 +869,6 @@ bool dontGuardAnyInputs(const NormalizedInstruction& ni) {
   case Op::Jmp:
   case Op::JmpNS:
   case Op::ClsCnsD:
-  case Op::FCallBuiltin:
-  case Op::NewStructDArray:
   case Op::NewStructDict:
   case Op::Switch:
   case Op::SSwitch:
@@ -880,11 +912,12 @@ bool dontGuardAnyInputs(const NormalizedInstruction& ni) {
   case Op::AKExists:
   case Op::AddElemC:
   case Op::AddNewElemC:
-  case Op::Array:
   case Op::Dict:
   case Op::Keyset:
   case Op::Vec:
   case Op::ArrayIdx:
+  case Op::ArrayMarkLegacy:
+  case Op::ArrayUnmarkLegacy:
   case Op::BareThis:
   case Op::BitNot:
   case Op::CGetG:
@@ -899,8 +932,6 @@ bool dontGuardAnyInputs(const NormalizedInstruction& ni) {
   case Op::CastDict:
   case Op::CastKeyset:
   case Op::CastVec:
-  case Op::CastVArray:
-  case Op::CastDArray:
   case Op::DblAsBits:
   case Op::CheckProp:
   case Op::CheckThis:
@@ -947,7 +978,6 @@ bool dontGuardAnyInputs(const NormalizedInstruction& ni) {
   case Op::FuncCred:
   case Op::GetMemoKeyL:
   case Op::Idx:
-  case Op::InitThisLoc:
   case Op::InstanceOf:
   case Op::InstanceOfD:
   case Op::IsLateBoundCls:
@@ -964,14 +994,13 @@ bool dontGuardAnyInputs(const NormalizedInstruction& ni) {
   case Op::Mod:
   case Op::Pow:
   case Op::ClassName:
+  case Op::LazyClassFromClass:
   case Op::NativeImpl:
   case Op::NewCol:
   case Op::NewPair:
   case Op::NewDictArray:
   case Op::NewVec:
   case Op::NewKeysetArray:
-  case Op::NewVArray:
-  case Op::NewDArray:
   case Op::NewObj:
   case Op::NewObjR:
   case Op::NewObjD:
@@ -986,7 +1015,6 @@ bool dontGuardAnyInputs(const NormalizedInstruction& ni) {
   case Op::PopC:
   case Op::PopU:
   case Op::PopU2:
-  case Op::PopFrame:
   case Op::PopL:
   case Op::Print:
   case Op::PushL:
@@ -1013,7 +1041,6 @@ bool dontGuardAnyInputs(const NormalizedInstruction& ni) {
   case Op::VerifyRetNonNullC:
   case Op::VerifyOutType:
   case Op::WHResult:
-  case Op::Xor:
   case Op::BaseGC:
   case Op::BaseGL:
   case Op::BaseSC:
@@ -1034,6 +1061,7 @@ bool dontGuardAnyInputs(const NormalizedInstruction& ni) {
   case Op::RetM:
   case Op::Select:
   case Op::LockObj:
+  case Op::ClsCnsL:
     return false;
 
   // These are instructions that are always interp-one'd, or are always no-ops.
@@ -1071,8 +1099,7 @@ bool instrBreaksProfileBB(const NormalizedInstruction& inst) {
       op == OpAwait || // may branch to scheduler and suspend execution
       op == OpAwaitAll || // similar to Await
       op == OpClsCnsD || // side exits if misses in the RDS
-      (op == OpThrowNonExhaustiveSwitch && // control flow breaks bb
-       RuntimeOption::EvalThrowOnNonExhaustiveSwitch > 1) ||
+      op == OpThrowNonExhaustiveSwitch || // control flow breaks bb
       op == OpVerifyParamTypeTS || // avoids combinatorial explosion
       op == OpVerifyParamType) {   // with nullable types
     return true;
@@ -1088,6 +1115,8 @@ bool instrBreaksProfileBB(const NormalizedInstruction& inst) {
 }
 
 //////////////////////////////////////////////////////////////////////
+
+namespace {
 
 #define IMM_BLA(n)     ni.immVec
 #define IMM_SLA(n)     ni.immVec
@@ -1118,8 +1147,8 @@ bool instrBreaksProfileBB(const NormalizedInstruction& inst) {
 #define SIX(x0,x1,x2,x3,x4,x5) , IMM_##x0(0), IMM_##x1(1), IMM_##x2(2), IMM_##x3(3), IMM_##x4(4), IMM_##x5(5)
 #define NA                   /*  */
 
-static void translateDispatch(irgen::IRGS& irgs,
-                              const NormalizedInstruction& ni) {
+void translateDispatch(irgen::IRGS& irgs,
+                       const NormalizedInstruction& ni) {
 #define O(nm, imms, ...) case Op::nm: irgen::emit##nm(irgs imms); return;
   switch (ni.op()) { OPCODES }
 #undef O
@@ -1156,28 +1185,20 @@ static void translateDispatch(irgen::IRGS& irgs,
 
 //////////////////////////////////////////////////////////////////////
 
-namespace {
-
 Type flavorToType(FlavorDesc f) {
   switch (f) {
-    case NOV: not_reached();
-
-    case CV: return TCell;  // TODO(#3029148) this could be InitCell
+    case CV:  return TInitCell;
     case CUV: return TCell;
-    case UV: return TUninit;
+    case UV:  return TUninit;
+    case NOV: break;
   }
-  not_reached();
+  always_assert(false);
 }
 
 }
 
 void translateInstr(irgen::IRGS& irgs, const NormalizedInstruction& ni) {
   assertx(curSrcKey(irgs) == ni.source);
-  const Func* builtinFunc = nullptr;
-  if (ni.op() == OpFCallBuiltin) {
-    auto str = ni.m_unit->lookupLitstrId(ni.imm[3].u_SA);
-    builtinFunc = Func::lookupBuiltin(str);
-  }
   auto pc = ni.pc();
   for (auto i = 0, num = instrNumPops(pc); i < num; ++i) {
     if (isFCall(ni.op()) && instrInputFlavor(pc, i) == UV) {
@@ -1187,8 +1208,7 @@ void translateInstr(irgen::IRGS& irgs, const NormalizedInstruction& ni) {
       // override them anyway so it's not worth guarding on them.
       break;
     }
-    auto const type =
-      !builtinFunc ? flavorToType(instrInputFlavor(pc, i)) : TCell;
+    auto const type = flavorToType(instrInputFlavor(pc, i));
     irgen::assertTypeStack(irgs, BCSPRelOffset{i}, type);
   }
 
@@ -1202,19 +1222,17 @@ void translateInstr(irgen::IRGS& irgs, const NormalizedInstruction& ni) {
   }
 
   if (isAlwaysNop(ni)) return;
-  handleBespokeInputs(irgs, ni.source);
+
   if (ni.interp || RuntimeOption::EvalJitAlwaysInterpOne) {
     irgen::interpOne(irgs);
     return;
   }
 
-  if (ni.forceSurpriseCheck) {
-    surpriseCheck(irgs);
-  }
+  if (ni.forceSurpriseCheck) surpriseCheck(irgs);
 
-  translateDispatch(irgs, ni);
-
-  handleVanillaOutputs(irgs, ni.source);
+  translateDispatchBespoke(irgs, ni, [&](irgen::IRGS& env) {
+    translateDispatch(env, ni);
+  });
 
   FTRACE(3, "\nTranslated {}: {} with state:\n{}\n",
          ni.offset(), ni, show(irgs));

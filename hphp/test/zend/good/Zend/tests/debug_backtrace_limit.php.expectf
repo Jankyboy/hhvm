@@ -1,126 +1,126 @@
-Array
+Vec
 (
-    [0] => Array
+    [0] => Dict
         (
-            [file] => %sdebug_backtrace_limit.php
+            [file] => %s/test/zend/good/Zend/tests/debug_backtrace_limit.php
             [line] => 7
             [function] => c
-            [args] => Array
+            [args] => Vec
                 (
                 )
 
         )
 
 )
-Array
+Vec
 (
-    [0] => Array
+    [0] => Dict
         (
-            [file] => %sdebug_backtrace_limit.php
+            [file] => %s/test/zend/good/Zend/tests/debug_backtrace_limit.php
             [line] => 7
             [function] => c
-            [args] => Array
+            [args] => Vec
                 (
                 )
 
         )
 
-    [1] => Array
+    [1] => Dict
         (
-            [file] => %sdebug_backtrace_limit.php
+            [file] => %s/test/zend/good/Zend/tests/debug_backtrace_limit.php
             [line] => 3
             [function] => b
-            [args] => Array
+            [args] => Vec
                 (
                 )
 
         )
 
 )
-Array
+Vec
 (
-    [0] => Array
+    [0] => Dict
         (
-            [file] => %sdebug_backtrace_limit.php
+            [file] => %s/test/zend/good/Zend/tests/debug_backtrace_limit.php
             [line] => 7
             [function] => c
-            [args] => Array
+            [args] => Vec
                 (
                 )
 
         )
 
-    [1] => Array
+    [1] => Dict
         (
-            [file] => %sdebug_backtrace_limit.php
+            [file] => %s/test/zend/good/Zend/tests/debug_backtrace_limit.php
             [line] => 3
             [function] => b
-            [args] => Array
+            [args] => Vec
                 (
                 )
 
         )
 
-    [2] => Array
+    [2] => Dict
         (
-            [file] => %sdebug_backtrace_limit.php
+            [file] => %s/test/zend/good/Zend/tests/debug_backtrace_limit.php
             [line] => 19
             [function] => a
-            [args] => Array
+            [args] => Vec
                 (
                 )
 
         )
 
-    [3] => Array
+    [3] => Dict
         (
             [function] => entrypoint_debug_backtrace_limit
-            [args] => Array
+            [args] => Vec
                 (
                 )
 
         )
 
 )
-Array
+Vec
 (
-    [0] => Array
+    [0] => Dict
         (
-            [file] => %sdebug_backtrace_limit.php
+            [file] => %s/test/zend/good/Zend/tests/debug_backtrace_limit.php
             [line] => 7
             [function] => c
-            [args] => Array
+            [args] => Vec
                 (
                 )
 
         )
 
-    [1] => Array
+    [1] => Dict
         (
-            [file] => %sdebug_backtrace_limit.php
+            [file] => %s/test/zend/good/Zend/tests/debug_backtrace_limit.php
             [line] => 3
             [function] => b
-            [args] => Array
+            [args] => Vec
                 (
                 )
 
         )
 
-    [2] => Array
+    [2] => Dict
         (
-            [file] => %sdebug_backtrace_limit.php
+            [file] => %s/test/zend/good/Zend/tests/debug_backtrace_limit.php
             [line] => 19
             [function] => a
-            [args] => Array
+            [args] => Vec
                 (
                 )
 
         )
 
-    [3] => Array
+    [3] => Dict
         (
             [function] => entrypoint_debug_backtrace_limit
-            [args] => Array
+            [args] => Vec
                 (
                 )
 

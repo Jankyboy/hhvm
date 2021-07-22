@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VM_RECORD_H_
-#define incl_HPHP_VM_RECORD_H_
+#pragma once
 
 #include "hphp/runtime/base/atomic-countable.h"
 #include "hphp/runtime/base/atomic-shared-ptr.h"
@@ -92,7 +91,7 @@ struct PreRecordDesc : AtomicCountable {
   void atomicRelease();
 
 private:
-  using FieldMap = IndexedStringMap<Field,true,Slot>;
+  using FieldMap = IndexedStringMap<Field,Slot>;
   void checkDefaultValueType(const Field&) const;
 
 public:
@@ -160,6 +159,7 @@ struct RecordDesc : AtomicCountable {
   const StringData* name()       const { return m_preRec->name(); }
   Attr attrs()                   const { return m_preRec->attrs(); }
   const StringData* parentName() const { return m_preRec->parentName();  }
+  size_t stableHash()            const;
 
   /*
    * Whether this record is uniquely named across the codebase.
@@ -208,6 +208,51 @@ struct RecordDesc : AtomicCountable {
    * phase changes before that (see destroy()).
    */
   static RecordDesc* newRecordDesc(PreRecordDesc* preRec, RecordDesc* parent);
+
+  /*
+   * Define a new RecordDesc from `record' for this request.
+   *
+   * Raises a fatal error in various conditions (e.g., RecordDesc already
+   * defined, etc.) if `failIsFatal' is set).
+   *
+   * Also always fatals if a type alias already exists in this request with the
+   * same name as that of `record', regardless of the value of `failIsFatal'.
+   */
+  static RecordDesc* def(PreRecordDesc* preRecord, bool failIsFatal = true);
+
+  /*
+   * Look up the RecordDesc in this request with name `name', or with the name
+   * mapped to the NamedEntity `ne'.
+   *
+   * Return nullptr if the record is not yet defined in this request.
+   */
+  static RecordDesc* lookup(const NamedEntity* ne);
+  static RecordDesc* lookup(const StringData* name);
+
+  /*
+   * Finds a record which is guaranteed to be unique.
+   * The record has not necessarily been loaded in the current request.
+   *
+   * Return nullptr if there is no such record.
+   */
+  static const RecordDesc* lookupUnique(const StringData* name);
+
+  /*
+   * Autoload the RecordDesc with name `name' and bind it `ne' in this request.
+   *
+   * @requires: NamedEntity::get(name) == ne
+   */
+  static RecordDesc* loadMissing(const NamedEntity* ne,
+                                           const StringData* name);
+
+  /*
+   * Same as lookup(), but if `tryAutoload' is set, call and return loadMissing().
+   */
+  static RecordDesc* get(const NamedEntity* ne,
+                         const StringData* name,
+                         bool tryAutoload);
+  static RecordDesc* get(const StringData* name, bool tryAutoload);
+
   void destroy();
   /*
    * Called when the (atomic) refcount hits zero.
@@ -244,19 +289,6 @@ struct RecordDesc : AtomicCountable {
   Avail availWithParent(RecordDesc*& parent, bool tryAutoload = false) const;
   bool isZombie() const { return !m_cachedRecordDesc.bound(); }
 
-  /*
-   * Return true, and set the m_serialized flag, iff this RecordDesc hasn't
-   * been serialized yet (see prof-data-serialize.cpp).
-   *
-   * Not thread safe - caller is responsible for any necessary locking.
-   */
-  bool serialize() const;
-
-  /*
-   * Return true if this RecordDesc was already serialized.
-   */
-  bool wasSerialized() const;
-
 private:
   void setParent();
   void setFields();
@@ -266,8 +298,6 @@ private:
   FieldMap m_fields;
 
   mutable rds::Link<LowPtr<RecordDesc>, rds::Mode::NonLocal> m_cachedRecordDesc;
-
-  mutable bool m_serialized : 1;
 };
 
 inline bool recordHasPersistentRDS(const RecordDesc* rec) {
@@ -279,4 +309,6 @@ extern Mutex g_recordsMutex;
 ///////////////////////////////////////////////////////////////////////////////
 }
 
-#endif
+#define incl_HPHP_VM_RECORD_INL_H_
+#include "hphp/runtime/vm/record-inl.h"
+#undef incl_HPHP_VM_RECORD_INL_H_

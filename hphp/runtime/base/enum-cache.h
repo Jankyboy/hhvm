@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_ENUM_CACHE_H_
-#define incl_HPHP_ENUM_CACHE_H_
+#pragma once
 
 #include "hphp/runtime/ext/extension.h"
 #include "hphp/runtime/vm/class.h"
@@ -72,10 +71,6 @@ struct EnumCache {
   // Helper that raises a PHP exception
   [[noreturn]] static void failLookup(const Variant& msg);
 
-  // Large enums get the dummy LargeEnum tag (so that we can cache a single
-  // static value for these enums). Small enums get a tag based on the caller.
-  static Array tagEnumWithProvenance(Array input);
-
 private:
   // Class* to intptr_ti key helpers
   const static intptr_t RECURSE_MASK = 1;
@@ -129,4 +124,3 @@ private:
 
 }
 
-#endif

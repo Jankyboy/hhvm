@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_MEMORY_MANAGER_H_
-#define incl_HPHP_MEMORY_MANAGER_H_
+#pragma once
 
 #include <array>
 #include <string>
@@ -394,7 +393,6 @@ constexpr char kTVTrashFill2    = 0x7b; // used by req::ptr dtors
 constexpr char kTVTrashJITStk   = 0x7c; // used by the JIT for stack slots
 constexpr char kTVTrashJITFrame = 0x7d; // used by the JIT for stack frames
 constexpr char kTVTrashJITHeap  = 0x7e; // used by the JIT for heap
-constexpr char kTVTrashJITRetVal = 0x7f; // used by the JIT for ActRec::m_r
 constexpr uintptr_t kSmallFreeWord = 0x6a6a6a6a6a6a6a6aLL;
 constexpr uintptr_t kMallocFreeWord = 0x5a5a5a5a5a5a5a5aLL;
 
@@ -404,12 +402,6 @@ constexpr uintptr_t kMallocFreeWord = 0x5a5a5a5a5a5a5a5aLL;
 static_assert(RefCountMaxRealistic < (kMallocFreeWord >> 4), "");
 
 //////////////////////////////////////////////////////////////////////
-
-// Header MemoryManager uses for StringDatas that wrap APCHandle
-struct StringDataNode {
-  StringDataNode* next;
-  StringDataNode* prev;
-};
 
 static_assert(std::numeric_limits<type_scan::Index>::max() <=
               std::numeric_limits<uint16_t>::max(),
@@ -541,6 +533,14 @@ struct SparseHeap {
    */
   MemBlock slab_range() const { return m_slab_range; }
 
+  /*
+   * When the process is going to shutdown soon, try to free the slabs directly
+   * instead of handling them to slab manager.
+   */
+  static void PrepareToStop(bool val = true) {
+    s_shutdown.exchange(val, std::memory_order_release);
+  }
+
  protected:
   struct SlabInfo {
     SlabInfo(void* p, uint16_t v) : ptr(p), version(v) {}
@@ -552,6 +552,9 @@ struct SparseHeap {
   MemBlock m_slab_range;
   int64_t m_hugeBytes{0};               // compare with RequestHugeMaxBytes
   SlabManager* m_slabManager{nullptr};
+  // When the process is shutting down, we try to unmap the slabs directly at
+  // the end of the request.
+  static std::atomic_bool s_shutdown;
 };
 
 using HeapImpl = SparseHeap;
@@ -568,6 +571,26 @@ struct MemoryManager {
    *   MemoryManager::MaskAlloc masker(tl_heap);
    */
   struct MaskAlloc;
+
+  /*
+   * This is an RAII wrapper to count mallocs made in a scoped region. The
+   * intent is for extensions to use this to capture how much memory some
+   * opaque C++ allocation process has allocated in order to be able to
+   * credit this request thread for freeing it after it is freed on the
+   * extension's background thread (e.g. in an AsioExternalThreadEvent's
+   * unserialize method).
+   *
+   * Usage:
+   * uint64_t allocated = 0;
+   * {
+   *   MemoryManager::CountMalloc counter(tl_heap, allocated);
+   *   <do stuff>
+   * }
+   *
+   * Later on:
+   * tl_heap->takeCreditForFreeOnOtherThread(allocated);
+   */
+  struct CountMalloc;
 
   /*
    * An RAII wrapper to suppress OOM checking in a region.
@@ -675,7 +698,7 @@ struct MemoryManager {
   static size_t computeSize2Index(size_t size);
   static size_t lookupSmallSize2Index(size_t size);
   static size_t size2Index(size_t size);
-  static size_t sizeIndex2Size(size_t index);
+  static constexpr size_t sizeIndex2Size(size_t index);
 
   /////////////////////////////////////////////////////////////////////////////
   // Cleanup.
@@ -804,10 +827,20 @@ struct MemoryManager {
   bool stopStatsInterval();
 
   /*
-   * How much memory this thread has allocated or deallocated.
+   * How much memory this thread has allocated or deallocated from the
+   * underlying malloc implementation's perspective.
    */
   int64_t getAllocated() const;
   int64_t getDeallocated() const;
+  /*
+   * Apply a credit to this thread's malloc memory stats for a free that
+   * happened on another thread.
+   */
+  void takeCreditForFreeOnOtherThread(uint64_t size);
+
+  /*
+   * How much memory this thread has allocated and not freed using heap APIs.
+   */
   int64_t currentUsage() const;
 
   /*
@@ -875,7 +908,6 @@ struct MemoryManager {
   void addNativeObject(NativeNode*);
   void removeNativeObject(NativeNode*);
   void addSweepable(Sweepable*);
-  template<class Fn> void sweepApcStrings(Fn fn);
 
   /////////////////////////////////////////////////////////////////////////////
   // Request profiling.
@@ -922,12 +954,6 @@ struct MemoryManager {
 
   /////////////////////////////////////////////////////////////////////////////
   // Garbage collection.
-
-  /*
-   * Returns ptr to head node of m_strings linked list. This used by
-   * StringData during a reset, enlist, and delist
-   */
-  StringDataNode& getStringList();
 
   /*
    * Run the experimental collector.
@@ -1024,7 +1050,6 @@ private:
   void* m_front{nullptr};
   void* m_limit{nullptr};
   FreelistArray m_freelists;
-  StringDataNode m_strings; // in-place node is head of circular list
   int64_t m_nextGC{kNoNextGC}; // request gc when heap usage reaches this size
   int64_t m_nextSample{kNoNextSample};
   int64_t m_usageLimit; // OOM when m_stats.usage() > m_usageLimit
@@ -1056,8 +1081,13 @@ private:
   uint64_t* m_deallocated;
 
   // previous values of *m_[de]allocated from last resetStats()
+  // We adjust these numbers as needed when we want to hide allocations/frees
+  // from the memory manager.
   uint64_t m_resetAllocated;
   uint64_t m_resetDeallocated;
+  // An adjustment to take credit for freeing memory allocated by this thread
+  // and freed on another thread.
+  uint64_t m_freedOnOtherThread;
 
   // true if mallctlnametomib() setup succeeded, which requires jemalloc
   static bool s_statsEnabled;
@@ -1094,5 +1124,3 @@ void reset_alloc_sampling();
 }
 
 #include "hphp/runtime/base/memory-manager-inl.h"
-
-#endif

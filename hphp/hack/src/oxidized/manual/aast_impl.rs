@@ -8,8 +8,8 @@ use crate::ast_defs;
 use crate::pos::Pos;
 use std::{borrow::Cow, boxed::Box};
 
-impl<Ex, Fb, En, Hi> Stmt<Ex, Fb, En, Hi> {
-    pub fn new(pos: Pos, s: Stmt_<Ex, Fb, En, Hi>) -> Self {
+impl<Ex, Fb, En> Stmt<Ex, Fb, En> {
+    pub fn new(pos: Pos, s: Stmt_<Ex, Fb, En>) -> Self {
         Self(pos, s)
     }
 
@@ -18,7 +18,7 @@ impl<Ex, Fb, En, Hi> Stmt<Ex, Fb, En, Hi> {
     }
 
     pub fn is_assign_expr(&self) -> bool {
-        if let Some(Expr(_, Expr_::Binop(bop))) = &self.1.as_expr() {
+        if let Some(Expr(_, _, Expr_::Binop(bop))) = &self.1.as_expr() {
             if let (ast_defs::Bop::Eq(_), _, _) = bop.as_ref() {
                 return true;
             }
@@ -27,67 +27,66 @@ impl<Ex, Fb, En, Hi> Stmt<Ex, Fb, En, Hi> {
     }
 }
 
-impl<Ex, Fb, En, Hi> Expr<Ex, Fb, En, Hi> {
-    pub fn new(ex: Ex, e: Expr_<Ex, Fb, En, Hi>) -> Self {
-        Self(ex, e)
+impl<Ex, Fb, En> Expr<Ex, Fb, En> {
+    pub fn new(ex: Ex, pos: Pos, e: Expr_<Ex, Fb, En>) -> Self {
+        Self(ex, pos, e)
     }
 
     pub fn lvar_name(&self) -> Option<&str> {
-        match &self.1 {
+        match &self.2 {
             Expr_::Lvar(lid) => Some(&(lid.1).1),
             _ => None,
         }
     }
 
     pub fn is_import(&self) -> bool {
-        match &self.1 {
+        match &self.2 {
             Expr_::Import(_) => true,
             _ => false,
         }
     }
 }
 
-impl<Fb, En, Hi> Expr<Pos, Fb, En, Hi> {
+impl<Fb, En> Expr<(), Fb, En> {
     pub fn pos(&self) -> &Pos {
-        &self.0
+        &self.1
     }
     pub fn mk_lvar(p: &Pos, n: &str) -> Self {
         Self::new(
+            (),
             p.clone(),
             Expr_::Lvar(Box::new(Lid(p.clone(), (0, String::from(n))))),
         )
     }
 
-    pub fn as_class_get(
-        &self,
-    ) -> Option<(&ClassId<Pos, Fb, En, Hi>, &ClassGetExpr<Pos, Fb, En, Hi>)> {
-        self.1.as_class_get()
+    pub fn as_class_get(&self) -> Option<(&ClassId<(), Fb, En>, &ClassGetExpr<(), Fb, En>, &bool)> {
+        self.2.as_class_get()
     }
 
-    pub fn as_class_const(&self) -> Option<(&ClassId<Pos, Fb, En, Hi>, &Pstring)> {
-        self.1.as_class_const()
+    pub fn as_class_const(&self) -> Option<(&ClassId<(), Fb, En>, &Pstring)> {
+        self.2.as_class_const()
     }
 
     pub fn as_id(&self) -> Option<&Sid> {
-        self.1.as_id()
+        self.2.as_id()
     }
 }
 
-impl<Ex, Fb, En, Hi> Expr_<Ex, Fb, En, Hi> {
+impl<Ex, Fb, En> Expr_<Ex, Fb, En> {
     pub fn make_string(s: Vec<u8>) -> Self {
         Expr_::String(s.into())
     }
 }
 
-impl<Ex, Fb, En, Hi> ClassId<Ex, Fb, En, Hi> {
+impl<Ex, Fb, En> ClassId<Ex, Fb, En> {
     pub fn annot(&self) -> &Ex {
         &self.0
     }
-    pub fn get(&self) -> &ClassId_<Ex, Fb, En, Hi> {
-        &self.1
+    pub fn get(&self) -> &ClassId_<Ex, Fb, En> {
+        &self.2
     }
-    pub fn as_ciexpr(&self) -> Option<&Expr<Ex, Fb, En, Hi>> {
-        self.1.as_ciexpr()
+    pub fn as_ciexpr(&self) -> Option<&Expr<Ex, Fb, En>> {
+        self.2.as_ciexpr()
     }
 }
 
@@ -113,8 +112,8 @@ pub fn new_nsenv(env: crate::namespace_env::Env) -> Nsenv {
     ocamlrep::rc::RcOc::new(env)
 }
 
-impl<Ex, Fb, En, Hi> Afield<Ex, Fb, En, Hi> {
-    pub fn value(&self) -> &Expr<Ex, Fb, En, Hi> {
+impl<Ex, Fb, En> Afield<Ex, Fb, En> {
+    pub fn value(&self) -> &Expr<Ex, Fb, En> {
         match self {
             Self::AFvalue(e) => e,
             Self::AFkvalue(_, e) => e,
@@ -123,26 +122,24 @@ impl<Ex, Fb, En, Hi> Afield<Ex, Fb, En, Hi> {
 }
 
 // TODO(hrust): consider codegen the following
-impl<'a, Ex, Fb, En, Hi> Into<Cow<'a, Method_<Ex, Fb, En, Hi>>> for Method_<Ex, Fb, En, Hi>
+impl<'a, Ex, Fb, En> Into<Cow<'a, Method_<Ex, Fb, En>>> for Method_<Ex, Fb, En>
 where
     Ex: Clone,
     Fb: Clone,
     En: Clone,
-    Hi: Clone,
 {
     fn into(self) -> Cow<'a, Self> {
         Cow::Owned(self)
     }
 }
 
-impl<'a, Ex, Fb, En, Hi> Into<Cow<'a, Method_<Ex, Fb, En, Hi>>> for &'a Method_<Ex, Fb, En, Hi>
+impl<'a, Ex, Fb, En> Into<Cow<'a, Method_<Ex, Fb, En>>> for &'a Method_<Ex, Fb, En>
 where
     Ex: Clone,
     Fb: Clone,
     En: Clone,
-    Hi: Clone,
 {
-    fn into(self) -> Cow<'a, Method_<Ex, Fb, En, Hi>> {
+    fn into(self) -> Cow<'a, Method_<Ex, Fb, En>> {
         Cow::Borrowed(self)
     }
 }

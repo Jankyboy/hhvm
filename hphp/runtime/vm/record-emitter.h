@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_VM_RECORD_EMIT_H_
-#define incl_HPHP_VM_RECORD_EMIT_H_
+#pragma once
 
 #include "hphp/runtime/base/repo-auth-type.h"
 #include "hphp/runtime/base/array-data.h"
@@ -23,7 +22,6 @@
 #include "hphp/runtime/vm/func.h"
 #include "hphp/runtime/vm/func-emitter.h"
 #include "hphp/runtime/vm/record.h"
-#include "hphp/runtime/vm/repo-helpers.h"
 
 #include <vector>
 
@@ -87,7 +85,7 @@ struct RecordEmitter {
     UserAttributeMap m_userAttributes{};
   };
 
-  using FieldMap = IndexedStringMap<Field, true, Slot>;
+  using FieldMap = IndexedStringMap<Field, Slot>;
 
   RecordEmitter(UnitEmitter& ue, Id id, const std::string& name);
 
@@ -99,14 +97,13 @@ struct RecordEmitter {
   const StringData* name() const { return m_name; }
   const StringData* parentName() const { return m_parent; }
   Attr attrs() const { return m_attrs; }
+  void setAttrs(Attr attrs) { m_attrs = attrs; }
   UserAttributeMap userAttributes() const { return m_userAttributes; }
   void setUserAttributes(UserAttributeMap map) {
     m_userAttributes = std::move(map);
   }
 
   Id id() const { return m_id; }
-
-  void commit(RepoTxn& txn) const; // throws(RepoExc)
 
   PreRecordDesc* create(Unit& unit) const;
 
@@ -144,30 +141,5 @@ struct RecordEmitter {
     FieldMap::Builder m_fieldMap;
 };
 
-struct RecordRepoProxy : RepoProxy {
-  friend struct PreRecordDesc;
-  friend struct RecordEmitter;
-
-  explicit RecordRepoProxy(Repo& repo);
-  ~RecordRepoProxy();
-  void createSchema(int repoId, RepoTxn& txn); // throws(RepoExc)
-
-  struct InsertRecordStmt : public RepoProxy::Stmt {
-    InsertRecordStmt(Repo& repo, int repoId) : Stmt(repo, repoId) {}
-    void insert(const RecordEmitter& re, RepoTxn& txn, int64_t unitSn,
-                Id recordId, const StringData* name); // throws(RepoExc)
-  };
-
-  struct GetRecordsStmt : public RepoProxy::Stmt {
-    GetRecordsStmt(Repo& repo, int repoId) : Stmt(repo, repoId) {}
-    void get(UnitEmitter& ue); // throws(RepoExc)
-  };
-
-  InsertRecordStmt insertRecord[RepoIdCount];
-  GetRecordsStmt getRecords[RepoIdCount];
-};
-
 ///////////////////////////////////////////////////////////////////////////////
 }
-
-#endif

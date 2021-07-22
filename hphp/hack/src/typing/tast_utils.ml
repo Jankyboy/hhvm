@@ -14,6 +14,7 @@ open Typing_defs
 module Env = Tast_env
 module MakeType = Typing_make_type
 module Cls = Decl_provider.Class
+module SN = Naming_special_names
 
 (** Return true if ty definitely does not contain null.  I.e., the
     return value false can mean two things: ty does contain null, e.g.,
@@ -40,7 +41,7 @@ let rec type_non_nullable env ty =
     when type_non_nullable env ty ->
     true
   | Tunion tyl when not (List.is_empty tyl) ->
-    List.for_all tyl (type_non_nullable env)
+    List.for_all tyl ~f:(type_non_nullable env)
   | _ -> false
 
 (* Truthiness utilities ******************************************************)
@@ -111,6 +112,7 @@ let rec truthiness env ty =
   | Tvar _ ->
     Unknown
   | Tnonnull
+  | Tneg _
   | Tvarray _
   | Tdarray _
   | Tvarray_or_darray _
@@ -128,8 +130,8 @@ let rec truthiness env ty =
       Always_truthy
     else (
       (* Classes which implement Traversable but not Container will always be
-       truthy when empty. If this Tclass is instead an interface type like
-       KeyedTraversable, the value may or may not be truthy when empty. *)
+         truthy when empty. If this Tclass is instead an interface type like
+         KeyedTraversable, the value may or may not be truthy when empty. *)
       match Decl_provider.get_class (Env.get_ctx env) cid with
       | None -> Unknown
       | Some cls ->
@@ -147,31 +149,30 @@ let rec truthiness env ty =
   | Tprim Tvoid -> Always_falsy
   | Tprim Tnoreturn -> Unknown
   | Tprim (Tint | Tbool | Tfloat | Tstring | Tnum | Tarraykey) -> Possibly_falsy
-  (* Tatom are string at runtine, but neither "0" nor "" are valid atom names *)
-  | Tprim (Tatom _) -> Always_truthy
   | Tunion tyl ->
     begin
-      match List.map tyl (truthiness env) with
+      match List.map tyl ~f:(truthiness env) with
       | [] -> Unknown
       | hd :: tl -> List.fold tl ~init:hd ~f:fold_truthiness
     end
   | Tintersection tyl ->
-    List.map tyl (truthiness env)
+    List.map tyl ~f:(truthiness env)
     |> List.fold ~init:Possibly_falsy ~f:intersect_truthiness
   | Tgeneric _
   | Tnewtype _
   | Tdependent _ ->
-    let (env, tyl) = Env.get_concrete_supertypes env ty in
+    let (env, tyl) = Env.get_concrete_supertypes ~abstract_enum:true env ty in
     begin
-      match List.map tyl (truthiness env) with
+      match List.map tyl ~f:(truthiness env) with
       | [] -> Unknown
       | hd :: tl -> List.fold tl ~init:hd ~f:fold_truthiness
     end
-  | Tshape (Closed_shape, fields) when Int.equal 0 (ShapeMap.cardinal fields) ->
+  | Tshape (Closed_shape, fields) when Int.equal 0 (TShapeMap.cardinal fields)
+    ->
     Always_falsy
   | Tshape (_, fields) ->
     let has_non_optional_fields =
-      ShapeMap.fold
+      TShapeMap.fold
         (fun _ { sft_optional = opt; _ } -> ( || ) (not opt))
         fields
         false
@@ -181,12 +182,16 @@ let rec truthiness env ty =
     else
       Possibly_falsy
   | Ttuple [] -> Always_falsy
+  | Ttuple (_ :: _) ->
+    (* A tuple is a vec at runtime, and non-empty vecs are truthy. *)
+    Always_truthy
   | Tobject
   | Tfun _
-  | Ttuple _
-  | Tpu _
-  | Tpu_type_access _ ->
+  | Taccess _ ->
     (* TODO(T36532263) check if that's ok *) Unknown
+  | Tvec_or_dict _ ->
+    (* TODO(T69768816) determine which variant is correct for vec_or_dict *)
+    Unknown
   | Tunapplied_alias _ ->
     Typing_defs.error_Tunapplied_alias_in_illegal_context ()
 
@@ -245,7 +250,7 @@ let rec find_sketchy_types env acc ty =
   | Tgeneric _
   | Tnewtype _
   | Tdependent _ ->
-    let (env, tyl) = Env.get_concrete_supertypes env ty in
+    let (env, tyl) = Env.get_concrete_supertypes ~abstract_enum:true env ty in
     List.fold tyl ~init:acc ~f:(find_sketchy_types env)
   | Tany _
   | Tnonnull
@@ -259,10 +264,11 @@ let rec find_sketchy_types env acc ty =
   | Tvar _
   | Tvarray _
   | Tdarray _
+  | Tvec_or_dict _
   | Tvarray_or_darray _
-  | Tpu _
-  | Tpu_type_access _
-  | Tunapplied_alias _ ->
+  | Tunapplied_alias _
+  | Taccess _
+  | Tneg _ ->
     acc
 
 let find_sketchy_types env ty = find_sketchy_types env [] ty

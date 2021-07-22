@@ -7,6 +7,8 @@
  *
  *)
 
+module Option = Base.Option
+
 type 'a in_channel = Timeout.in_channel
 
 type 'a out_channel = Stdlib.out_channel
@@ -85,6 +87,12 @@ module Entry : sig
     Unix.file_descr * Unix.file_descr ->
     unit
 
+  (* Note: the Entry module is not public, so this exception can only
+   * be used in this file.
+   *)
+  exception Context_not_found
+
+  (* Might raise {!Context_not_found} *)
   val get_context :
     unit ->
     ('param, 'input, 'output) t * 'param * ('input, 'output) channel_pair
@@ -108,8 +116,9 @@ end = struct
     name
 
   let find name =
-    try Obj.obj (Hashtbl.find entry_points name)
-    with Not_found -> Printf.ksprintf failwith "Unknown entry point %S" name
+    match Hashtbl.find_opt entry_points name with
+    | Some entry -> Obj.obj entry
+    | None -> Printf.ksprintf failwith "Unknown entry point %S" name
 
   let set_context entry param (ic, oc) =
     let data = (ic, oc, param) in
@@ -125,6 +134,8 @@ end = struct
     close_out oc;
     Unix.putenv "HH_SERVER_DAEMON_PARAM" file
 
+  exception Context_not_found
+
   (* How this works on Unix: It may appear like we are passing file descriptors
    * from one process to another here, but in_handle / out_handle are actually
    * file descriptors that are already open in the current process -- they were
@@ -132,20 +143,26 @@ end = struct
    * exec causes the child to "forget" everything, we have to pass the numbers
    * of these file descriptors as arguments.
    *
-   * I'm not entirely sure what this does on Windows. *)
+   * I'm not entirely sure what this does on Windows.
+   *
+   * Might raise {!Context_not_found} *)
   let get_context () =
-    let entry = Unix.getenv "HH_SERVER_DAEMON" in
-    if entry = "" then raise Not_found;
+    let entry =
+      try Unix.getenv "HH_SERVER_DAEMON" with
+      | Caml.Not_found -> raise Context_not_found
+    in
+    if String.equal entry "" then raise Context_not_found;
     let (in_handle, out_handle, param) =
       try
         let file = Sys.getenv "HH_SERVER_DAEMON_PARAM" in
-        if file = "" then raise Not_found;
+        if String.equal file "" then raise Context_not_found;
         let ic = Sys_utils.open_in_bin_no_fail file in
         let res = Marshal.from_channel ic in
         Sys_utils.close_in_no_fail "Daemon.get_context" ic;
         Sys.remove file;
         res
-      with exn ->
+      with
+      | exn ->
         failwith ("Can't find daemon parameters: " ^ Printexc.to_string exn)
     in
     ( entry,
@@ -176,7 +193,8 @@ let exec entry param ic oc =
   try
     f param (ic, oc);
     exit 0
-  with e ->
+  with
+  | e ->
     prerr_endline (Printexc.to_string e);
     Printexc.print_backtrace stderr;
     exit 2
@@ -244,10 +262,11 @@ let fork
          Unix.close log_stderr;
        f param (child_in, child_out);
        exit 0
-     with e ->
-       prerr_endline (Printexc.to_string e);
-       Printexc.print_backtrace stderr;
-       exit 1)
+     with
+    | e ->
+      prerr_endline (Printexc.to_string e);
+      Printexc.print_backtrace stderr;
+      exit 1)
   | pid ->
     (* parent *)
     Timeout.close_in child_in;
@@ -272,7 +291,8 @@ let spawn
   Unix.close child_in;
   Unix.close child_out;
   let close_if_open fd =
-    (try Unix.close fd with Unix.Unix_error (Unix.EBADF, _, _) -> ())
+    try Unix.close fd with
+    | Unix.Unix_error (Unix.EBADF, _, _) -> ()
   in
   if stdin <> Unix.stdin then close_if_open stdin;
   if stdout <> Unix.stdout then close_if_open stdout;
@@ -309,7 +329,8 @@ let check_entry_point () =
     let (entry, param, (ic, oc)) = Entry.get_context () in
     Entry.clear_context ();
     exec entry param ic oc
-  with Not_found -> ()
+  with
+  | Entry.Context_not_found -> ()
 
 let close { channels = (ic, oc); _ } =
   Timeout.close_in ic;

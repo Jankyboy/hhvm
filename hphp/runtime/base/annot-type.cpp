@@ -16,7 +16,6 @@
 
 #include "hphp/runtime/base/annot-type.h"
 
-#include <folly/Optional.h>
 #include <folly/MapUtil.h>
 #include "hphp/runtime/base/string-data.h"
 #include "hphp/runtime/base/static-string-table.h"
@@ -46,12 +45,12 @@ const StaticString
 
 MaybeDataType nameToMaybeDataType(const StringData* typeName) {
   auto const* type = nameToAnnotType(typeName);
-  return type ? MaybeDataType(getAnnotDataType(*type)) : folly::none;
+  return type ? MaybeDataType(getAnnotDataType(*type)) : std::nullopt;
 }
 
 MaybeDataType nameToMaybeDataType(const std::string& typeName) {
   auto const* type = nameToAnnotType(typeName);
-  return type ? MaybeDataType(getAnnotDataType(*type)) : folly::none;
+  return type ? MaybeDataType(getAnnotDataType(*type)) : std::nullopt;
 }
 
 /**
@@ -62,10 +61,11 @@ MaybeDataType nameToMaybeDataType(const std::string& typeName) {
 static const std::pair<HhvmStrToTypeMap, StdStrToTypeMap>& getAnnotTypeMaps() {
   static const std::pair<HhvmStrToTypeMap, StdStrToTypeMap> mapPair = []() {
     std::pair<HhvmStrToTypeMap, StdStrToTypeMap> mappedPairs;
-    const struct Pair {
+    struct Pair {
       const char* name;
       AnnotType type;
-    } pairs[] = {
+    };
+    std::vector<Pair> pairs = {
       { "HH\\nothing",  AnnotType::Nothing },
       { "HH\\noreturn", AnnotType::NoReturn },
       { "HH\\null",     AnnotType::Null },
@@ -83,25 +83,19 @@ static const std::pair<HhvmStrToTypeMap, StdStrToTypeMap>& getAnnotTypeMaps() {
       { "self",         AnnotType::Self },
       { "parent",       AnnotType::Parent },
       { "callable",     AnnotType::Callable },
-      { "HH\\dict",     AnnotType::Dict },
       { "HH\\vec",      AnnotType::Vec },
+      { "HH\\dict",     AnnotType::Dict },
       { "HH\\keyset",   AnnotType::Keyset },
-      {
-        "HH\\varray",
-        RO::EvalHackArrDVArrs ? AnnotType::Vec : AnnotType::VArray
-      },
-      {
-        "HH\\darray",
-        RO::EvalHackArrDVArrs ? AnnotType::Dict : AnnotType::DArray
-      },
-      {
-        "HH\\varray_or_darray",
-        RO::EvalHackArrDVArrs ? AnnotType::VecOrDict : AnnotType::VArrOrDArr
-      },
+      { "HH\\varray",   AnnotType::Vec },
+      { "HH\\darray",   AnnotType::Dict },
+      { "HH\\varray_or_darray", AnnotType::VecOrDict },
       { "HH\\vec_or_dict", AnnotType::VecOrDict },
-      { "HH\\arraylike", AnnotType::ArrayLike },
+      { "HH\\AnyArray", AnnotType::ArrayLike },
     };
-    for (unsigned i = 0; i < sizeof(pairs) / sizeof(Pair); ++i) {
+    if (RO::EvalClassPassesClassname) {
+      pairs.push_back({ "HH\\classname", AnnotType::Classname });
+    }
+    for (unsigned i = 0; i < pairs.size(); ++i) {
       mappedPairs.first[makeStaticString(pairs[i].name)] = pairs[i].type;
       mappedPairs.second[pairs[i].name] = pairs[i].type;
     }
@@ -193,6 +187,7 @@ TypedValue annotDefaultValue(AnnotType at) {
     case AnnotType::Nothing:
     case AnnotType::Record:
     case AnnotType::NoReturn:
+    case AnnotType::Classname:
     case AnnotType::Null:     return make_tv<KindOfNull>();
     case AnnotType::Nonnull:
     case AnnotType::Number:
@@ -200,11 +195,6 @@ TypedValue annotDefaultValue(AnnotType at) {
     case AnnotType::Int:      return make_tv<KindOfInt64>(0);
     case AnnotType::Bool:     return make_tv<KindOfBoolean>(false);
     case AnnotType::Float:    return make_tv<KindOfDouble>(0);
-    case AnnotType::DArray:
-      return make_persistent_array_like_tv(staticEmptyDArray());
-    case AnnotType::VArray:
-    case AnnotType::VArrOrDArr:
-      return make_persistent_array_like_tv(staticEmptyVArray());
     case AnnotType::ArrayLike:
     case AnnotType::VecOrDict:
     case AnnotType::Vec:
@@ -233,6 +223,14 @@ annotCompat(DataType dt, AnnotType at, const StringData* annotClsName) {
       return (isIntType(dt) || isDoubleType(dt))
         ? AnnotAction::Pass : AnnotAction::Fail;
     case AnnotMetaType::ArrayKey:
+      if (isClassType(dt)) {
+        return RuntimeOption::EvalClassStringHintNotices
+          ? AnnotAction::WarnClass : AnnotAction::ConvertClass;
+      }
+      if (isLazyClassType(dt)) {
+        return RuntimeOption::EvalClassStringHintNotices
+          ? AnnotAction::WarnLazyClass : AnnotAction::ConvertLazyClass;
+      }
       return (isIntType(dt) || isStringType(dt))
         ? AnnotAction::Pass : AnnotAction::Fail;
     case AnnotMetaType::Self:
@@ -248,26 +246,23 @@ annotCompat(DataType dt, AnnotType at, const StringData* annotClsName) {
     case AnnotMetaType::Callable:
       // For "callable", if `dt' is not string/array/object/func we know
       // it's not compatible, otherwise more checks are required
-      return (isStringType(dt) || isArrayType(dt) || isVecType(dt) ||
+      return (isStringType(dt) || isVecType(dt) || isDictType(dt) ||
               isFuncType(dt) || dt == KindOfObject || isClsMethType(dt) ||
               isRFuncType(dt) || isRClsMethType(dt))
         ? AnnotAction::CallableCheck : AnnotAction::Fail;
-    case AnnotMetaType::VArrOrDArr:
-      assertx(!RO::EvalHackArrDVArrs);
-      if (isClsMethType(dt)) return AnnotAction::ClsMethCheck;
-      return isHAMSafeDVArrayType(dt) ? AnnotAction::Pass : AnnotAction::Fail;
     case AnnotMetaType::VecOrDict:
-      if (isClsMethType(dt)) {
-        return RO::EvalHackArrDVArrs
-          ? AnnotAction::ClsMethCheck
-          : AnnotAction::Fail;
-      }
       return (isVecType(dt) || isDictType(dt))
         ? AnnotAction::Pass
         : AnnotAction::Fail;
     case AnnotMetaType::ArrayLike:
-      if (isClsMethType(dt)) return AnnotAction::ClsMethCheck;
       return isArrayLikeType(dt) ? AnnotAction::Pass : AnnotAction::Fail;
+    case AnnotMetaType::Classname:
+      if (isStringType(dt)) return AnnotAction::Pass;
+      if (isClassType(dt) || isLazyClassType(dt)) {
+        return RO::EvalClassnameNotices ?
+          AnnotAction::WarnClassname : AnnotAction::Pass;
+      }
+      return AnnotAction::Fail;
     case AnnotMetaType::Nothing:
     case AnnotMetaType::NoReturn:
       return AnnotAction::Fail;
@@ -280,13 +275,9 @@ annotCompat(DataType dt, AnnotType at, const StringData* annotClsName) {
     return RuntimeOption::EvalClassStringHintNotices
       ? AnnotAction::WarnClass : AnnotAction::ConvertClass;
   }
-  if (isClsMethType(dt)) {
-    auto const resolve = [] (bool okay) {
-      return okay ? AnnotAction::ClsMethCheck : AnnotAction::Fail;
-    };
-    if (at == AnnotType::Vec)       return resolve(RO::EvalHackArrDVArrs);
-    if (at == AnnotType::VArray)    return resolve(!RO::EvalHackArrDVArrs);
-    if (at == AnnotType::ArrayLike) return resolve(true);
+  if (at == AnnotType::String && dt == KindOfLazyClass) {
+    return RuntimeOption::EvalClassStringHintNotices
+      ? AnnotAction::WarnLazyClass : AnnotAction::ConvertLazyClass;
   }
 
   if (at == AnnotType::Record) {
@@ -315,10 +306,6 @@ annotCompat(DataType dt, AnnotType at, const StringData* annotClsName) {
       case KindOfString:
         return interface_supports_string(annotClsName)
           ? AnnotAction::Pass : AnnotAction::Fail;
-      case KindOfPersistentDArray:
-      case KindOfDArray:
-      case KindOfPersistentVArray:
-      case KindOfVArray:
       case KindOfPersistentVec:
       case KindOfVec:
       case KindOfPersistentDict:
@@ -333,9 +320,14 @@ annotCompat(DataType dt, AnnotType at, const StringData* annotClsName) {
             ? AnnotAction::WarnClass : AnnotAction::ConvertClass;
         }
         return AnnotAction::Fail;
+      case KindOfLazyClass:
+        if (interface_supports_string(annotClsName)) {
+          return RuntimeOption::EvalClassStringHintNotices
+            ? AnnotAction::WarnLazyClass : AnnotAction::ConvertLazyClass;
+        }
+        return AnnotAction::Fail;
       case KindOfClsMeth:
-        return interface_supports_arrlike(annotClsName) ?
-          AnnotAction::ClsMethCheck : AnnotAction::Fail;
+        return AnnotAction::Fail;
       case KindOfFunc:
       case KindOfRClsMeth:
       case KindOfRFunc:
@@ -344,7 +336,6 @@ annotCompat(DataType dt, AnnotType at, const StringData* annotClsName) {
       case KindOfBoolean:
       case KindOfResource:
       case KindOfRecord:
-      case KindOfLazyClass: // TODO (T68823113)
         return AnnotAction::Fail;
       case KindOfObject:
         not_reached();

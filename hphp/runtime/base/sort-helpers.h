@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_SORT_HELPERS_H_
-#define incl_HPHP_SORT_HELPERS_H_
+#pragma once
 
 #include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/base/comparisons.h"
@@ -332,7 +331,7 @@ struct ElmUCompare {
       *acc.getValue(right).asTypedValue()
     };
     auto ret = Variant::attach(
-      g_context->invokeFuncFew(*ctx, 2, args)
+      g_context->invokeFuncFew(*ctx, 2, args, RuntimeCoeffects::fixme())
     );
     if (ctx->func->takesInOutParams()) {
       assertx(ret.isArray());
@@ -375,4 +374,3 @@ private:
 ///////////////////////////////////////////////////////////////////////////////
 }
 
-#endif // incl_HPHP_SORT_HELPERS_H_

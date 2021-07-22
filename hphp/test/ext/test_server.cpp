@@ -124,7 +124,7 @@ bool TestServer::VerifyServerResponse(const char* input, const char** outputs,
       }
       if (header) {
         HHVM_FN(curl_setopt)(c.toResource(), CURLOPT_HTTPHEADER,
-                      make_varray(header));
+                      make_vec_array(header));
       }
       if (responseHeader) {
         HHVM_FN(curl_setopt)(c.toResource(), CURLOPT_HEADER, 1);
@@ -179,7 +179,7 @@ void TestServer::RunServer() {
     : "-vServer.TakeoverFilename=" + std::string(s_filename);
   auto serverType = std::string("-vServer.Type=") + m_serverType;
   auto pidFile = std::string("-vPidFile=") + s_pidfile;
-  auto repoFile = std::string("-vRepo.Central.Path=") + s_repoFile;
+  auto repoFile = std::string("-vRepo.Path=") + s_repoFile;
   auto logFile = std::string("-vLog.File=") + s_logFile;
 
   const char *argv[] = {
@@ -375,7 +375,7 @@ bool TestServer::TestServerVariables() {
 bool TestServer::TestInteraction() {
   // run this twice to test lvalBlackHole
   VSR2("<?hh "
-        "$a[] = new stdclass;"
+        "$a[] = new stdClass;"
         "var_dump(count(array_combine($a, $a)));",
         "");
 
@@ -859,7 +859,6 @@ bool TestServer::TestXboxServer() {
         "    if ($msg == '1') return xbox_get_thread_timeout();\n"
         "    else if ($msg == '2') xbox_set_thread_timeout(5);\n"
         "    else if ($msg == '3') return xbox_get_thread_time();\n"
-        "    else xbox_schedule_thread_reset();\n"
         "  }\n"
         "}\n",
         "int(10)\n"

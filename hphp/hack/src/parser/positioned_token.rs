@@ -11,7 +11,9 @@ use crate::{
     lexable_trivia::LexableTrivia,
     positioned_trivia::{PositionedTrivia, PositionedTrivium},
     source_text::SourceText,
+    token_factory::SimpleTokenFactory,
     token_kind::TokenKind,
+    trivia_factory::SimpleTriviaFactory,
     trivia_kind::TriviaKind,
 };
 
@@ -34,30 +36,68 @@ pub struct PositionedTokenImpl {
 // counted pointer to the actual shared struct
 pub type PositionedToken = RcOc<PositionedTokenImpl>;
 
-impl<'a> LexableToken<'a> for PositionedToken {
-    type Trivia = PositionedTrivia;
+pub fn new(
+    kind: TokenKind,
+    offset: usize,
+    width: usize,
+    leading: PositionedTrivia,
+    trailing: PositionedTrivia,
+) -> PositionedToken {
+    let leading_width = leading.iter().map(|x| x.width).sum();
+    let trailing_width = trailing.iter().map(|x| x.width).sum();
+    RcOc::new(PositionedTokenImpl {
+        kind,
+        offset,
+        leading_width,
+        width,
+        trailing_width,
+        leading,
+        trailing,
+    })
+}
 
+impl SimpleTokenFactory for PositionedToken {
     fn make(
         kind: TokenKind,
-        _source: &SourceText,
         offset: usize,
         width: usize,
-        leading: Self::Trivia,
-        trailing: Self::Trivia,
+        leading: PositionedTrivia,
+        trailing: PositionedTrivia,
     ) -> Self {
-        let leading_width = leading.iter().map(|x| x.width).sum();
-        let trailing_width = trailing.iter().map(|x| x.width).sum();
-
-        RcOc::new(PositionedTokenImpl {
-            kind,
-            offset,
-            leading_width,
-            width,
-            trailing_width,
-            leading,
-            trailing,
-        })
+        new(kind, offset, width, leading, trailing)
     }
+
+    // Tricky: the with_ functions that modify tokens can be very cheap (when ref count is 1), or
+    // possibly expensive (when make_mut has to perform a clone of underlying token that is shared).
+    // Fortunately, they are used only in lexer/parser BEFORE the tokens are embedded in syntax, so
+    // before any sharing occurs
+    fn with_leading(mut self, leading: PositionedTrivia) -> Self {
+        let mut token = RcOc::make_mut(&mut self);
+        let token_start_offset = token.offset + token.leading_width;
+        let leading_width = leading.iter().map(|x| x.width).sum();
+        token.offset = token_start_offset - leading_width;
+        token.leading_width = leading_width;
+        token.leading = leading;
+        self
+    }
+
+    fn with_trailing(mut self, trailing: PositionedTrivia) -> Self {
+        let mut token = RcOc::make_mut(&mut self);
+        let trailing_width = trailing.iter().map(|x| x.width).sum();
+        token.trailing_width = trailing_width;
+        token.trailing = trailing;
+        self
+    }
+
+    fn with_kind(mut self, kind: TokenKind) -> Self {
+        let mut token = RcOc::make_mut(&mut self);
+        token.kind = kind;
+        self
+    }
+}
+
+impl LexableToken for PositionedToken {
+    type Trivia = PositionedTrivia;
 
     fn kind(&self) -> TokenKind {
         self.kind
@@ -97,28 +137,6 @@ impl<'a> LexableToken<'a> for PositionedToken {
 
     fn trailing_is_empty(&self) -> bool {
         self.trailing.is_empty()
-    }
-
-    // Tricky: the with_ functions that modify tokens can be very cheap (when ref count is 1), or
-    // possibly expensive (when make_mut has to perform a clone of underlying token that is shared).
-    // Fortunately, they are used only in lexer/parser BEFORE the tokens are embedded in syntax, so
-    // before any sharing occurs
-    fn with_leading(mut self, leading: Self::Trivia) -> Self {
-        let mut token = RcOc::make_mut(&mut self);
-        token.leading = leading;
-        self
-    }
-
-    fn with_trailing(mut self, trailing: Self::Trivia) -> Self {
-        let mut token = RcOc::make_mut(&mut self);
-        token.trailing = trailing;
-        self
-    }
-
-    fn with_kind(mut self, kind: TokenKind) -> Self {
-        let mut token = RcOc::make_mut(&mut self);
-        token.kind = kind;
-        self
     }
 
     fn has_leading_trivia_kind(&self, kind: TriviaKind) -> bool {
@@ -165,7 +183,7 @@ impl PositionedTokenImpl {
     }
 }
 
-impl<'a> LexablePositionedToken<'a> for PositionedToken {
+impl LexablePositionedToken for PositionedToken {
     fn text<'b>(&self, source_text: &'b SourceText) -> &'b str {
         source_text.sub_as_str(self.start_offset(), self.width())
     }
@@ -179,34 +197,17 @@ impl<'a> LexablePositionedToken<'a> for PositionedToken {
         RcOc::new(inner)
     }
 
-    fn trim_left(&mut self, n: usize) -> Result<(), String> {
-        let inner = RcOc::get_mut(self).ok_or("could not get mutable")?;
-        inner.leading_width = inner.leading_width + n;
-        inner.width = inner.width - n;
-        Ok(())
-    }
-
-    fn trim_right(&mut self, n: usize) -> Result<(), String> {
-        let inner = RcOc::get_mut(self).ok_or("could not get mutable")?;
-        inner.trailing_width = inner.trailing_width + n;
-        inner.width = inner.width - n;
-        Ok(())
-    }
-
-    fn concatenate(s: &Self, e: &Self) -> Result<Self, String> {
-        let mut t = s.clone_value();
-        let inner = RcOc::get_mut(&mut t).ok_or("could not get mutable")?;
-        inner.width = e.end_offset() + 1 - s.start_offset();
-        inner.trailing_width = e.trailing_width();
-        inner.trailing = e.trailing.to_vec();
-        Ok(t)
-    }
-
     fn positioned_leading(&self) -> &[PositionedTrivium] {
         &self.leading
     }
 
     fn positioned_trailing(&self) -> &[PositionedTrivium] {
         &self.trailing
+    }
+}
+
+impl SimpleTriviaFactory for PositionedTrivia {
+    fn make() -> Self {
+        Self::new()
     }
 }

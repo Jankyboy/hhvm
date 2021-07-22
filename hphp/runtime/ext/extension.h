@@ -15,8 +15,7 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_EXTENSION_H_
-#define incl_HPHP_EXTENSION_H_
+#pragma once
 
 #include "hphp/runtime/base/debuggable.h"
 #include "hphp/runtime/base/ini-setting.h"
@@ -77,6 +76,7 @@ public:
   virtual void moduleLoad(const IniSetting::Map& /*ini*/, Hdf /*hdf*/);
   virtual void moduleInfo(Array &info);
   virtual void moduleInit();
+  virtual void cliClientInit();
   virtual void moduleShutdown();
   virtual void threadInit();
   virtual void threadShutdown();
@@ -153,4 +153,3 @@ extern "C" Extension* getModule() { \
 
 /////////////////////////////////////////////////////////////////////////////
 } // namespace HPHP
-#endif // incl_HPHP_EXTENSION_H_

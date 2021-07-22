@@ -19,7 +19,6 @@
 #include <string>
 
 #include <folly/Format.h>
-#include <folly/Optional.h>
 #include <folly/ScopeGuard.h>
 
 #include "hphp/util/bisector.h"
@@ -388,11 +387,11 @@ bool srcsCanSpanCall(const IRInstruction& inst) {
   return true;
 }
 
-folly::Optional<uint32_t> pure_store_bit(Local& env, AliasClass acls) {
+Optional<uint32_t> pure_store_bit(Local& env, AliasClass acls) {
   if (auto const meta = env.global.ainfo.find(canonicalize(acls))) {
     return meta->index;
   }
-  return folly::none;
+  return std::nullopt;
 }
 
 void set_movable_store(Local& env, uint32_t bit, IRInstruction& inst) {
@@ -586,7 +585,7 @@ void visit(Local& env, IRInstruction& inst) {
         load(env, ALocal { inst.src(0), inst.extra<AssertLoc>()->locId });
         return;
       case AssertStk:
-        load(env, AStack { inst.src(0), inst.extra<AssertStk>()->offset, 1 });
+        load(env, AStack::at(inst.extra<AssertStk>()->offset));
         return;
       default:
         return;
@@ -864,9 +863,12 @@ IRInstruction* resolve_flat(Global& genv, Block* blk, uint32_t id,
       auto const st = stores[j++];
       auto si = st->src(i);
       if (!si->inst()->is(DefConst) && si->type().admitsSingleVal()) {
-        si = genv.unit.cns(si->type());
+        // If edges do not all have the same SSATmp src,
+        // rewrite srcs with constant values to use DefConst.
+        phiInputs[edge.from()] = genv.unit.cns(si->type());
+      } else {
+        phiInputs[edge.from()] = si;
       }
-      phiInputs[edge.from()] = si;
       if (temp == nullptr) temp = si;
       if (si != temp) same = false;
     }
@@ -1404,133 +1406,94 @@ void fix_inlined_call(Global& genv, IRInstruction* call, SSATmp* fp) {
   // Nothing to do if the frame hasn't changed.
   if (fp == call->src(1)) return;
 
-  auto const origFp = call->src(1);
-  auto const extra = call->extra<Call>();
-  auto const callOffset = extra->callOffset;
-  assertx(origFp->inst()->is(BeginInlining));
-
   // Adjust the fp and callOffset to reflect the caller frame for this call.
+  assertx(call->src(1)->inst()->is(BeginInlining));
   auto const sk = call->marker().fixupSk();
-  extra->callOffset = sk.offset() - sk.func()->base();
+  call->extra<Call>()->callOffset = sk.offset();
   call->setSrc(1, fp);
-
-  // If we've already inserted a SyncReturnBC instruction there's no need
-  // to insert any more.
-  if (extra->hasInlFixup) return;
-  extra->hasInlFixup = true;
-
-  auto const catchBlock = call->taken();
-  auto it = catchBlock->skipHeader();
-
-  auto syncInst = genv.unit.gen(
-    SyncReturnBC,
-    it->bcctx(),
-    SyncReturnBCData{callOffset, extra->spOffset + extra->numInputs()},
-    call->src(0),
-    origFp
-  );
-  catchBlock->insert(it, syncInst);
 }
 
 struct FPState {
-  PC catchPC;      // PC at dominating BeginCatch or nullptr
+  SrcKey catchSk;  // SrcKey at dominating BeginCatch or SrcKey{}
   int exitDepth;   // number of live frames at end of block
   SSATmp* entry;   // live fp at start of block
   SSATmp* exit;    // live fp at end of block
   SSATmp* catchFP; // live fp at dominating BeginCatch or nullptr
 };
 
+using Frames = jit::vector<SSATmp*>;
+
+SSATmp* parent_frame(SSATmp* fp) {
+  assertx(fp->inst()->is(BeginInlining));
+  return fp->inst()->src(1);
+}
+
+void populate_ancestor_frames(SSATmp* fp, Frames& frames) {
+  frames.clear();
+  while (fp) {
+    assertx(fp->isA(TFramePtr));
+    assertx(fp->inst()->is(DefFP, DefFuncEntryFP, BeginInlining));
+    frames.push_back(fp);
+    fp = fp->inst()->is(BeginInlining) ? parent_frame(fp) : nullptr;
+  }
+  std::reverse(frames.begin(), frames.end());
+}
+
 void append_inline_returns(Global& genv, Block* b, SSATmp* start, SSATmp* end) {
   auto const it = b->backIter();
-  for (; start != end; start = start->inst()->src(1)) {
-    assertx(start->inst()->is(BeginInlining));
-
-    auto const sInst = start->inst();
-    auto const next = start->inst()->src(1);
-    auto const nInst = next->inst();
-    auto const startOff = sInst->extra<BeginInlining>()->spOffset.offset;
-    auto const nextOff = [&] {
-      if (next->inst()->is(BeginInlining)) {
-        return nInst->extra<BeginInlining>()->spOffset;
-      }
-      auto const sp = sInst->src(0);
-      assertx(sp->inst()->is(DefRegSP, DefFrameRelSP));
-
-      // The IRSPRelOffset of `next` relative to `sp` is the same as the
-      // FPInvOffset of `sp` relative to `next`.
-      auto const off = sp->inst()->extra<FPInvOffsetData>()->offset;
-      return IRSPRelOffset{off.offset};
-    }().offset;
-
-    /*
-     * IRSPRel offsets get smaller the further down the stack they are, and
-     * start will by definition always be below next. The offset computed by
-     * nextOff - startOff will therefore be > 0. We want the FPRelOff, relative
-     * to start of next. FPRel offsets are positive above the fp they are
-     * are relative to ane negative below.
-     *
-     * +---------------------------+
-     * |            ...            |
-     * |                           |
-     * +---------------------------+
-     * |                           |
-     * +---------------------------+ <- sp ----+--+
-     * |                           |           |  |
-     * +---------------------------+  nextOff >|  |
-     * |                           |           |  |
-     * +---------------------------+ <- next --+--|-+
-     * |                           |              | |
-     * +---------------------------+    startOff >| |< nextOff - startOff
-     * |                           |              | |
-     * +---------------------------+ <- start ----+-+
-     * |                           |
-     * |            ...            |
-     * +---------------------------+
-     */
-    auto const callerFpOff = FPRelOffset{nextOff - startOff};
-
-    auto returnInst = genv.unit.gen(
-      InlineReturn,
-      it->bcctx(),
-      FPRelOffsetData { callerFpOff },
-      start,
-      next
-    );
-    b->insert(it, returnInst);
+  while (start != end) {
+    auto const next = parent_frame(start);
+    b->insert(it, genv.unit.gen(InlineReturn, it->bcctx(), start, next));
+    start = next;
   }
 }
 
-void adjust_inline_marker(IRInstruction& inst, SSATmp* fp) {
-  if (inst.marker().fp() == fp) return;
-  if (!inst.mayRaiseError() && !inst.is(BeginCatch)) return;
+void adjust_inline_marker(IRInstruction& inst, Frames& scratch_frames,
+                          const Frames& published_frames) {
+  // As an optimization, avoid rewriting CheckSurpriseFlags markers.
+  if (inst.is(CheckSurpriseFlags)) return;
+
+  // Find the last ancestor of this frame that's been published. This search
+  // definitely stops at the DefFP at i = 0, so it must be successful.
+  populate_ancestor_frames(inst.marker().fp(), scratch_frames);
+  if (published_frames.empty() || scratch_frames.empty()) return;
+  auto i = std::min(published_frames.size(), scratch_frames.size()) - 1;
+  while (published_frames[i] != scratch_frames[i]) {
+    assertx(i > 0);
+    i--;
+  }
+
+  // If fp == curFp, then curFp is published and we're fine. Else, the frame
+  // right after fp in the scratch_frames list exists and is the first call
+  // from a published frame to an unpublished ancestor of curFp.
+  auto const fp = published_frames[i];
   auto const curFp = inst.marker().fp();
+  assertx(curFp == scratch_frames.back());
+  if (curFp == fp) return;
+  assertx(i + 1 < scratch_frames.size());
+  auto const fixupSk = scratch_frames[i + 1]->inst()->marker().sk();
+
+  // Compute the difference between the current and the previous stack base.
   assertx(curFp->inst()->is(BeginInlining));
-  auto const curOff = curFp->inst()->extra<BeginInlining>()->spOffset.offset;
-  auto const newOff = [&] {
+  auto const curBIData = curFp->inst()->extra<BeginInlining>();
+  auto const curStackBaseOffset =
+    curBIData->spOffset - curBIData->func->numSlotsInFrame();
+  auto const newStackBaseOffset = [&] {
     if (fp->inst()->is(BeginInlining)) {
-      return fp->inst()->extra<BeginInlining>()->spOffset.offset;
+      auto const newBIData = fp->inst()->extra<BeginInlining>();
+      return newBIData->spOffset - newBIData->func->numSlotsInFrame();
     }
     assertx(fp->inst()->is(DefFP, DefFuncEntryFP));
     auto const defSP = curFp->inst()->src(0)->inst();
-    return defSP->extra<FPInvOffsetData>()->offset.offset;
+    auto const irSPOff = defSP->extra<DefStackData>()->irSPOff;
+    return SBInvOffset{0}.to<IRSPRelOffset>(irSPOff);
   }();
+  auto const stackBaseDelta = newStackBaseOffset - curStackBaseOffset;
 
-  // Compute the difference in spoffset between the current and the previous
-  // marker fp.
-  auto const spAdj = newOff - curOff;
-
-  // Find the source key for the last inlined call from a published frame.
-  auto const callSK = [&] {
-    auto next = curFp;
-    for (;next->inst()->src(1) != fp; next = next->inst()->src(1)) {
-      assertx(next->inst()->is(BeginInlining));
-    }
-    return next->inst()->marker().sk();
-  }();
-
-  inst.marker() = inst.marker().adjustFP(fp)
-                               .adjustSP(inst.marker().spOff() + spAdj)
-                               .adjustFixupSK(callSK);
+  inst.marker() = inst.marker()
+    .adjustFP(fp)
+    .adjustSPOff(inst.marker().bcSPOff() + stackBaseDelta)
+    .adjustFixupSK(fixupSk);
 }
 
 void insert_eager_sync(Global& genv, IRInstruction& endCatch) {
@@ -1548,7 +1511,7 @@ void insert_eager_sync(Global& genv, IRInstruction& endCatch) {
 void fix_inline_frames(Global& genv) {
   using ECM = EndCatchData::CatchMode;
   StateVector<Block,FPState> blockState{
-    genv.unit, FPState{nullptr, 0, nullptr, nullptr, nullptr}
+    genv.unit, FPState{SrcKey{}, 0, nullptr, nullptr, nullptr}
   };
   const BlockList rpoBlocks{genv.poBlockList.rbegin(), genv.poBlockList.rend()};
   auto const rpoIDs = numberBlocks(genv.unit, rpoBlocks);
@@ -1558,6 +1521,12 @@ void fix_inline_frames(Global& genv) {
   for (auto rpoId = uint32_t{0}; rpoId < rpoBlocks.size(); ++rpoId) {
     incompleteQ.push(rpoId);
   }
+
+  // Save scratch space for the list of ancestor frame pointers needed to
+  // adjust markers as we go. As long as we don't repeatedly allocate and
+  // de-allocate these vectors, the O(inline-depth) cost should be okay.
+  Frames published_frames;
+  Frames scratch_frames;
 
   while (!incompleteQ.empty()) {
     auto const rpoId = incompleteQ.pop();
@@ -1569,7 +1538,7 @@ void fix_inline_frames(Global& genv) {
     blk->forEachPred([&] (Block* pred) {
       auto const& bs = blockState[pred];
       needFixup |= bs.exit && state.entry && state.entry != bs.exit;
-      if (bs.catchPC) state.catchPC = bs.catchPC;
+      if (bs.catchSk.valid()) state.catchSk = bs.catchSk;
       if (bs.catchFP) state.catchFP = bs.catchFP;
 
       if (!bs.exit) return;
@@ -1594,9 +1563,12 @@ void fix_inline_frames(Global& genv) {
     }
 
     auto fp = state.entry;
-    folly::Optional<IRSPRelOffset> lastSync;
+    Optional<IRSPRelOffset> lastSync;
+    populate_ancestor_frames(fp, published_frames);
+    assertx(published_frames.size() == state.exitDepth);
+
     for (auto& inst : *blk) {
-      adjust_inline_marker(inst, fp);
+      adjust_inline_marker(inst, scratch_frames, published_frames);
 
       if (inst.is(InlineReturn)) {
         if (fp == inst.src(0)) {
@@ -1604,8 +1576,7 @@ void fix_inline_frames(Global& genv) {
           // have removed any of its parent calls as they should each depend on
           // each other.
           assertx(inst.src(1) == parentFPs[fp]);
-          state.exitDepth--;
-
+          published_frames.pop_back();
           fp = inst.src(1);
           continue;
         }
@@ -1622,20 +1593,27 @@ void fix_inline_frames(Global& genv) {
         assertx(parent->is(BeginInlining));
 
         InlineCallData data;
-        data.syncVmpc = state.catchPC;
+        data.syncVmpc = state.catchSk.valid() ? state.catchSk.pc() : nullptr;
         data.spOffset = parent->extra<BeginInlining>()->spOffset;
+        data.returnSk = parent->marker().sk().advanced();
+        data.returnSPOff = parent->marker().bcSPOff() - kNumActRecCells + 1;
         genv.unit.replace(&inst, InlineCall, data, parent->dst(), fp);
         // fallthrough to the InlineCall logic
       }
 
       if (inst.is(InlineCall)) {
         fp = inst.src(0);
-        inst.extra<InlineCall>()->syncVmpc = state.catchPC;
-        state.exitDepth++;
+        published_frames.push_back(fp);
+        inst.extra<InlineCall>()->syncVmpc = state.catchSk.valid()
+          ? state.catchSk.pc() : nullptr;
+      }
+
+      if (inst.is(DefFP, DefFuncEntryFP)) {
+        fp = inst.dst();
+        published_frames.push_back(fp);
       }
 
       if (debug && inst.is(BeginInlining)) parentFPs[inst.dst()] = inst.src(1);
-      if (inst.is(DefFP, DefFuncEntryFP)) fp = inst.dst();
       if (inst.is(Call)) fix_inlined_call(genv, &inst, fp);
       if (inst.is(CallBuiltin)) inst.setSrc(0, fp);
 
@@ -1645,7 +1623,7 @@ void fix_inline_frames(Global& genv) {
       }
 
       if (inst.is(BeginCatch)) {
-        state.catchPC = inst.marker().sk().pc();
+        state.catchSk = inst.marker().sk();
         state.catchFP = fp;
       }
       if (inst.is(EndCatch)) {
@@ -1670,6 +1648,7 @@ void fix_inline_frames(Global& genv) {
       });
     }
     state.exit = fp;
+    state.exitDepth = published_frames.size();
   }
 }
 

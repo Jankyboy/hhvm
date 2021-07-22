@@ -75,11 +75,11 @@ struct XSLTProcessorData {
   m_secprefs(k_XSL_SECPREF_DEFAULT),
   m_registerPhpFunctions(0) {
     if (m_params.empty()) {
-      m_params = Array::CreateDArray();
+      m_params = Array::CreateDict();
     }
 
     if (m_registered_phpfunctions.empty()) {
-      m_registered_phpfunctions = Array::CreateDArray();
+      m_registered_phpfunctions = Array::CreateDict();
     }
   };
 
@@ -104,8 +104,8 @@ struct XSLTProcessorData {
   Array m_registered_phpfunctions;
   String m_profile;
 
-  Array m_usedElements; // don't let DOMElements get free'd out from under us
-                        // while preparing to create a new document
+  // Only used to hold DOMElements in scope when constructing a new document
+  Array m_usedElements = Array::CreateVec();
 
   xmlDocPtr apply_stylesheet();
 };
@@ -263,7 +263,7 @@ static xmlChar *xslt_string_to_xpathexpr(const char *str) {
 }
 
 static Object newNode(const String name, xmlNodePtr obj) {
-  auto const cls = Unit::lookupClass(name.get());
+  auto const cls = Class::lookup(name.get());
   Object ret{cls};
   auto retData = Native::data<DOMNode>(ret);
   retData->setNode(obj);
@@ -308,13 +308,12 @@ static void xslt_ext_function_php(xmlXPathParserContextPtr ctxt,
     return;
   }
 
-  Array args;
-  // Reverse order to pop values off ctxt stack
+  Array args_vec = Array::CreateVec();
   for (int i = nargs - 2; i >= 0; i--) {
     Variant arg;
     obj = valuePop(ctxt);
     if (obj == nullptr) {
-      args.prepend(init_null());
+      args_vec.append(init_null());
       continue;
     }
     switch (obj->type) {
@@ -333,7 +332,7 @@ static void xslt_ext_function_php(xmlXPathParserContextPtr ctxt,
         arg = String(str, CopyString);
         xmlFree(str);
       } else if (type == 2) {
-        arg = Array::CreateVArray();
+        arg = Array::CreateVec();
         if (obj->nodesetval && obj->nodesetval->nodeNr > 0) {
           for (int j = 0; j < obj->nodesetval->nodeNr; j++) {
             // TODO: not sure this is the right thing to do.
@@ -368,7 +367,13 @@ static void xslt_ext_function_php(xmlXPathParserContextPtr ctxt,
       arg = String((char*)xmlXPathCastToString(obj), CopyString);
     }
     xmlXPathFreeObject(obj);
-    args.prepend(arg);
+    args_vec.append(arg);
+  }
+
+  // Reverse order to pop values off ctxt stack
+  Array args;
+  for (auto i = args_vec.size(); i > 0; i--) {
+    args.append(args_vec.lookup(safe_cast<int64_t>(i - 1)));
   }
 
   obj = valuePop(ctxt);
@@ -398,7 +403,7 @@ static void xslt_ext_function_php(xmlXPathParserContextPtr ctxt,
       ObjectData *retval_data = retval.asCObjRef().get();
       xmlNode* nodep = Native::data<DOMNode>(retval_data)->nodep();
       valuePush(ctxt, xmlXPathNewNodeSet(nodep));
-      intern->m_usedElements.prepend(retval);
+      intern->m_usedElements.append(retval);
     } else if (retval.is(KindOfBoolean)) {
       valuePush(ctxt, xmlXPathNewBoolean(retval.toBoolean()));
     } else if (retval.isObject()) {

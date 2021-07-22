@@ -1,2 +1,1 @@
--vEval.EmitClsMethPointers=false -vEval.EmitInstMethPointers=false 
--vEval.HackArrDVArrs=true -vEval.HackArrDVArrMark=true -vEval.HackArrDVArrVarDump=true
+-vEval.EmitInstMethPointers=false

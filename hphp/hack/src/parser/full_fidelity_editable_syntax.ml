@@ -159,17 +159,13 @@ let offset _ = None
 
 let position _ _ = None
 
-let to_json ?with_value:_ node =
+let to_json ?with_value:_ ?ignore_missing:_ node =
   let version = Full_fidelity_schema.full_fidelity_schema_version_number in
   let tree = EditableSyntax.to_json node in
   Hh_json.JSON_Object
     [("parse_tree", tree); ("version", Hh_json.JSON_String version)]
 
 let rust_parse _ _ = failwith "not implemented"
-
-let rust_parse_with_coroutine_sc _ _ = failwith "not implemented"
-
-let rust_parse_with_decl_mode_sc _ _ = failwith "not implemented"
 
 let rust_parse_with_verify_sc _ _ = failwith "not implemented"
 

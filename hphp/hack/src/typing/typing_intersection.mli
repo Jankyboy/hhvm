@@ -12,7 +12,8 @@ open Typing_env_types
 module Reason = Typing_reason
 module Utils = Typing_utils
 
-val non : env -> Reason.t -> locl_ty -> approx:Utils.approx -> env * locl_ty
+val negate_type :
+  env -> Reason.t -> locl_ty -> approx:Utils.approx -> env * locl_ty
 
 val intersect : env -> r:Reason.t -> locl_ty -> locl_ty -> env * locl_ty
 
@@ -26,3 +27,6 @@ val simplify_intersections :
 
 val intersect_i :
   env -> Typing_reason.t -> internal_type -> locl_ty -> env * internal_type
+
+val destruct_inter_list :
+  env -> locl_ty list -> env * (locl_ty list * Reason.t option)

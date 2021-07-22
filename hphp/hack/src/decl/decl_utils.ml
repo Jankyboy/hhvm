@@ -10,6 +10,7 @@
 open Reordered_argument_collections
 open Aast
 open Typing_defs
+module SN = Naming_special_names
 
 let unwrap_class_hint = function
   | (_, Happly ((pos, class_name), type_parameters)) ->
@@ -26,11 +27,9 @@ let unwrap_class_type ty =
   | (r, Tapply (name, tparaml)) -> (r, name, tparaml)
   | (r, Tgeneric _) ->
     let p = Typing_reason.to_pos r in
-    Errors.expected_class ~suffix:" or interface but got a generic" p;
     (r, (p, ""), [])
   | (r, _) ->
     let p = Typing_reason.to_pos r in
-    Errors.expected_class ~suffix:" or interface" p;
     (r, (p, ""), [])
 
 (* Given sets A and B return a tuple (AnB, A\B), i.e split A into the part
@@ -74,7 +73,7 @@ let split_defs defs split_if_in_defs =
     in
     (r1, r2))
 
-let infer_const (_, expr_) =
+let infer_const expr_ =
   match expr_ with
   | String _ -> Some Tstring
   | True
@@ -83,8 +82,8 @@ let infer_const (_, expr_) =
   | Int _ -> Some Tint
   | Float _ -> Some Tfloat
   | Null -> Some Tnull
-  | Unop ((Ast_defs.Uminus | Ast_defs.Uplus), (_, Int _)) -> Some Tint
-  | Unop ((Ast_defs.Uminus | Ast_defs.Uplus), (_, Float _)) -> Some Tfloat
+  | Unop ((Ast_defs.Uminus | Ast_defs.Uplus), (_, _, Int _)) -> Some Tint
+  | Unop ((Ast_defs.Uminus | Ast_defs.Uplus), (_, _, Float _)) -> Some Tfloat
   | _ ->
     (* We can't infer the type of everything here. Notably, if you
      * define a const in terms of another const, we need an annotation,
@@ -115,7 +114,7 @@ let coalesce_consistent parent current =
   (* This case is unreachable, because parent would have to be a final class *)
   | FinalClass -> parent
 
-let consistent_construct_kind cls =
+let consistent_construct_kind cls : consistent_kind =
   Shallow_decl_defs.(
     if cls.sc_final then
       FinalClass

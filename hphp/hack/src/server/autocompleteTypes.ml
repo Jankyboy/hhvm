@@ -39,6 +39,7 @@ type complete_autocomplete_result = {
   res_kind: SearchUtils.si_kind;
   func_details: func_details_result option;
   ranking_details: ranking_details_result option;
+  res_documentation: string option;
 }
 
 (* Results that still need a typing environment to convert ty information
@@ -72,6 +73,7 @@ type legacy_autocomplete_context = {
   is_after_open_square_bracket: bool;
   is_after_quote: bool;
   is_before_apostrophe: bool;
+  is_open_curly_without_equals: bool;
   char_at_pos: char;
 }
 

@@ -14,13 +14,13 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_HPHP_REVERSE_DATA_MAP_H_
-#define incl_HPHP_REVERSE_DATA_MAP_H_
+#pragma once
 
 #include <folly/DiscriminatedPtr.h>
 
 namespace HPHP {
 
+struct ArrayData;
 struct Class;
 struct Func;
 struct NamedEntity;
@@ -40,6 +40,7 @@ namespace data_map {
  *
  * The object pointer must be 16-byte aligned.
  */
+void register_start(const ArrayData*);
 void register_start(const Class*);
 void register_start(const Func*);
 void register_start(const NamedEntity*);
@@ -52,6 +53,7 @@ void register_start(const Unit*);
  * Requires that register_start() was called on the object, and it has not yet
  * been deregistered.
  */
+void deregister(const ArrayData*);
 void deregister(const Class*);
 void deregister(const Func*);
 void deregister(const NamedEntity*);
@@ -68,6 +70,7 @@ void deregister(const Unit*);
  * Returns an empty result if `addr' is not mapped.
  */
 using result = folly::DiscriminatedPtr<
+  ArrayData,
   Class,
   Func,
   NamedEntity,
@@ -80,4 +83,3 @@ result find_containing(const void* addr);
 
 }}
 
-#endif
