@@ -103,6 +103,7 @@ type t = {
   tco_language_feature_logging: bool;
   tco_timeout: int;
   tco_disallow_invalid_arraykey: bool;
+  tco_constraint_array_index: bool;
   code_agnostic_fixme: bool;
   allowed_fixme_codes_strict: ISet.t;
   log_levels: int SMap.t;
@@ -171,7 +172,6 @@ type t = {
   dump_tast_hashes: bool;
   dump_tasts: string list;
   tco_autocomplete_mode: bool;
-  tco_log_exhaustivity_check: bool;
   tco_sticky_quarantine: bool;
   tco_lsp_invalidation: bool;
   tco_autocomplete_sort_text: bool;
@@ -225,6 +225,7 @@ let default =
     tco_language_feature_logging = false;
     tco_timeout = 0;
     tco_disallow_invalid_arraykey = true;
+    tco_constraint_array_index = false;
     code_agnostic_fixme = false;
     allowed_fixme_codes_strict = ISet.empty;
     log_levels = SMap.empty;
@@ -293,7 +294,6 @@ let default =
     dump_tast_hashes = false;
     dump_tasts = [];
     tco_autocomplete_mode = false;
-    tco_log_exhaustivity_check = false;
     tco_sticky_quarantine = false;
     tco_lsp_invalidation = false;
     tco_autocomplete_sort_text = false;
@@ -346,6 +346,7 @@ let set
     ?tco_language_feature_logging
     ?tco_timeout
     ?tco_disallow_invalid_arraykey
+    ?tco_constraint_array_index
     ?code_agnostic_fixme
     ?allowed_fixme_codes_strict
     ?log_levels
@@ -414,7 +415,6 @@ let set
     ?dump_tast_hashes
     ?dump_tasts
     ?tco_autocomplete_mode
-    ?tco_log_exhaustivity_check
     ?tco_sticky_quarantine
     ?tco_lsp_invalidation
     ?tco_autocomplete_sort_text
@@ -503,6 +503,8 @@ let set
       setting
         tco_disallow_invalid_arraykey
         options.tco_disallow_invalid_arraykey;
+    tco_constraint_array_index =
+      setting tco_constraint_array_index options.tco_constraint_array_index;
     log_levels = setting log_levels options.log_levels;
     tco_remote_old_decls_no_limit =
       setting
@@ -681,8 +683,6 @@ let set
     dump_tasts = setting dump_tasts options.dump_tasts;
     tco_autocomplete_mode =
       setting tco_autocomplete_mode options.tco_autocomplete_mode;
-    tco_log_exhaustivity_check =
-      setting tco_log_exhaustivity_check options.tco_log_exhaustivity_check;
     tco_sticky_quarantine =
       setting tco_sticky_quarantine options.tco_sticky_quarantine;
     tco_lsp_invalidation =

@@ -54,6 +54,7 @@ impl Default for GlobalOptions {
             tco_language_feature_logging: false,
             tco_timeout: 0,
             tco_disallow_invalid_arraykey: false, // true in ocaml, true in .hhconfig
+            tco_constraint_array_index: false,
             code_agnostic_fixme: false,
             allowed_fixme_codes_strict: i_set::ISet::new(),
             log_levels: s_map::SMap::new(),
@@ -122,7 +123,6 @@ impl Default for GlobalOptions {
             dump_tast_hashes: false,
             dump_tasts: vec![],
             tco_autocomplete_mode: false,
-            tco_log_exhaustivity_check: false,
             tco_sticky_quarantine: false,
             tco_lsp_invalidation: false,
             tco_autocomplete_sort_text: false,

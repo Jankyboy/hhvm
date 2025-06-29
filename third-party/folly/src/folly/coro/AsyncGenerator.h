@@ -695,22 +695,44 @@ class AsyncGeneratorPromise final
     state_ = State::DONE;
   }
 
-  template <typename U>
-  auto await_transform(U&& value) {
+  // FIXME: Much of this class is currently copy-pasted from `TaskPromiseBase`,
+  // Refactor this to use that, so as to avoid `co_await` behavior divergence.
+
+  template <
+      typename Awaitable,
+      std::enable_if_t<!must_await_immediately_v<Awaitable>, int> = 0>
+  auto await_transform(Awaitable&& awaitable) {
     bypassExceptionThrowing_ =
         bypassExceptionThrowing_ == BypassExceptionThrowing::REQUESTED
         ? BypassExceptionThrowing::ACTIVE
         : BypassExceptionThrowing::INACTIVE;
+
     return folly::coro::co_withAsyncStack(folly::coro::co_viaIfAsync(
         executor_.get_alias(),
         folly::coro::co_withCancellation(
-            cancelToken_, static_cast<U&&>(value))));
+            cancelToken_, static_cast<Awaitable&&>(awaitable))));
+  }
+  template <
+      typename Awaitable,
+      std::enable_if_t<must_await_immediately_v<Awaitable>, int> = 0>
+  auto await_transform(Awaitable awaitable) {
+    bypassExceptionThrowing_ =
+        bypassExceptionThrowing_ == BypassExceptionThrowing::REQUESTED
+        ? BypassExceptionThrowing::ACTIVE
+        : BypassExceptionThrowing::INACTIVE;
+
+    return folly::coro::co_withAsyncStack(folly::coro::co_viaIfAsync(
+        executor_.get_alias(),
+        folly::coro::co_withCancellation(
+            cancelToken_,
+            mustAwaitImmediatelyUnsafeMover(std::move(awaitable))())));
   }
 
   template <typename Awaitable>
-  auto await_transform(NothrowAwaitable<Awaitable>&& awaitable) {
+  auto await_transform(NothrowAwaitable<Awaitable> awaitable) {
     bypassExceptionThrowing_ = BypassExceptionThrowing::REQUESTED;
-    return await_transform(awaitable.unwrap());
+    return await_transform(
+        mustAwaitImmediatelyUnsafeMover(awaitable.unwrap())());
   }
 
   auto await_transform(folly::coro::co_current_executor_t) noexcept {

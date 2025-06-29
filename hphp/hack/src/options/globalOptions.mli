@@ -97,6 +97,8 @@ type t = {
   tco_disallow_invalid_arraykey: bool;
       (** Flag to disallow using values that get casted to array keys at runtime;
         like bools, floats, or null; as array keys. *)
+  tco_constraint_array_index: bool;
+      (** Flag to enable the constraint solver to infer that a type can be indexed *)
   code_agnostic_fixme: bool;
       (** HH_FIXME should silence *any* error, not just the one specified by code *)
   allowed_fixme_codes_strict: ISet.t;
@@ -236,8 +238,6 @@ type t = {
   dump_tasts: string list;
       (** List of paths whose TASTs to be dumped in /tmp/hh_server/tasts *)
   tco_autocomplete_mode: bool;  (** Are we running in autocomplete mode ? *)
-  tco_log_exhaustivity_check: bool;
-      (** Instrument the existing exhaustivity lint (for strict switch statements) *)
   tco_sticky_quarantine: bool;
       (** Controls behavior of [Provider_utils.respect_but_quarantine_unsaved_changes] *)
   tco_lsp_invalidation: bool;
@@ -326,6 +326,7 @@ val set :
   ?tco_language_feature_logging:bool ->
   ?tco_timeout:int ->
   ?tco_disallow_invalid_arraykey:bool ->
+  ?tco_constraint_array_index:bool ->
   ?code_agnostic_fixme:bool ->
   ?allowed_fixme_codes_strict:ISet.t ->
   ?log_levels:int SMap.t ->
@@ -394,7 +395,6 @@ val set :
   ?dump_tast_hashes:bool ->
   ?dump_tasts:string list ->
   ?tco_autocomplete_mode:bool ->
-  ?tco_log_exhaustivity_check:bool ->
   ?tco_sticky_quarantine:bool ->
   ?tco_lsp_invalidation:bool ->
   ?tco_autocomplete_sort_text:bool ->
