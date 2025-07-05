@@ -382,6 +382,7 @@ let load_config (config : Config_file_common.t) (options : GlobalOptions.t) :
     ?tco_language_feature_logging:(bool_opt "language_feature_logging" config)
     ?tco_timeout:(int_opt "timeout" config)
     ?tco_disallow_invalid_arraykey:(bool_opt "disallow_invalid_arraykey" config)
+    ?tco_constraint_array_index:(bool_opt "constraint_array_index" config)
     ?code_agnostic_fixme:(bool_opt "code_agnostic_fixme" config)
     ?allowed_fixme_codes_strict:
       (prepare_iset config "allowed_fixme_codes_strict")
@@ -465,7 +466,6 @@ let load_config (config : Config_file_common.t) (options : GlobalOptions.t) :
       (bool_opt "allow_all_files_for_module_declarations" config)
     ?tco_populate_dead_unsafe_cast_heap:
       (bool_opt "populate_dead_unsafe_cast_heap" config)
-    ?tco_log_exhaustivity_check:(bool_opt "log_exhaustivity_check" config)
     ?dump_tast_hashes:(bool_opt "dump_tast_hashes" config)
     ?warnings_default_all:(bool_opt "warnings_default_all" config)
     ?tco_strict_switch:(bool_opt "strict_switch" config)
@@ -517,6 +517,7 @@ let load_config (config : Config_file_common.t) (options : GlobalOptions.t) :
       (bool_opt "class_pointer_ban_classname_class_const" config)
     ?class_pointer_ban_class_array_key:
       (bool_opt "class_pointer_ban_class_array_key" config)
+    ?tco_poly_function_pointers:(bool_opt "poly_function_pointers" config)
     options
 
 (** Load local config from the following sources:

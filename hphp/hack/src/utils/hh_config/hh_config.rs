@@ -352,6 +352,8 @@ impl HhConfig {
                 "disallow_invalid_arraykey",
                 default.tco_disallow_invalid_arraykey,
             )?,
+            tco_constraint_array_index: hhconfig
+                .get_bool_or("constraint_array_index", default.code_agnostic_fixme)?,
             code_agnostic_fixme: hhconfig
                 .get_bool_or("code_agnostic_fixme", default.code_agnostic_fixme)?,
             allowed_fixme_codes_strict: hhconfig.get_int_set_or(
@@ -399,7 +401,6 @@ impl HhConfig {
             tco_error_php_lambdas: default.tco_error_php_lambdas,
             tco_disallow_discarded_nullable_awaitables: default
                 .tco_disallow_discarded_nullable_awaitables,
-            tco_higher_kinded_types: default.tco_higher_kinded_types,
             tco_typecheck_sample_rate: hhconfig
                 .get_float_or("typecheck_sample_rate", default.tco_typecheck_sample_rate)?,
             tco_enable_sound_dynamic: hhconfig.get_bool_or(
@@ -491,8 +492,6 @@ impl HhConfig {
                 }
             },
             tco_autocomplete_mode: default.tco_autocomplete_mode,
-            tco_log_exhaustivity_check: hhconfig
-                .get_bool_or("log_exhaustivity_check", default.tco_log_exhaustivity_check)?,
             tco_sticky_quarantine: default.tco_sticky_quarantine,
             tco_lsp_invalidation: default.tco_lsp_invalidation,
             tco_autocomplete_sort_text: default.tco_autocomplete_sort_text,
@@ -601,6 +600,8 @@ impl HhConfig {
                 "class_pointer_ban_class_array_key",
                 default.class_pointer_ban_class_array_key,
             )?,
+            tco_poly_function_pointers: hhconfig
+                .get_bool_or("poly_function_pointers", default.tco_poly_function_pointers)?,
         };
         let mut c = Self {
             opts,

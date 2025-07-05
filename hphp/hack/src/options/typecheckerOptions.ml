@@ -91,6 +91,8 @@ let timeout t = t.GlobalOptions.tco_timeout
 
 let disallow_invalid_arraykey t = t.GlobalOptions.tco_disallow_invalid_arraykey
 
+let constraint_array_index t = t.GlobalOptions.tco_constraint_array_index
+
 let log_levels t = t.GlobalOptions.log_levels
 
 let remote_old_decls_no_limit t = t.GlobalOptions.tco_remote_old_decls_no_limit
@@ -146,8 +148,6 @@ let disallow_discarded_nullable_awaitables t =
   t.GlobalOptions.tco_disallow_discarded_nullable_awaitables
 
 let is_systemlib t = t.GlobalOptions.po.ParserOptions.is_systemlib
-
-let higher_kinded_types t = t.GlobalOptions.tco_higher_kinded_types
 
 let enable_sound_dynamic t = t.GlobalOptions.tco_enable_sound_dynamic
 
@@ -279,8 +279,6 @@ let set_tco_autocomplete_mode t =
 
 let package_info t = t.GlobalOptions.po.ParserOptions.package_info
 
-let tco_log_exhaustivity_check t = t.GlobalOptions.tco_log_exhaustivity_check
-
 let tco_sticky_quarantine t = t.GlobalOptions.tco_sticky_quarantine
 
 let tco_lsp_invalidation t = t.GlobalOptions.tco_lsp_invalidation
@@ -354,3 +352,5 @@ let class_pointer_ban_classname_class_const t =
 
 let class_pointer_ban_class_array_key t =
   t.GlobalOptions.class_pointer_ban_class_array_key
+
+let tco_poly_function_pointers t = t.GlobalOptions.tco_poly_function_pointers
