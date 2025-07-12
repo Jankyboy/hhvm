@@ -75,8 +75,8 @@ bool is_annotation_blacklisted_in_fatal(const std::string& key) {
 }
 
 bool is_complex_return(const t_type* type) {
-  return type->is_container() || type->is_string_or_binary() ||
-      type->is_struct_or_union() || type->is_exception();
+  return type->is<t_container>() || type->is_string_or_binary() ||
+      type->is<t_structured>();
 }
 
 bool same_types(const t_type* a, const t_type* b) {
@@ -198,8 +198,7 @@ bool should_mangle_field_storage_name_in_struct(const t_structured& s) {
 }
 
 bool resolves_to_container_or_struct(const t_type* type) {
-  return type->is_container() || type->is_struct_or_union() ||
-      type->is_exception();
+  return type->is<t_container>() || type->is<t_structured>();
 }
 
 bool is_runtime_annotation(const t_named& named) {
@@ -436,6 +435,16 @@ class t_mstch_cpp2_generator : public t_mstch_generator {
     auto base = t_whisker_generator::make_prototype_for_function(proto);
     auto def = whisker::dsl::prototype_builder<h_function>::extends(base);
 
+    def.property("cpp_return_type", [&](const t_function& f) -> std::string {
+      return cpp_context_->resolver().get_return_type(f);
+    });
+
+    // Specifies if the generated recv_* functions have an additional argument
+    // representing the return value.
+    def.property("cpp_recv_arg?", [&](const t_function& f) {
+      return !f.return_type()->is_void() || f.sink_or_stream();
+    });
+
     return std::move(def).make();
   }
 
@@ -529,10 +538,10 @@ class cpp_mstch_program : public mstch_program {
     std::vector<const t_typedef*> result;
     for (const t_typedef* i : program_->typedefs()) {
       const t_type* alias = i->get_type();
-      if (alias->is_typedef() &&
+      if (alias->is<t_typedef>() &&
           alias->has_unstructured_annotation("cpp.type")) {
         const t_type* ttype = i->get_type()->get_true_type();
-        if ((ttype->is_struct_or_union() || ttype->is_exception()) &&
+        if ((ttype->is<t_structured>()) &&
             !cpp_name_resolver::find_first_adapter(*ttype)) {
           result.push_back(i);
         }
@@ -562,7 +571,7 @@ class cpp_mstch_program : public mstch_program {
   std::vector<std::string> get_fatal_union_names() {
     std::vector<std::string> result;
     for (const t_structured* obj : program_->structured_definitions()) {
-      if (obj->is_union()) {
+      if (obj->is<t_union>()) {
         result.push_back(get_fatal_string_short_id(obj));
       }
     }
@@ -571,7 +580,7 @@ class cpp_mstch_program : public mstch_program {
   std::vector<std::string> get_fatal_struct_names() {
     std::vector<std::string> result;
     for (const t_structured* obj : program_->structured_definitions()) {
-      if (!obj->is_union() && !cpp_name_resolver::find_first_adapter(*obj)) {
+      if (!obj->is<t_union>() && !cpp_name_resolver::find_first_adapter(*obj)) {
         result.push_back(get_fatal_string_short_id(obj));
       }
     }
@@ -699,6 +708,7 @@ class cpp_mstch_program : public mstch_program {
         *program_, [&] { return gen_transitive_include_map(program_); });
     mstch::array initializers = {
         fmt::format("{}()", schematizer::name_schema(sm_, *program_))};
+    initializers.reserve(includes.size() + 1);
     for (const auto& [_, include] : includes) {
       initializers.push_back(include);
     }
@@ -768,7 +778,7 @@ class cpp_mstch_program : public mstch_program {
     }
     // structs, unions and exceptions
     for (const t_structured* obj : program_->structured_definitions()) {
-      if (obj->is_union()) {
+      if (obj->is<t_union>()) {
         // When generating <program_name>_fatal_union.h, we will generate
         // <union_name>_Type_enum_traits
         unique_names.emplace("Type", "Type");
@@ -812,7 +822,7 @@ class cpp_mstch_program : public mstch_program {
     std::unordered_set<std::string> fields;
     std::vector<const std::string*> ordered_fields;
     for (const t_structured* s : program_->structured_definitions()) {
-      if (s->is_union()) {
+      if (s->is<t_union>()) {
         continue;
       }
       for (const t_field& f : s->fields()) {
@@ -1088,8 +1098,6 @@ class cpp_mstch_function : public mstch_function {
         this,
         {
             {"function:eb", &cpp_mstch_function::event_based},
-            {"function:cpp_return_type", &cpp_mstch_function::cpp_return_type},
-            {"function:cpp_void?", &cpp_mstch_function::is_cpp_void},
             {"function:stack_arguments?", &cpp_mstch_function::stack_arguments},
             {"function:created_interaction",
              &cpp_mstch_function::created_interaction},
@@ -1105,13 +1113,6 @@ class cpp_mstch_function : public mstch_function {
         function_->has_structured_annotation(kCppProcessInEbThreadUri) ||
         interface_->has_unstructured_annotation("process_in_event_base") ||
         interface_->has_structured_annotation(kCppProcessInEbThreadUri);
-  }
-  mstch::node cpp_return_type() {
-    return cpp_context_->resolver().get_return_type(*function_);
-  }
-  // Specifies if the generated C++ function is void.
-  mstch::node is_cpp_void() {
-    return function_->return_type()->is_void() && !function_->sink_or_stream();
   }
   mstch::node stack_arguments() {
     return cpp2::is_stack_arguments(context_.options, *function_);
@@ -1238,36 +1239,41 @@ class cpp_mstch_type : public mstch_type {
   std::string get_type_namespace(const t_program* program) override {
     return cpp2::get_gen_namespace(*program);
   }
-  mstch::node resolves_to_base() { return resolved_type_->is_primitive_type(); }
+  mstch::node resolves_to_base() {
+    return resolved_type_->is<t_primitive_type>();
+  }
   mstch::node resolves_to_integral() {
     return resolved_type_->is_byte() || resolved_type_->is_any_int();
   }
   mstch::node resolves_to_base_or_enum() {
-    return resolved_type_->is_primitive_type() || resolved_type_->is_enum();
+    return resolved_type_->is<t_primitive_type>() ||
+        resolved_type_->is<t_enum>();
   }
-  mstch::node resolves_to_container() { return resolved_type_->is_container(); }
+  mstch::node resolves_to_container() {
+    return resolved_type_->is<t_container>();
+  }
   mstch::node resolves_to_container_or_struct() {
     return ::apache::thrift::compiler::resolves_to_container_or_struct(
         resolved_type_);
   }
   mstch::node resolves_to_container_or_enum() {
-    return resolved_type_->is_container() || resolved_type_->is_enum();
+    return resolved_type_->is<t_container>() || resolved_type_->is<t_enum>();
   }
   mstch::node resolves_to_complex_return() {
     return is_complex_return(resolved_type_);
   }
   mstch::node resolves_to_fixed_size() {
     return resolved_type_->is_bool() || resolved_type_->is_byte() ||
-        resolved_type_->is_any_int() || resolved_type_->is_enum() ||
+        resolved_type_->is_any_int() || resolved_type_->is<t_enum>() ||
         resolved_type_->is_floating_point();
   }
-  mstch::node resolves_to_enum() { return resolved_type_->is_enum(); }
+  mstch::node resolves_to_enum() { return resolved_type_->is<t_enum>(); }
   mstch::node transitively_refers_to_struct() {
     // fast path is unnecessary but may avoid allocations
-    if (resolved_type_->is_struct_or_union()) {
+    if (resolved_type_->is<t_struct>() || resolved_type_->is<t_union>()) {
       return true;
     }
-    if (!resolved_type_->is_container()) {
+    if (!resolved_type_->is<t_container>()) {
       return false;
     }
     // type is a container: traverse (breadthwise, but could be depthwise)
@@ -1276,17 +1282,17 @@ class cpp_mstch_type : public mstch_type {
     while (!queue.empty()) {
       auto next = queue.front();
       queue.pop();
-      if (next->is_struct_or_union()) {
+      if (next->is<t_struct>() || next->is<t_union>()) {
         return true;
       }
-      if (!next->is_container()) {
+      if (!next->is<t_container>()) {
         continue;
       }
-      if (next->is_list()) {
+      if (next->is<t_list>()) {
         queue.push(static_cast<const t_list*>(next)->get_elem_type());
-      } else if (next->is_set()) {
+      } else if (next->is<t_set>()) {
         queue.push(static_cast<const t_set*>(next)->get_elem_type());
-      } else if (next->is_map()) {
+      } else if (next->is<t_map>()) {
         queue.push(static_cast<const t_map*>(next)->get_key_type());
         queue.push(static_cast<const t_map*>(next)->get_val_type());
       } else {
@@ -1447,19 +1453,19 @@ class cpp_mstch_struct : public mstch_struct {
           field->get_req() == t_field::e_req::optional) {
         continue;
       }
-      if (type->is_enum() ||
-          (type->is_primitive_type() && !type->is_string_or_binary()) ||
+      if (type->is<t_enum>() ||
+          (type->is<t_primitive_type>() && !type->is_string_or_binary()) ||
           (type->is_string_or_binary() && field->get_value() != nullptr) ||
-          (type->is_container() && field->get_value() != nullptr &&
+          (type->is<t_container>() && field->get_value() != nullptr &&
            !field->get_value()->is_empty()) ||
-          (type->is_struct_or_union() &&
+          ((type->is<t_struct>() || type->is<t_union>()) &&
            (struct_ != type->try_as<t_struct>()) &&
            ((field->get_value() && !field->get_value()->is_empty()) ||
             (cpp2::is_explicit_ref(field) &&
              field->get_req() != t_field::e_req::optional))) ||
-          (type->is_container() && cpp2::is_explicit_ref(field) &&
+          (type->is<t_container>() && cpp2::is_explicit_ref(field) &&
            field->get_req() != t_field::e_req::optional) ||
-          (type->is_primitive_type() && cpp2::is_explicit_ref(field) &&
+          (type->is<t_primitive_type>() && cpp2::is_explicit_ref(field) &&
            field->get_req() != t_field::e_req::optional)) {
         filtered_fields.push_back(field);
       }
@@ -1472,7 +1478,7 @@ class cpp_mstch_struct : public mstch_struct {
     for (auto i : cpp2::get_mixins_and_members(*struct_)) {
       const auto suffix =
           ::apache::thrift::compiler::generate_legacy_api(*struct_) ||
-              i.mixin->type()->is_union()
+              i.mixin->type()->is<t_union>()
           ? "_ref"
           : "";
       fields.push_back(mstch::map{
@@ -1578,7 +1584,7 @@ class cpp_mstch_struct : public mstch_struct {
         {"cpp.virtual", "cpp2.virtual"});
   }
   mstch::node message() {
-    if (!struct_->is_exception()) {
+    if (!struct_->is<t_exception>()) {
       return {};
     }
     const auto* message_field = struct_->as<t_exception>().get_message_field();
@@ -1677,13 +1683,13 @@ class cpp_mstch_struct : public mstch_struct {
     // member with a non-trivial destructor (involving at least a branch and a
     // likely deallocation).
     // TODO(ott): Support unions.
-    if (struct_->is_exception()) {
+    if (struct_->is<t_exception>()) {
       return true;
     }
     for (const auto& field : struct_->fields()) {
       const auto* resolved_typedef = field.type()->get_true_type();
       if (cpp2::is_ref(&field) || resolved_typedef->is_string_or_binary() ||
-          resolved_typedef->is_container()) {
+          resolved_typedef->is<t_container>()) {
         return true;
       }
     }
@@ -1708,7 +1714,7 @@ class cpp_mstch_struct : public mstch_struct {
   }
 
   mstch::node get_num_union_members() {
-    if (!struct_->is_union()) {
+    if (!struct_->is<t_union>()) {
       throw std::runtime_error("not a union struct");
     }
     return struct_->fields().size();
@@ -1884,7 +1890,7 @@ class cpp_mstch_struct : public mstch_struct {
     for (const auto& field : struct_->fields()) {
       const t_type* type = field.get_type()->get_true_type();
       if (cpp2::is_ref(&field) || cpp2::is_custom_type(field) ||
-          !type->is_scalar()) {
+          !is_scalar(*type)) {
         return false;
       }
     }
@@ -2285,7 +2291,7 @@ class cpp_mstch_field : public mstch_field {
   bool is_eligible_for_storage_name_mangling() const {
     const auto* strct = field_context_->strct;
 
-    if (strct->is_union()) {
+    if (strct->is<t_union>()) {
       return false;
     }
 
@@ -2328,7 +2334,7 @@ class cpp_mstch_const : public mstch_const {
         });
   }
   mstch::node enum_value() {
-    if (const_->type()->is_enum()) {
+    if (const_->type()->is<t_enum>()) {
       const auto* enm = static_cast<const t_enum*>(const_->type());
       const auto* enum_val = enm->find_value(const_->value()->get_integer());
       if (enum_val) {

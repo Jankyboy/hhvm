@@ -4,7 +4,7 @@
 
 function takes_varray(varray $x) :mixed{}
 
-function handler($name, $target, inout $args) :mixed{
+<<__DynamicallyCallable>> function handler($name, $target, inout $args) :mixed{
   var_dump(is_varray($args));
   takes_varray($args);
   $args[0] = 'handler';
@@ -13,6 +13,6 @@ function handler($name, $target, inout $args) :mixed{
 
 <<__EntryPoint>>
 function main() :mixed{
-  fb_intercept2('foo', 'handler');
+  fb_intercept2('foo', HH\dynamic_fun('handler'));
   $x = 'fail'; foo(inout $x); var_dump($x);
 }

@@ -277,27 +277,27 @@ std::string format_marshal_type_unadapted(
   } else if (true_type->is_string_or_binary()) {
     // unicode's internal_data representation is binary
     return "Bytes";
-  } else if (true_type->is_enum()) {
+  } else if (true_type->is<t_enum>()) {
     return fmt::format(
         "::apache::thrift::python::capi::ComposedEnum<{}::{}>",
         cpp2::get_gen_namespace(*true_type->program()),
         cpp2::get_name(true_type));
-  } else if (true_type->is_struct_or_union() || true_type->is_exception()) {
+  } else if (true_type->is<t_structured>()) {
     return fmt::format(
         "::apache::thrift::python::capi::ComposedStruct<{}::{}, ::{}::NamespaceTag>",
         cpp2::get_gen_namespace(*true_type->program()),
         cpp2::get_name(true_type),
         gen_capi_module_prefix(true_type->program()));
 
-  } else if (true_type->is_list()) {
+  } else if (true_type->is<t_list>()) {
     const auto* elem_type =
         dynamic_cast<const t_list*>(true_type)->get_elem_type();
     return format_unary_type(node, elem_type, "list", type_override);
-  } else if (true_type->is_set()) {
+  } else if (true_type->is<t_set>()) {
     const auto* elem_type =
         dynamic_cast<const t_set*>(true_type)->get_elem_type();
     return format_unary_type(node, elem_type, "set", type_override);
-  } else if (true_type->is_map()) {
+  } else if (true_type->is<t_map>()) {
     const auto* map = dynamic_cast<const t_map*>(true_type);
     return format_map_type(
         node, map->get_key_type(), map->get_val_type(), type_override);
@@ -430,19 +430,19 @@ class python_capi_mstch_program : public mstch_program {
       return;
     }
     auto true_type = orig_type->get_true_type();
-    is_typedef = is_typedef == TypeDef::HasTypedef || orig_type->is_typedef()
+    is_typedef = is_typedef == TypeDef::HasTypedef || orig_type->is<t_typedef>()
         ? TypeDef::HasTypedef
         : TypeDef::NoTypedef;
     if (is_typedef == TypeDef::HasTypedef) {
       add_typedef_namespace(true_type);
     }
-    if (true_type->is_list()) {
+    if (true_type->is<t_list>()) {
       visit_type_with_typedef(
           dynamic_cast<const t_list&>(*true_type).get_elem_type(), is_typedef);
-    } else if (true_type->is_set()) {
+    } else if (true_type->is<t_set>()) {
       visit_type_with_typedef(
           dynamic_cast<const t_set&>(*true_type).get_elem_type(), is_typedef);
-    } else if (true_type->is_map()) {
+    } else if (true_type->is<t_map>()) {
       const auto* map = dynamic_cast<const t_map*>(true_type);
       visit_type_with_typedef(map->get_key_type(), is_typedef);
       visit_type_with_typedef(map->get_val_type(), is_typedef);
@@ -543,24 +543,24 @@ class python_capi_mstch_struct : public mstch_struct {
                 {"cpp.type", "cpp2.type"})) {
       return is_type_iobuf(*type_anno);
     }
-    if (type->is_list() &&
+    if (type->is<t_list>() &&
         !capi_eligible_type(
             dynamic_cast<const t_list*>(type)->get_elem_type())) {
       return false;
     } else if (
-        type->is_set() &&
+        type->is<t_set>() &&
         !capi_eligible_type(
             dynamic_cast<const t_set*>(type)->get_elem_type())) {
       return false;
     } else if (
-        type->is_map() &&
+        type->is<t_map>() &&
         (!capi_eligible_type(
              dynamic_cast<const t_map*>(type)->get_key_type()) ||
          !capi_eligible_type(
              dynamic_cast<const t_map*>(type)->get_val_type()))) {
       return false;
     }
-    if (type->is_typedef()) {
+    if (type->is<t_typedef>()) {
       const t_typedef* tdef = dynamic_cast<const t_typedef*>(type);
       return capi_eligible_type(tdef->get_type());
     }

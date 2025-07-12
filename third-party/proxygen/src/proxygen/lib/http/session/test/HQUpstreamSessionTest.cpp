@@ -1101,13 +1101,13 @@ TEST_P(HQUpstreamSessionTest, TestOnStopSendingHTTPRequestRejected) {
   EXPECT_CALL(*socketDriver_->getSocket(),
               resetStream(streamId, HTTP3::ErrorCode::HTTP_REQUEST_CANCELLED))
       .Times(2) // once from on stopSending and once from sendAbort
-      .WillRepeatedly(
-          Invoke([&](quic::StreamId id, quic::ApplicationErrorCode) {
-            // setWriteError will cancaleDeliveryCallbacks which will invoke
-            // onCanceled to decrementPendingByteEvents on the txn.
-            socketDriver_->setWriteError(id);
-            return folly::unit;
-          }));
+      .WillRepeatedly(Invoke([&](quic::StreamId id, quic::ApplicationErrorCode)
+                                 -> quic::Expected<void, quic::LocalErrorCode> {
+        // setWriteError will cancaleDeliveryCallbacks which will invoke
+        // onCanceled to decrementPendingByteEvents on the txn.
+        socketDriver_->setWriteError(id);
+        return {};
+      }));
   EXPECT_CALL(*handler, _onError(_))
       .Times(1)
       .WillOnce(Invoke([](HTTPException ex) {
@@ -2298,7 +2298,7 @@ TEST_P(HQUpstreamSessionTestWebTransport, BidirectionalStream) {
   EXPECT_TRUE(writeComplete);
 
   // Wait for a read
-  stream.readHandle->awaitNextRead(&eventBase_, [&](auto, auto) {
+  stream.readHandle->awaitNextRead(&eventBase_, [&](auto, auto, auto) {
     VLOG(4) << "read 1, adding 70k";
     // Now add a big buf, which will pause ingress
     socketDriver_->addReadEvent(
@@ -2311,19 +2311,21 @@ TEST_P(HQUpstreamSessionTestWebTransport, BidirectionalStream) {
   EXPECT_TRUE(socketDriver_->isStreamPaused(id));
 
   // Read again
-  stream.readHandle->awaitNextRead(&eventBase_, [&](auto, auto streamData) {
-    VLOG(4) << "read 2, adding EOF";
-    EXPECT_EQ(streamData->data->computeChainDataLength(), 65535);
-    // Add EOF and wait for it
-    socketDriver_->addReadEOF(id, std::chrono::milliseconds(0));
-  });
+  stream.readHandle->awaitNextRead(
+      &eventBase_, [&](auto, auto, auto streamData) {
+        VLOG(4) << "read 2, adding EOF";
+        EXPECT_EQ(streamData->data->computeChainDataLength(), 65535);
+        // Add EOF and wait for it
+        socketDriver_->addReadEOF(id, std::chrono::milliseconds(0));
+      });
   VLOG(4) << "flushLoop 2";
   flushAndLoopN(2);
-  stream.readHandle->awaitNextRead(&eventBase_, [&](auto, auto streamData) {
-    LOG(INFO) << "read 3";
-    EXPECT_EQ(streamData->data->computeChainDataLength(), 4465);
-    EXPECT_TRUE(streamData->fin);
-  });
+  stream.readHandle->awaitNextRead(
+      &eventBase_, [&](auto, auto, auto streamData) {
+        LOG(INFO) << "read 3";
+        EXPECT_EQ(streamData->data->computeChainDataLength(), 4465);
+        EXPECT_TRUE(streamData->fin);
+      });
   VLOG(4) << "flushLoop 3";
   flushAndLoopN(1);
   closeWTSession();

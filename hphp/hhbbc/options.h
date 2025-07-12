@@ -144,11 +144,14 @@ struct Options {
    * Extern-worker config
    */
   std::string ExternWorkerUseCase;
+  std::string ExternWorkerPlatform;
   std::string ExternWorkerWorkingDir;
   bool ExternWorkerForceSubprocess = false;
   bool ExternWorkerUseExecCache = true;
   bool ExternWorkerCleanup = true;
   bool ExternWorkerUseRichClient = true;
+  // TODO: Clean up ExternWorkerUseZippyRichClient since this is read from
+  // the features file.
   bool ExternWorkerUseZippyRichClient = false;
   bool ExternWorkerUseP2P = false;
   bool ExternWorkerVerboseLogging = false;

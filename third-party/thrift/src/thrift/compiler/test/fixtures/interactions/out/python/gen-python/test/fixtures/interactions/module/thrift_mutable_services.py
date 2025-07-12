@@ -6,6 +6,8 @@
 #
 
 from __future__ import annotations
+import builtins
+
 
 from abc import ABCMeta
 import typing as _typing
@@ -18,7 +20,7 @@ from thrift.python.mutable_serializer import serialize_iobuf, deserialize, Proto
 from thrift.python.server import ServiceInterface, RpcKind, PythonUserException
 
 import test.fixtures.interactions.module.thrift_mutable_types as _fbthrift__test__fixtures__interactions__module__thrift_mutable_types
-import test.fixtures.interactions.module.thrift_metadata
+import test.fixtures.interactions.module.thrift_metadata as _fbthrift__test__fixtures__interactions__module__thrift_metadata
 import test.fixtures.another_interactions.shared.thrift_services
 import test.fixtures.another_interactions.shared.thrift_mutable_types as _fbthrift__test__fixtures__another_interactions__shared__thrift_mutable_types
 
@@ -46,11 +48,11 @@ class MyServiceInterface(
 
     @staticmethod
     def __get_metadata__() -> _fbthrift_metadata.ThriftMetadata:
-        return test.fixtures.interactions.module.thrift_metadata.gen_metadata_service_MyService()
+        return _fbthrift__test__fixtures__interactions__module__thrift_metadata.gen_metadata_service_MyService()
 
     @staticmethod
     def __get_metadata_service_response__() -> _fbthrift_metadata.ThriftServiceMetadataResponse:
-        return test.fixtures.interactions.module.thrift_metadata._fbthrift_metadata_service_response_MyService()
+        return _fbthrift__test__fixtures__interactions__module__thrift_metadata._fbthrift_metadata_service_response_MyService()
 
 
 
@@ -68,7 +70,7 @@ class MyServiceInterface(
 
     async def interact(
             self,
-            arg: int
+            arg: builtins.int
         ) -> None:
         raise NotImplementedError("async def interact is not implemented")
 
@@ -81,7 +83,7 @@ class MyServiceInterface(
 
     async def interactFast(
             self
-        ) -> int:
+        ) -> builtins.int:
         raise NotImplementedError("async def interactFast is not implemented")
 
     async def _fbthrift__handler_interactFast(self, args: _fbthrift_iobuf.IOBuf, protocol: Protocol) -> _fbthrift_iobuf.IOBuf:
@@ -93,10 +95,10 @@ class MyServiceInterface(
 
     async def serialize(
             self
-        ) -> _typing.Tuple[int, _typing.Awaitable[_typing.AsyncIterator[int]] | _typing.AsyncIterator[int]]:
+        ) -> _typing.Tuple[builtins.int, _typing.Awaitable[_typing.AsyncIterator[builtins.int]] | _typing.AsyncIterator[builtins.int]]:
         raise NotImplementedError("async def serialize is not implemented")
 
-    async def _fbthrift__stream_wrapper_serialize(self, stream_generator: _typing.AsyncIterator[int], protocol: Protocol) -> _typing.AsyncIterator[_fbthrift_iobuf.IOBuf]:
+    async def _fbthrift__stream_wrapper_serialize(self, stream_generator: _typing.AsyncIterator[builtins.int], protocol: Protocol) -> _typing.AsyncIterator[_fbthrift_iobuf.IOBuf]:
         async for item in stream_generator:
             yield serialize_iobuf(_fbthrift__test__fixtures__interactions__module__thrift_mutable_types._fbthrift_MyService_serialize_result_stream(success=item), protocol)
 
@@ -134,11 +136,11 @@ class FactoriesInterface(
 
     @staticmethod
     def __get_metadata__() -> _fbthrift_metadata.ThriftMetadata:
-        return test.fixtures.interactions.module.thrift_metadata.gen_metadata_service_Factories()
+        return _fbthrift__test__fixtures__interactions__module__thrift_metadata.gen_metadata_service_Factories()
 
     @staticmethod
     def __get_metadata_service_response__() -> _fbthrift_metadata.ThriftServiceMetadataResponse:
-        return test.fixtures.interactions.module.thrift_metadata._fbthrift_metadata_service_response_Factories()
+        return _fbthrift__test__fixtures__interactions__module__thrift_metadata._fbthrift_metadata_service_response_Factories()
 
 
 
@@ -156,7 +158,7 @@ class FactoriesInterface(
 
     async def interact(
             self,
-            arg: int
+            arg: builtins.int
         ) -> None:
         raise NotImplementedError("async def interact is not implemented")
 
@@ -169,7 +171,7 @@ class FactoriesInterface(
 
     async def interactFast(
             self
-        ) -> int:
+        ) -> builtins.int:
         raise NotImplementedError("async def interactFast is not implemented")
 
     async def _fbthrift__handler_interactFast(self, args: _fbthrift_iobuf.IOBuf, protocol: Protocol) -> _fbthrift_iobuf.IOBuf:
@@ -181,10 +183,10 @@ class FactoriesInterface(
 
     async def serialize(
             self
-        ) -> _typing.Tuple[int, _typing.Awaitable[_typing.AsyncIterator[int]] | _typing.AsyncIterator[int]]:
+        ) -> _typing.Tuple[builtins.int, _typing.Awaitable[_typing.AsyncIterator[builtins.int]] | _typing.AsyncIterator[builtins.int]]:
         raise NotImplementedError("async def serialize is not implemented")
 
-    async def _fbthrift__stream_wrapper_serialize(self, stream_generator: _typing.AsyncIterator[int], protocol: Protocol) -> _typing.AsyncIterator[_fbthrift_iobuf.IOBuf]:
+    async def _fbthrift__stream_wrapper_serialize(self, stream_generator: _typing.AsyncIterator[builtins.int], protocol: Protocol) -> _typing.AsyncIterator[_fbthrift_iobuf.IOBuf]:
         async for item in stream_generator:
             yield serialize_iobuf(_fbthrift__test__fixtures__interactions__module__thrift_mutable_types._fbthrift_Factories_serialize_result_stream(success=item), protocol)
 
@@ -219,11 +221,11 @@ class PerformInterface(
 
     @staticmethod
     def __get_metadata__() -> _fbthrift_metadata.ThriftMetadata:
-        return test.fixtures.interactions.module.thrift_metadata.gen_metadata_service_Perform()
+        return _fbthrift__test__fixtures__interactions__module__thrift_metadata.gen_metadata_service_Perform()
 
     @staticmethod
     def __get_metadata_service_response__() -> _fbthrift_metadata.ThriftServiceMetadataResponse:
-        return test.fixtures.interactions.module.thrift_metadata._fbthrift_metadata_service_response_Perform()
+        return _fbthrift__test__fixtures__interactions__module__thrift_metadata._fbthrift_metadata_service_response_Perform()
 
 
 
@@ -259,11 +261,11 @@ class InteractWithSharedInterface(
 
     @staticmethod
     def __get_metadata__() -> _fbthrift_metadata.ThriftMetadata:
-        return test.fixtures.interactions.module.thrift_metadata.gen_metadata_service_InteractWithShared()
+        return _fbthrift__test__fixtures__interactions__module__thrift_metadata.gen_metadata_service_InteractWithShared()
 
     @staticmethod
     def __get_metadata_service_response__() -> _fbthrift_metadata.ThriftServiceMetadataResponse:
-        return test.fixtures.interactions.module.thrift_metadata._fbthrift_metadata_service_response_InteractWithShared()
+        return _fbthrift__test__fixtures__interactions__module__thrift_metadata._fbthrift_metadata_service_response_InteractWithShared()
 
 
 
@@ -299,11 +301,11 @@ class BoxServiceInterface(
 
     @staticmethod
     def __get_metadata__() -> _fbthrift_metadata.ThriftMetadata:
-        return test.fixtures.interactions.module.thrift_metadata.gen_metadata_service_BoxService()
+        return _fbthrift__test__fixtures__interactions__module__thrift_metadata.gen_metadata_service_BoxService()
 
     @staticmethod
     def __get_metadata_service_response__() -> _fbthrift_metadata.ThriftServiceMetadataResponse:
-        return test.fixtures.interactions.module.thrift_metadata._fbthrift_metadata_service_response_BoxService()
+        return _fbthrift__test__fixtures__interactions__module__thrift_metadata._fbthrift_metadata_service_response_BoxService()
 
 
 

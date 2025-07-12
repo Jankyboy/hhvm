@@ -54,6 +54,7 @@ impl Default for GlobalOptions {
             tco_language_feature_logging: false,
             tco_timeout: 0,
             tco_disallow_invalid_arraykey: false, // true in ocaml, true in .hhconfig
+            tco_constraint_array_index: false,
             code_agnostic_fixme: false,
             allowed_fixme_codes_strict: i_set::ISet::new(),
             log_levels: s_map::SMap::new(),
@@ -90,7 +91,6 @@ impl Default for GlobalOptions {
             symbol_write_referenced_out: None,
             symbol_write_reindexed_out: None,
             symbol_write_sym_hash_out: false,
-            tco_higher_kinded_types: false,
             tco_typecheck_sample_rate: 1.0,
             tco_enable_sound_dynamic: false,
             tco_pessimise_builtins: false,
@@ -122,7 +122,6 @@ impl Default for GlobalOptions {
             dump_tast_hashes: false,
             dump_tasts: vec![],
             tco_autocomplete_mode: false,
-            tco_log_exhaustivity_check: false,
             tco_sticky_quarantine: false,
             tco_lsp_invalidation: false,
             tco_autocomplete_sort_text: false,
@@ -150,12 +149,12 @@ impl Default for GlobalOptions {
             safe_abstract: false,
             needs_concrete: false,
             allow_class_string_cast: true,
-            class_pointer_ban_classname_new: false,
-            class_pointer_ban_classname_type_structure: false,
-            class_pointer_ban_classname_static_prop: false,
-            class_pointer_ban_classname_static_meth: false,
-            class_pointer_ban_classname_class_const: false,
+            class_pointer_ban_classname_new: 0,
+            class_pointer_ban_classname_type_structure: 0,
+            class_pointer_ban_classname_static_meth: 0,
+            class_pointer_ban_classname_class_const: 0,
             class_pointer_ban_class_array_key: false,
+            tco_poly_function_pointers: false,
         }
     }
 }

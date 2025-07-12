@@ -92,10 +92,8 @@ mstch::node mstch_enum::values() {
   return make_mstch_enum_values(enum_->get_enum_values());
 }
 
-// TODO(T219861020): Rename to get_structured
-mstch::node mstch_type::get_struct() {
-  if (type_->is_struct_or_union() || type_->is_exception() ||
-      type_->is_union()) {
+mstch::node mstch_type::get_structured() {
+  if (type_->is<t_structured>()) {
     std::string id =
         type_->program()->name() + get_type_namespace(type_->program());
     return make_mstch_array_cached(
@@ -109,7 +107,7 @@ mstch::node mstch_type::get_struct() {
 }
 
 mstch::node mstch_type::get_enum() {
-  if (resolved_type_->is_enum()) {
+  if (resolved_type_->is<t_enum>()) {
     std::string id =
         type_->program()->name() + get_type_namespace(type_->program());
     return make_mstch_array_cached(
@@ -122,7 +120,7 @@ mstch::node mstch_type::get_enum() {
 }
 
 mstch::node mstch_type::get_list_type() {
-  if (resolved_type_->is_list()) {
+  if (resolved_type_->is<t_list>()) {
     return context_.type_factory->make_mstch_object(
         dynamic_cast<const t_list*>(resolved_type_)->get_elem_type(),
         context_,
@@ -132,7 +130,7 @@ mstch::node mstch_type::get_list_type() {
 }
 
 mstch::node mstch_type::get_set_type() {
-  if (resolved_type_->is_set()) {
+  if (resolved_type_->is<t_set>()) {
     return context_.type_factory->make_mstch_object(
         dynamic_cast<const t_set*>(resolved_type_)->get_elem_type(),
         context_,
@@ -142,7 +140,7 @@ mstch::node mstch_type::get_set_type() {
 }
 
 mstch::node mstch_type::get_key_type() {
-  if (resolved_type_->is_map()) {
+  if (resolved_type_->is<t_map>()) {
     return context_.type_factory->make_mstch_object(
         dynamic_cast<const t_map*>(resolved_type_)->get_key_type(),
         context_,
@@ -152,7 +150,7 @@ mstch::node mstch_type::get_key_type() {
 }
 
 mstch::node mstch_type::get_value_type() {
-  if (resolved_type_->is_map()) {
+  if (resolved_type_->is<t_map>()) {
     return context_.type_factory->make_mstch_object(
         dynamic_cast<const t_map*>(resolved_type_)->get_val_type(),
         context_,
@@ -162,7 +160,7 @@ mstch::node mstch_type::get_value_type() {
 }
 
 mstch::node mstch_type::get_typedef_type() {
-  if (type_->is_typedef()) {
+  if (type_->is<t_typedef>()) {
     return context_.type_factory->make_mstch_object(
         dynamic_cast<const t_typedef*>(type_)->get_type(), context_, pos_);
   }
@@ -170,7 +168,7 @@ mstch::node mstch_type::get_typedef_type() {
 }
 
 mstch::node mstch_type::get_typedef() {
-  if (type_->is_typedef()) {
+  if (type_->is<t_typedef>()) {
     return context_.typedef_factory->make_mstch_object(
         dynamic_cast<const t_typedef*>(type_), context_, pos_);
   }
@@ -255,10 +253,10 @@ mstch::node mstch_const_value::list_elems() {
   if (type_ == cv::CV_LIST) {
     const t_type* expected_type = nullptr;
     if (expected_type_) {
-      if (expected_type_->is_list()) {
+      if (expected_type_->is<t_list>()) {
         expected_type =
             dynamic_cast<const t_list*>(expected_type_)->get_elem_type();
-      } else if (expected_type_->is_set()) {
+      } else if (expected_type_->is<t_set>()) {
         expected_type =
             dynamic_cast<const t_set*>(expected_type_)->get_elem_type();
       }
@@ -274,7 +272,7 @@ mstch::node mstch_const_value::map_elems() {
     return mstch::node();
   }
   std::pair<const t_type*, const t_type*> expected_types;
-  if (expected_type_ && expected_type_->is_map()) {
+  if (expected_type_ && expected_type_->is<t_map>()) {
     const auto* m = dynamic_cast<const t_map*>(expected_type_);
     expected_types = {m->get_key_type(), m->get_val_type()};
   }
@@ -290,7 +288,7 @@ mstch::node mstch_const_value::is_const_struct() {
     return false;
   }
   const auto* type = const_value_->ttype()->get_true_type();
-  return type->is_struct_or_union() || type->is_exception();
+  return type->is<t_structured>();
 }
 
 mstch::node mstch_const_value::const_struct_type() {
@@ -299,7 +297,7 @@ mstch::node mstch_const_value::const_struct_type() {
   }
 
   const auto* type = const_value_->ttype()->get_true_type();
-  if (type->is_struct_or_union() || type->is_exception()) {
+  if (type->is<t_structured>()) {
     return context_.type_factory->make_mstch_object(type, context_);
   }
 
@@ -312,7 +310,7 @@ mstch::node mstch_const_value::const_struct() {
   mstch::array a;
 
   const auto* type = const_value_->ttype()->get_true_type();
-  if (type->is_struct_or_union() || type->is_exception()) {
+  if (type->is<t_structured>()) {
     const auto* strct = dynamic_cast<const t_structured*>(type);
     for (auto member : const_value_->get_map()) {
       const auto* field = strct->get_field_by_name(member.first->get_string());
@@ -441,7 +439,7 @@ mstch::node mstch_struct::fields() {
 }
 
 mstch::node mstch_struct::exception_safety() {
-  if (!struct_->is_exception()) {
+  if (!struct_->is<t_exception>()) {
     return std::string("");
   }
 
@@ -457,7 +455,7 @@ mstch::node mstch_struct::exception_safety() {
 }
 
 mstch::node mstch_struct::exception_blame() {
-  if (!struct_->is_exception()) {
+  if (!struct_->is<t_exception>()) {
     return std::string("");
   }
 
@@ -475,7 +473,7 @@ mstch::node mstch_struct::exception_blame() {
 }
 
 mstch::node mstch_struct::exception_kind() {
-  if (!struct_->is_exception()) {
+  if (!struct_->is<t_exception>()) {
     return std::string("");
   }
 
@@ -556,9 +554,10 @@ mstch::node mstch_function::sink_exceptions() {
 
 mstch::node mstch_function::sink_final_reponse_type() {
   const t_sink* sink = function_->sink();
-  return sink ? context_.type_factory->make_mstch_object(
-                    sink->get_final_response_type(), context_, pos_)
-              : mstch::node();
+  return sink && sink->get_final_response_type()
+      ? context_.type_factory->make_mstch_object(
+            sink->get_final_response_type(), context_, pos_)
+      : mstch::node();
 }
 
 mstch::node mstch_function::sink_final_response_exceptions() {

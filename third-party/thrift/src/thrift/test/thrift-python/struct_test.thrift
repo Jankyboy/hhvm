@@ -35,6 +35,12 @@ const set<string> set_constant = ["foo", "bar", "baz"];
 
 const map<string, i32> map_constant = {"foo": 1, "bar": 2};
 
+enum TestEnum {
+  ARM1 = 1,
+  ARM2 = 2,
+  ARM4 = 4,
+}
+
 struct TestStructConstant {
   1: i32 unqualified_i32;
   2: string unqualified_string;
@@ -55,10 +61,12 @@ struct TestStruct {
 struct TestStructWithDefaultValues {
   1: i32 unqualified_integer = 42;
 
+  // DEPRECATED: optional-qualified fields with default for testing only
   2: optional i32 optional_integer = 43;
 
   3: TestStruct unqualified_struct = TestStruct{unqualified_string = "hello"};
 
+  // DEPRECATED: optional-qualified fields with default for testing only
   4: optional TestStruct optional_struct = TestStruct{
     unqualified_string = "world",
   };
@@ -68,6 +76,11 @@ struct TestStructWithDefaultValues {
   6: optional TestStruct optional_struct_intrinsic_default;
 
   7: list<i32> unqualified_list_i32 = [1, 2, 3];
+
+  8: TestEnum unqualified_enum = TestEnum.ARM1;
+
+  // DEPRECATED: optional-qualified fields with default for testing only
+  9: optional TestEnum optional_enum = TestEnum.ARM2;
 }
 
 struct TestStructAllThriftPrimitiveTypes {

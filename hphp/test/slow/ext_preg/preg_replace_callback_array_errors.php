@@ -3,7 +3,7 @@
 abstract final class FStatics {
   public static $count = 1;
 }
-function f() :mixed{
+<<__DynamicallyCallable>> function f() :mixed{
   throw new Exception((string)FStatics::$count);
 }
 function test($fn) {
@@ -11,7 +11,7 @@ function test($fn) {
 }
 // From PHP 7 testing sources, with minor modification
 
-<<__EntryPoint>>
+<<__EntryPoint, __DynamicallyCallable>>
 function main_preg_replace_callback_array_errors(): void {
   set_error_handler(($errno, $errstr, ...$_rest)==> {
     throw new Exception($errstr);
@@ -41,11 +41,11 @@ function main_preg_replace_callback_array_errors(): void {
     dict["xx" => "notValid1", "yy" => "notValid2"], $a, -1,
     inout $b,
   )));
-  test(() ==> var_dump(preg_replace_callback_array(dict['/\w' => 'f'], 'z', -1, inout $count)));
+  test(() ==> var_dump(preg_replace_callback_array(dict['/\w' => HH\dynamic_fun('f')], 'z', -1, inout $count)));
   try {
     var_dump(
       preg_replace_callback_array(
-        dict['/\w/' => 'f', '/.*/' => 'f'],
+        dict['/\w/' => HH\dynamic_fun('f'), '/.*/' => HH\dynamic_fun('f')],
         'z',
         -1,
         inout $count

@@ -34,6 +34,7 @@
 #include <fmt/core.h>
 
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -95,6 +96,73 @@ class DefinitionRef;
 class TypeRef;
 
 /**
+ * A non-unique Thrift IDL source-based identifier for a user-defined type in a
+ * Thrift type system.
+ *
+ * Unlike URIs, source names may not be unique, even within a single type
+ * system. Every type must have exactly one source name name, but a single name
+ * may refer to multiple types.
+ *
+ * A SourceIdentifier has two components:
+ *   - location:
+ *       A URI of the resource (typically a file) containing the source Thrift
+ *       IDL for a user-defined type. Examples:
+ *         - "file:///thrift/lib/thrift/standard.thrift"
+ *         - "fbsource://xplat/thrift/lib/thrift/standard.thrift"
+ *   - name:
+ *       The name of the definition within the source Thrift IDL pointed to by
+ *       the location above.
+ */
+struct SourceIdentifierView {
+  std::string_view location;
+  std::string_view name;
+
+  friend bool operator==(
+      SourceIdentifierView lhs, SourceIdentifierView rhs) noexcept {
+    return std::tie(lhs.location, lhs.name) == std::tie(rhs.location, rhs.name);
+  }
+  friend bool operator!=(
+      SourceIdentifierView lhs, SourceIdentifierView rhs) noexcept {
+    return !(lhs == rhs);
+  }
+};
+struct SourceIdentifier {
+  std::string location;
+  std::string name;
+
+  /* implicit */ operator SourceIdentifierView() const noexcept {
+    return {location, name};
+  }
+
+  friend bool operator==(
+      const SourceIdentifier& lhs, const SourceIdentifier& rhs) noexcept {
+    return std::tie(lhs.location, lhs.name) == std::tie(rhs.location, rhs.name);
+  }
+  friend bool operator!=(
+      const SourceIdentifier& lhs, const SourceIdentifier& rhs) noexcept {
+    return !(lhs == rhs);
+  }
+};
+
+inline bool operator==(
+    SourceIdentifierView lhs, const SourceIdentifier& rhs) noexcept {
+  return lhs == SourceIdentifierView(rhs);
+}
+inline bool operator==(
+    const SourceIdentifier& lhs, SourceIdentifierView rhs) noexcept {
+  return SourceIdentifierView(lhs) == rhs;
+}
+
+inline bool operator!=(
+    SourceIdentifierView lhs, const SourceIdentifier& rhs) noexcept {
+  return !(lhs == rhs);
+}
+inline bool operator!=(
+    const SourceIdentifier& lhs, SourceIdentifierView rhs) noexcept {
+  return !(lhs == rhs);
+}
+
+/**
  * An interface for a Thrift "type system", which is a store of schema
  * information.
  *
@@ -141,15 +209,66 @@ class TypeSystem {
    * Generates a set of all user-defined type URIs currently known to the type
    * system.
    *
-   * For every URI returned by this method, `getUserDefinedType` must succeed.
-   * However, the converse is not true — `getUserDefinedType` may succeed for
-   * types whose URI is not returned by this method.
+   * For every URI returned by this function, `getUserDefinedType` must succeed.
+   * For every URI that is NOT returned by this function, `getUserDefinedType`
+   * must fail.
    *
-   * In practice, many `TypeSystem` implementations will have a direct 1:1
-   * mapping between `getKnownUris` and `getUserDefinedType`. This is a useful
-   * guarantee because it allows the caller to traverse the full `TypeSystem`.
+   * If the set of URIs is not finitely enumerable, then this function should
+   * return an empty optional. Note that such TypeSystem implementations are not
+   * serializable.
    */
-  virtual folly::F14FastSet<Uri> getKnownUris() const = 0;
+  virtual std::optional<folly::F14FastSet<Uri>> getKnownUris() const = 0;
+};
+
+/**
+ * An interface for a Thrift "type system" that supports looking up types by
+ * source names instead of URIs. Note that unlike URIs, source names do not
+ * uniquely identify types within a type system.
+ *
+ * Typically, source information for a type system is derived from the Thrift
+ * IDL source file that produced it.
+ *
+ * The SourceIndexedTypeSystem interface provides only an alternative lookup
+ * scheme. It does not include any other information regarding the types
+ * contained within the type system.
+ */
+class SourceIndexedTypeSystem : public TypeSystem {
+ public:
+  ~SourceIndexedTypeSystem() noexcept override = default;
+
+  /**
+   * Resolves the defintion of a user-defined type referred to by a source
+   * identifier, if it exists.
+   *
+   * Note that source information is optional — not all user-defined types may
+   * have a source identifier.
+   */
+  virtual std::optional<DefinitionRef> getUserDefinedTypeBySourceIdentifier(
+      SourceIdentifierView) const = 0;
+
+  /**
+   * Retrieves the source identifier for a user-defined type, if it exists. This
+   * is the inverse of `getUserDefinedTypeBySourceIdentifier`.
+   *
+   * Note that source information is optional — not all user-defined types may
+   * have a source identifier.
+   */
+  virtual std::optional<SourceIdentifierView>
+      getSourceIdentiferForUserDefinedType(DefinitionRef) const = 0;
+
+  using NameToDefinitionsMap = folly::F14FastMap<std::string, DefinitionRef>;
+  /**
+   * Resolves all definitions of user-defined types at a provided location URI.
+   * Typically, this URI points to a source Thrift IDL file.
+   *
+   * The result is a mapping of definition name to a reference to the
+   * definition.
+   *
+   * For every name in the result, `getUserDefinedTypeBySourceIdentifier` must
+   * also succeed.
+   */
+  virtual NameToDefinitionsMap getUserDefinedTypesAtLocation(
+      std::string_view location) const = 0;
 };
 
 /**
@@ -831,6 +950,16 @@ class DefinitionRef final {
         [&](const auto&) -> const T& { throwAccessInactiveKind(); });
   }
 
+  /**
+   * Returns true if two DefinitionRef objects refer to the exact same node
+   * object (by address).
+   *
+   * Note that there is always exactly one node object for each definition, and
+   * so the address of the node object is sufficient to uniquely identify the
+   * definition.
+   */
+  friend bool operator==(const DefinitionRef&, const DefinitionRef&) noexcept;
+
   explicit DefinitionRef(Alternative definition)
       : definition_(std::move(definition)) {}
 
@@ -869,3 +998,11 @@ template <typename K, typename V>
 } // namespace detail
 
 } // namespace apache::thrift::type_system
+
+namespace std {
+template <>
+struct hash<apache::thrift::type_system::DefinitionRef> {
+  std::size_t operator()(
+      const apache::thrift::type_system::DefinitionRef&) const;
+};
+} // namespace std

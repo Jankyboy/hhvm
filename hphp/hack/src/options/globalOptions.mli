@@ -97,6 +97,8 @@ type t = {
   tco_disallow_invalid_arraykey: bool;
       (** Flag to disallow using values that get casted to array keys at runtime;
         like bools, floats, or null; as array keys. *)
+  tco_constraint_array_index: bool;
+      (** Flag to enable the constraint solver to infer that a type can be indexed *)
   code_agnostic_fixme: bool;
       (** HH_FIXME should silence *any* error, not just the one specified by code *)
   allowed_fixme_codes_strict: ISet.t;
@@ -165,8 +167,6 @@ type t = {
       (** Flag to report an error on php style anonymous functions *)
   tco_disallow_discarded_nullable_awaitables: bool;
       (** Flag to error on using discarded nullable awaitables *)
-  tco_higher_kinded_types: bool;
-      (** Controls if higher-kinded types are supported *)
   tco_typecheck_sample_rate: float;
       (** Type check this proportion of all files. Default is 1.0.
         DO NOT set to any other value except for testing purposes. *)
@@ -236,8 +236,6 @@ type t = {
   dump_tasts: string list;
       (** List of paths whose TASTs to be dumped in /tmp/hh_server/tasts *)
   tco_autocomplete_mode: bool;  (** Are we running in autocomplete mode ? *)
-  tco_log_exhaustivity_check: bool;
-      (** Instrument the existing exhaustivity lint (for strict switch statements) *)
   tco_sticky_quarantine: bool;
       (** Controls behavior of [Provider_utils.respect_but_quarantine_unsaved_changes] *)
   tco_lsp_invalidation: bool;
@@ -295,18 +293,17 @@ type t = {
   needs_concrete: bool;
       (** Enable __NeedsConcrete checking https://fburl.com/hack-needs-concrete *)
   allow_class_string_cast: bool;  (** Admits (string)$c when $c: class<T>  *)
-  class_pointer_ban_classname_new: bool;
+  class_pointer_ban_classname_new: int;
       (** Error on new $c() when $c: classname<T>  *)
-  class_pointer_ban_classname_type_structure: bool;
+  class_pointer_ban_classname_type_structure: int;
       (** Error on type_structure($c, 'T') when $c: classname<T>  *)
-  class_pointer_ban_classname_static_prop: bool;
-      (** Error on $c::$foo when $c: classname<T>  *)
-  class_pointer_ban_classname_static_meth: bool;
+  class_pointer_ban_classname_static_meth: int;
       (** Error on $c::foo() when $c: classname<T>  *)
-  class_pointer_ban_classname_class_const: bool;
+  class_pointer_ban_classname_class_const: int;
       (** Error on $c::FOO when $c: classname<T>  *)
   class_pointer_ban_class_array_key: bool;
       (** Error on dict[$c => 1] when $c: class<T>  *)
+  tco_poly_function_pointers: bool;
 }
 [@@deriving eq, show]
 
@@ -326,6 +323,7 @@ val set :
   ?tco_language_feature_logging:bool ->
   ?tco_timeout:int ->
   ?tco_disallow_invalid_arraykey:bool ->
+  ?tco_constraint_array_index:bool ->
   ?code_agnostic_fixme:bool ->
   ?allowed_fixme_codes_strict:ISet.t ->
   ?log_levels:int SMap.t ->
@@ -362,7 +360,6 @@ val set :
   ?symbol_write_sym_hash_out:bool ->
   ?tco_error_php_lambdas:bool ->
   ?tco_disallow_discarded_nullable_awaitables:bool ->
-  ?tco_higher_kinded_types:bool ->
   ?tco_typecheck_sample_rate:float ->
   ?tco_enable_sound_dynamic:bool ->
   ?tco_pessimise_builtins:bool ->
@@ -394,7 +391,6 @@ val set :
   ?dump_tast_hashes:bool ->
   ?dump_tasts:string list ->
   ?tco_autocomplete_mode:bool ->
-  ?tco_log_exhaustivity_check:bool ->
   ?tco_sticky_quarantine:bool ->
   ?tco_lsp_invalidation:bool ->
   ?tco_autocomplete_sort_text:bool ->
@@ -422,12 +418,12 @@ val set :
   ?safe_abstract:bool ->
   ?needs_concrete:bool ->
   ?allow_class_string_cast:bool ->
-  ?class_pointer_ban_classname_new:bool ->
-  ?class_pointer_ban_classname_type_structure:bool ->
-  ?class_pointer_ban_classname_static_prop:bool ->
-  ?class_pointer_ban_classname_static_meth:bool ->
-  ?class_pointer_ban_classname_class_const:bool ->
+  ?class_pointer_ban_classname_new:int ->
+  ?class_pointer_ban_classname_type_structure:int ->
+  ?class_pointer_ban_classname_static_meth:int ->
+  ?class_pointer_ban_classname_class_const:int ->
   ?class_pointer_ban_class_array_key:bool ->
+  ?tco_poly_function_pointers:bool ->
   t ->
   t
 

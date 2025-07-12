@@ -19,12 +19,12 @@ class C extends A {
   public function test1(A $a) :mixed{ return $a->func1(); }
 }
 
-function test1() :mixed{ return (new A)->func1(); }
-function test2() :mixed{ return (new A)->func2(); }
-function test3() :mixed{ return (new B)->test1(new A); }
-function test4() :mixed{ return (new B)->test2(new A); }
-function test5() :mixed{ return (new C)->test1(new A); }
-function test6() :mixed{ return (new D)->test1(new A); }
+<<__DynamicallyCallable>> function test1() :mixed{ return (new A)->func1(); }
+<<__DynamicallyCallable>> function test2() :mixed{ return (new A)->func2(); }
+<<__DynamicallyCallable>> function test3() :mixed{ return (new B)->test1(new A); }
+<<__DynamicallyCallable>> function test4() :mixed{ return (new B)->test2(new A); }
+<<__DynamicallyCallable>> function test5() :mixed{ return (new C)->test1(new A); }
+<<__DynamicallyCallable>> function test6() :mixed{ return (new D)->test1(new A); }
 
 
 <<__EntryPoint>>
@@ -45,6 +45,6 @@ if ($count < count($tests)) {
   ++$count;
   apc_store('count', $count);
   echo "====================== $test =======================\n";
-  var_dump($test());
+  var_dump(HH\dynamic_fun($test)());
 }
 }

@@ -135,6 +135,9 @@ const std::string& cpp_name_resolver::get_return_type(const t_function& fun) {
   type_resolve_fn resolve_fn = &cpp_name_resolver::get_native_type;
   if (const t_sink* sink = fun.sink()) {
     return detail::get_or_gen(sink_cache_, sink, [&]() {
+      if (!sink->get_final_response_type()) {
+        return std::string("/* TODO (@sazonovk) */");
+      }
       if (fun.has_return_type()) {
         return detail::gen_template_type(
             "::apache::thrift::ResponseAndSinkConsumer",
@@ -320,7 +323,7 @@ std::string cpp_name_resolver::gen_unprefixed_namespace(
 }
 
 bool cpp_name_resolver::can_resolve_to_scalar(const t_type& node) {
-  return node.get_true_type()->is_scalar() || find_first_adapter(node) ||
+  return is_scalar(*node.get_true_type()) || find_first_adapter(node) ||
       find_first_type(node);
 }
 
@@ -547,7 +550,7 @@ std::string cpp_name_resolver::gen_adapted_type(
 
 std::string cpp_name_resolver::gen_type_tag(
     const t_type& type, bool ignore_cpp_type) {
-  std::string tag = type.is_typedef()
+  std::string tag = type.is<t_typedef>()
       ? gen_type_tag(*type.as<t_typedef>().get_type())
       : gen_thrift_type_tag(type);
 
@@ -613,34 +616,34 @@ std::string cpp_name_resolver::gen_thrift_type_tag(
     return ns + "float_t";
   } else if (type.is_double()) {
     return ns + "double_t";
-  } else if (type.is_enum()) {
+  } else if (type.is<t_enum>()) {
     return ns + "enum_t<" + get_standard_type(type) + ">";
   } else if (type.is_string()) {
     return ns + "string_t";
   } else if (type.is_binary()) {
     return ns + "binary_t";
-  } else if (type.is_list()) {
+  } else if (type.is<t_list>()) {
     auto& list = type.as<t_list>();
     auto& elem = *list.get_elem_type();
     auto elem_tag = gen_type_tag(elem);
     return ns + "list<" + elem_tag + ">";
-  } else if (type.is_set()) {
+  } else if (type.is<t_set>()) {
     auto& set = type.as<t_set>();
     auto& elem = *set.get_elem_type();
     auto elem_tag = gen_type_tag(elem);
     return ns + "set<" + elem_tag + ">";
-  } else if (type.is_map()) {
+  } else if (type.is<t_map>()) {
     auto& map = type.as<t_map>();
     auto& key = *map.get_key_type();
     auto& val = *map.get_val_type();
     auto key_tag = gen_type_tag(key);
     auto val_tag = gen_type_tag(val);
     return ns + "map<" + key_tag + ", " + val_tag + ">";
-  } else if (type.is_union()) {
+  } else if (type.is<t_union>()) {
     return ns + "union_t<" + get_standard_type(type) + ">";
-  } else if (type.is_struct_or_union()) {
+  } else if (type.is<t_struct>()) {
     return ns + "struct_t<" + get_standard_type(type) + ">";
-  } else if (type.is_exception()) {
+  } else if (type.is<t_exception>()) {
     return ns + "exception_t<" + get_standard_type(type) + ">";
   } else {
     throw std::runtime_error("unknown type for: " + type.get_full_name());

@@ -1,6 +1,6 @@
 <?hh
 
-function foo(int $a) :mixed{ echo "foo($a)\n"; }
+<<__DynamicallyCallable>> function foo(int $a) :mixed{ echo "foo($a)\n"; }
 class A { static function b(int $a) :mixed{ echo "A::b($a)\n"; } }
 
 <<__Memoize>>
@@ -23,11 +23,11 @@ function main() :mixed{
   memo_fptr(foo<>, 1);
   memo_fptr(__hhvm_intrinsics\launder_value(foo<>), 2);
 
-  memo_fptr('foo', 1);
-  memo_fptr(__hhvm_intrinsics\launder_value('foo'), 2);
+  memo_fptr(HH\dynamic_fun('foo'), 1);
+  memo_fptr(HH\dynamic_fun(__hhvm_intrinsics\launder_value('foo')), 2);
 
-  memo_fptr('foo', 1);
-  memo_fptr(__hhvm_intrinsics\launder_value('foo'), 2);
+  memo_fptr(HH\dynamic_fun('foo'), 1);
+  memo_fptr(HH\dynamic_fun(__hhvm_intrinsics\launder_value('foo')), 2);
 
   memo_cptr(A::b<>, 3);
   memo_cptr(__hhvm_intrinsics\launder_value(A::b<>), 4);

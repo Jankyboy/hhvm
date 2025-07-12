@@ -153,7 +153,6 @@ type user_attribute = {
 type 'ty tparam = {
   tp_variance: Ast_defs.variance;
   tp_name: pos_id;
-  tp_tparams: 'ty tparam list;
   tp_constraints: (Ast_defs.constraint_kind * 'ty) list;
   tp_reified: Aast.reify_kind;
   tp_user_attributes: user_attribute list;
@@ -646,10 +645,17 @@ type destructure = {
  * indexed with certain literals, and so in those cases it is not sufficient to
  * record simply the type of the index.
  *)
+type can_index_shape =
+  | IntLit of int
+  | StringLit of string
+  | Generic
+[@@deriving show]
+
 type can_index = {
   ci_key: locl_ty;
-  ci_shape: tshape_field_name option;
+  ci_shape: can_index_shape;
   ci_val: locl_ty;
+  ci_lhs_of_null_coalesce: bool;
   ci_expr_pos: Pos.t;
   ci_index_pos: Pos.t;
 }

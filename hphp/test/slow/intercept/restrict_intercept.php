@@ -8,7 +8,7 @@ function foo1($i = 10) :mixed{
   var_dump(__METHOD__);
 }
 
-function bar($_1, $_2, inout $_3) :mixed{
+<<__DynamicallyCallable>> function bar($_1, $_2, inout $_3) :mixed{
   var_dump(__METHOD__);
   return shape('value' => null);
 }
@@ -17,7 +17,7 @@ function bar($_1, $_2, inout $_3) :mixed{
 <<__EntryPoint>>
 function main(): void {
   foo();
-  fb_intercept2('foo', 'bar');
+  fb_intercept2('foo', HH\dynamic_fun('bar'));
   foo();
-  fb_intercept2('foo1', 'bar');
+  fb_intercept2('foo1', HH\dynamic_fun('bar'));
 }

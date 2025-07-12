@@ -1,23 +1,23 @@
 <?hh
 
-function non_rx($fn) :mixed{
-  if ($fn) $fn(null);
+<<__DynamicallyCallable>> function non_rx($fn) :mixed{
+  if ($fn) HH\dynamic_fun($fn)(null);
 }
 
-function rx_local($fn)[rx_local] :mixed{
-  if ($fn) $fn(null);
+<<__DynamicallyCallable>> function rx_local($fn)[rx_local] :mixed{
+  if ($fn) HH\dynamic_fun($fn)(null);
 }
 
-function rx_shallow($fn)[rx_shallow] :mixed{
-  if ($fn) $fn(null);
+<<__DynamicallyCallable>> function rx_shallow($fn)[rx_shallow] :mixed{
+  if ($fn) HH\dynamic_fun($fn)(null);
 }
 
-function rx($fn)[rx] :mixed{
-  if ($fn) $fn(null);
+<<__DynamicallyCallable>> function rx($fn)[rx] :mixed{
+  if ($fn) HH\dynamic_fun($fn)(null);
 }
 
-function pure($fn)[] :mixed{
-  if ($fn) $fn(null);
+<<__DynamicallyCallable>> function pure($fn)[] :mixed{
+  if ($fn) HH\dynamic_fun($fn)(null);
 }
 
 <<__EntryPoint>>
@@ -26,7 +26,7 @@ function main() :mixed{
   foreach ($functions as $caller) {
     foreach ($functions as $callee) {
       try {
-        $caller($callee);
+        HH\dynamic_fun($caller)($callee);
         echo "$caller -> $callee: ok\n";
       } catch (Exception $e) {
         echo "$caller -> $callee: ".$e->getMessage()."\n";

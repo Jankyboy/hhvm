@@ -143,19 +143,19 @@ bool can_derive_ord(const t_type* type) {
   type = type->get_true_type();
   if (type->is_string() || type->is_binary() || type->is_bool() ||
       type->is_byte() || type->is_i16() || type->is_i32() || type->is_i64() ||
-      type->is_enum() || type->is_void()) {
+      type->is<t_enum>() || type->is_void()) {
     return true;
   }
   if (type->has_structured_annotation(kRustOrdUri)) {
     return true;
   }
-  if (type->is_list()) {
+  if (type->is<t_list>()) {
     auto elem_type = dynamic_cast<const t_list*>(type)->get_elem_type();
     return elem_type && can_derive_ord(elem_type);
   }
   // We can implement Ord on BTreeMap (the default map type) if both the key and
   // value implement Eq.
-  if (type->is_map() && !has_custom_type_annotation) {
+  if (type->is<t_map>() && !has_custom_type_annotation) {
     auto map_type = dynamic_cast<const t_map*>(type);
     auto key_elem_type = map_type->get_key_type();
     auto val_elem_type = map_type->get_val_type();
@@ -343,7 +343,7 @@ bool node_has_adapter(const t_named& node) {
 
 bool type_has_transitive_adapter(
     const t_type* type, bool step_through_newtypes) {
-  if (type->is_typedef()) {
+  if (type->is<t_typedef>()) {
     auto typedef_type = dynamic_cast<const t_typedef*>(type);
     if (typedef_type) {
       // Currently the only "type" that can have an adapter is a typedef.
@@ -358,19 +358,19 @@ bool type_has_transitive_adapter(
       return type_has_transitive_adapter(
           typedef_type->get_type(), step_through_newtypes);
     }
-  } else if (type->is_list()) {
+  } else if (type->is<t_list>()) {
     auto list_type = dynamic_cast<const t_list*>(type);
     if (list_type) {
       return type_has_transitive_adapter(
           list_type->get_elem_type(), step_through_newtypes);
     }
-  } else if (type->is_set()) {
+  } else if (type->is<t_set>()) {
     auto set_type = dynamic_cast<const t_set*>(type);
     if (set_type) {
       return type_has_transitive_adapter(
           set_type->get_elem_type(), step_through_newtypes);
     }
-  } else if (type->is_map()) {
+  } else if (type->is<t_map>()) {
     auto map_type = dynamic_cast<const t_map*>(type);
     if (map_type) {
       return type_has_transitive_adapter(
@@ -378,7 +378,7 @@ bool type_has_transitive_adapter(
           type_has_transitive_adapter(
                  map_type->get_val_type(), step_through_newtypes);
     }
-  } else if (type->is_struct_or_union()) {
+  } else if (type->is<t_struct>() || type->is<t_union>()) {
     auto struct_type = dynamic_cast<const t_structured*>(type);
     if (struct_type) {
       return node_has_adapter(*struct_type);
@@ -389,7 +389,7 @@ bool type_has_transitive_adapter(
 }
 
 const t_type* step_through_typedefs(const t_type* t, bool break_on_adapter) {
-  while (t->is_typedef()) {
+  while (t->is<t_typedef>()) {
     auto typedef_type = dynamic_cast<const t_typedef*>(t);
     if (!typedef_type) {
       return t;
@@ -425,7 +425,7 @@ bool typedef_has_constructor_expression(const t_typedef* t) {
       break;
     }
     const t_type* definition = t->get_type();
-    if (definition->is_enum()) {
+    if (definition->is<t_enum>()) {
       // Outermost typedef refers to an enum.
       return true;
     }
@@ -733,7 +733,7 @@ class rust_mstch_program : public mstch_program {
   mstch::node rust_nonexhaustive_structs() {
     for (t_structured* strct : program_->structs_and_unions()) {
       // The is_union is because `union` are also in this collection.
-      if (!strct->is_union() &&
+      if (!strct->is<t_union>() &&
           !strct->has_structured_annotation(kRustExhaustiveUri)) {
         return true;
       }
@@ -1724,14 +1724,14 @@ class mstch_rust_value : public mstch_base {
     return quote(const_value_->get_string(), false);
   }
   mstch::node is_list() {
-    return underlying_type_->is_list() &&
+    return underlying_type_->is<t_list>() &&
         (const_value_->kind() == value_type::CV_LIST ||
          (const_value_->kind() == value_type::CV_MAP &&
           const_value_->get_map().empty()));
   }
   mstch::node list_elements() {
     const t_type* elem_type;
-    if (underlying_type_->is_set()) {
+    if (underlying_type_->is<t_set>()) {
       auto set_type = dynamic_cast<const t_set*>(underlying_type_);
       if (!set_type) {
         return mstch::node();
@@ -1753,29 +1753,28 @@ class mstch_rust_value : public mstch_base {
     return elements;
   }
   mstch::node is_set() {
-    return underlying_type_->is_set() &&
+    return underlying_type_->is<t_set>() &&
         (const_value_->kind() == value_type::CV_LIST ||
          (const_value_->kind() == value_type::CV_MAP &&
           const_value_->get_map().empty()));
   }
   mstch::node set_members() { return list_elements(); }
   mstch::node is_map() {
-    return underlying_type_->is_map() &&
+    return underlying_type_->is<t_map>() &&
         (const_value_->kind() == value_type::CV_MAP ||
          (const_value_->kind() == value_type::CV_LIST &&
           const_value_->get_list().empty()));
   }
   mstch::node map_entries();
   mstch::node is_struct() {
-    return (underlying_type_->is_struct_or_union() ||
-            underlying_type_->is_exception()) &&
-        !underlying_type_->is_union() &&
+    return underlying_type_->is<t_structured>() &&
+        !underlying_type_->is<t_union>() &&
         const_value_->kind() == value_type::CV_MAP;
   }
   mstch::node struct_fields();
   mstch::node is_exhaustive();
   mstch::node is_union() {
-    if (!underlying_type_->is_union() ||
+    if (!underlying_type_->is<t_union>() ||
         const_value_->kind() != value_type::CV_MAP) {
       return false;
     }
@@ -1829,7 +1828,7 @@ class mstch_rust_value : public mstch_base {
     }
     return mstch::node();
   }
-  mstch::node is_enum() { return underlying_type_->is_enum(); }
+  mstch::node is_enum() { return underlying_type_->is<t_enum>(); }
   mstch::node enum_variant() {
     if (const_value_->is_enum()) {
       auto enum_value = const_value_->get_enum_value();
@@ -1861,7 +1860,7 @@ class mstch_rust_value : public mstch_base {
       return true;
     }
     // Enum variants as well
-    if (underlying_type_->is_enum()) {
+    if (underlying_type_->is<t_enum>()) {
       return enum_variant();
     }
     return false;
@@ -2083,8 +2082,8 @@ class rust_mstch_const : public mstch_const {
     }
 
     auto type = const_->type()->get_true_type();
-    return type->is_list() || type->is_map() || type->is_set() ||
-        type->is_struct_or_union();
+    return type->is<t_list>() || type->is<t_map>() || type->is<t_set>() ||
+        type->is<t_struct>() || type->is<t_union>();
   }
   mstch::node rust_typed_value() {
     unsigned depth = 0;
@@ -2231,7 +2230,7 @@ class rust_mstch_typedef : public mstch_typedef {
     if (!type_has_transitive_adapter(typedef_->get_type(), true)) {
       auto inner = typedef_->get_true_type();
       if (inner->is_bool() || inner->is_byte() || inner->is_i16() ||
-          inner->is_i32() || inner->is_i64() || inner->is_enum() ||
+          inner->is_i32() || inner->is_i64() || inner->is<t_enum>() ||
           inner->is_void()) {
         return true;
       }

@@ -474,8 +474,8 @@ void mutate_inject_metadata_fields(
 
   const auto* structured = dynamic_cast<const t_structured*>(ttype);
   // We only allow injecting fields from a struct type.
-  if (structured == nullptr || ttype->is_union() || ttype->is_exception() ||
-      ttype->is<t_paramlist>()) {
+  if (structured == nullptr || ttype->is<t_union>() ||
+      ttype->is<t_exception>() || ttype->is<t_paramlist>()) {
     ctx.error(
         "`{}` is not a struct type. `@internal.InjectMetadataFields` can be "
         "only used with a struct type.",
@@ -537,16 +537,16 @@ void add_annotations_to_node_type(
     return;
   }
 
-  if (node_type->is_container() ||
-      (node_type->is_typedef() &&
+  if (node_type->is<t_container>() ||
+      (node_type->is<t_typedef>() &&
        static_cast<const t_typedef*>(node_type)->typedef_kind() !=
            t_typedef::kind::defined) ||
-      (node_type->is_primitive_type() &&
+      (node_type->is<t_primitive_type>() &&
        !node_type->unstructured_annotations().empty())) {
     // This is a new type we can modify in place
     update_annotations(
         const_cast<t_type&>(*node_type), std::move(annotations), origin);
-  } else if (node_type->is_primitive_type()) {
+  } else if (node_type->is<t_primitive_type>()) {
     // Copy type as we don't handle unnamed typedefs to base types :(
     auto unnamed = std::make_unique<t_primitive_type>(
         *static_cast<const t_primitive_type*>(node_type));
@@ -609,16 +609,17 @@ void lower_deprecated_annotations(
         }
 
         auto* inner_type = const_cast<t_type*>(type->get_type());
-        if (inner_type->is_typedef()) {
+        if (inner_type->is<t_typedef>()) {
           ctx.error("Cannot use {} on typedefs of typedefs", annot);
         } else if (
-            !inner_type->is_container() && !inner_type->is_primitive_type()) {
+            !inner_type->is<t_container>() &&
+            !inner_type->is<t_primitive_type>()) {
           ctx.error(
               "Annotation {} is only supported on typedefs of primitive or container types.",
               annot);
         } else {
           // Ensure annotations can be added to inner type
-          if (inner_type->is_primitive_type() &&
+          if (inner_type->is<t_primitive_type>() &&
               inner_type->unstructured_annotations().empty()) {
             auto new_type = std::make_unique<t_primitive_type>(
                 static_cast<const t_primitive_type&>(*inner_type));

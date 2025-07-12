@@ -48,7 +48,7 @@ import {{#program:py3Namespaces}}{{value}}.{{/program:py3Namespaces}}{{program:n
 
 {{#program:includeNamespaces}}
 {{#hasTypes?}}
-import {{#includeNamespace}}{{value}}.{{/includeNamespace}}types_inplace_FBTHRIFT_ONLY_DO_NOT_USE as _{{#includeNamespace}}{{value}}_{{/includeNamespace}}types
+import {{#includeNamespace}}{{value}}.{{/includeNamespace}}types as _{{#includeNamespace}}{{value}}_{{/includeNamespace}}types
 {{#program:hasConstants}}
 import {{#includeNamespace}}{{value}}.{{/includeNamespace}}types
 {{/program:hasConstants}}
@@ -157,8 +157,8 @@ class {{struct:name}}({{> types/python_struct_class }}):
         {{/struct:exception?}}
         {{! There's an optimization opportunity here if convertible objects are already correct type}}
 
-    def __new__(cls, *args, **kwargs) -> {{struct:name}}:
-        instance = super().__new__(cls)
+    def __new__(_fbthrift__cls, *args, **kwargs) -> {{struct:name}}:
+        instance = super().__new__(_fbthrift__cls)
         {{#struct:fields_and_mixin_fields}}
         {{#field:type}}{{#type:needs_convert?}}
         instance._fbthrift_inner__{{field:py_name}} = None

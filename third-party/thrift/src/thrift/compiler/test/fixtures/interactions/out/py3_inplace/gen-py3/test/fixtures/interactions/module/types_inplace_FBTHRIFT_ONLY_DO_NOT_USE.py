@@ -27,7 +27,7 @@ import test.fixtures.interactions.module.thrift_types as _fbthrift_python_types
 import test.fixtures.interactions.module.thrift_enums as _fbthrift_python_enums
 
 
-import test.fixtures.another_interactions.shared.types_inplace_FBTHRIFT_ONLY_DO_NOT_USE as _test_fixtures_another_interactions_shared_types
+import test.fixtures.another_interactions.shared.types as _test_fixtures_another_interactions_shared_types
 
 def get_types_reflection():
     return importlib.import_module(
@@ -70,8 +70,8 @@ class CustomException(thrift.py3.exceptions.GeneratedError):
 
         super(thrift.python.exceptions.Error, self).__init__(*(val for _, val in self))
 
-    def __new__(cls, *args, **kwargs) -> CustomException:
-        instance = super().__new__(cls)
+    def __new__(_fbthrift__cls, *args, **kwargs) -> CustomException:
+        instance = super().__new__(_fbthrift__cls)
         return instance
 
     @staticmethod
@@ -172,8 +172,8 @@ class ShouldBeBoxed(thrift.py3.types.Struct):
             self._fbthrift__inner = _fbthrift_python_types.ShouldBeBoxed(*args, **kwargs)
 
 
-    def __new__(cls, *args, **kwargs) -> ShouldBeBoxed:
-        instance = super().__new__(cls)
+    def __new__(_fbthrift__cls, *args, **kwargs) -> ShouldBeBoxed:
+        instance = super().__new__(_fbthrift__cls)
         return instance
 
     def __call__(self, **kwargs) -> ShouldBeBoxed:

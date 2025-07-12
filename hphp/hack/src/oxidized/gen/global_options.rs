@@ -3,7 +3,7 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the "hack" directory of this source tree.
 //
-// @generated SignedSource<<ca9136f87a6e86f19e2507f36912b654>>
+// @generated SignedSource<<8816312c95bd82d52ae6ae9910e368ad>>
 //
 // To regenerate this file, run:
 //   hphp/hack/src/oxidized_regen.sh
@@ -166,6 +166,7 @@ pub struct GlobalOptions {
     pub tco_language_feature_logging: bool,
     pub tco_timeout: isize,
     pub tco_disallow_invalid_arraykey: bool,
+    pub tco_constraint_array_index: bool,
     pub code_agnostic_fixme: bool,
     pub allowed_fixme_codes_strict: i_set::ISet,
     pub log_levels: s_map::SMap<isize>,
@@ -202,7 +203,6 @@ pub struct GlobalOptions {
     pub symbol_write_sym_hash_out: bool,
     pub tco_error_php_lambdas: bool,
     pub tco_disallow_discarded_nullable_awaitables: bool,
-    pub tco_higher_kinded_types: bool,
     pub tco_typecheck_sample_rate: f64,
     pub tco_enable_sound_dynamic: bool,
     pub tco_pessimise_builtins: bool,
@@ -234,7 +234,6 @@ pub struct GlobalOptions {
     pub dump_tast_hashes: bool,
     pub dump_tasts: Vec<String>,
     pub tco_autocomplete_mode: bool,
-    pub tco_log_exhaustivity_check: bool,
     pub tco_sticky_quarantine: bool,
     pub tco_lsp_invalidation: bool,
     pub tco_autocomplete_sort_text: bool,
@@ -262,10 +261,10 @@ pub struct GlobalOptions {
     pub safe_abstract: bool,
     pub needs_concrete: bool,
     pub allow_class_string_cast: bool,
-    pub class_pointer_ban_classname_new: bool,
-    pub class_pointer_ban_classname_type_structure: bool,
-    pub class_pointer_ban_classname_static_prop: bool,
-    pub class_pointer_ban_classname_static_meth: bool,
-    pub class_pointer_ban_classname_class_const: bool,
+    pub class_pointer_ban_classname_new: isize,
+    pub class_pointer_ban_classname_type_structure: isize,
+    pub class_pointer_ban_classname_static_meth: isize,
+    pub class_pointer_ban_classname_class_const: isize,
     pub class_pointer_ban_class_array_key: bool,
+    pub tco_poly_function_pointers: bool,
 }

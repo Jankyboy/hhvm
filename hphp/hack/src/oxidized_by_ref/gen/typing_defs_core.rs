@@ -3,7 +3,7 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the "hack" directory of this source tree.
 //
-// @generated SignedSource<<3c2865f1da2f2599ed0d9591593217d5>>
+// @generated SignedSource<<692ea0fed8ba43f4d2b7d139109270c1>>
 //
 // To regenerate this file, run:
 //   hphp/hack/src/oxidized_regen.sh
@@ -293,8 +293,6 @@ pub struct Tparam<'a> {
     pub variance: oxidized::ast_defs::Variance,
     #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub name: PosId<'a>,
-    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
-    pub tparams: &'a [&'a Tparam<'a>],
     #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
     pub constraints: &'a [(oxidized::ast_defs::ConstraintKind, &'a Ty<'a>)],
     pub reified: oxidized::ast_defs::ReifyKind,
@@ -1104,3 +1102,30 @@ pub enum TupleExtra<'a> {
 }
 impl<'a> TrivialDrop for TupleExtra<'a> {}
 arena_deserializer::impl_deserialize_in_arena!(TupleExtra<'arena>);
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    EqModuloPos,
+    FromOcamlRepIn,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+#[rust_to_ocaml(attr = "deriving show")]
+#[repr(C, u8)]
+pub enum CanIndexShape<'a> {
+    IntLit(isize),
+    #[serde(deserialize_with = "arena_deserializer::arena", borrow)]
+    StringLit(&'a str),
+    Generic,
+}
+impl<'a> TrivialDrop for CanIndexShape<'a> {}
+arena_deserializer::impl_deserialize_in_arena!(CanIndexShape<'arena>);

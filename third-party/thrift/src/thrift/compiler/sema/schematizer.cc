@@ -398,9 +398,9 @@ void schematize_recursively(
       auto new_schema_2 = generator->gen_schema(
           static_cast<const t_structured&>(*resolved_type));
       std::string def_type = [&] {
-        if (resolved_type->is_union()) {
+        if (resolved_type->is<t_union>()) {
           return "unionDef";
-        } else if (resolved_type->is_exception()) {
+        } else if (resolved_type->is<t_exception>()) {
           return "exceptionDef";
         } else {
           return "structDef";
@@ -492,7 +492,7 @@ std::unique_ptr<t_const_value> schematizer::gen_schema(
       node.fields(),
       opts_.intern_value);
 
-  if (node.is_exception()) {
+  if (node.is<t_exception>()) {
     const auto& ex = static_cast<const t_exception&>(node);
     schema->add_map(val("safety"), val(ex.safety()));
     schema->add_map(val("kind"), val(ex.kind()));
@@ -624,9 +624,11 @@ std::unique_ptr<t_const_value> schematizer::gen_schema(const t_service& node) {
             throws->fields(),
             opts_.intern_value);
       }
-      sink_schema->add_map(
-          val("finalResponse"),
-          gen_type(*sink->final_response_type(), node.program()));
+      if (sink->final_response_type()) {
+        sink_schema->add_map(
+            val("finalResponse"),
+            gen_type(*sink->final_response_type(), node.program()));
+      }
       if (auto throws = sink->final_response_exceptions()) {
         add_fields(
             this,
@@ -805,11 +807,18 @@ protocol_value_builder::protocol_value_builder() : ty_{nullptr} {}
         // extend the look-up to any sealed key type.
         return protocol_value_builder{*map.get_val_type()};
       },
-      [&](const t_structured& strct) {
+      [&](const t_struct& strct) {
         assert(
             key.kind() == t_const_value::CV_STRING &&
             "A struct only has named fields");
         const auto* field = strct.get_field_by_name(key.get_string());
+        return protocol_value_builder{*field->get_type()};
+      },
+      [&](const t_union& union_) {
+        assert(
+            key.kind() == t_const_value::CV_STRING &&
+            "A union only has named fields");
+        const auto* field = union_.get_field_by_name(key.get_string());
         return protocol_value_builder{*field->get_type()};
       },
       [&](auto&&) -> protocol_value_builder {
@@ -827,10 +836,16 @@ protocol_value_builder::protocol_value_builder() : ty_{nullptr} {}
   }
 
   return ty_->visit(
-      [&](const t_structured&) {
+      [&](const t_struct&) {
         assert(
             key.kind() == t_const_value::CV_STRING &&
             "A struct only has named fields");
+        return as_value_type();
+      },
+      [&](const t_union&) {
+        assert(
+            key.kind() == t_const_value::CV_STRING &&
+            "A union only has named fields");
         return as_value_type();
       },
       [&](const t_map& map) {
@@ -891,7 +906,8 @@ protocol_value_builder::to_labeled_value(
   // Verify that the field is a valid type for a protocol value key
   switch (protocol_value.kind()) {
     case t_const_value::CV_INTEGER:
-      if (!(ty_->is_any_int() || ty_->is_enum() || ty_->is_floating_point())) {
+      if (!(ty_->is_any_int() || ty_->is<t_enum>() ||
+            ty_->is_floating_point())) {
         raise_exception();
       }
       if (ty_->is_floating_point()) {

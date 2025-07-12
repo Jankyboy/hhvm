@@ -81,7 +81,7 @@ TEST_F(ServiceSchemaTest, Programs) {
   EXPECT_EQ(programs.size(), 3);
 
   auto mainProgram = findProgramByName(syntaxGraph, "syntax_graph");
-  EXPECT_EQ(mainProgram->definitionsByName().size(), 13);
+  EXPECT_EQ(mainProgram->definitionsByName().size(), 15);
   EXPECT_EQ(mainProgram->namespaces().size(), 1);
   EXPECT_EQ(
       mainProgram->namespaces().at("cpp2"), "apache.thrift.syntax_graph.test");
@@ -379,6 +379,27 @@ TEST_F(ServiceSchemaTest, Constant) {
       "╰─ value = ...\n");
 }
 
+TEST_F(ServiceSchemaTest, NestedConstant) {
+  auto syntaxGraph = SyntaxGraph::fromSchema(schemaFor<test::TestService>());
+  auto program = findProgramByName(syntaxGraph, "syntax_graph");
+
+  folly::not_null<const DefinitionNode*> testNestedConst =
+      program->definitionsByName().at("testNestedConst");
+  EXPECT_EQ(&testNestedConst->program(), program.unwrap());
+  EXPECT_EQ(testNestedConst->kind(), DefinitionNode::Kind::CONSTANT);
+  EXPECT_EQ(testNestedConst->name(), "testNestedConst");
+  const ConstantNode& c = testNestedConst->asConstant();
+
+  EXPECT_EQ(
+      &c.type().asStruct(),
+      &program->definitionsByName().at("TestStructuredAnnotation")->asStruct());
+  const auto& value = c.value().as_object();
+  EXPECT_EQ(value.at(FieldId{1}).as_i64(), 3);
+  EXPECT_TRUE(value.at(FieldId{2}).is_object());
+  const auto& inner = value.at(FieldId{2}).as_object();
+  EXPECT_EQ(inner.at(FieldId{1}).as_i64(), 4);
+}
+
 TEST_F(ServiceSchemaTest, Service) {
   auto syntaxGraph = SyntaxGraph::fromSchema(schemaFor<test::TestService2>());
   auto program = findProgramByName(syntaxGraph, "syntax_graph");
@@ -546,8 +567,12 @@ TEST_F(ServiceSchemaTest, StructuredAnnotation) {
   EXPECT_EQ(
       &annotations[0].type().asStruct(),
       &program->definitionsByName().at("TestStructuredAnnotation")->asStruct());
-  EXPECT_EQ(annotations[0].fields().size(), 1);
+  EXPECT_EQ(annotations[0].fields().size(), 2);
   EXPECT_EQ(annotations[0].fields().at("field1").as_i64(), 3);
+  EXPECT_TRUE(annotations[0].fields().at("field2").is_map());
+  const auto& field = *annotations[0].fields().at("field2").as_map().begin();
+  EXPECT_EQ(field.first.as_string(), "field1");
+  EXPECT_EQ(field.second.as_i64(), 4);
 }
 
 TEST_F(ServiceSchemaTest, StructuredAnnotationWithoutUri) {

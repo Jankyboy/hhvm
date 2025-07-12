@@ -83,6 +83,14 @@ class t_type : public t_named {
     return dynamic_cast<const T*>(this);
   }
 
+  // Visitor API
+  // Note: this requires including the `type_visitor.h` header to prevent a
+  // circular dependency.
+  template <typename... Visitors>
+  decltype(auto) visit(Visitors&&... visitors) const {
+    return detail::visit_type(*this, std::forward<Visitors>(visitors)...);
+  }
+
  protected:
   /**
    * Default constructor for t_type
@@ -181,7 +189,6 @@ class t_type : public t_named {
    * Default returns for every thrift type
    */
   virtual bool is_void() const { return false; }
-  virtual bool is_primitive_type() const { return false; }
   virtual bool is_string() const { return false; }
   virtual bool is_bool() const { return false; }
   virtual bool is_byte() const { return false; }
@@ -190,26 +197,11 @@ class t_type : public t_named {
   virtual bool is_i64() const { return false; }
   virtual bool is_float() const { return false; }
   virtual bool is_double() const { return false; }
-  virtual bool is_typedef() const { return false; }
-  virtual bool is_enum() const { return false; }
-  virtual bool is_struct_or_union() const { return false; }
-  virtual bool is_struct() const { return false; }
-  virtual bool is_union() const { return false; }
-  virtual bool is_exception() const { return false; }
-  virtual bool is_container() const { return false; }
-  virtual bool is_list() const { return false; }
-  virtual bool is_set() const { return false; }
-  virtual bool is_map() const { return false; }
   virtual bool is_binary() const { return false; }
 
   bool is_string_or_binary() const { return is_string() || is_binary(); }
   bool is_any_int() const { return is_i16() || is_i32() || is_i64(); }
   bool is_floating_point() const { return is_double() || is_float(); }
-  bool is_scalar() const {
-    return is_enum() || is_any_int() || is_byte() || is_bool() ||
-        is_floating_point();
-  }
-  bool is_int_or_enum() const { return is_any_int() || is_enum(); }
 
   /**
    * Create a unique hash number based on t_type's properties.
@@ -222,14 +214,6 @@ class t_type : public t_named {
   }
 
   const t_program* get_program() const { return program(); }
-
-  // Visitor API
-  // Note: this requires including the `type_visitor.h` header to prevent a
-  // circular dependency.
-  template <typename... Visitors>
-  decltype(auto) visit(Visitors&&... visitors) const {
-    return detail::visit_type(*this, std::forward<Visitors>(visitors)...);
-  }
 };
 
 /**
@@ -313,5 +297,7 @@ class t_type_ref final {
   static t_type_ref for_placeholder(t_placeholder_typedef& unresolved_type);
   t_placeholder_typedef* get_unresolved_type() { return unresolved_type_; }
 };
+
+bool is_scalar(const t_type& type);
 
 } // namespace apache::thrift::compiler

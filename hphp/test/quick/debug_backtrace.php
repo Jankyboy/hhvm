@@ -10,14 +10,14 @@ class A {
   }
 }
 
-function bar() :mixed{
+<<__DynamicallyCallable>> function bar() :mixed{
   $a = new A();
   $a->bar(1, "str", vec[1, 2, 3]);
   hphp_invoke_method($a, "A", "bar", vec[1, 2]);
   hphp_invoke_method($a, "A", "bar", Map {'a' => 1, 'b' => 2});
 }
 function foo() :mixed{
-  call_user_func("bar");
+  call_user_func(HH\dynamic_fun("bar"));
 }
 
 function error_handler($errno, $errstr, $errfile, $errline, $errcontext) :mixed{

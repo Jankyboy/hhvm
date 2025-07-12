@@ -6,6 +6,8 @@
 #
 
 from __future__ import annotations
+import builtins
+
 
 from abc import ABCMeta
 import typing as _typing
@@ -18,7 +20,7 @@ from thrift.python.mutable_serializer import serialize_iobuf, deserialize, Proto
 from thrift.python.server import ServiceInterface, RpcKind, PythonUserException
 
 import python_module_root.my.namespacing.test.module.module.thrift_mutable_types as python_module_root__my__namespacing__test__module__module__thrift_mutable_types
-import python_module_root.my.namespacing.test.module.module.thrift_metadata
+import python_module_root.my.namespacing.test.module.module.thrift_metadata as python_module_root__my__namespacing__test__module__module__thrift_metadata
 
 class TestServiceInterface(
     ServiceInterface,
@@ -41,18 +43,18 @@ class TestServiceInterface(
 
     @staticmethod
     def __get_metadata__() -> _fbthrift_metadata.ThriftMetadata:
-        return python_module_root.my.namespacing.test.module.module.thrift_metadata.gen_metadata_service_TestService()
+        return python_module_root__my__namespacing__test__module__module__thrift_metadata.gen_metadata_service_TestService()
 
     @staticmethod
     def __get_metadata_service_response__() -> _fbthrift_metadata.ThriftServiceMetadataResponse:
-        return python_module_root.my.namespacing.test.module.module.thrift_metadata._fbthrift_metadata_service_response_TestService()
+        return python_module_root__my__namespacing__test__module__module__thrift_metadata._fbthrift_metadata_service_response_TestService()
 
 
 
     async def init(
             self,
-            int1: int
-        ) -> int:
+            int1: builtins.int
+        ) -> builtins.int:
         raise NotImplementedError("async def init is not implemented")
 
     async def _fbthrift__handler_init(self, args: _fbthrift_iobuf.IOBuf, protocol: Protocol) -> _fbthrift_iobuf.IOBuf:

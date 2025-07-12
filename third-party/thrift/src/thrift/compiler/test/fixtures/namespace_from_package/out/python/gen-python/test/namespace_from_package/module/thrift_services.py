@@ -6,6 +6,8 @@
 #
 
 from __future__ import annotations
+import builtins
+
 
 from abc import ABCMeta
 import typing as _typing
@@ -17,7 +19,7 @@ from thrift.python.serializer import serialize_iobuf, deserialize, Protocol
 from thrift.python.server import ServiceInterface, RpcKind, PythonUserException
 
 import test.namespace_from_package.module.thrift_types as _fbthrift__test__namespace_from_package__module__thrift_types
-import test.namespace_from_package.module.thrift_metadata
+import test.namespace_from_package.module.thrift_metadata as _fbthrift__test__namespace_from_package__module__thrift_metadata
 
 class TestServiceInterface(
     ServiceInterface,
@@ -40,18 +42,18 @@ class TestServiceInterface(
 
     @staticmethod
     def __get_metadata__() -> _fbthrift_metadata.ThriftMetadata:
-        return test.namespace_from_package.module.thrift_metadata.gen_metadata_service_TestService()
+        return _fbthrift__test__namespace_from_package__module__thrift_metadata.gen_metadata_service_TestService()
 
     @staticmethod
     def __get_metadata_service_response__() -> _fbthrift_metadata.ThriftServiceMetadataResponse:
-        return test.namespace_from_package.module.thrift_metadata._fbthrift_metadata_service_response_TestService()
+        return _fbthrift__test__namespace_from_package__module__thrift_metadata._fbthrift_metadata_service_response_TestService()
 
 
 
     async def init(
             self,
-            int1: int
-        ) -> int:
+            int1: builtins.int
+        ) -> builtins.int:
         raise NotImplementedError("async def init is not implemented")
 
     async def _fbthrift__handler_init(self, args: _fbthrift_iobuf.IOBuf, protocol: Protocol) -> _fbthrift_iobuf.IOBuf:

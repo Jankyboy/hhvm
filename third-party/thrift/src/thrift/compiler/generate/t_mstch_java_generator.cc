@@ -526,7 +526,7 @@ class mstch_java_struct : public mstch_struct {
   mstch::node java_package() {
     return get_namespace_or_default(*struct_->program());
   }
-  mstch::node is_struct_union() { return struct_->is_union(); }
+  mstch::node is_struct_union() { return struct_->is<t_union>(); }
   mstch::node is_union_field_type_unique() {
     std::set<std::string> field_types;
     for (const auto& field : struct_->fields()) {
@@ -561,7 +561,7 @@ class mstch_java_struct : public mstch_struct {
     return false;
   }
   mstch::node is_as_bean() {
-    if (!struct_->is_exception() && !struct_->is_union()) {
+    if (!struct_->is<t_exception>() && !struct_->is<t_union>()) {
       return struct_->get_unstructured_annotation("java.swift.mutable") ==
           "true" ||
           struct_->has_structured_annotation(kJavaMutableUri);
@@ -572,7 +572,7 @@ class mstch_java_struct : public mstch_struct {
 
   mstch::node is_BigStruct() {
     return (
-        struct_->is_struct_or_union() &&
+        (struct_->is<t_struct>() || struct_->is<t_union>()) &&
         struct_->fields().size() > bigStructThreshold);
   }
 
@@ -602,7 +602,7 @@ class mstch_java_struct : public mstch_struct {
   // 2 - there is no struct field named 'message' (since it
   //  will generate `getMessage()` method)
   mstch::node needs_exception_message() {
-    return struct_->is_exception() &&
+    return struct_->is<t_exception>() &&
         dynamic_cast<const t_exception&>(*struct_).get_message_field() !=
         nullptr &&
         struct_->get_field_by_name("message") == nullptr;
@@ -876,7 +876,7 @@ class mstch_java_field : public mstch_field {
 
   bool _has_type_adapter() {
     auto type = field_->get_type();
-    if (type->is_typedef()) {
+    if (type->is<t_typedef>()) {
       if (t_typedef::get_first_structured_annotation_or_null(
               type, kJavaAdapterUri)) {
         return true;
@@ -900,7 +900,7 @@ class mstch_java_field : public mstch_field {
   mstch::node get_typedef_structed_annotation_attribute(
       const char* uri, const std::string& field) {
     auto type = field_->get_type();
-    if (type->is_typedef()) {
+    if (type->is<t_typedef>()) {
       if (auto annotation =
               t_typedef::get_first_structured_annotation_or_null(type, uri)) {
         for (const auto& item : annotation->value()->get_map()) {
@@ -969,27 +969,26 @@ class mstch_java_field : public mstch_field {
         field_type->is_bool() || field_type->is_byte() ||
         field_type->is_float() || field_type->is_i16() ||
         field_type->is_i32() || field_type->is_i64() ||
-        field_type->is_double() || field_type->is_enum());
+        field_type->is_double() || field_type->is<t_enum>());
   }
 
   mstch::node is_enum() {
     const t_type* field_type = field_->get_type()->get_true_type();
-    return field_type->is_enum();
+    return field_type->is<t_enum>();
   }
 
   mstch::node is_object() {
     const t_type* field_type = field_->get_type()->get_true_type();
-    return field_type->is_struct_or_union() || field_type->is_exception() ||
-        field_type->is_union();
+    return field_type->is<t_structured>();
   }
 
   mstch::node is_union() {
     const t_type* field_type = field_->get_type()->get_true_type();
-    return field_type->is_union();
+    return field_type->is<t_union>();
   }
 
   mstch::node is_container() {
-    return field_->get_type()->get_true_type()->is_container();
+    return field_->get_type()->get_true_type()->is<t_container>();
   }
   mstch::node java_name() { return get_java_swift_name(field_); }
 
@@ -1026,7 +1025,7 @@ class mstch_java_field : public mstch_field {
     return default_value_for_type(field->get_type());
   }
   std::string default_value_for_type(const t_type* type) {
-    if (type->is_typedef()) {
+    if (type->is<t_typedef>()) {
       auto typedef_type = dynamic_cast<const t_typedef*>(type)->get_type();
       return default_value_for_type(typedef_type);
     } else {
@@ -1040,7 +1039,7 @@ class mstch_java_field : public mstch_field {
         return "0.";
       } else if (type->is_bool()) {
         return "false";
-      } else if (type->is_enum()) {
+      } else if (type->is<t_enum>()) {
         // we use fromInteger(0) as default value as it may be null or the enum
         // entry for 0.
         auto javaNamespace = get_namespace_or_default(*(type->program()));
@@ -1183,23 +1182,23 @@ class mstch_java_const : public mstch_const {
   mstch::node java_ignore_constant() {
     // we have to ignore constants if they are enums that we handled as ints, as
     // we don't have the constant values to work with.
-    if (const_->type()->is_map()) {
+    if (const_->type()->is<t_map>()) {
       t_map* map = (t_map*)const_->type();
-      if (map->get_key_type()->is_enum()) {
+      if (map->get_key_type()->is<t_enum>()) {
         return map->get_key_type()->has_unstructured_annotation(
             "java.swift.skip_enum_name_map");
       }
     }
-    if (const_->type()->is_list()) {
+    if (const_->type()->is<t_list>()) {
       t_list* list = (t_list*)const_->type();
-      if (list->get_elem_type()->is_enum()) {
+      if (list->get_elem_type()->is<t_enum>()) {
         return list->get_elem_type()->has_unstructured_annotation(
             "java.swift.skip_enum_name_map");
       }
     }
-    if (const_->type()->is_set()) {
+    if (const_->type()->is<t_set>()) {
       t_set* set = (t_set*)const_->type();
-      if (set->get_elem_type()->is_enum()) {
+      if (set->get_elem_type()->is<t_enum>()) {
         return set->get_elem_type()->has_unstructured_annotation(
             "java.swift.skip_enum_name_map");
       }
@@ -1311,7 +1310,7 @@ class mstch_java_type : public mstch_type {
   }
 
   mstch::node is_container_type() {
-    return type_->get_true_type()->is_container();
+    return type_->get_true_type()->is<t_container>();
   }
 
   mstch::node java_type() {
@@ -1328,7 +1327,7 @@ class mstch_java_type : public mstch_type {
   }
 
   mstch::node has_structured_annotation(const char* uri) {
-    if (type_->is_typedef()) {
+    if (type_->is<t_typedef>()) {
       if (t_typedef::get_first_structured_annotation_or_null(type_, uri)) {
         return true;
       }
@@ -1347,7 +1346,7 @@ class mstch_java_type : public mstch_type {
 
   mstch::node get_structed_annotation_attribute(
       const char* uri, const std::string& field) {
-    if (type_->is_typedef()) {
+    if (type_->is<t_typedef>()) {
       if (auto annotation =
               t_typedef::get_first_structured_annotation_or_null(type_, uri)) {
         for (const auto& item : annotation->value()->get_map()) {
@@ -1387,7 +1386,7 @@ class mstch_java_type : public mstch_type {
     int32_t count = 0;
     auto type = type_;
     while (type) {
-      if (type_->is_typedef() &&
+      if (type_->is<t_typedef>() &&
           type->has_structured_annotation(kJavaAdapterUri)) {
         count++;
         if (const auto* as_typedef = dynamic_cast<const t_typedef*>(type)) {

@@ -33,7 +33,7 @@ function f($a, inout $b, $c=null, $d=vec[1, 2, SOME_CONSTANT]) :mixed{
 /**
  * This is g's doc comment.
  */
-function g($a=null, $b=vec[1, 2, 3], $c=SOME_CONSTANT) :mixed{
+<<__DynamicallyCallable>> function g($a=null, $b=vec[1, 2, 3], $c=SOME_CONSTANT) :mixed{
   print "In g($a, $b, $c)\n";
 }
 
@@ -133,13 +133,6 @@ function entrypoint_reflection(): void {
 
   print "--- export(\"f\") ---\n";
   var_dump(ReflectionFunction::export('f', true));
-  print "\n";
-
-  $rg = new ReflectionFunction("g");
-
-  print "--- invoke(\"g\") ---\n";
-  var_dump($rg->invoke("a", "b"));
-  var_dump($rg->invoke("a", "b"));
   print "\n";
 
   print "--- export(\"g\") ---\n";

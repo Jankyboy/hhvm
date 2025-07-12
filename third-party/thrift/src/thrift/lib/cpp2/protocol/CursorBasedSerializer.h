@@ -886,7 +886,7 @@ class StringCursorWriter : detail::DelayedSizeCursorWriter {
  * Typically constructed from a CursorSerializationWrapper.
  */
 template <typename Tag>
-class StructuredCursorWriter : detail::BaseCursorWriter {
+class StructuredCursorWriter : detail::BaseCursorWriter<BinaryProtocolWriter> {
   static_assert(
       type::is_a_v<Tag, type::structured_c>, "T must be a thrift class");
   using T = type::native_type<Tag>;
@@ -1388,9 +1388,8 @@ void ContainerCursorReader<Tag, ProtocolReader, Contiguous>::readItem() {
         decodeTo<typename detail::ContainerTraits<Tag>::KeyTag, ProtocolReader>(
             *protocol_, lastRead_->first);
     detail::decodeTo<
-        ProtocolReader,
-        typename detail::ContainerTraits<Tag>::ValueTag>(
-        *protocol_, lastRead_->second);
+        typename detail::ContainerTraits<Tag>::ValueTag,
+        ProtocolReader>(*protocol_, lastRead_->second);
   } else {
     static_assert(!sizeof(Tag), "unexpected tag");
   }

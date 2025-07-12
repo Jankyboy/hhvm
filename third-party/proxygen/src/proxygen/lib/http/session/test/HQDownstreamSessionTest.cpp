@@ -2720,10 +2720,11 @@ TEST_P(HQDownstreamSessionTest, DelegateResponse) {
                 setDSRPacketizationRequestSender(_, _))
         .WillOnce(Invoke(
             [&](StreamId,
-                std::unique_ptr<quic::DSRPacketizationRequestSender> sender) {
+                std::unique_ptr<quic::DSRPacketizationRequestSender> sender)
+                -> quic::Expected<void, quic::LocalErrorCode> {
               EXPECT_EQ(rawDsrSender, sender.get());
               senderStorage = std::move(sender);
-              return folly::unit;
+              return {};
             }));
     folly::Optional<size_t> dsrOffset;
     EXPECT_CALL(*mockDsrRequestSender, onHeaderBytesGenerated(_))
@@ -2777,10 +2778,11 @@ TEST_P(HQDownstreamSessionTest, DelegateResponseError) {
                 setDSRPacketizationRequestSender(_, _))
         .WillOnce(Invoke(
             [&](StreamId,
-                std::unique_ptr<quic::DSRPacketizationRequestSender> sender) {
+                std::unique_ptr<quic::DSRPacketizationRequestSender> sender)
+                -> quic::Expected<void, quic::LocalErrorCode> {
               EXPECT_EQ(rawDsrSender, sender.get());
               senderStorage = std::move(sender);
-              return folly::unit;
+              return {};
             }));
     folly::Optional<size_t> dsrOffset;
     EXPECT_CALL(*mockDsrRequestSender, onHeaderBytesGenerated(_))
@@ -2835,7 +2837,7 @@ TEST_P(HQDownstreamSessionTest, getHTTPPriority) {
             expectedResults.value().urgency,
             expectedResults.value().incremental)))
         .WillOnce(
-            Return(folly::makeUnexpected(LocalErrorCode::STREAM_NOT_EXISTS)))
+            Return(quic::make_unexpected(LocalErrorCode::STREAM_NOT_EXISTS)))
         .WillOnce(Return(quic::HTTPPriorityQueue::Priority(
             expectedResults.value().urgency,
             expectedResults.value().incremental)));
@@ -3007,6 +3009,82 @@ TEST_P(HQDownstreamSessionTest, InvalidNoErrorAbort) {
   EXPECT_NE(streams.find(streamId), streams.end());
   EXPECT_EQ(streams[streamId].error,
             folly::make_optional(HTTP3::ErrorCode::HTTP_INTERNAL_ERROR));
+
+  hqSession_->closeWhenIdle();
+}
+
+TEST_P(HQDownstreamSessionTest, IncrementalStreamsRoundRobin) {
+  // set connection flow control window to 1500 bytes
+  socketDriver_->getSocket()->setConnectionFlowControlWindow(1500);
+
+  auto id1 = sendRequest(getProgressiveGetRequest());
+  auto id2 = sendRequest(getProgressiveGetRequest());
+  socketDriver_->expectSetPriority(id1, Priority(1, true));
+  socketDriver_->expectSetPriority(id2, Priority(1, true));
+
+  auto handler1 = addSimpleStrictHandler();
+  handler1->expectHeaders();
+  handler1->expectEOM([&handler1]() {
+    handler1->sendHeaders(200, 3000);
+    handler1->sendBody(3000);
+    handler1->sendEOM();
+  });
+
+  auto handler2 = addSimpleStrictHandler();
+  handler2->expectHeaders();
+  handler2->expectEOM([&handler2]() {
+    handler2->sendHeaders(200, 3000);
+    handler2->sendBody(3000);
+    handler2->sendEOM();
+  });
+
+  flushRequestsAndLoop();
+
+  // after first egress, txn1 should have written data and txn2 should have none
+  // (since the connection window was consumed by txn1)
+  EXPECT_GT(socketDriver_->streams_[id1].writeBuf.chainLength(), 0);
+  EXPECT_EQ(socketDriver_->streams_[id2].writeBuf.chainLength(), 0);
+  auto txn1FirstBytes = socketDriver_->streams_[id1].writeBuf.chainLength();
+
+  socketDriver_->getSocket()->setConnectionFlowControlWindow(1500);
+  flushRequestsAndLoop();
+
+  // after second egress, txn2 should have written data
+  // and txn1 should not have written additional data
+  EXPECT_EQ(socketDriver_->streams_[id1].writeBuf.chainLength(),
+            txn1FirstBytes);
+  EXPECT_GT(socketDriver_->streams_[id2].writeBuf.chainLength(), 0);
+  auto txn2FirstBytes = socketDriver_->streams_[id2].writeBuf.chainLength();
+
+  socketDriver_->getSocket()->setConnectionFlowControlWindow(1500);
+  flushRequestsAndLoop();
+
+  // after third egress, txn1 should have written more data
+  EXPECT_GT(socketDriver_->streams_[id1].writeBuf.chainLength(),
+            txn1FirstBytes);
+  EXPECT_EQ(socketDriver_->streams_[id2].writeBuf.chainLength(),
+            txn2FirstBytes);
+  auto txn1SecondBytes = socketDriver_->streams_[id1].writeBuf.chainLength();
+
+  socketDriver_->getSocket()->setConnectionFlowControlWindow(1500);
+  flushRequestsAndLoop();
+
+  // after fourth egress, txn2 should have written more data
+  EXPECT_EQ(socketDriver_->streams_[id1].writeBuf.chainLength(),
+            txn1SecondBytes);
+  EXPECT_GT(socketDriver_->streams_[id2].writeBuf.chainLength(),
+            txn2FirstBytes);
+
+  // grant enough flow control to finish both streams
+  socketDriver_->getSocket()->setConnectionFlowControlWindow(10000);
+  handler1->expectDetachTransaction();
+  handler2->expectDetachTransaction();
+  flushRequestsAndLoop();
+
+  EXPECT_GE(socketDriver_->streams_[id1].writeBuf.chainLength(), 3000);
+  EXPECT_GE(socketDriver_->streams_[id2].writeBuf.chainLength(), 3000);
+  EXPECT_TRUE(socketDriver_->streams_[id1].writeEOF);
+  EXPECT_TRUE(socketDriver_->streams_[id2].writeEOF);
 
   hqSession_->closeWhenIdle();
 }
@@ -3290,21 +3368,21 @@ TEST_P(HQDownstreamSessionTestDeliveryAck,
                                                     quic::StreamId id,
                                                     uint64_t offset,
                                                     quic::ByteEventCallback* cb)
-              -> folly::Expected<folly::Unit, LocalErrorCode> {
+              -> quic::Expected<void, LocalErrorCode> {
             if (id == streamId) {
-              return folly::makeUnexpected(LocalErrorCode::INVALID_OPERATION);
+              return quic::make_unexpected(LocalErrorCode::INVALID_OPERATION);
             }
 
             socketDriver->checkNotReadOnlyStream(id);
             auto it = socketDriver->streams_.find(id);
             if (it == socketDriver->streams_.end() ||
                 it->second.nextWriteOffset >= offset) {
-              return folly::makeUnexpected(LocalErrorCode::STREAM_NOT_EXISTS);
+              return quic::make_unexpected(LocalErrorCode::STREAM_NOT_EXISTS);
             }
             CHECK_NE(it->second.writeState,
                      MockQuicSocketDriver::StateEnum::CLOSED);
             it->second.deliveryCallbacks.push_back({offset, cb});
-            return folly::unit;
+            return {};
           }));
 
   EXPECT_CALL(*handler, _onError(_))
@@ -3446,26 +3524,26 @@ TEST_P(HQDownstreamSessionTestDeliveryAck, TestBodyDeliveryErr) {
                                           quic::StreamId id,
                                           uint64_t offset,
                                           quic::ByteEventCallback* cb)
-              -> folly::Expected<folly::Unit, LocalErrorCode> {
+              -> quic::Expected<void, LocalErrorCode> {
             if (id == streamId && offset > streamOffsetAfterHeaders) {
               for (auto& it : socketDriver->streams_) {
                 auto& stream = it.second;
                 stream.readState = quic::MockQuicSocketDriver::ERROR;
                 stream.writeState = quic::MockQuicSocketDriver::ERROR;
               }
-              return folly::makeUnexpected(LocalErrorCode::INVALID_OPERATION);
+              return quic::make_unexpected(LocalErrorCode::INVALID_OPERATION);
             }
 
             socketDriver->checkNotReadOnlyStream(id);
             auto it = socketDriver->streams_.find(id);
             if (it == socketDriver->streams_.end() ||
                 it->second.nextWriteOffset >= offset) {
-              return folly::makeUnexpected(LocalErrorCode::STREAM_NOT_EXISTS);
+              return quic::make_unexpected(LocalErrorCode::STREAM_NOT_EXISTS);
             }
             CHECK_NE(it->second.writeState,
                      MockQuicSocketDriver::StateEnum::CLOSED);
             it->second.deliveryCallbacks.push_back({offset, cb});
-            return folly::unit;
+            return {};
           }));
 
   EXPECT_CALL(*handler, _onError(_))

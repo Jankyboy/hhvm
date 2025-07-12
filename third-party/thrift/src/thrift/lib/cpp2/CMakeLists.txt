@@ -245,9 +245,17 @@ add_library(
   async/RocketClientChannel.cpp
   async/RpcOptions.cpp
   async/RpcTypes.cpp
-  async/ServerGeneratorStream.cpp
+  async/ServerGeneratorStreamBridge.cpp
   async/ServerRequestData.cpp
   async/ServerSinkBridge.cpp
+  async/processor/AsyncProcessor.cpp
+  async/processor/AsyncProcessorFunc.cpp
+  async/processor/EventTask.cpp
+  async/processor/RequestParams.cpp
+  async/processor/ServerRequest.cpp
+  async/processor/ServerRequestHelper.cpp
+  async/processor/ServerRequestTask.cpp
+  async/processor/ServiceHandlerBase.cpp
   gen/module_constants_cpp.cpp
   gen/module_metadata_cpp.cpp
   gen/module_types_cpp.cpp
@@ -256,7 +264,6 @@ add_library(
   security/FizzPeeker.cpp
   security/SSLUtil.cpp
   security/extensions/ThriftParametersClientExtension.cpp
-  security/extensions/ThriftParametersContext.cpp
   security/extensions/Types.cpp
   server/AdaptiveConcurrency.cpp
   server/ConcurrencyControllerBase.cpp

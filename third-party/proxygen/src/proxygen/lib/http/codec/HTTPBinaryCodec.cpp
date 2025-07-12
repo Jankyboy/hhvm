@@ -26,7 +26,13 @@ namespace proxygen {
 namespace {
 folly::Expected<size_t, quic::TransportErrorCode> encodeInteger(
     uint64_t i, folly::io::QueueAppender& appender) {
-  return quic::encodeQuicInteger(i, [&](auto val) { appender.writeBE(val); });
+  auto result =
+      quic::encodeQuicInteger(i, [&](auto val) { appender.writeBE(val); });
+  if (result.has_value()) {
+    return result.value();
+  } else {
+    return folly::makeUnexpected(result.error());
+  }
 }
 
 void encodeString(folly::StringPiece str, folly::io::QueueAppender& appender) {
@@ -556,6 +562,17 @@ void HTTPBinaryCodec::onIngressEOF() {
     callback_->onError(ingressTxnID_,
                        HTTPException(HTTPException::Direction::INGRESS,
                                      "Incomplete message received"));
+    return;
+  }
+  if (!parseError_ && (state_ == ParseState::FRAMING_INDICATOR ||
+                       state_ == ParseState::CONTROL_DATA)) {
+    // Case where sent message is either empty or only contains framing
+    // indicator
+    callback_->onError(
+        ingressTxnID_,
+        HTTPException(HTTPException::Direction::INGRESS,
+                      "Incomplete message received, either empty or only "
+                      "contains framing indicator"));
     return;
   }
   if (state_ == ParseState::HEADERS_SECTION) {

@@ -186,7 +186,6 @@ type user_attribute = {
 type 'ty tparam = {
   tp_variance: Ast_defs.variance;
   tp_name: pos_id;
-  tp_tparams: 'ty tparam list;
   tp_constraints: (Ast_defs.constraint_kind * 'ty) list;
   tp_reified: Ast_defs.reify_kind;
   tp_user_attributes: user_attribute list;
@@ -1130,7 +1129,6 @@ let rec ty__compare : type a. ?normalize_lists:bool -> a ty_ -> a ty_ -> int =
       (* Type parameters on functions are always marked invariant *)
       tp_variance = _;
       tp_name = name1;
-      tp_tparams = tparams1;
       tp_constraints = constraints1;
       tp_reified = reified1;
       tp_user_attributes = user_attributes1;
@@ -1140,7 +1138,6 @@ let rec ty__compare : type a. ?normalize_lists:bool -> a ty_ -> a ty_ -> int =
     let {
       tp_variance = _;
       tp_name = name2;
-      tp_tparams = tparams2;
       tp_constraints = constraints2;
       tp_reified = reified2;
       tp_user_attributes = user_attributes2;
@@ -1149,14 +1146,10 @@ let rec ty__compare : type a. ?normalize_lists:bool -> a ty_ -> a ty_ -> int =
     in
     match String.compare (snd name1) (snd name2) with
     | 0 -> begin
-      match tparams_compare tparams1 tparams2 with
+      match constraints_compare constraints1 constraints2 with
       | 0 -> begin
-        match constraints_compare constraints1 constraints2 with
-        | 0 -> begin
-          match user_attributes_compare user_attributes1 user_attributes2 with
-          | 0 -> Aast_defs.compare_reify_kind reified1 reified2
-          | n -> n
-        end
+        match user_attributes_compare user_attributes1 user_attributes2 with
+        | 0 -> Aast_defs.compare_reify_kind reified1 reified2
         | n -> n
       end
       | n -> n
@@ -1450,10 +1443,17 @@ type has_member = {
 }
 [@@deriving show]
 
+type can_index_shape =
+  | IntLit of int
+  | StringLit of string
+  | Generic
+[@@deriving show]
+
 type can_index = {
   ci_key: locl_ty;
-  ci_shape: tshape_field_name option;
+  ci_shape: can_index_shape;
   ci_val: locl_ty;
+  ci_lhs_of_null_coalesce: bool;
   ci_expr_pos: Pos.t;
   ci_index_pos: Pos.t;
 }
@@ -1580,11 +1580,21 @@ let has_member_compare ~normalize_lists hm1 hm2 =
     | comp -> comp)
   | comp -> comp
 
+let can_index_shape_compare cis1 cis2 =
+  match (cis1, cis2) with
+  | (IntLit i1, IntLit i2) -> Int.compare i1 i2
+  | (IntLit _, _) -> -1
+  | (_, IntLit _) -> 1
+  | (StringLit s1, StringLit s2) -> String.compare s1 s2
+  | (StringLit _, _) -> -1
+  | (_, StringLit _) -> 1
+  | (Generic, Generic) -> 0
+
 let can_index_compare ~normalize_lists ci1 ci2 =
   match ty_compare ~normalize_lists ci1.ci_key ci2.ci_key with
   | 0 ->
     (match ty_compare ~normalize_lists ci1.ci_val ci2.ci_val with
-    | 0 -> Option.compare compare_tshape_field_name ci1.ci_shape ci2.ci_shape
+    | 0 -> can_index_shape_compare ci1.ci_shape ci2.ci_shape
     | comp -> comp)
   | comp -> comp
 

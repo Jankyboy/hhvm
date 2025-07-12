@@ -64,8 +64,7 @@ class PythonAsyncProcessorFactory
       FunctionMapType functions,
       std::vector<PyObject*> lifecycleFuncs,
       folly::Executor::KeepAlive<> executor,
-      std::string serviceName,
-      bool enableResourcePools);
+      std::string serviceName);
 
  private:
   folly::SemiFuture<folly::Unit> callLifecycle(LifecycleFunc);
@@ -75,11 +74,6 @@ class PythonAsyncProcessorFactory
   const std::vector<PyObject*> lifecycleFuncs_;
   folly::Executor::KeepAlive<> executor;
   std::string serviceName_;
-
-  using PythonMetadataForRpcKind = std::unordered_map<
-      apache::thrift::RpcKind,
-      std::shared_ptr<PythonAsyncProcessor::PythonMetadata>>;
-  PythonMetadataForRpcKind pythonMetadataForRpcKind_;
 
   /**
    * Callers must use the create() factory function to create a
@@ -91,14 +85,12 @@ class PythonAsyncProcessorFactory
       FunctionMapType functions,
       std::vector<PyObject*> lifecycleFuncs,
       folly::Executor::KeepAlive<> executor,
-      std::string serviceName,
-      PythonMetadataForRpcKind pythonMetadataForRpcKind)
+      std::string serviceName)
       : python_server_(python_server),
         functions_(std::move(functions)),
         lifecycleFuncs_(std::move(lifecycleFuncs)),
         executor(std::move(executor)),
-        serviceName_(std::move(serviceName)),
-        pythonMetadataForRpcKind_(std::move(pythonMetadataForRpcKind)) {}
+        serviceName_(std::move(serviceName)) {}
 };
 
 } // namespace apache::thrift::python

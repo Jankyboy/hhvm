@@ -48,6 +48,15 @@ std::string getLifecycleFuncName(LifecycleFunc func) {
     }
   }
 }
+
+std::shared_ptr<const PythonAsyncProcessor::PythonMetadata> makeMetadata(
+    apache::thrift::RpcKind rpcKind) {
+  DCHECK(rpcKind != apache::thrift::RpcKind::SINK) << "Not implemented yet";
+  return std::make_shared<PythonAsyncProcessor::PythonMetadata>(
+      PythonAsyncProcessor::PythonMetadata::ExecutorType::ANY,
+      PythonAsyncProcessor::PythonMetadata::InteractionType::NONE,
+      rpcKind);
+}
 } // namespace
 
 folly::SemiFuture<folly::Unit>
@@ -80,12 +89,12 @@ PythonAsyncProcessorFactory::createMethodMetadata() {
   AsyncProcessorFactory::MethodMetadataMap result;
 
   for (const auto& [methodName, function] : functions_) {
-    switch (function.first) {
+    auto rpcKind = function.first;
+    switch (rpcKind) {
       case apache::thrift::RpcKind::SINGLE_REQUEST_SINGLE_RESPONSE:
       case apache::thrift::RpcKind::SINGLE_REQUEST_NO_RESPONSE:
       case apache::thrift::RpcKind::SINGLE_REQUEST_STREAMING_RESPONSE:
-        result.emplace(
-            methodName, pythonMetadataForRpcKind_.at(function.first));
+        result.emplace(methodName, makeMetadata(rpcKind));
         break;
       case apache::thrift::RpcKind::SINK:
         // Python doesn't support sink yet. Explictly
@@ -103,46 +112,14 @@ PythonAsyncProcessorFactory::create(
     FunctionMapType functions,
     std::vector<PyObject*> lifecycleFuncs,
     folly::Executor::KeepAlive<> executor,
-    std::string serviceName,
-    bool enableResourcePools) {
-  // This should not be const because of the eventual
-  // std::move(pythonMetadataForRpcKind) below. A const here would make that
-  // move perform a copy.
-  static auto makePythonMetadataForRpcKind = [](bool enableResourcePools) {
-    PythonMetadataForRpcKind pythonMetadataForRpcKind;
-    for (auto rpcKind :
-         {apache::thrift::RpcKind::SINGLE_REQUEST_SINGLE_RESPONSE,
-          apache::thrift::RpcKind::SINGLE_REQUEST_NO_RESPONSE,
-          apache::thrift::RpcKind::SINGLE_REQUEST_STREAMING_RESPONSE}) {
-      pythonMetadataForRpcKind[rpcKind] = enableResourcePools
-          ? std::make_shared<PythonAsyncProcessor::PythonMetadata>(
-                PythonAsyncProcessor::PythonMetadata::ExecutorType::ANY,
-                PythonAsyncProcessor::PythonMetadata::InteractionType::NONE,
-                rpcKind)
-          : std::make_shared<PythonAsyncProcessor::PythonMetadata>(
-                PythonAsyncProcessor::PythonMetadata::ExecutorType::UNKNOWN,
-                PythonAsyncProcessor::PythonMetadata::InteractionType::UNKNOWN,
-                rpcKind);
-    }
-    return pythonMetadataForRpcKind;
-  };
-  static auto kThreadManagerPythonMetadataForRpcKind =
-      makePythonMetadataForRpcKind(false);
-  static auto kResourcePoolPythonMetadataForRpcKind =
-      makePythonMetadataForRpcKind(true);
-
-  auto pythonMetadataForRpcKind = enableResourcePools
-      ? kResourcePoolPythonMetadataForRpcKind
-      : kThreadManagerPythonMetadataForRpcKind;
-
+    std::string serviceName) {
   return std::shared_ptr<PythonAsyncProcessorFactory>(
       new PythonAsyncProcessorFactory(
           python_server,
           std::move(functions),
           std::move(lifecycleFuncs),
           std::move(executor),
-          std::move(serviceName),
-          std::move(pythonMetadataForRpcKind)));
+          std::move(serviceName)));
 }
 
 } // namespace apache::thrift::python

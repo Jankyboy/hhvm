@@ -15,7 +15,7 @@ class cls1 implements i1, i2 {
  function func1(cls1 $p1, inout $p2, $p3='def') :mixed{
  var_dump($p1);
 }
- function func2($a) :mixed{
+ <<__DynamicallyCallable>> function func2($a) :mixed{
  var_dump($a);
 }
  class cls2 extends cls1 {
@@ -123,8 +123,6 @@ function dump_param($param) :mixed{
 function main_1354() :mixed{
 $func = new ReflectionFunction('func1');
  dump_func($func);
- $func = new ReflectionFunction('func2');
- $func->invoke('invoked');
 $cls = new ReflectionClass('cls1');
  $obj = $cls->newInstance();
  dump_class($cls, $obj);

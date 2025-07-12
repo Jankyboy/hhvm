@@ -137,6 +137,7 @@ type ureason =
   | URarray_value
   | URpair_value
   | URtuple_access
+  | URtuple_OOB
   | URpair_access
   | URnewtype_cstr
   | URclass_req
@@ -160,6 +161,8 @@ val index_array : ureason
 
 val index_tuple : ureason
 
+val index_shape : ureason
+
 val index_class : string -> ureason
 
 val set_element : string -> ureason
@@ -181,6 +184,11 @@ val idx : Pos.t * t -> t
 val idx_vector : Pos.t -> t
 
 val idx_vector_from_decl : Pos_or_decl.t -> 'phase t_
+
+(* Used as an index, in the String case *)
+val idx_string : Pos.t -> t
+
+val idx_string_from_decl : Pos_or_decl.t -> 'phase t_
 
 (* Because it is iterated in a foreach loop *)
 val foreach : Pos.t -> t

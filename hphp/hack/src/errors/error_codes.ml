@@ -745,7 +745,6 @@ module Typing = struct
     | HHExpectFailure [@value 4453]
     | CallLvalue [@value 4454]
     | UnsafeCastAwait [@value 4455]
-    | HigherKindedTypesUnsupportedFeature [@value 4456]
     | ThisFinal [@value 4457]
     | ExactClassFinal [@value 4458]
     (* | GlobalVariableWriteDEPRECATED [@value 4459] *)
@@ -814,6 +813,8 @@ module Warning = struct
     | SafeAbstractConstAccess [@value 12018]
     | SwitchRedundancy [@value 12019]
     | StaticCallOnTrait [@value 12020]
+    | StaticPropertyOverride [@value 12021]
+    | StringToClassPointer [@value 12022]
   [@@deriving enum, ord, show { with_path = false }]
 end
 

@@ -103,6 +103,7 @@ type t = {
   tco_language_feature_logging: bool;
   tco_timeout: int;
   tco_disallow_invalid_arraykey: bool;
+  tco_constraint_array_index: bool;
   code_agnostic_fixme: bool;
   allowed_fixme_codes_strict: ISet.t;
   log_levels: int SMap.t;
@@ -139,7 +140,6 @@ type t = {
   symbol_write_sym_hash_out: bool;
   tco_error_php_lambdas: bool;
   tco_disallow_discarded_nullable_awaitables: bool;
-  tco_higher_kinded_types: bool;
   tco_typecheck_sample_rate: float;
   tco_enable_sound_dynamic: bool;
   tco_pessimise_builtins: bool;
@@ -171,7 +171,6 @@ type t = {
   dump_tast_hashes: bool;
   dump_tasts: string list;
   tco_autocomplete_mode: bool;
-  tco_log_exhaustivity_check: bool;
   tco_sticky_quarantine: bool;
   tco_lsp_invalidation: bool;
   tco_autocomplete_sort_text: bool;
@@ -199,12 +198,12 @@ type t = {
   safe_abstract: bool;
   needs_concrete: bool;
   allow_class_string_cast: bool;
-  class_pointer_ban_classname_new: bool;
-  class_pointer_ban_classname_type_structure: bool;
-  class_pointer_ban_classname_static_prop: bool;
-  class_pointer_ban_classname_static_meth: bool;
-  class_pointer_ban_classname_class_const: bool;
+  class_pointer_ban_classname_new: int;
+  class_pointer_ban_classname_type_structure: int;
+  class_pointer_ban_classname_static_meth: int;
+  class_pointer_ban_classname_class_const: int;
   class_pointer_ban_class_array_key: bool;
+  tco_poly_function_pointers: bool;
 }
 [@@deriving eq, show]
 
@@ -225,6 +224,7 @@ let default =
     tco_language_feature_logging = false;
     tco_timeout = 0;
     tco_disallow_invalid_arraykey = true;
+    tco_constraint_array_index = false;
     code_agnostic_fixme = false;
     allowed_fixme_codes_strict = ISet.empty;
     log_levels = SMap.empty;
@@ -261,7 +261,6 @@ let default =
     symbol_write_sym_hash_out = false;
     tco_error_php_lambdas = false;
     tco_disallow_discarded_nullable_awaitables = false;
-    tco_higher_kinded_types = false;
     tco_typecheck_sample_rate = 1.0;
     tco_enable_sound_dynamic = false;
     tco_pessimise_builtins = false;
@@ -293,7 +292,6 @@ let default =
     dump_tast_hashes = false;
     dump_tasts = [];
     tco_autocomplete_mode = false;
-    tco_log_exhaustivity_check = false;
     tco_sticky_quarantine = false;
     tco_lsp_invalidation = false;
     tco_autocomplete_sort_text = false;
@@ -322,12 +320,12 @@ let default =
     safe_abstract = false;
     needs_concrete = false;
     allow_class_string_cast = true;
-    class_pointer_ban_classname_new = false;
-    class_pointer_ban_classname_type_structure = false;
-    class_pointer_ban_classname_static_prop = false;
-    class_pointer_ban_classname_static_meth = false;
-    class_pointer_ban_classname_class_const = false;
+    class_pointer_ban_classname_new = 0;
+    class_pointer_ban_classname_type_structure = 0;
+    class_pointer_ban_classname_static_meth = 0;
+    class_pointer_ban_classname_class_const = 0;
     class_pointer_ban_class_array_key = false;
+    tco_poly_function_pointers = false;
   }
 
 let set
@@ -346,6 +344,7 @@ let set
     ?tco_language_feature_logging
     ?tco_timeout
     ?tco_disallow_invalid_arraykey
+    ?tco_constraint_array_index
     ?code_agnostic_fixme
     ?allowed_fixme_codes_strict
     ?log_levels
@@ -382,7 +381,6 @@ let set
     ?symbol_write_sym_hash_out
     ?tco_error_php_lambdas
     ?tco_disallow_discarded_nullable_awaitables
-    ?tco_higher_kinded_types
     ?tco_typecheck_sample_rate
     ?tco_enable_sound_dynamic
     ?tco_pessimise_builtins
@@ -414,7 +412,6 @@ let set
     ?dump_tast_hashes
     ?dump_tasts
     ?tco_autocomplete_mode
-    ?tco_log_exhaustivity_check
     ?tco_sticky_quarantine
     ?tco_lsp_invalidation
     ?tco_autocomplete_sort_text
@@ -444,10 +441,10 @@ let set
     ?allow_class_string_cast
     ?class_pointer_ban_classname_new
     ?class_pointer_ban_classname_type_structure
-    ?class_pointer_ban_classname_static_prop
     ?class_pointer_ban_classname_static_meth
     ?class_pointer_ban_classname_class_const
     ?class_pointer_ban_class_array_key
+    ?tco_poly_function_pointers
     options =
   let setting setting option =
     match setting with
@@ -503,6 +500,8 @@ let set
       setting
         tco_disallow_invalid_arraykey
         options.tco_disallow_invalid_arraykey;
+    tco_constraint_array_index =
+      setting tco_constraint_array_index options.tco_constraint_array_index;
     log_levels = setting log_levels options.log_levels;
     tco_remote_old_decls_no_limit =
       setting
@@ -585,8 +584,6 @@ let set
       setting
         tco_disallow_discarded_nullable_awaitables
         options.tco_disallow_discarded_nullable_awaitables;
-    tco_higher_kinded_types =
-      setting tco_higher_kinded_types options.tco_higher_kinded_types;
     tco_typecheck_sample_rate =
       setting tco_typecheck_sample_rate options.tco_typecheck_sample_rate;
     tco_enable_sound_dynamic =
@@ -681,8 +678,6 @@ let set
     dump_tasts = setting dump_tasts options.dump_tasts;
     tco_autocomplete_mode =
       setting tco_autocomplete_mode options.tco_autocomplete_mode;
-    tco_log_exhaustivity_check =
-      setting tco_log_exhaustivity_check options.tco_log_exhaustivity_check;
     tco_sticky_quarantine =
       setting tco_sticky_quarantine options.tco_sticky_quarantine;
     tco_lsp_invalidation =
@@ -763,10 +758,6 @@ let set
       setting
         class_pointer_ban_classname_type_structure
         options.class_pointer_ban_classname_type_structure;
-    class_pointer_ban_classname_static_prop =
-      setting
-        class_pointer_ban_classname_static_prop
-        options.class_pointer_ban_classname_static_prop;
     class_pointer_ban_classname_static_meth =
       setting
         class_pointer_ban_classname_static_meth
@@ -779,6 +770,8 @@ let set
       setting
         class_pointer_ban_class_array_key
         options.class_pointer_ban_class_array_key;
+    tco_poly_function_pointers =
+      setting tco_poly_function_pointers options.tco_poly_function_pointers;
   }
 
 let so_naming_sqlite_path t = t.so_naming_sqlite_path

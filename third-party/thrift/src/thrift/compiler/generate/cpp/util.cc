@@ -294,9 +294,9 @@ bool is_eligible_for_constexpr::operator()(const t_type* type) {
     }
     bool result = false;
     if (t->is_any_int() || t->is_floating_point() || t->is_bool() ||
-        t->is_enum()) {
+        t->is<t_enum>()) {
       result = true;
-    } else if (t->is_union() || t->is_exception()) {
+    } else if (t->is<t_union>() || t->is<t_exception>()) {
       // Union and exception constructors are not defaulted.
       result = false;
     } else if (t->has_unstructured_annotation(
@@ -322,7 +322,8 @@ bool is_eligible_for_constexpr::operator()(const t_type* type) {
         result = eligible::no;
         return false;
       } else if (result == eligible::unknown) {
-        if (!field->get_type()->is_struct_or_union()) {
+        if (!field->get_type()->is<t_struct>() &&
+            !field->get_type()->is<t_union>()) {
           return false;
         }
         // Structs are eligible if all their fields are.
@@ -369,9 +370,9 @@ static void get_mixins_and_members_impl(
     std::vector<mixin_member>& out) {
   for (const auto& member : strct.fields()) {
     if (is_mixin(member)) {
-      assert(member.type()->get_true_type()->is_struct_or_union());
+      assert(member.type()->get_true_type()->is<t_structured>());
       auto mixin_struct =
-          static_cast<const t_structured*>(member.type()->get_true_type());
+          member.type()->get_true_type()->try_as<t_structured>();
       const auto& mixin =
           top_level_mixin != nullptr ? *top_level_mixin : member;
 
@@ -404,32 +405,32 @@ std::string get_gen_type_class(t_type const& type) {
     return tc + "integral";
   } else if (ttype.is_floating_point()) {
     return tc + "floating_point";
-  } else if (ttype.is_enum()) {
+  } else if (ttype.is<t_enum>()) {
     return tc + "enumeration";
   } else if (ttype.is_string()) {
     return tc + "string";
   } else if (ttype.is_binary()) {
     return tc + "binary";
-  } else if (ttype.is_list()) {
+  } else if (ttype.is<t_list>()) {
     auto& list = dynamic_cast<t_list const&>(ttype);
     auto& elem = *list.get_elem_type();
     auto elem_tc = get_gen_type_class(elem);
     return tc + "list<" + elem_tc + ">";
-  } else if (ttype.is_set()) {
+  } else if (ttype.is<t_set>()) {
     auto& set = dynamic_cast<t_set const&>(ttype);
     auto& elem = *set.get_elem_type();
     auto elem_tc = get_gen_type_class(elem);
     return tc + "set<" + elem_tc + ">";
-  } else if (ttype.is_map()) {
+  } else if (ttype.is<t_map>()) {
     auto& map = dynamic_cast<t_map const&>(ttype);
     auto& key = *map.get_key_type();
     auto& val = *map.get_val_type();
     auto key_tc = get_gen_type_class(key);
     auto val_tc = get_gen_type_class(val);
     return tc + "map<" + key_tc + ", " + val_tc + ">";
-  } else if (ttype.is_union()) {
+  } else if (ttype.is<t_union>()) {
     return tc + "variant";
-  } else if (ttype.is_struct_or_union() || ttype.is_exception()) {
+  } else if (ttype.is<t_structured>()) {
     return tc + "structure";
   } else {
     throw std::runtime_error(
@@ -459,8 +460,7 @@ bool deprecated_terse_writes(const t_field* field) {
   // (e.g. i32/i64, empty strings/list/map)
   auto t = field->get_type()->get_true_type();
   return field->get_req() == t_field::e_req::opt_in_req_out &&
-      (cpp2::is_unique_ref(field) ||
-       (!t->is_struct_or_union() && !t->is_exception()));
+      (cpp2::is_unique_ref(field) || (!t->is<t_structured>()));
 }
 
 t_field_id get_internal_injected_field_id(t_field_id id) {

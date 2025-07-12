@@ -105,12 +105,12 @@ class Cls8 {
   use Trait4;
 }
 
-<<__Memoize>> function func1() :mixed{
+<<__Memoize, __DynamicallyCallable>> function func1() :mixed{
   echo "func1()\n";
   return 'zyzzy';
 }
 
-<<__Memoize>> function func2($a) :mixed{
+<<__Memoize, __DynamicallyCallable>> function func2($a) :mixed{
   echo "func2()\n";
   return $a;
 }
@@ -195,12 +195,12 @@ function testTraitSingleMethods() :mixed{
 function testFreeFuncs() :mixed{
   echo "================================\n";
   echo "Testing free functions....\n\n";
-  runFuncs('func1', 'func2');
-  runFuncs('func1', 'func2');
+  runFuncs(HH\dynamic_fun('func1'), HH\dynamic_fun('func2'));
+  runFuncs(HH\dynamic_fun('func1'), HH\dynamic_fun('func2'));
   HH\clear_static_memoization(null, 'func1');
-  runFuncs('func1', 'func2');
+  runFuncs(HH\dynamic_fun('func1'), HH\dynamic_fun('func2'));
   HH\clear_static_memoization(null, 'func2');
-  runFuncs('func1', 'func2');
+  runFuncs(HH\dynamic_fun('func1'), HH\dynamic_fun('func2'));
 }
 
 function main() :mixed{

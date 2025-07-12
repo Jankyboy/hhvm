@@ -16,8 +16,6 @@
 
 #include <thrift/conformance/cpp2/Any.h>
 
-#include <fmt/core.h>
-#include <folly/lang/Exception.h>
 #include <thrift/lib/cpp2/type/UniversalName.h>
 
 namespace apache::thrift::conformance {
@@ -57,11 +55,11 @@ void setProtocol(const Protocol& protocol, Any& any) noexcept {
       any.customProtocol().reset();
       break;
     case StandardProtocol::Custom:
-      any.protocol_ref().emplace(StandardProtocol::Custom);
-      any.customProtocol_ref() = protocol.custom();
+      any.protocol().emplace(StandardProtocol::Custom);
+      any.customProtocol() = protocol.custom();
       break;
     default:
-      any.protocol_ref().emplace(protocol.standard());
+      any.protocol().emplace(protocol.standard());
       any.customProtocol().reset();
       break;
   }

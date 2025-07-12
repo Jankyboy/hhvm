@@ -51,111 +51,6 @@ namespace apache::thrift {
 
 thread_local RequestParams ServerInterface::requestParams_;
 
-EventTask::~EventTask() {
-  expired();
-}
-
-void EventTask::expired() {
-  // only expire req_ once
-  if (!req_.request()) {
-    return;
-  }
-  failWith(
-      TApplicationException{"Task expired without processing"},
-      kTaskExpiredErrorCode);
-}
-
-void EventTask::failWith(folly::exception_wrapper ex, std::string exCode) {
-  auto cleanUp = [oneway = oneway_,
-                  req = apache::thrift::detail::ServerRequestHelper::request(
-                      std::move(req_)),
-                  ex = std::move(ex),
-                  exCode = std::move(exCode)]() mutable {
-    // if oneway, skip sending back anything
-    if (oneway) {
-      return;
-    }
-    req->sendErrorWrapped(std::move(ex), std::move(exCode));
-  };
-
-  auto eb = apache::thrift::detail::ServerRequestHelper::eventBase(req_);
-
-  if (eb->inRunningEventBaseThread()) {
-    cleanUp();
-  } else {
-    eb->runInEventBaseThread(std::move(cleanUp));
-  }
-}
-
-void EventTask::setTile(TilePtr&& tile) {
-  req_.requestContext()->setTile(std::move(tile));
-}
-
-ServerRequestTask::~ServerRequestTask() {
-  // only expire req_ once
-  if (!req_.request()) {
-    return;
-  }
-  failWith(
-      TApplicationException{"Task expired without processing"},
-      kTaskExpiredErrorCode);
-}
-
-void ServerRequestTask::failWith(
-    folly::exception_wrapper ex, std::string exCode) {
-  auto cleanUp = [req = apache::thrift::detail::ServerRequestHelper::request(
-                      std::move(req_)),
-                  ex = std::move(ex),
-                  exCode = std::move(exCode)]() mutable {
-    req->sendErrorWrapped(std::move(ex), std::move(exCode));
-  };
-
-  auto eb = apache::thrift::detail::ServerRequestHelper::eventBase(req_);
-
-  if (eb->inRunningEventBaseThread()) {
-    cleanUp();
-  } else {
-    eb->runInEventBaseThread(std::move(cleanUp));
-  }
-}
-
-void ServerRequestTask::setTile(TilePtr&& tile) {
-  req_.requestContext()->setTile(std::move(tile));
-}
-
-void ServerRequestTask::acceptIntoResourcePool(int8_t priority) {
-  detail::ServerRequestHelper::setInternalPriority(req_, priority);
-  detail::ServerRequestHelper::resourcePool(req_)->accept(std::move(req_));
-}
-
-std::string_view AsyncProcessor::getServiceName() {
-  return "NoServiceNameSet";
-}
-
-void AsyncProcessor::terminateInteraction(
-    int64_t, Cpp2ConnContext&, folly::EventBase&) noexcept {
-  LOG(DFATAL) << "This processor doesn't support interactions";
-}
-
-void AsyncProcessor::destroyAllInteractions(
-    Cpp2ConnContext&, folly::EventBase&) noexcept {}
-
-void AsyncProcessor::executeRequest(
-    ServerRequest&&, const AsyncProcessorFactory::MethodMetadata&) {
-  LOG(FATAL) << "Unimplemented executeRequest called";
-}
-
-void AsyncProcessor::coalesceWithServerScopedLegacyEventHandlers(
-    const apache::thrift::server::ServerConfigs& server) {
-  const auto& serverScopedEventHandlers = server.getLegacyEventHandlers();
-  if (!serverScopedEventHandlers.empty()) {
-    std::shared_lock lock{getRWMutex()};
-    for (const auto& eventHandler : serverScopedEventHandlers) {
-      addEventHandler(eventHandler);
-    }
-  }
-}
-
 void GeneratedAsyncProcessorBase::processInteraction(ServerRequest&& req) {
   if (!setUpRequestProcessing(req)) {
     return;
@@ -1249,7 +1144,8 @@ HandlerCallbackBase::processServiceInterceptorsOnResponse(
         resultOrActiveException,
         methodNameInfo_.serviceName,
         methodNameInfo_.definingServiceName,
-        methodNameInfo_.methodName};
+        methodNameInfo_.methodName,
+        methodNameInfo_.qualifiedMethodName};
     try {
       co_await serviceInterceptors[i]->internal_onResponse(
           connectionInfo,

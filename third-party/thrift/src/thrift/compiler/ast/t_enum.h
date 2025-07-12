@@ -90,7 +90,6 @@ class t_enum : public t_type {
     return values_raw_;
   }
 
-  bool is_enum() const override { return true; }
   type get_type_value() const override { return type::t_enum; }
 };
 

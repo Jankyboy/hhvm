@@ -62,9 +62,9 @@ mstch::map t_mstch_generator::dump(const t_structured& strct, bool shallow) {
       {"fields?", strct.has_fields()},
       {"fields",
        shallow ? static_cast<mstch::node>(false) : dump_elems(strct.fields())},
-      {"exception?", strct.is_exception()},
-      {"union?", strct.is_union()},
-      {"plain?", !strct.is_exception() && !strct.is_union()},
+      {"exception?", strct.is<t_exception>()},
+      {"union?", strct.is<t_union>()},
+      {"plain?", !strct.is<t_exception>() && !strct.is<t_union>()},
       {"annotations", dump_elems(strct.unstructured_annotations())},
   };
 
@@ -116,38 +116,39 @@ mstch::map t_mstch_generator::dump(const t_type& orig_type) {
       {"double?", type.is_double()},
       {"float?", type.is_float()},
       {"floating_point?", type.is_floating_point()},
-      // TODO(T219861020): Evaluate if unions should be included and rename as
-      // needed.
-      {"struct?", type.is_struct_or_union() || type.is_exception()},
-      {"union?", type.is_union()},
-      {"enum?", type.is_enum()},
-      {"base?", type.is_primitive_type()},
-      {"container?", type.is_container()},
-      {"list?", type.is_list()},
-      {"set?", type.is_set()},
-      {"map?", type.is_map()},
-      {"typedef?", type.is_typedef()},
+      {"struct?", type.is<t_struct>()},
+      {"union?", type.is<t_union>()},
+      {"enum?", type.is<t_enum>()},
+      {"base?", type.is<t_primitive_type>()},
+      {"container?", type.is<t_container>()},
+      {"list?", type.is<t_list>()},
+      {"set?", type.is<t_set>()},
+      {"map?", type.is<t_map>()},
+      {"typedef?", type.is<t_typedef>()},
   };
 
-  if (type.is_struct_or_union() || type.is_exception()) {
+  if (type.is<t_struct>()) {
     // Shallow dump the struct
     result.emplace("struct", dump(dynamic_cast<const t_struct&>(type), true));
-  } else if (type.is_enum()) {
+  } else if (type.is<t_union>()) {
+    // Shallow dump the union
+    result.emplace("union", dump(dynamic_cast<const t_union&>(type), true));
+  } else if (type.is<t_enum>()) {
     result.emplace("enum", dump(dynamic_cast<const t_enum&>(type)));
-  } else if (type.is_list()) {
+  } else if (type.is<t_list>()) {
     result.emplace(
         "list_elem_type",
         dump(*dynamic_cast<const t_list&>(type).get_elem_type()));
-  } else if (type.is_set()) {
+  } else if (type.is<t_set>()) {
     result.emplace(
         "set_elem_type",
         dump(*dynamic_cast<const t_set&>(type).get_elem_type()));
-  } else if (type.is_map()) {
+  } else if (type.is<t_map>()) {
     result.emplace(
         "key_type", dump(*dynamic_cast<const t_map&>(type).get_key_type()));
     result.emplace(
         "value_type", dump(*dynamic_cast<const t_map&>(type).get_val_type()));
-  } else if (type.is_typedef()) {
+  } else if (type.is<t_typedef>()) {
     result.emplace(
         "typedef_type", dump(*dynamic_cast<const t_typedef&>(type).get_type()));
   }

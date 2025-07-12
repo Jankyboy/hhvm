@@ -84,14 +84,17 @@ class PythonAsyncProcessor : public apache::thrift::GeneratedAsyncProcessorBase,
   }
 
   void processSerializedCompressedRequestWithMetadata(
-      apache::thrift::ResponseChannelRequest::UniquePtr req,
-      apache::thrift::SerializedCompressedRequest&& serializedRequest,
-      const apache::thrift::AsyncProcessorFactory::MethodMetadata&
-          untypedMethodMetadata,
-      apache::thrift::protocol::PROTOCOL_TYPES protType,
-      apache::thrift::Cpp2RequestContext* context,
-      folly::EventBase* eb,
-      apache::thrift::concurrency::ThreadManager* tm) override;
+      apache::thrift::ResponseChannelRequest::UniquePtr,
+      apache::thrift::SerializedCompressedRequest&&,
+      const apache::thrift::AsyncProcessorFactory::MethodMetadata&,
+      apache::thrift::protocol::PROTOCOL_TYPES,
+      apache::thrift::Cpp2RequestContext*,
+      folly::EventBase*,
+      apache::thrift::concurrency::ThreadManager*) override {
+    LOG(FATAL)
+        << "processSerializedCompressedRequestWithMetadata support has been "
+        << "removed from PythonAsyncProcessor";
+  }
 
   void executeRequest(
       apache::thrift::ServerRequest&& request,

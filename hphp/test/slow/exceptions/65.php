@@ -14,14 +14,14 @@ function test2() :mixed{
   if (foo(0)) $a=1;
   return $a | new stdClass;
 }
-function test3() :mixed{
+<<__DynamicallyCallable>> function test3() :mixed{
   if (foo(0)) $a=1;
   $x = new stdClass;
   return $a::foo;
 }
 function test($f) :mixed{
   try {
-    $f();
+    HH\dynamic_fun($f)();
   }
  catch (Exception $e) {
     var_dump($f.':Caught');

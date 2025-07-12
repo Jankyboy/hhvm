@@ -587,6 +587,51 @@ module Static_call_on_trait = struct
   let quickfixes _ = []
 end
 
+module Static_property_override = struct
+  open Typing_warning.Static_property_override
+
+  type t = Typing_warning.Static_property_override.t
+
+  let code = Codes.StaticPropertyOverride
+
+  let codes = [code]
+
+  let code _ = code
+
+  let claim { prop_name; _ } =
+    Printf.sprintf
+      "Static property is overridden: %s"
+      (Markdown_lite.md_codify prop_name)
+
+  let reasons { child_prop_pos; _ } =
+    [(child_prop_pos, "Overriding static property is here")]
+
+  let quickfixes _ = []
+end
+
+module String_to_class_pointer = struct
+  open Typing_warning.String_to_class_pointer
+
+  type t = Typing_warning.String_to_class_pointer.t
+
+  let code = Codes.StringToClassPointer
+
+  let codes = [code]
+
+  let code _ = code
+
+  let claim { cls_name; _ } =
+    let name = Utils.strip_ns cls_name in
+    Printf.sprintf
+      "It is no longer allowed to use a `classname<%s>` in this position. Please use a `class<%s>` instead."
+      name
+      name
+
+  let reasons { ty_pos; _ } = [(ty_pos, "Definition is here")]
+
+  let quickfixes _ = []
+end
+
 let module_of (type a x) (kind : (x, a) Typing_warning.kind) :
     (module Warning with type t = x) =
   match kind with
@@ -603,6 +648,8 @@ let module_of (type a x) (kind : (x, a) Typing_warning.kind) :
   | Typing_warning.No_disjoint_union_check -> (module No_disjoint_union_check)
   | Typing_warning.Switch_redundancy -> (module Switch_redundancy)
   | Typing_warning.Static_call_on_trait -> (module Static_call_on_trait)
+  | Typing_warning.Static_property_override -> (module Static_property_override)
+  | Typing_warning.String_to_class_pointer -> (module String_to_class_pointer)
 
 let module_of_migrated
     (type x) (kind : (x, Typing_warning.migrated) Typing_warning.kind) :

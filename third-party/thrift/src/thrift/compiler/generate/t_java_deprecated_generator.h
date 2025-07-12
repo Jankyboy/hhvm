@@ -275,9 +275,9 @@ class t_java_deprecated_generator : public t_concat_generator {
   bool type_can_be_null(const t_type* ttype) {
     ttype = ttype->get_true_type();
 
-    return generate_boxed_primitive || ttype->is_container() ||
-        ttype->is_struct_or_union() || ttype->is_exception() ||
-        ttype->is_string_or_binary() || ttype->is_enum();
+    return generate_boxed_primitive || ttype->is<t_container>() ||
+        ttype->is<t_structured>() || ttype->is_string_or_binary() ||
+        ttype->is<t_enum>();
   }
 
   std::string constant_name(std::string name);

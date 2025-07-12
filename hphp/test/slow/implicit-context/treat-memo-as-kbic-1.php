@@ -45,19 +45,19 @@ class B extends Base {
 }
 
 
-<<__Memoize(#KeyedByIC)>>
+<<__Memoize(#KeyedByIC), __DynamicallyCallable>>
 function memo_kbic($a, $b)[defaults]: mixed{
   $context = (ClassContext::getContext()?->name() ?? 'null');
   echo "args: $a, $b name: $context\n";
 }
 
-<<__Memoize(#MakeICInaccessible)>>
+<<__Memoize(#MakeICInaccessible), __DynamicallyCallable>>
 function memo_inaccessible($a, $b)[defaults]: mixed{
   $context = (ClassContext::getContext()?->name() ?? 'null');
   echo "args: $a, $b name: $context\n";
 }
 
-<<__Memoize>>
+<<__Memoize, __DynamicallyCallable>>
 function memo_default($a, $b)[defaults]: mixed{
   $context = (ClassContext::getContext()?->name() ?? 'null');
   echo "args: $a, $b name: $context\n";
@@ -67,7 +67,7 @@ function f()[defaults]: mixed{
   $klass_b = new B(0);
   $tryout = function($memo_function, $a, $b) use ($klass_b) {
     try {
-      $memo_function($a, $b);
+      HH\dynamic_fun($memo_function)($a, $b);
     } catch (Exception $e) {
       echo "Function $memo_function throws: ".$e->getMessage() . "\n";
     }

@@ -1,6 +1,6 @@
 <?hh
 
-function handler($name, $obj, inout $args) :mixed{
+<<__DynamicallyCallable>> function handler($name, $obj, inout $args) :mixed{
   echo "----HANDLER----\n";
   var_dump($name, $obj, $args);
   echo "---------------\n";
@@ -17,7 +17,7 @@ function foo($arg, inout $a) :mixed{
 
 <<__EntryPoint>>
 function main() :mixed{
-  fb_intercept2('foo', 'handler');
+  fb_intercept2('foo', HH\dynamic_fun('handler'));
   $a = 1;
   var_dump(foo("Hey!", inout $a));
   var_dump($a);

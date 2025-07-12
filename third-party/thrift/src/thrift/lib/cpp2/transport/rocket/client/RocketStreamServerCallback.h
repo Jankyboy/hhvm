@@ -16,9 +16,6 @@
 
 #pragma once
 
-#include <memory>
-#include <utility>
-
 #include <folly/ExceptionWrapper.h>
 #include <folly/io/IOBuf.h>
 #include <folly/io/async/HHWheelTimer.h>
@@ -27,35 +24,17 @@
 #include <thrift/lib/cpp2/async/RpcOptions.h>
 #include <thrift/lib/cpp2/async/StreamCallbacks.h>
 #include <thrift/lib/cpp2/transport/rocket/Types.h>
+#include <thrift/lib/cpp2/transport/rocket/client/StreamChannelStatusResponse.h>
 #include <thrift/lib/thrift/gen-cpp2/RpcMetadata_types.h>
 
 namespace apache::thrift::rocket {
 class RocketClient;
 
-enum class StreamChannelStatus { Alive, Complete, ContractViolation };
-
-class StreamChannelStatusResponse {
- public:
-  /* implicit */ StreamChannelStatusResponse(StreamChannelStatus status)
-      : status_(status) {}
-  StreamChannelStatusResponse(StreamChannelStatus status, std::string errorMsg)
-      : status_(status), errorMsg_(std::move(errorMsg)) {}
-
-  StreamChannelStatus getStatus() const { return status_; }
-  std::string getErrorMsg() && {
-    return std::move(errorMsg_).value_or("Unknown error");
-  }
-
- private:
-  StreamChannelStatus status_;
-  std::optional<std::string> errorMsg_;
-};
-
 class RocketStreamServerCallback : public StreamServerCallback {
  public:
   RocketStreamServerCallback(
-      rocket::StreamId streamId,
-      rocket::RocketClient& client,
+      StreamId streamId,
+      RocketClient& client,
       StreamClientCallback& clientCallback)
       : client_(client),
         clientCallback_(&clientCallback),
@@ -79,83 +58,14 @@ class RocketStreamServerCallback : public StreamServerCallback {
   StreamChannelStatusResponse onStreamError(folly::exception_wrapper);
   void onStreamHeaders(HeadersPayload&&);
 
-  rocket::StreamId streamId() const noexcept { return streamId_; }
+  StreamId streamId() const noexcept { return streamId_; }
 
  protected:
-  rocket::RocketClient& client_;
+  RocketClient& client_;
 
  private:
   StreamClientCallback* clientCallback_;
-  rocket::StreamId streamId_;
-};
-
-class RocketStreamServerCallbackWithChunkTimeout
-    : public RocketStreamServerCallback {
- public:
-  RocketStreamServerCallbackWithChunkTimeout(
-      rocket::StreamId streamId,
-      rocket::RocketClient& client,
-      StreamClientCallback& clientCallback,
-      std::chrono::milliseconds chunkTimeout,
-      uint64_t initialCredits)
-      : RocketStreamServerCallback(streamId, client, clientCallback),
-        chunkTimeout_(chunkTimeout),
-        credits_(initialCredits) {}
-
-  bool onStreamRequestN(uint64_t tokens) override;
-
-  bool onInitialPayload(FirstResponsePayload&&, folly::EventBase*);
-
-  StreamChannelStatusResponse onStreamPayload(StreamPayload&&);
-
-  void timeoutExpired() noexcept;
-
- private:
-  void scheduleTimeout();
-  void cancelTimeout();
-
-  const std::chrono::milliseconds chunkTimeout_;
-  uint64_t credits_{0};
-  std::unique_ptr<folly::HHWheelTimer::Callback> timeout_;
-};
-
-class RocketSinkServerCallback : public SinkServerCallback {
- public:
-  RocketSinkServerCallback(
-      rocket::StreamId streamId,
-      rocket::RocketClient& client,
-      SinkClientCallback& clientCallback,
-      std::unique_ptr<CompressionConfig> compressionConfig)
-      : client_(client),
-        clientCallback_(&clientCallback),
-        streamId_(streamId),
-        compressionConfig_(std::move(compressionConfig)) {}
-
-  bool onSinkNext(StreamPayload&&) override;
-  void onSinkError(folly::exception_wrapper) override;
-  bool onSinkComplete() override;
-
-  void resetClientCallback(SinkClientCallback& clientCallback) override {
-    clientCallback_ = &clientCallback;
-  }
-
-  bool onInitialPayload(FirstResponsePayload&&, folly::EventBase*);
-  void onInitialError(folly::exception_wrapper);
-
-  StreamChannelStatusResponse onFinalResponse(StreamPayload&&);
-  StreamChannelStatusResponse onFinalResponseError(folly::exception_wrapper);
-
-  StreamChannelStatusResponse onSinkRequestN(uint64_t tokens);
-
-  rocket::StreamId streamId() const noexcept { return streamId_; }
-
- private:
-  rocket::RocketClient& client_;
-  SinkClientCallback* clientCallback_;
-  rocket::StreamId streamId_;
-  enum class State { BothOpen, StreamOpen };
-  State state_{State::BothOpen};
-  std::unique_ptr<CompressionConfig> compressionConfig_;
+  StreamId streamId_;
 };
 
 } // namespace apache::thrift::rocket

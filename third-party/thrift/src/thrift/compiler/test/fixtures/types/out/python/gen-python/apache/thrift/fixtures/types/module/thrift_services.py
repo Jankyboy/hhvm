@@ -6,6 +6,8 @@
 #
 
 from __future__ import annotations
+import builtins
+
 
 from abc import ABCMeta
 import typing as _typing
@@ -17,7 +19,7 @@ from thrift.python.serializer import serialize_iobuf, deserialize, Protocol
 from thrift.python.server import ServiceInterface, RpcKind, PythonUserException
 
 import apache.thrift.fixtures.types.module.thrift_types as _fbthrift__apache__thrift__fixtures__types__module__thrift_types
-import apache.thrift.fixtures.types.module.thrift_metadata
+import apache.thrift.fixtures.types.module.thrift_metadata as _fbthrift__apache__thrift__fixtures__types__module__thrift_metadata
 import apache.thrift.fixtures.types.included.thrift_types as _fbthrift__apache__thrift__fixtures__types__included__thrift_types
 
 class SomeServiceInterface(
@@ -42,18 +44,18 @@ class SomeServiceInterface(
 
     @staticmethod
     def __get_metadata__() -> _fbthrift_metadata.ThriftMetadata:
-        return apache.thrift.fixtures.types.module.thrift_metadata.gen_metadata_service_SomeService()
+        return _fbthrift__apache__thrift__fixtures__types__module__thrift_metadata.gen_metadata_service_SomeService()
 
     @staticmethod
     def __get_metadata_service_response__() -> _fbthrift_metadata.ThriftServiceMetadataResponse:
-        return apache.thrift.fixtures.types.module.thrift_metadata._fbthrift_metadata_service_response_SomeService()
+        return _fbthrift__apache__thrift__fixtures__types__module__thrift_metadata._fbthrift_metadata_service_response_SomeService()
 
 
 
     async def bounce_map(
             self,
-            m: _typing.Mapping[int, str]
-        ) -> _typing.Mapping[int, str]:
+            m: _typing.Mapping[builtins.int, builtins.str]
+        ) -> _typing.Mapping[builtins.int, builtins.str]:
         raise NotImplementedError("async def bounce_map is not implemented")
 
     async def _fbthrift__handler_bounce_map(self, args: _fbthrift_iobuf.IOBuf, protocol: Protocol) -> _fbthrift_iobuf.IOBuf:
@@ -65,8 +67,8 @@ class SomeServiceInterface(
 
     async def binary_keyed_map(
             self,
-            r: _typing.Sequence[int]
-        ) -> _typing.Mapping[bytes, int]:
+            r: _typing.Sequence[builtins.int]
+        ) -> _typing.Mapping[builtins.bytes, builtins.int]:
         raise NotImplementedError("async def binary_keyed_map is not implemented")
 
     async def _fbthrift__handler_binary_keyed_map(self, args: _fbthrift_iobuf.IOBuf, protocol: Protocol) -> _fbthrift_iobuf.IOBuf:

@@ -2,7 +2,7 @@
 
 function a() :mixed{ echo __METHOD__."\n"; }
 function b() :mixed{ echo __METHOD__."\n"; }
-function c() :mixed{ echo __METHOD__."\n"; }
+<<__DynamicallyCallable>> function c() :mixed{ echo __METHOD__."\n"; }
 
 trait T {
   function f() :mixed{ echo __METHOD__."\n"; }
@@ -41,7 +41,7 @@ function main() :mixed{
   HH\enable_function_coverage();
   echo ">>>>>> COVERAGE_START\n";
   b();
-  __hhvm_intrinsics\launder_value('c')();
+  HH\dynamic_fun(__hhvm_intrinsics\launder_value('c'))();
   echo ">>>>>> COVERAGE_STOP\n";
   var_dump(HH\collect_function_coverage());
 

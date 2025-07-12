@@ -37,7 +37,9 @@
 #include <thrift/lib/cpp2/transport/rocket/client/KeepAliveWatcher.h>
 #include <thrift/lib/cpp2/transport/rocket/client/RequestContext.h>
 #include <thrift/lib/cpp2/transport/rocket/client/RequestContextQueue.h>
+#include <thrift/lib/cpp2/transport/rocket/client/RocketSinkServerCallback.h>
 #include <thrift/lib/cpp2/transport/rocket/client/RocketStreamServerCallback.h>
+#include <thrift/lib/cpp2/transport/rocket/client/RocketStreamServerCallbackWithChunkTimeout.h>
 #include <thrift/lib/cpp2/transport/rocket/compression/CustomCompressor.h>
 #include <thrift/lib/cpp2/transport/rocket/flush/FlushManager.h>
 #include <thrift/lib/cpp2/transport/rocket/framing/Frames.h>
@@ -46,6 +48,7 @@
 #include <thrift/lib/thrift/gen-cpp2/RpcMetadata_types.h>
 
 THRIFT_FLAG_DECLARE_bool(rocket_client_binary_rpc_metadata_encoding);
+THRIFT_FLAG_DECLARE_bool(rocket_client_set_eor_flag);
 
 namespace folly {
 class IOBuf;

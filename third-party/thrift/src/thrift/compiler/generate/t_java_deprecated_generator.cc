@@ -318,14 +318,14 @@ void t_java_deprecated_generator::print_const_value(
   if (!defval) {
     out << (in_static ? "" : "public static final ") << type_name(type) << " ";
   }
-  if (type->is_primitive_type()) {
+  if (type->is<t_primitive_type>()) {
     string v2 = render_const_value(out, name, type, value);
     out << name << " = " << v2 << ";" << endl << endl;
-  } else if (type->is_enum()) {
+  } else if (type->is<t_enum>()) {
     out << name << " = " << render_const_value(out, name, type, value) << ";"
         << endl
         << endl;
-  } else if (type->is_struct_or_union() || type->is_exception()) {
+  } else if (type->is<t_structured>()) {
     const vector<t_field*>& fields = ((t_struct*)type)->get_members();
     vector<t_field*>::const_iterator f_iter;
     const vector<pair<t_const_value*, t_const_value*>>& val = value->get_map();
@@ -357,7 +357,7 @@ void t_java_deprecated_generator::print_const_value(
       indent(out) << "}" << endl;
     }
     out << endl;
-  } else if (type->is_map()) {
+  } else if (type->is<t_map>()) {
     out << name << " = new " << type_name(type, false, true) << "();" << endl;
     if (!in_static) {
       indent(out) << "static {" << endl;
@@ -377,14 +377,14 @@ void t_java_deprecated_generator::print_const_value(
       indent(out) << "}" << endl;
     }
     out << endl;
-  } else if (type->is_list() || type->is_set()) {
+  } else if (type->is<t_list>() || type->is<t_set>()) {
     out << name << " = new " << type_name(type, false, true) << "();" << endl;
     if (!in_static) {
       indent(out) << "static {" << endl;
       indent_up();
     }
     const t_type* etype;
-    if (type->is_list()) {
+    if (type->is<t_list>()) {
       etype = ((t_list*)type)->get_elem_type();
     } else {
       etype = ((t_set*)type)->get_elem_type();
@@ -413,12 +413,11 @@ string t_java_deprecated_generator::render_const_value(
     const t_const_value* value) {
   type = type->get_true_type();
   std::ostringstream render;
-  if (type->is_primitive_type()) {
-    t_primitive_type::t_primitive tbase =
-        ((t_primitive_type*)type)->primitive_type();
+  if (const auto* primitive = type->try_as<t_primitive_type>()) {
+    t_primitive_type::type tbase = primitive->primitive_type();
     switch (tbase) {
-      case t_primitive_type::TYPE_STRING:
-      case t_primitive_type::TYPE_BINARY:
+      case t_primitive_type::type::t_string:
+      case t_primitive_type::type::t_binary:
         render << '"';
         for (unsigned char c : value->get_string()) {
           switch (c) {
@@ -441,33 +440,33 @@ string t_java_deprecated_generator::render_const_value(
           }
         }
         render << '"';
-        if (tbase == t_primitive_type::TYPE_BINARY) {
+        if (tbase == t_primitive_type::type::t_binary) {
           render << ".getBytes()";
         }
         break;
-      case t_primitive_type::TYPE_BOOL:
+      case t_primitive_type::type::t_bool:
         render << ((value->get_integer() > 0) ? "true" : "false");
         break;
-      case t_primitive_type::TYPE_BYTE:
+      case t_primitive_type::type::t_byte:
         render << "(byte)" << value->get_integer();
         break;
-      case t_primitive_type::TYPE_I16:
+      case t_primitive_type::type::t_i16:
         render << "(short)" << value->get_integer();
         break;
-      case t_primitive_type::TYPE_I32:
+      case t_primitive_type::type::t_i32:
         render << value->get_integer();
         break;
-      case t_primitive_type::TYPE_I64:
+      case t_primitive_type::type::t_i64:
         render << value->get_integer() << "L";
         break;
-      case t_primitive_type::TYPE_DOUBLE:
+      case t_primitive_type::type::t_double:
         if (value->kind() == t_const_value::CV_INTEGER) {
           render << "(double)" << value->get_integer();
         } else {
           render << value->get_double();
         }
         break;
-      case t_primitive_type::TYPE_FLOAT:
+      case t_primitive_type::type::t_float:
         if (value->kind() == t_const_value::CV_INTEGER) {
           render << "(float)" << value->get_integer();
         } else {
@@ -477,9 +476,9 @@ string t_java_deprecated_generator::render_const_value(
       default:
         throw std::runtime_error(
             "compiler error: no const of base type " +
-            t_primitive_type::t_primitive_name(tbase));
+            t_primitive_type::type_name(tbase));
     }
-  } else if (type->is_enum()) {
+  } else if (type->is<t_enum>()) {
     std::string namespace_prefix =
         type->program()->get_namespace(namespace_key_);
     if (namespace_prefix.length() > 0) {
@@ -508,7 +507,7 @@ string t_java_deprecated_generator::render_const_value(
  * @param tstruct The struct definition
  */
 void t_java_deprecated_generator::generate_struct(const t_structured* tstruct) {
-  if (tstruct->is_union()) {
+  if (tstruct->is<t_union>()) {
     generate_java_union(tstruct);
   } else {
     generate_java_struct(tstruct, false /* is_exception */);
@@ -1860,7 +1859,7 @@ void t_java_deprecated_generator::generate_reflection_getters(
   indent(out) << "case " << upcase_string(field_name) << ":" << endl;
   indent_up();
 
-  if (type->is_primitive_type() && !type->is_string_or_binary()) {
+  if (type->is<t_primitive_type>() && !type->is_string_or_binary()) {
     t_primitive_type* base_type = (t_primitive_type*)type;
 
     indent(out) << "return new " << type_name(type, true, false) << "("
@@ -1907,7 +1906,7 @@ void t_java_deprecated_generator::generate_generic_field_getters_setters(
     const std::string& field_name = field->get_name();
     std::string cap_name = get_cap_name(field_name);
 
-    if (type->is_list() || type->is_map() || type->is_set())
+    if (type->is<t_list>() || type->is<t_map>() || type->is<t_set>())
       needs_suppress_warnings = true;
 
     indent_up();
@@ -1966,9 +1965,9 @@ std::string t_java_deprecated_generator::get_simple_getter_name(
   std::string cap_name = get_cap_name(field_name);
   const t_type* type = field->get_type()->get_true_type();
 
-  if (type->is_primitive_type() &&
+  if (type->is<t_primitive_type>() &&
       ((t_primitive_type*)type)->primitive_type() ==
-          t_primitive_type::TYPE_BOOL) {
+          t_primitive_type::type::t_bool) {
     return "is" + cap_name;
   } else {
     return "get" + cap_name;
@@ -2119,7 +2118,7 @@ void t_java_deprecated_generator::generate_java_struct_tostring(
       string fname = field->get_name();
       const t_type* ftype = field->get_type()->get_true_type();
 
-      if (tstruct->is_union()) {
+      if (tstruct->is<t_union>()) {
         indent(out) << "// Only print this field if it is the set field"
                     << endl;
         indent(out) << "if (" << generate_setfield_check(field) << ")" << endl;
@@ -2153,7 +2152,7 @@ void t_java_deprecated_generator::generate_java_struct_tostring(
           indent_up();
         }
 
-        if (ftype->is_primitive_type() && ftype->is_binary()) {
+        if (ftype->is<t_primitive_type>() && ftype->is_binary()) {
           indent(out) << "  int __" << fname << "_size = Math.min("
                       << field_getter << ".length, 128);" << endl;
           indent(out) << "  for (int i = 0; i < __" << fname << "_size; i++) {"
@@ -2169,7 +2168,7 @@ void t_java_deprecated_generator::generate_java_struct_tostring(
           indent(out) << "  }" << endl;
           indent(out) << "  if (" << field_getter
                       << ".length > 128) sb.append(\" ...\");" << endl;
-        } else if (ftype->is_enum()) {
+        } else if (ftype->is<t_enum>()) {
           indent(out) << "String " << fname << "_name = " << field_getter
                       << " == null ? \"null\" : " << field_getter << ".name();"
                       << endl;
@@ -2197,7 +2196,7 @@ void t_java_deprecated_generator::generate_java_struct_tostring(
         scope_down(out);
       }
 
-      if (tstruct->is_union()) {
+      if (tstruct->is<t_union>()) {
         scope_down(out);
       }
 
@@ -2265,38 +2264,38 @@ void t_java_deprecated_generator::generate_java_meta_data_map(
  */
 std::string t_java_deprecated_generator::get_java_type_string(
     const t_type* type) {
-  if (type->is_list()) {
+  if (type->is<t_list>()) {
     return "TType.LIST";
-  } else if (type->is_map()) {
+  } else if (type->is<t_map>()) {
     return "TType.MAP";
-  } else if (type->is_set()) {
+  } else if (type->is<t_set>()) {
     return "TType.SET";
-  } else if (type->is_struct_or_union() || type->is_exception()) {
+  } else if (type->is<t_structured>()) {
     return "TType.STRUCT";
-  } else if (type->is_enum()) {
+  } else if (type->is<t_enum>()) {
     return "TType.I32";
-  } else if (type->is_typedef()) {
+  } else if (type->is<t_typedef>()) {
     return get_java_type_string(((t_typedef*)type)->get_type());
-  } else if (type->is_primitive_type()) {
-    switch (((t_primitive_type*)type)->primitive_type()) {
-      case t_primitive_type::TYPE_VOID:
+  } else if (const auto* primitive = type->try_as<t_primitive_type>()) {
+    switch (primitive->primitive_type()) {
+      case t_primitive_type::type::t_void:
         return "TType.VOID";
-      case t_primitive_type::TYPE_STRING:
-      case t_primitive_type::TYPE_BINARY:
+      case t_primitive_type::type::t_string:
+      case t_primitive_type::type::t_binary:
         return "TType.STRING";
-      case t_primitive_type::TYPE_BOOL:
+      case t_primitive_type::type::t_bool:
         return "TType.BOOL";
-      case t_primitive_type::TYPE_BYTE:
+      case t_primitive_type::type::t_byte:
         return "TType.BYTE";
-      case t_primitive_type::TYPE_I16:
+      case t_primitive_type::type::t_i16:
         return "TType.I16";
-      case t_primitive_type::TYPE_I32:
+      case t_primitive_type::type::t_i32:
         return "TType.I32";
-      case t_primitive_type::TYPE_I64:
+      case t_primitive_type::type::t_i64:
         return "TType.I64";
-      case t_primitive_type::TYPE_DOUBLE:
+      case t_primitive_type::type::t_double:
         return "TType.DOUBLE";
-      case t_primitive_type::TYPE_FLOAT:
+      case t_primitive_type::type::t_float:
         return "TType.FLOAT";
       default:
         throw std::runtime_error(
@@ -2316,15 +2315,15 @@ void t_java_deprecated_generator::generate_field_value_meta_data(
   out << endl;
   indent_up();
   indent_up();
-  if (type->is_struct_or_union()) {
+  if (type->is<t_struct>() || type->is<t_union>()) {
     indent(out) << "new StructMetaData(TType.STRUCT, " << type_name(type)
                 << ".class";
-  } else if (type->is_container()) {
-    if (type->is_list()) {
+  } else if (type->is<t_container>()) {
+    if (type->is<t_list>()) {
       indent(out) << "new ListMetaData(TType.LIST, ";
       const t_type* elem_type = ((t_list*)type)->get_elem_type();
       generate_field_value_meta_data(out, elem_type);
-    } else if (type->is_set()) {
+    } else if (type->is<t_set>()) {
       indent(out) << "new SetMetaData(TType.SET, ";
       const t_type* elem_type = ((t_set*)type)->get_elem_type();
       generate_field_value_meta_data(out, elem_type);
@@ -3240,53 +3239,52 @@ void t_java_deprecated_generator::generate_deserialize_field(
 
   string name = prefix + tfield->get_name();
 
-  if (type->is_struct_or_union() || type->is_exception()) {
+  if (type->is<t_structured>()) {
     generate_deserialize_struct(out, (t_structured*)type, name);
-  } else if (type->is_container()) {
+  } else if (type->is<t_container>()) {
     generate_deserialize_container(out, type, name);
-  } else if (type->is_enum()) {
+  } else if (type->is<t_enum>()) {
     indent(out) << name << " = "
                 << get_enum_class_name(tfield->get_type()->get_true_type())
                 << ".findByValue(iprot.readI32());" << endl;
-  } else if (type->is_primitive_type()) {
+  } else if (const auto* primitive = type->try_as<t_primitive_type>()) {
     indent(out) << name << " = iprot.";
-    t_primitive_type::t_primitive tbase =
-        ((t_primitive_type*)type)->primitive_type();
+    t_primitive_type::type tbase = primitive->primitive_type();
     switch (tbase) {
-      case t_primitive_type::TYPE_VOID:
+      case t_primitive_type::type::t_void:
         throw std::runtime_error(
             "compiler error: cannot serialize void field in a struct: " + name);
-      case t_primitive_type::TYPE_STRING:
+      case t_primitive_type::type::t_string:
         out << "readString();";
         break;
-      case t_primitive_type::TYPE_BINARY:
+      case t_primitive_type::type::t_binary:
         out << "readBinary();";
         break;
-      case t_primitive_type::TYPE_BOOL:
+      case t_primitive_type::type::t_bool:
         out << "readBool();";
         break;
-      case t_primitive_type::TYPE_BYTE:
+      case t_primitive_type::type::t_byte:
         out << "readByte();";
         break;
-      case t_primitive_type::TYPE_I16:
+      case t_primitive_type::type::t_i16:
         out << "readI16();";
         break;
-      case t_primitive_type::TYPE_I32:
+      case t_primitive_type::type::t_i32:
         out << "readI32();";
         break;
-      case t_primitive_type::TYPE_I64:
+      case t_primitive_type::type::t_i64:
         out << "readI64();";
         break;
-      case t_primitive_type::TYPE_DOUBLE:
+      case t_primitive_type::type::t_double:
         out << "readDouble();";
         break;
-      case t_primitive_type::TYPE_FLOAT:
+      case t_primitive_type::type::t_float:
         out << "readFloat();";
         break;
       default:
         throw std::runtime_error(
             "compiler error: no Java name for base type " +
-            t_primitive_type::t_primitive_name(tbase));
+            t_primitive_type::type_name(tbase));
     }
     out << endl;
   } else {
@@ -3303,7 +3301,7 @@ void t_java_deprecated_generator::generate_deserialize_field(
  */
 void t_java_deprecated_generator::generate_deserialize_struct(
     ofstream& out, const t_structured* tstruct, string prefix) {
-  if (generate_immutable_structs_ && !tstruct->is_union()) {
+  if (generate_immutable_structs_ && !tstruct->is<t_union>()) {
     out << indent() << prefix << " = " << type_name(tstruct)
         << ".deserialize(iprot);" << endl;
   } else {
@@ -3322,20 +3320,20 @@ void t_java_deprecated_generator::generate_deserialize_container(
 
   string obj;
 
-  if (ttype->is_map()) {
+  if (ttype->is<t_map>()) {
     obj = tmp("_map");
-  } else if (ttype->is_set()) {
+  } else if (ttype->is<t_set>()) {
     obj = tmp("_set");
-  } else if (ttype->is_list()) {
+  } else if (ttype->is<t_list>()) {
     obj = tmp("_list");
   }
 
   // Declare variables, read header
-  if (ttype->is_map()) {
+  if (ttype->is<t_map>()) {
     indent(out) << "TMap " << obj << " = iprot.readMapBegin();" << endl;
-  } else if (ttype->is_set()) {
+  } else if (ttype->is<t_set>()) {
     indent(out) << "TSet " << obj << " = iprot.readSetBegin();" << endl;
-  } else if (ttype->is_list()) {
+  } else if (ttype->is<t_list>()) {
     indent(out) << "TList " << obj << " = iprot.readListBegin();" << endl;
   }
 
@@ -3347,7 +3345,7 @@ void t_java_deprecated_generator::generate_deserialize_container(
               << type_name(ttype, false, true)
               // size the collection correctly,
               // use initial capacity of 0 if there is no explicit size
-              << "(Math.max(0, " << (ttype->is_list() ? "" : "2*") << obj
+              << "(Math.max(0, " << (ttype->is<t_list>() ? "" : "2*") << obj
               << ".size" << "));" << endl;
 
   // For loop iterates over elements
@@ -3357,11 +3355,11 @@ void t_java_deprecated_generator::generate_deserialize_container(
 
   indent(out) << "     (" << obj << ".size < 0) ? ";
 
-  if (ttype->is_map()) {
+  if (ttype->is<t_map>()) {
     out << "iprot.peekMap()";
-  } else if (ttype->is_set()) {
+  } else if (ttype->is<t_set>()) {
     out << "iprot.peekSet()";
-  } else if (ttype->is_list()) {
+  } else if (ttype->is<t_list>()) {
     out << "iprot.peekList()";
   }
 
@@ -3370,22 +3368,22 @@ void t_java_deprecated_generator::generate_deserialize_container(
 
   scope_up(out);
 
-  if (ttype->is_map()) {
+  if (ttype->is<t_map>()) {
     generate_deserialize_map_element(out, (t_map*)ttype, prefix);
-  } else if (ttype->is_set()) {
+  } else if (ttype->is<t_set>()) {
     generate_deserialize_set_element(out, (t_set*)ttype, prefix);
-  } else if (ttype->is_list()) {
+  } else if (ttype->is<t_list>()) {
     generate_deserialize_list_element(out, (t_list*)ttype, prefix);
   }
 
   scope_down(out);
 
   // Read container end
-  if (ttype->is_map()) {
+  if (ttype->is<t_map>()) {
     indent(out) << "iprot.readMapEnd();" << endl;
-  } else if (ttype->is_set()) {
+  } else if (ttype->is<t_set>()) {
     indent(out) << "iprot.readSetEnd();" << endl;
-  } else if (ttype->is_list()) {
+  } else if (ttype->is<t_list>()) {
     indent(out) << "iprot.readListEnd();" << endl;
   }
 
@@ -3458,56 +3456,55 @@ void t_java_deprecated_generator::generate_serialize_field(
         tfield->get_name());
   }
 
-  if (type->is_struct_or_union() || type->is_exception()) {
+  if (type->is<t_structured>()) {
     generate_serialize_struct(
         out, (t_structured*)type, prefix + tfield->get_name());
-  } else if (type->is_container()) {
+  } else if (type->is<t_container>()) {
     generate_serialize_container(out, type, prefix + tfield->get_name());
-  } else if (type->is_enum()) {
+  } else if (type->is<t_enum>()) {
     auto enumName = prefix + tfield->get_name();
     indent(out) << "oprot.writeI32(" << enumName
                 << " == null ? 0 : " << enumName << ".getValue());" << endl;
-  } else if (type->is_primitive_type()) {
+  } else if (const auto* primitive = type->try_as<t_primitive_type>()) {
     string name = prefix + tfield->get_name();
     indent(out) << "oprot.";
 
-    t_primitive_type::t_primitive tbase =
-        ((t_primitive_type*)type)->primitive_type();
+    t_primitive_type::type tbase = primitive->primitive_type();
     switch (tbase) {
-      case t_primitive_type::TYPE_VOID:
+      case t_primitive_type::type::t_void:
         throw std::runtime_error(
             "compiler error: cannot serialize void field in a struct: " + name);
-      case t_primitive_type::TYPE_STRING:
+      case t_primitive_type::type::t_string:
         out << "writeString(" << name << ");";
         break;
-      case t_primitive_type::TYPE_BINARY:
+      case t_primitive_type::type::t_binary:
         out << "writeBinary(" << name << ");";
         break;
-      case t_primitive_type::TYPE_BOOL:
+      case t_primitive_type::type::t_bool:
         out << "writeBool(" << name << ");";
         break;
-      case t_primitive_type::TYPE_BYTE:
+      case t_primitive_type::type::t_byte:
         out << "writeByte(" << name << ");";
         break;
-      case t_primitive_type::TYPE_I16:
+      case t_primitive_type::type::t_i16:
         out << "writeI16(" << name << ");";
         break;
-      case t_primitive_type::TYPE_I32:
+      case t_primitive_type::type::t_i32:
         out << "writeI32(" << name << ");";
         break;
-      case t_primitive_type::TYPE_I64:
+      case t_primitive_type::type::t_i64:
         out << "writeI64(" << name << ");";
         break;
-      case t_primitive_type::TYPE_DOUBLE:
+      case t_primitive_type::type::t_double:
         out << "writeDouble(" << name << ");";
         break;
-      case t_primitive_type::TYPE_FLOAT:
+      case t_primitive_type::type::t_float:
         out << "writeFloat(" << name << ");";
         break;
       default:
         throw std::runtime_error(
             "compiler error: no Java name for base type " +
-            t_primitive_type::t_primitive_name(tbase));
+            t_primitive_type::type_name(tbase));
     }
     out << endl;
   } else {
@@ -3541,53 +3538,53 @@ void t_java_deprecated_generator::generate_serialize_container(
     ofstream& out, const t_type* ttype, string prefix) {
   scope_up(out);
 
-  if (ttype->is_map()) {
+  if (ttype->is<t_map>()) {
     indent(out) << "oprot.writeMapBegin(new TMap("
                 << type_to_enum(((t_map*)ttype)->get_key_type()) << ", "
                 << type_to_enum(((t_map*)ttype)->get_val_type()) << ", "
                 << prefix << ".size()));" << endl;
-  } else if (ttype->is_set()) {
+  } else if (ttype->is<t_set>()) {
     indent(out) << "oprot.writeSetBegin(new TSet("
                 << type_to_enum(((t_set*)ttype)->get_elem_type()) << ", "
                 << prefix << ".size()));" << endl;
-  } else if (ttype->is_list()) {
+  } else if (ttype->is<t_list>()) {
     indent(out) << "oprot.writeListBegin(new TList("
                 << type_to_enum(((t_list*)ttype)->get_elem_type()) << ", "
                 << prefix << ".size()));" << endl;
   }
 
   string iter = tmp("_iter");
-  if (ttype->is_map()) {
+  if (ttype->is<t_map>()) {
     indent(out) << "for (Map.Entry<"
                 << type_name(((t_map*)ttype)->get_key_type(), true, false)
                 << ", "
                 << type_name(((t_map*)ttype)->get_val_type(), true, false)
                 << "> " << iter << " : " << prefix << ".entrySet())";
-  } else if (ttype->is_set()) {
+  } else if (ttype->is<t_set>()) {
     indent(out) << "for (" << type_name(((t_set*)ttype)->get_elem_type()) << " "
                 << iter << " : " << prefix << ")";
-  } else if (ttype->is_list()) {
+  } else if (ttype->is<t_list>()) {
     indent(out) << "for (" << type_name(((t_list*)ttype)->get_elem_type())
                 << " " << iter << " : " << prefix << ")";
   }
 
   scope_up(out);
 
-  if (ttype->is_map()) {
+  if (ttype->is<t_map>()) {
     generate_serialize_map_element(out, (t_map*)ttype, iter, prefix);
-  } else if (ttype->is_set()) {
+  } else if (ttype->is<t_set>()) {
     generate_serialize_set_element(out, (t_set*)ttype, iter);
-  } else if (ttype->is_list()) {
+  } else if (ttype->is<t_list>()) {
     generate_serialize_list_element(out, (t_list*)ttype, iter);
   }
 
   scope_down(out);
 
-  if (ttype->is_map()) {
+  if (ttype->is<t_map>()) {
     indent(out) << "oprot.writeMapEnd();" << endl;
-  } else if (ttype->is_set()) {
+  } else if (ttype->is<t_set>()) {
     indent(out) << "oprot.writeSetEnd();" << endl;
-  } else if (ttype->is_list()) {
+  } else if (ttype->is<t_list>()) {
     indent(out) << "oprot.writeListEnd();" << endl;
   }
 
@@ -3636,9 +3633,10 @@ string t_java_deprecated_generator::type_name(
   ttype = ttype->get_true_type();
   string prefix;
 
-  if (ttype->is_primitive_type()) {
-    return base_type_name((t_primitive_type*)ttype, in_container);
-  } else if (ttype->is_map()) {
+  if (auto* primitive = ttype->try_as<t_primitive_type>()) {
+    return base_type_name(
+        const_cast<t_primitive_type*>(primitive), in_container);
+  } else if (ttype->is<t_map>()) {
     const t_map* tmap = (t_map*)ttype;
     if (in_init) {
       prefix = "HashMap";
@@ -3649,7 +3647,7 @@ string t_java_deprecated_generator::type_name(
         (skip_generic ? ""
                       : "<" + type_name(tmap->get_key_type(), true) + "," +
                  type_name(tmap->get_val_type(), true) + ">");
-  } else if (ttype->is_set()) {
+  } else if (ttype->is<t_set>()) {
     const t_set* tset = (t_set*)ttype;
     if (in_init) {
       prefix = "HashSet";
@@ -3659,7 +3657,7 @@ string t_java_deprecated_generator::type_name(
     return prefix +
         (skip_generic ? ""
                       : "<" + type_name(tset->get_elem_type(), true) + ">");
-  } else if (ttype->is_list()) {
+  } else if (ttype->is<t_list>()) {
     const t_list* tlist = (t_list*)ttype;
     if (in_init) {
       prefix = "ArrayList";
@@ -3691,34 +3689,34 @@ string t_java_deprecated_generator::type_name(
  */
 string t_java_deprecated_generator::base_type_name(
     t_primitive_type* type, bool in_container) {
-  t_primitive_type::t_primitive tbase = type->primitive_type();
+  t_primitive_type::type tbase = type->primitive_type();
   bool boxedPrimitive = in_container || generate_boxed_primitive;
 
   switch (tbase) {
-    case t_primitive_type::TYPE_VOID:
+    case t_primitive_type::type::t_void:
       return "void";
-    case t_primitive_type::TYPE_STRING:
+    case t_primitive_type::type::t_string:
       return "String";
-    case t_primitive_type::TYPE_BINARY:
+    case t_primitive_type::type::t_binary:
       return "byte[]";
-    case t_primitive_type::TYPE_BOOL:
+    case t_primitive_type::type::t_bool:
       return (boxedPrimitive ? "Boolean" : "boolean");
-    case t_primitive_type::TYPE_BYTE:
+    case t_primitive_type::type::t_byte:
       return (boxedPrimitive ? "Byte" : "byte");
-    case t_primitive_type::TYPE_I16:
+    case t_primitive_type::type::t_i16:
       return (boxedPrimitive ? "Short" : "short");
-    case t_primitive_type::TYPE_I32:
+    case t_primitive_type::type::t_i32:
       return (boxedPrimitive ? "Integer" : "int");
-    case t_primitive_type::TYPE_I64:
+    case t_primitive_type::type::t_i64:
       return (boxedPrimitive ? "Long" : "long");
-    case t_primitive_type::TYPE_DOUBLE:
+    case t_primitive_type::type::t_double:
       return (boxedPrimitive ? "Double" : "double");
-    case t_primitive_type::TYPE_FLOAT:
+    case t_primitive_type::type::t_float:
       return (boxedPrimitive ? "Float" : "float");
     default:
       throw std::runtime_error(
           "compiler error: no C++ name for base type " +
-          t_primitive_type::t_primitive_name(tbase));
+          t_primitive_type::type_name(tbase));
   }
 }
 
@@ -3733,41 +3731,40 @@ string t_java_deprecated_generator::declare_field(
   string result = type_name(tfield->get_type()) + " " + tfield->get_name();
   if (init) {
     const t_type* ttype = tfield->get_type()->get_true_type();
-    if (ttype->is_primitive_type() && tfield->get_value() != nullptr) {
+    if (ttype->is<t_primitive_type>() && tfield->get_value() != nullptr) {
       ofstream dummy;
       result += " = " +
           render_const_value(
                     dummy, tfield->get_name(), ttype, tfield->get_value());
-    } else if (ttype->is_primitive_type()) {
-      t_primitive_type::t_primitive tbase =
-          ((t_primitive_type*)ttype)->primitive_type();
+    } else if (const auto* primitive = ttype->try_as<t_primitive_type>()) {
+      t_primitive_type::type tbase = primitive->primitive_type();
       switch (tbase) {
-        case t_primitive_type::TYPE_VOID:
+        case t_primitive_type::type::t_void:
           throw std::runtime_error("NO T_VOID CONSTRUCT");
-        case t_primitive_type::TYPE_STRING:
-        case t_primitive_type::TYPE_BINARY:
+        case t_primitive_type::type::t_string:
+        case t_primitive_type::type::t_binary:
           result += " = null";
           break;
-        case t_primitive_type::TYPE_BOOL:
+        case t_primitive_type::type::t_bool:
           result += " = false";
           break;
-        case t_primitive_type::TYPE_BYTE:
-        case t_primitive_type::TYPE_I16:
-        case t_primitive_type::TYPE_I32:
-        case t_primitive_type::TYPE_I64:
+        case t_primitive_type::type::t_byte:
+        case t_primitive_type::type::t_i16:
+        case t_primitive_type::type::t_i32:
+        case t_primitive_type::type::t_i64:
           result += " = 0";
           break;
-        case t_primitive_type::TYPE_DOUBLE:
+        case t_primitive_type::type::t_double:
           result += " = (double)0";
           break;
-        case t_primitive_type::TYPE_FLOAT:
+        case t_primitive_type::type::t_float:
           result += " = (float)0";
           break;
       }
 
-    } else if (ttype->is_enum()) {
+    } else if (ttype->is<t_enum>()) {
       result += " = 0";
-    } else if (ttype->is_container()) {
+    } else if (ttype->is<t_container>()) {
       result += " = new " + type_name(ttype, false, true) + "()";
     } else {
       result += " = new " + type_name(ttype, false, true) + "()";
@@ -3890,39 +3887,38 @@ string t_java_deprecated_generator::async_argument_list(
 string t_java_deprecated_generator::type_to_enum(const t_type* type) {
   type = type->get_true_type();
 
-  if (type->is_primitive_type()) {
-    t_primitive_type::t_primitive tbase =
-        ((t_primitive_type*)type)->primitive_type();
+  if (const auto* primitive = type->try_as<t_primitive_type>()) {
+    t_primitive_type::type tbase = primitive->primitive_type();
     switch (tbase) {
-      case t_primitive_type::TYPE_VOID:
+      case t_primitive_type::type::t_void:
         throw std::runtime_error("NO T_VOID CONSTRUCT");
-      case t_primitive_type::TYPE_STRING:
-      case t_primitive_type::TYPE_BINARY:
+      case t_primitive_type::type::t_string:
+      case t_primitive_type::type::t_binary:
         return "TType.STRING";
-      case t_primitive_type::TYPE_BOOL:
+      case t_primitive_type::type::t_bool:
         return "TType.BOOL";
-      case t_primitive_type::TYPE_BYTE:
+      case t_primitive_type::type::t_byte:
         return "TType.BYTE";
-      case t_primitive_type::TYPE_I16:
+      case t_primitive_type::type::t_i16:
         return "TType.I16";
-      case t_primitive_type::TYPE_I32:
+      case t_primitive_type::type::t_i32:
         return "TType.I32";
-      case t_primitive_type::TYPE_I64:
+      case t_primitive_type::type::t_i64:
         return "TType.I64";
-      case t_primitive_type::TYPE_DOUBLE:
+      case t_primitive_type::type::t_double:
         return "TType.DOUBLE";
-      case t_primitive_type::TYPE_FLOAT:
+      case t_primitive_type::type::t_float:
         return "TType.FLOAT";
     }
-  } else if (type->is_enum()) {
+  } else if (type->is<t_enum>()) {
     return "TType.I32";
-  } else if (type->is_struct_or_union() || type->is_exception()) {
+  } else if (type->is<t_structured>()) {
     return "TType.STRUCT";
-  } else if (type->is_map()) {
+  } else if (type->is<t_map>()) {
     return "TType.MAP";
-  } else if (type->is_set()) {
+  } else if (type->is<t_set>()) {
     return "TType.SET";
-  } else if (type->is_list()) {
+  } else if (type->is<t_list>()) {
     return "TType.LIST";
   }
 
@@ -3966,7 +3962,7 @@ void t_java_deprecated_generator::generate_java_docstring_comment(
 
 void t_java_deprecated_generator::generate_java_doc(
     ofstream& out, const t_field* field) {
-  if (field->get_type()->is_enum()) {
+  if (field->get_type()->is<t_enum>()) {
     string combined_message =
         field->doc() + "\n@see " + get_enum_class_name(field->get_type());
     generate_java_docstring_comment(out, combined_message);
@@ -4092,11 +4088,11 @@ bool t_java_deprecated_generator::is_comparable(
     const t_type* type, vector<const t_type*>* enclosing) {
   type = type->get_true_type();
 
-  if (type->is_primitive_type()) {
+  if (type->is<t_primitive_type>()) {
     return true;
-  } else if (type->is_enum()) {
+  } else if (type->is<t_enum>()) {
     return true;
-  } else if (type->is_exception()) {
+  } else if (type->is<t_exception>()) {
     // There's no particular reason this wouldn't work exactly the same
     // as it does for structs. I'm not sure we actually want exceptions
     // to be Comparable though: in addition to the fields we have, which
@@ -4117,12 +4113,12 @@ bool t_java_deprecated_generator::is_comparable(
     bool ret = struct_has_all_comparable_fields((t_struct*)type, enclosing);
     enclosing->pop_back();
     return ret;
-  } else if (type->is_map()) {
+  } else if (type->is<t_map>()) {
     return is_comparable(((t_map*)type)->get_key_type(), enclosing) &&
         is_comparable(((t_map*)type)->get_val_type(), enclosing);
-  } else if (type->is_set()) {
+  } else if (type->is<t_set>()) {
     return is_comparable(((t_set*)type)->get_elem_type(), enclosing);
-  } else if (type->is_list()) {
+  } else if (type->is<t_list>()) {
     return is_comparable(((t_list*)type)->get_elem_type(), enclosing);
   } else {
     throw std::runtime_error("Don't know how to handle this ttype");
@@ -4145,18 +4141,18 @@ bool t_java_deprecated_generator::struct_has_all_comparable_fields(
 bool t_java_deprecated_generator::type_has_naked_binary(const t_type* type) {
   type = type->get_true_type();
 
-  if (type->is_primitive_type()) {
+  if (type->is<t_primitive_type>()) {
     return type->is_binary();
-  } else if (type->is_enum()) {
+  } else if (type->is<t_enum>()) {
     return false;
   } else if (type->is<t_structured>()) {
     return false;
-  } else if (type->is_map()) {
+  } else if (type->is<t_map>()) {
     return type_has_naked_binary(((t_map*)type)->get_key_type()) ||
         type_has_naked_binary(((t_map*)type)->get_val_type());
-  } else if (type->is_set()) {
+  } else if (type->is<t_set>()) {
     return type_has_naked_binary(((t_set*)type)->get_elem_type());
-  } else if (type->is_list()) {
+  } else if (type->is<t_list>()) {
     return type_has_naked_binary(((t_list*)type)->get_elem_type());
   } else {
     throw std::runtime_error("Don't know how to handle this ttype");

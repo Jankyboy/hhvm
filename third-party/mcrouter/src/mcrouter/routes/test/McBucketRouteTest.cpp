@@ -18,7 +18,6 @@
 #include <folly/String.h>
 #include <folly/json/dynamic.h>
 #include <gtest/gtest.h>
-#include "folly/fibers/FiberManagerMap.h"
 #include "folly/io/async/EventBase.h"
 #include "folly/json/json.h"
 
@@ -81,7 +80,7 @@ TEST(McBucketRouteTest, checkParams) {
   std::string_view total = "100";
   std::string_view keyspace = "testReg:testPool";
 
-  std::string kMcBucketRouteConfig = folly::sformat(
+  std::string kMcBucketRouteConfig = fmt::format(
       R"(
   {{
     "bucketize": true,

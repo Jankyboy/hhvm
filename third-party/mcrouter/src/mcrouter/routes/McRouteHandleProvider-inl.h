@@ -7,6 +7,8 @@
 
 #include <memory>
 
+#include <fmt/format.h>
+
 #include <folly/Conv.h>
 #include <folly/Range.h>
 
@@ -614,6 +616,12 @@ McRouteHandleProvider<RouterInfo>::createSRRoute(
         jHashRoute["bucketize"] = true;
       }
     }
+    if (auto* jWeightsRvSalt = json.get_ptr("weights_rv_salt")) {
+      checkLogic(
+          jWeightsRvSalt->isString(),
+          "SRRoute: 'weights_rv_salt' is not string");
+      jHashRoute["salt"] = jWeightsRvSalt->getString();
+    }
     route = createHashRoute<RouterInfo>(
         std::move(jHashRoute),
         {route, makeNullRoute(factory, folly::dynamic::object())},
@@ -829,7 +837,7 @@ McRouteHandleProvider<RouterInfo>::buildCheckedRouteMap() {
             checkLogic(rh != nullptr, "make{} returned nullptr", rhName);
             return rh;
           } catch (const std::exception& e) {
-            throw std::logic_error(folly::sformat(
+            throw std::logic_error(fmt::format(
                 "make{} throws when contructing: {}", rhName, e.what()));
           }
         });
@@ -861,7 +869,7 @@ McRouteHandleProvider<RouterInfo>::buildCheckedRouteMapWithProxy() {
             checkLogic(rh != nullptr, "make{} returned nullptr", rhName);
             return rh;
           } catch (const std::exception& e) {
-            throw std::logic_error(folly::sformat(
+            throw std::logic_error(fmt::format(
                 "make{} throws when contructing: {}", rhName, e.what()));
           }
         });
@@ -894,7 +902,7 @@ McRouteHandleProvider<RouterInfo>::buildCheckedRouteMapForWrapper() {
             checkLogic(ret != nullptr, "make{} returned nullptr", rhName);
             return ret;
           } catch (const std::exception& e) {
-            throw std::logic_error(folly::sformat(
+            throw std::logic_error(fmt::format(
                 "make{} throws when contructing: {}", rhName, e.what()));
           }
         });

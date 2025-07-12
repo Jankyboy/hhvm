@@ -8,13 +8,13 @@ function bar(inout $a) :mixed{
   var_dump('bar');
   $a[0] = 2;
 }
-function goo($name, $obj, inout $params) :mixed{
+<<__DynamicallyCallable>> function goo($name, $obj, inout $params) :mixed{
   return shape('value' => bar(inout $params));
 }
 
 <<__EntryPoint>>
 function main_1198() :mixed{
-fb_intercept2('foo', 'goo');
+fb_intercept2('foo', HH\dynamic_fun('goo'));
 $a = 0;
 foo(inout $a);
 var_dump($a);

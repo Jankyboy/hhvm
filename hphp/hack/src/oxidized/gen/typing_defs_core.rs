@@ -3,7 +3,7 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the "hack" directory of this source tree.
 //
-// @generated SignedSource<<7d483c1f95c5b6ccd78b33a08befef45>>
+// @generated SignedSource<<5b3196c88bd44f1b6123a56cb76f6ba5>>
 //
 // To regenerate this file, run:
 //   hphp/hack/src/oxidized_regen.sh
@@ -326,7 +326,6 @@ pub struct UserAttribute {
 pub struct Tparam {
     pub variance: ast_defs::Variance,
     pub name: PosId,
-    pub tparams: Vec<Tparam>,
     pub constraints: Vec<(ast_defs::ConstraintKind, Ty)>,
     pub reified: ast_defs::ReifyKind,
     pub user_attributes: Vec<UserAttribute>,
@@ -1139,12 +1138,36 @@ pub struct HasMember {
     ToOcamlRep
 )]
 #[rust_to_ocaml(attr = "deriving show")]
+#[repr(C, u8)]
+pub enum CanIndexShape {
+    IntLit(isize),
+    StringLit(String),
+    Generic,
+}
+
+#[derive(
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    EqModuloPos,
+    FromOcamlRep,
+    Hash,
+    NoPosHash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    ToOcamlRep
+)]
+#[rust_to_ocaml(attr = "deriving show")]
 #[rust_to_ocaml(prefix = "ci_")]
 #[repr(C)]
 pub struct CanIndex {
     pub key: Ty,
-    pub shape: Option<TshapeFieldName>,
+    pub shape: CanIndexShape,
     pub val: Ty,
+    pub lhs_of_null_coalesce: bool,
     pub expr_pos: pos::Pos,
     pub index_pos: pos::Pos,
 }

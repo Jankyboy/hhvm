@@ -373,24 +373,23 @@ string t_js_generator::render_const_value(
 
   type = type->get_true_type();
 
-  if (type->is_primitive_type()) {
-    t_primitive_type::t_primitive tbase =
-        ((t_primitive_type*)type)->primitive_type();
+  if (const auto* primitive = type->try_as<t_primitive_type>()) {
+    t_primitive_type::type tbase = primitive->primitive_type();
     switch (tbase) {
-      case t_primitive_type::TYPE_STRING:
-      case t_primitive_type::TYPE_BINARY:
+      case t_primitive_type::type::t_string:
+      case t_primitive_type::type::t_binary:
         out << "'" << value->get_string() << "'";
         break;
-      case t_primitive_type::TYPE_BOOL:
+      case t_primitive_type::type::t_bool:
         out << (value->get_integer() > 0 ? "true" : "false");
         break;
-      case t_primitive_type::TYPE_BYTE:
-      case t_primitive_type::TYPE_I16:
-      case t_primitive_type::TYPE_I32:
-      case t_primitive_type::TYPE_I64:
+      case t_primitive_type::type::t_byte:
+      case t_primitive_type::type::t_i16:
+      case t_primitive_type::type::t_i32:
+      case t_primitive_type::type::t_i64:
         out << value->get_integer();
         break;
-      case t_primitive_type::TYPE_DOUBLE:
+      case t_primitive_type::type::t_double:
         if (value->kind() == t_const_value::CV_INTEGER) {
           out << value->get_integer();
         } else {
@@ -400,11 +399,11 @@ string t_js_generator::render_const_value(
       default:
         throw std::runtime_error(
             "compiler error: no const of base type " +
-            t_primitive_type::t_primitive_name(tbase));
+            t_primitive_type::type_name(tbase));
     }
-  } else if (type->is_enum()) {
+  } else if (type->is<t_enum>()) {
     out << value->get_integer();
-  } else if (type->is_struct_or_union() || type->is_exception()) {
+  } else if (type->is<t_structured>()) {
     out << "new " << js_type_namespace(type->program()) << type->get_name()
         << "({" << endl;
     indent_up();
@@ -432,7 +431,7 @@ string t_js_generator::render_const_value(
     }
 
     out << "})";
-  } else if (type->is_map()) {
+  } else if (type->is<t_map>()) {
     const t_type* ktype = ((t_map*)type)->get_key_type();
     const t_type* vtype = ((t_map*)type)->get_val_type();
     out << "{";
@@ -450,9 +449,9 @@ string t_js_generator::render_const_value(
     }
 
     out << endl << "}";
-  } else if (type->is_list() || type->is_set()) {
+  } else if (type->is<t_list>() || type->is<t_set>()) {
     const t_type* etype;
-    if (type->is_list()) {
+    if (type->is<t_list>()) {
       etype = ((t_list*)type)->get_elem_type();
     } else {
       etype = ((t_set*)type)->get_elem_type();
@@ -536,8 +535,7 @@ void t_js_generator::generate_js_struct_definition(
   for (m_iter = members.begin(); m_iter != members.end(); ++m_iter) {
     string dval = declare_field(*m_iter, false, true);
     const t_type* t = (*m_iter)->get_type()->get_true_type();
-    if ((*m_iter)->get_value() != nullptr &&
-        !(t->is_struct_or_union() || t->is_exception())) {
+    if ((*m_iter)->get_value() != nullptr && !(t->is<t_structured>())) {
       dval = render_const_value((*m_iter)->get_type(), (*m_iter)->get_value());
       out << indent() << "this." << (*m_iter)->get_name() << " = " << dval
           << ";" << endl;
@@ -550,8 +548,7 @@ void t_js_generator::generate_js_struct_definition(
   if (members.size() > 0) {
     for (m_iter = members.begin(); m_iter != members.end(); ++m_iter) {
       const t_type* t = (*m_iter)->get_type()->get_true_type();
-      if ((*m_iter)->get_value() != nullptr &&
-          (t->is_struct_or_union() || t->is_exception())) {
+      if ((*m_iter)->get_value() != nullptr && (t->is<t_structured>())) {
         indent(out) << "this." << (*m_iter)->get_name() << " = "
                     << render_const_value(t, (*m_iter)->get_value()) << ";"
                     << endl;
@@ -561,7 +558,7 @@ void t_js_generator::generate_js_struct_definition(
     // Early returns for exceptions
     for (m_iter = members.begin(); m_iter != members.end(); ++m_iter) {
       const t_type* t = (*m_iter)->get_type()->get_true_type();
-      if (t->is_exception()) {
+      if (t->is<t_exception>()) {
         out << indent() << "if (args instanceof "
             << js_type_namespace(t->program()) << t->get_name() << ") {" << endl
             << indent() << indent() << "this." << (*m_iter)->get_name()
@@ -1236,49 +1233,48 @@ void t_js_generator::generate_deserialize_field(
 
   string name = prefix + tfield->get_name();
 
-  if (type->is_struct_or_union() || type->is_exception()) {
+  if (type->is<t_structured>()) {
     generate_deserialize_struct(out, (t_struct*)type, name);
-  } else if (type->is_container()) {
+  } else if (type->is<t_container>()) {
     generate_deserialize_container(out, type, name);
-  } else if (type->is_primitive_type() || type->is_enum()) {
+  } else if (type->is<t_primitive_type>() || type->is<t_enum>()) {
     indent(out) << name << " = input.";
 
-    if (type->is_primitive_type()) {
-      t_primitive_type::t_primitive tbase =
-          ((t_primitive_type*)type)->primitive_type();
+    if (const auto* primitive = type->try_as<t_primitive_type>()) {
+      t_primitive_type::type tbase = primitive->primitive_type();
       switch (tbase) {
-        case t_primitive_type::TYPE_VOID:
+        case t_primitive_type::type::t_void:
           throw std::runtime_error(
               "compiler error: cannot serialize void field in a struct: " +
               name);
-        case t_primitive_type::TYPE_STRING:
-        case t_primitive_type::TYPE_BINARY:
+        case t_primitive_type::type::t_string:
+        case t_primitive_type::type::t_binary:
           out << "readString()";
           break;
-        case t_primitive_type::TYPE_BOOL:
+        case t_primitive_type::type::t_bool:
           out << "readBool()";
           break;
-        case t_primitive_type::TYPE_BYTE:
+        case t_primitive_type::type::t_byte:
           out << "readByte()";
           break;
-        case t_primitive_type::TYPE_I16:
+        case t_primitive_type::type::t_i16:
           out << "readI16()";
           break;
-        case t_primitive_type::TYPE_I32:
+        case t_primitive_type::type::t_i32:
           out << "readI32()";
           break;
-        case t_primitive_type::TYPE_I64:
+        case t_primitive_type::type::t_i64:
           out << "readI64()";
           break;
-        case t_primitive_type::TYPE_DOUBLE:
+        case t_primitive_type::type::t_double:
           out << "readDouble()";
           break;
         default:
           throw std::runtime_error(
               "compiler error: no JS name for base type " +
-              t_primitive_type::t_primitive_name(tbase));
+              t_primitive_type::type_name(tbase));
       }
-    } else if (type->is_enum()) {
+    } else if (type->is<t_enum>()) {
       out << "readI32()";
     }
 
@@ -1326,7 +1322,7 @@ void t_js_generator::generate_deserialize_container(
   out << indent() << "var " << rtmp3 << ";" << endl;
 
   // Declare variables, read header
-  if (ttype->is_map()) {
+  if (ttype->is<t_map>()) {
     out << indent() << prefix << " = {};" << endl
         << indent() << "var " << ktype << " = 0;" << endl
         << indent() << "var " << vtype << " = 0;" << endl;
@@ -1336,14 +1332,14 @@ void t_js_generator::generate_deserialize_container(
     out << indent() << vtype << " = " << rtmp3 << ".vtype;" << endl;
     out << indent() << size << " = " << rtmp3 << ".size;" << endl;
 
-  } else if (ttype->is_set()) {
+  } else if (ttype->is<t_set>()) {
     out << indent() << prefix << " = [];" << endl
         << indent() << "var " << etype << " = 0;" << endl
         << indent() << rtmp3 << " = input.readSetBegin();" << endl
         << indent() << etype << " = " << rtmp3 << ".etype;" << endl
         << indent() << size << " = " << rtmp3 << ".size;" << endl;
 
-  } else if (ttype->is_list()) {
+  } else if (ttype->is<t_list>()) {
     out << indent() << prefix << " = [];" << endl
         << indent() << "var " << etype << " = 0;" << endl
         << indent() << rtmp3 << " = input.readListBegin();" << endl
@@ -1358,7 +1354,7 @@ void t_js_generator::generate_deserialize_container(
 
   scope_up(out);
 
-  if (ttype->is_map()) {
+  if (ttype->is<t_map>()) {
     if (!gen_node_) {
       out << indent() << "if (" << i << " > 0 ) {" << endl
           << indent()
@@ -1371,20 +1367,20 @@ void t_js_generator::generate_deserialize_container(
     }
 
     generate_deserialize_map_element(out, (t_map*)ttype, prefix);
-  } else if (ttype->is_set()) {
+  } else if (ttype->is<t_set>()) {
     generate_deserialize_set_element(out, (t_set*)ttype, prefix);
-  } else if (ttype->is_list()) {
+  } else if (ttype->is<t_list>()) {
     generate_deserialize_list_element(out, (t_list*)ttype, prefix);
   }
 
   scope_down(out);
 
   // Read container end
-  if (ttype->is_map()) {
+  if (ttype->is<t_map>()) {
     indent(out) << "input.readMapEnd();" << endl;
-  } else if (ttype->is_set()) {
+  } else if (ttype->is<t_set>()) {
     indent(out) << "input.readSetEnd();" << endl;
-  } else if (ttype->is_list()) {
+  } else if (ttype->is<t_list>()) {
     indent(out) << "input.readListEnd();" << endl;
   }
 }
@@ -1449,12 +1445,12 @@ void t_js_generator::generate_serialize_field(
         tfield->get_name());
   }
 
-  if (type->is_struct_or_union() || type->is_exception()) {
+  if (type->is<t_structured>()) {
     generate_serialize_struct(
         out, (t_struct*)type, prefix + tfield->get_name());
-  } else if (type->is_container()) {
+  } else if (type->is<t_container>()) {
     generate_serialize_container(out, type, prefix + tfield->get_name());
-  } else if (type->is_primitive_type() || type->is_enum()) {
+  } else if (type->is<t_primitive_type>() || type->is<t_enum>()) {
     string name = tfield->get_name();
 
     // Hack for when prefix is defined (always a hash ref)
@@ -1463,42 +1459,41 @@ void t_js_generator::generate_serialize_field(
 
     indent(out) << "output.";
 
-    if (type->is_primitive_type()) {
-      t_primitive_type::t_primitive tbase =
-          ((t_primitive_type*)type)->primitive_type();
+    if (const auto* primitive = type->try_as<t_primitive_type>()) {
+      t_primitive_type::type tbase = primitive->primitive_type();
       switch (tbase) {
-        case t_primitive_type::TYPE_VOID:
+        case t_primitive_type::type::t_void:
           throw std::runtime_error(
               "compiler error: cannot serialize void field in a struct: " +
               name);
-        case t_primitive_type::TYPE_STRING:
-        case t_primitive_type::TYPE_BINARY:
+        case t_primitive_type::type::t_string:
+        case t_primitive_type::type::t_binary:
           out << "writeString(" << name << ")";
           break;
-        case t_primitive_type::TYPE_BOOL:
+        case t_primitive_type::type::t_bool:
           out << "writeBool(" << name << ")";
           break;
-        case t_primitive_type::TYPE_BYTE:
+        case t_primitive_type::type::t_byte:
           out << "writeByte(" << name << ")";
           break;
-        case t_primitive_type::TYPE_I16:
+        case t_primitive_type::type::t_i16:
           out << "writeI16(" << name << ")";
           break;
-        case t_primitive_type::TYPE_I32:
+        case t_primitive_type::type::t_i32:
           out << "writeI32(" << name << ")";
           break;
-        case t_primitive_type::TYPE_I64:
+        case t_primitive_type::type::t_i64:
           out << "writeI64(" << name << ")";
           break;
-        case t_primitive_type::TYPE_DOUBLE:
+        case t_primitive_type::type::t_double:
           out << "writeDouble(" << name << ")";
           break;
         default:
           throw std::runtime_error(
               "compiler error: no JS name for base type " +
-              t_primitive_type::t_primitive_name(tbase));
+              t_primitive_type::type_name(tbase));
       }
-    } else if (type->is_enum()) {
+    } else if (type->is<t_enum>()) {
       out << "writeI32(" << name << ")";
     }
     out << ";" << endl;
@@ -1529,23 +1524,23 @@ void t_js_generator::generate_serialize_struct(
  */
 void t_js_generator::generate_serialize_container(
     ofstream& out, const t_type* ttype, string prefix) {
-  if (ttype->is_map()) {
+  if (ttype->is<t_map>()) {
     indent(out) << "output.writeMapBegin("
                 << type_to_enum(((t_map*)ttype)->get_key_type()) << ", "
                 << type_to_enum(((t_map*)ttype)->get_val_type()) << ", "
                 << "Thrift.objectLength(" << prefix << "));" << endl;
-  } else if (ttype->is_set()) {
+  } else if (ttype->is<t_set>()) {
     indent(out) << "output.writeSetBegin("
                 << type_to_enum(((t_set*)ttype)->get_elem_type()) << ", "
                 << prefix << ".length);" << endl;
 
-  } else if (ttype->is_list()) {
+  } else if (ttype->is<t_list>()) {
     indent(out) << "output.writeListBegin("
                 << type_to_enum(((t_list*)ttype)->get_elem_type()) << ", "
                 << prefix << ".length);" << endl;
   }
 
-  if (ttype->is_map()) {
+  if (ttype->is<t_map>()) {
     string kiter = tmp("kiter");
     string viter = tmp("viter");
     indent(out) << "for (var " << kiter << " in " << prefix << ")" << endl;
@@ -1559,7 +1554,7 @@ void t_js_generator::generate_serialize_container(
     scope_down(out);
     scope_down(out);
 
-  } else if (ttype->is_set()) {
+  } else if (ttype->is<t_set>()) {
     string iter = tmp("iter");
     indent(out) << "for (var " << iter << " in " << prefix << ")" << endl;
     scope_up(out);
@@ -1571,7 +1566,7 @@ void t_js_generator::generate_serialize_container(
     scope_down(out);
     scope_down(out);
 
-  } else if (ttype->is_list()) {
+  } else if (ttype->is<t_list>()) {
     string iter = tmp("iter");
     indent(out) << "for (var " << iter << " in " << prefix << ")" << endl;
     scope_up(out);
@@ -1584,11 +1579,11 @@ void t_js_generator::generate_serialize_container(
     scope_down(out);
   }
 
-  if (ttype->is_map()) {
+  if (ttype->is<t_map>()) {
     indent(out) << "output.writeMapEnd();" << endl;
-  } else if (ttype->is_set()) {
+  } else if (ttype->is<t_set>()) {
     indent(out) << "output.writeSetEnd();" << endl;
-  } else if (ttype->is_list()) {
+  } else if (ttype->is<t_list>()) {
     indent(out) << "output.writeListEnd();" << endl;
   }
 }
@@ -1639,34 +1634,33 @@ string t_js_generator::declare_field(
 
   if (init) {
     const t_type* type = tfield->get_type()->get_true_type();
-    if (type->is_primitive_type()) {
-      t_primitive_type::t_primitive tbase =
-          ((t_primitive_type*)type)->primitive_type();
+    if (const auto* primitive = type->try_as<t_primitive_type>()) {
+      t_primitive_type::type tbase = primitive->primitive_type();
       switch (tbase) {
-        case t_primitive_type::TYPE_VOID:
+        case t_primitive_type::type::t_void:
           break;
-        case t_primitive_type::TYPE_STRING:
-        case t_primitive_type::TYPE_BINARY:
-        case t_primitive_type::TYPE_BOOL:
-        case t_primitive_type::TYPE_BYTE:
-        case t_primitive_type::TYPE_I16:
-        case t_primitive_type::TYPE_I32:
-        case t_primitive_type::TYPE_I64:
-        case t_primitive_type::TYPE_DOUBLE:
+        case t_primitive_type::type::t_string:
+        case t_primitive_type::type::t_binary:
+        case t_primitive_type::type::t_bool:
+        case t_primitive_type::type::t_byte:
+        case t_primitive_type::type::t_i16:
+        case t_primitive_type::type::t_i32:
+        case t_primitive_type::type::t_i64:
+        case t_primitive_type::type::t_double:
           result += " = null";
           break;
         default:
           throw std::runtime_error(
               "compiler error: no JS initializer for base type " +
-              t_primitive_type::t_primitive_name(tbase));
+              t_primitive_type::type_name(tbase));
       }
-    } else if (type->is_enum()) {
+    } else if (type->is<t_enum>()) {
       result += " = null";
-    } else if (type->is_map()) {
+    } else if (type->is<t_map>()) {
       result += " = null";
-    } else if (type->is_container()) {
+    } else if (type->is<t_container>()) {
       result += " = null";
-    } else if (type->is_struct_or_union() || type->is_exception()) {
+    } else if (type->is<t_structured>()) {
       if (obj) {
         result += " = new " + js_type_namespace(type->program()) +
             type->get_name() + "()";
@@ -1733,39 +1727,38 @@ string t_js_generator::argument_list(
 string t_js_generator ::type_to_enum(const t_type* type) {
   type = type->get_true_type();
 
-  if (type->is_primitive_type()) {
-    t_primitive_type::t_primitive tbase =
-        ((t_primitive_type*)type)->primitive_type();
+  if (const auto* primitive = type->try_as<t_primitive_type>()) {
+    t_primitive_type::type tbase = primitive->primitive_type();
     switch (tbase) {
-      case t_primitive_type::TYPE_VOID:
+      case t_primitive_type::type::t_void:
         throw std::runtime_error("NO T_VOID CONSTRUCT");
-      case t_primitive_type::TYPE_STRING:
-      case t_primitive_type::TYPE_BINARY:
+      case t_primitive_type::type::t_string:
+      case t_primitive_type::type::t_binary:
         return "Thrift.Type.STRING";
-      case t_primitive_type::TYPE_BOOL:
+      case t_primitive_type::type::t_bool:
         return "Thrift.Type.BOOL";
-      case t_primitive_type::TYPE_BYTE:
+      case t_primitive_type::type::t_byte:
         return "Thrift.Type.BYTE";
-      case t_primitive_type::TYPE_I16:
+      case t_primitive_type::type::t_i16:
         return "Thrift.Type.I16";
-      case t_primitive_type::TYPE_I32:
+      case t_primitive_type::type::t_i32:
         return "Thrift.Type.I32";
-      case t_primitive_type::TYPE_I64:
+      case t_primitive_type::type::t_i64:
         return "Thrift.Type.I64";
-      case t_primitive_type::TYPE_DOUBLE:
+      case t_primitive_type::type::t_double:
         return "Thrift.Type.DOUBLE";
-      case t_primitive_type::TYPE_FLOAT:
+      case t_primitive_type::type::t_float:
         throw std::runtime_error("Float type is not supported");
     }
-  } else if (type->is_enum()) {
+  } else if (type->is<t_enum>()) {
     return "Thrift.Type.I32";
-  } else if (type->is_struct_or_union() || type->is_exception()) {
+  } else if (type->is<t_structured>()) {
     return "Thrift.Type.STRUCT";
-  } else if (type->is_map()) {
+  } else if (type->is<t_map>()) {
     return "Thrift.Type.MAP";
-  } else if (type->is_set()) {
+  } else if (type->is<t_set>()) {
     return "Thrift.Type.SET";
-  } else if (type->is_list()) {
+  } else if (type->is<t_list>()) {
     return "Thrift.Type.LIST";
   }
 

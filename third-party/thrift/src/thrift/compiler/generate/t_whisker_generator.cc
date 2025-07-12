@@ -108,10 +108,10 @@ object t_type_as(const prototype_database& proto, const t_type& self) {
 // because this function will attach the prototype of t_struct.
 object resolve_derived_t_type(
     const prototype_database& proto, const t_type& self) {
-  if (self.is_typedef()) {
+  if (const auto* td = self.try_as<t_typedef>()) {
     // t_typedef::get_type_value() returns the underlying type value, which is
     // not useful for detecting t_typedef. So we handle it separately.
-    return object(proto.create<t_typedef>(*self.try_as<t_typedef>()));
+    return object(proto.create<t_typedef>(*td));
   }
   switch (self.get_type_value()) {
     case t_type::type::t_void:
@@ -167,7 +167,7 @@ prototype<t_type>::ptr t_whisker_generator::make_prototype_for_type(
   auto def = prototype_builder<h_type>::extends(proto.of<t_named>());
   // clang-format off
   def.property("void?",             mem_fn(&t_type::is_void));
-  def.property("primitive?",        mem_fn(&t_type::is_primitive_type));
+  def.property("primitive?",        mem_fn(&t_type::is<t_primitive_type>));
   def.property("string?",           mem_fn(&t_type::is_string));
   def.property("bool?",             mem_fn(&t_type::is_bool));
   def.property("byte?",             mem_fn(&t_type::is_byte));
@@ -176,21 +176,19 @@ prototype<t_type>::ptr t_whisker_generator::make_prototype_for_type(
   def.property("i64?",              mem_fn(&t_type::is_i64));
   def.property("float?",            mem_fn(&t_type::is_float));
   def.property("double?",           mem_fn(&t_type::is_double));
-  def.property("typedef?",          mem_fn(&t_type::is_typedef));
-  def.property("enum?",             mem_fn(&t_type::is_enum));
-  def.property("struct?",           mem_fn(&t_type::is_struct));
-  def.property("union?",            mem_fn(&t_type::is_union));
-  def.property("exception?",        mem_fn(&t_type::is_exception));
-  def.property("container?",        mem_fn(&t_type::is_container));
-  def.property("list?",             mem_fn(&t_type::is_list));
-  def.property("set?",              mem_fn(&t_type::is_set));
-  def.property("map?",              mem_fn(&t_type::is_map));
+  def.property("typedef?",          mem_fn(&t_type::is<t_typedef>));
+  def.property("enum?",             mem_fn(&t_type::is<t_enum>));
+  def.property("struct?",           mem_fn(&t_type::is<t_struct>));
+  def.property("union?",            mem_fn(&t_type::is<t_union>));
+  def.property("exception?",        mem_fn(&t_type::is<t_exception>));
+  def.property("container?",        mem_fn(&t_type::is<t_container>));
+  def.property("list?",             mem_fn(&t_type::is<t_list>));
+  def.property("set?",              mem_fn(&t_type::is<t_set>));
+  def.property("map?",              mem_fn(&t_type::is<t_map>));
   def.property("binary?",           mem_fn(&t_type::is_binary));
   def.property("string_or_binary?", mem_fn(&t_type::is_string_or_binary));
   def.property("any_int?",          mem_fn(&t_type::is_any_int));
   def.property("floating_point?",   mem_fn(&t_type::is_floating_point));
-  def.property("scalar?",           mem_fn(&t_type::is_scalar));
-  def.property("int_or_enum?",      mem_fn(&t_type::is_int_or_enum));
   // clang-format on
 
   def.property("full_name", mem_fn(&t_type::get_full_name));

@@ -389,6 +389,13 @@ struct Options {
     return *this;
   }
 
+  // Platform allows the HHBBC actions to be constrained to specific
+  // worker pools that increase the affinity of actions across that pool
+  Options& setPlatform(std::string p) {
+    m_platform = std::move(p);
+    return *this;
+  }
+
   Options& setFeaturesFile(std::string f) {
     m_featuresFile = std::move(f);
     return *this;
@@ -417,11 +424,6 @@ struct Options {
   // The below options are RE specific and not documented:
   Options& setUseRichClient(bool b) {
     m_useRichClient = b;
-    return *this;
-  }
-
-  Options& setUseZippyRichClient(bool b) {
-    m_useZippyRichClient = b;
     return *this;
   }
 
@@ -461,13 +463,13 @@ struct Options {
   bool m_useEdenFS{true};
   bool m_cleanup{true};
   bool m_useRichClient{true};
-  bool m_useZippyRichClient{false};
   bool m_useP2P{false};
   int m_casConnectionCount{16};
   int m_engineConnectionCount{6};
   int m_executionConcurrencyLimit{6000};
   int m_acConnectionCount{16};
   std::string m_useCase{""};
+  std::string m_platform{"linux-remote-execution"};
   std::string m_featuresFile{""};
   std::string m_workerPath{""};
 };

@@ -491,7 +491,9 @@ class mstch_program : public mstch_base {
   mstch::node has_unions() {
     auto& structs = program_->structs_and_unions();
     return std::any_of(
-        structs.cbegin(), structs.cend(), std::mem_fn(&t_structured::is_union));
+        structs.cbegin(),
+        structs.cend(),
+        std::mem_fn(&t_structured::is<t_union>));
   }
 
   mstch::node has_thrift_uris();
@@ -840,7 +842,7 @@ class mstch_type : public mstch_base {
             {"type:double?", &mstch_type::is_double},
             {"type:float?", &mstch_type::is_float},
             {"type:floating_point?", &mstch_type::is_floating_point},
-            {"type:struct?", &mstch_type::is_struct},
+            {"type:structured?", &mstch_type::is_structured},
             {"type:union?", &mstch_type::is_union},
             {"type:enum?", &mstch_type::is_enum},
             {"type:base?", &mstch_type::is_base},
@@ -849,7 +851,7 @@ class mstch_type : public mstch_base {
             {"type:set?", &mstch_type::is_set},
             {"type:map?", &mstch_type::is_map},
             {"type:typedef?", &mstch_type::is_typedef},
-            {"type:struct", &mstch_type::get_struct},
+            {"type:structured", &mstch_type::get_structured},
             {"type:enum", &mstch_type::get_enum},
             {"type:list_elem_type", &mstch_type::get_list_type},
             {"type:set_elem_type", &mstch_type::get_set_type},
@@ -882,22 +884,17 @@ class mstch_type : public mstch_base {
   mstch::node is_floating_point() {
     return resolved_type_->is_floating_point();
   }
-  // TODO(T219861020): Evaluate if unions should be here and rename method as
-  // neccessary.
-  mstch::node is_struct() {
-    return resolved_type_->is_struct_or_union() ||
-        resolved_type_->is_exception();
-  }
-  mstch::node is_union() { return resolved_type_->is_union(); }
-  mstch::node is_enum() { return resolved_type_->is_enum(); }
-  mstch::node is_base() { return resolved_type_->is_primitive_type(); }
-  mstch::node is_container() { return resolved_type_->is_container(); }
-  mstch::node is_list() { return resolved_type_->is_list(); }
-  mstch::node is_set() { return resolved_type_->is_set(); }
-  mstch::node is_map() { return resolved_type_->is_map(); }
-  mstch::node is_typedef() { return type_->is_typedef(); }
+  mstch::node is_structured() { return resolved_type_->is<t_structured>(); }
+  mstch::node is_union() { return resolved_type_->is<t_union>(); }
+  mstch::node is_enum() { return resolved_type_->is<t_enum>(); }
+  mstch::node is_base() { return resolved_type_->is<t_primitive_type>(); }
+  mstch::node is_container() { return resolved_type_->is<t_container>(); }
+  mstch::node is_list() { return resolved_type_->is<t_list>(); }
+  mstch::node is_set() { return resolved_type_->is<t_set>(); }
+  mstch::node is_map() { return resolved_type_->is<t_map>(); }
+  mstch::node is_typedef() { return type_->is<t_typedef>(); }
   virtual std::string get_type_namespace(const t_program*) { return ""; }
-  mstch::node get_struct();
+  mstch::node get_structured();
   mstch::node get_enum();
   mstch::node get_list_type();
   mstch::node get_set_type();
@@ -999,10 +996,10 @@ class mstch_struct : public mstch_base {
   mstch::node name() { return struct_->get_name(); }
   mstch::node has_fields() { return struct_->has_fields(); }
   mstch::node fields();
-  mstch::node is_exception() { return struct_->is_exception(); }
-  mstch::node is_union() { return struct_->is_union(); }
+  mstch::node is_exception() { return struct_->is<t_exception>(); }
+  mstch::node is_union() { return struct_->is<t_union>(); }
   mstch::node is_plain() {
-    return !struct_->is_exception() && !struct_->is_union();
+    return !struct_->is<t_exception>() && !struct_->is<t_union>();
   }
   mstch::node has_structured_annotations() {
     return !struct_->structured_annotations().empty();
@@ -1147,7 +1144,7 @@ class mstch_field : public mstch_base {
       return true;
     }
     auto type = field_->get_type();
-    if (type->is_typedef()) {
+    if (type->is<t_typedef>()) {
       if (t_typedef::get_first_structured_annotation_or_null(type, uri) !=
           nullptr) {
         return true;
@@ -1169,7 +1166,7 @@ class mstch_field : public mstch_base {
       CodingErrorAction action,
       CodingErrorAction def) {
     auto type = field_->get_type();
-    if (type->is_typedef()) {
+    if (type->is<t_typedef>()) {
       if (auto annotation =
               t_typedef::get_first_structured_annotation_or_null(type, uri)) {
         return has_compat_action(annotation, field, action, def);
@@ -1527,7 +1524,8 @@ class mstch_structured_annotation : public mstch_base {
   }
 
   mstch::node is_const_struct() {
-    return const_.type()->get_true_type()->is_struct_or_union();
+    return const_.type()->get_true_type()->is<t_struct>() ||
+        const_.type()->get_true_type()->is<t_union>();
   }
 
  protected:

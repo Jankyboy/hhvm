@@ -16,8 +16,8 @@
 
 #pragma once
 
+#include <gflags/gflags.h>
 #include <folly/experimental/io/IoUringBackend.h>
-#include <folly/portability/GFlags.h>
 
 DECLARE_bool(use_iouring_event_eventfd);
 DECLARE_int32(io_capacity);
@@ -25,6 +25,9 @@ DECLARE_int32(io_submit_sqe);
 DECLARE_int32(io_max_get);
 DECLARE_bool(set_iouring_defer_taskrun);
 DECLARE_int32(io_max_submit);
+DECLARE_bool(task_run_coop);
+DECLARE_int32(batch_size);
+DECLARE_int32(timeout_us);
 DECLARE_int32(io_registers);
 DECLARE_int32(io_prov_buffs_size);
 DECLARE_int32(io_prov_buffs);

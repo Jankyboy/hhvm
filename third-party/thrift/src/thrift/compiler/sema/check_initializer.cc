@@ -213,6 +213,16 @@ class compatibility_checker {
           name_,
           type->name());
     }
+    if (value->is_enum()) {
+      const t_enum* val_type = value->get_enum();
+      if (val_type != nullptr && val_type != type) {
+        error(
+            "const `{}` is defined as enum `{}` with a value of another enum `{}`",
+            name_,
+            type->name(),
+            val_type->get_name());
+      }
+    }
     return true;
   }
 
@@ -358,7 +368,7 @@ class default_value_checker final {
       // If this is a union (and, per previous test, the initializer is not
       // empty), then it cannot be the default value, which is always empty for
       // unions.
-      if (structured_type->is_union()) {
+      if (structured_type->is<t_union>()) {
         return false;
       }
 

@@ -42,6 +42,11 @@ struct TestRecursiveStruct {
 @scope.Field
 struct TestStructuredAnnotation {
   1: i64 field1;
+  2: TestInnerStructuredAnnotation field2;
+}
+
+struct TestInnerStructuredAnnotation {
+  1: i64 field1;
 }
 
 typedef list<TestStruct> ListOfTestStruct
@@ -49,7 +54,10 @@ typedef ListOfTestStruct TypedefToListOfTestStruct
 
 typedef TestStructuredAnnotation TypedefToTestStructuredAnnotation
 
-@TestStructuredAnnotation{field1 = 3}
+@TestStructuredAnnotation{
+  field1 = 3,
+  field2 = TestInnerStructuredAnnotation{field1 = 4},
+}
 @thrift.Uri{value = "meta.com/thrift_test/TestUnion"}
 union TestUnion {
   1: TestStruct s;
@@ -69,6 +77,10 @@ exception TestException {
 }
 
 const TestStruct testConst = TestStruct{field1 = 2, field2 = VALUE_1};
+const TestStructuredAnnotation testNestedConst = TestStructuredAnnotation{
+  field1 = 3,
+  field2 = TestInnerStructuredAnnotation{field1 = 4},
+};
 
 interaction TestInteraction {
   i32 foo(1: TestRecursiveStruct input) throws (1: TestException ex);

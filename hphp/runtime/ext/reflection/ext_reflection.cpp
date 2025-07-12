@@ -373,10 +373,6 @@ static const Class* get_prototype_class_from_interfaces(const Class *cls,
   return nullptr;
 }
 
-Variant HHVM_FUNCTION(hphp_invoke, const String& name, const Variant& params) {
-  return invoke(name, params);
-}
-
 static const StaticString s_invoke_not_instanceof_error(
   "Given object is not an instance of the class this method was declared in"
 );
@@ -780,9 +776,7 @@ static int64_t HHVM_METHOD(ReflectionFunctionAbstract, getNumberOfParameters) {
   return func->numParams();
 }
 
-static Array HHVM_METHOD(
-  ReflectionFunctionAbstract, getParamTypeVarNames
-) {
+static Array HHVM_METHOD(ReflectionFunctionAbstract, getParamTypeVarNames) {
   auto const func = ReflectionFuncHandle::GetFuncFor(this_);
   Array ret = Array::CreateKeyset();
   for (auto const& param : func->params()) {
@@ -793,6 +787,19 @@ static Array HHVM_METHOD(
     }
   }
 
+  return ret;
+}
+
+static Array HHVM_METHOD(
+  ReflectionFunctionAbstract, getTypeVarNames
+) {
+  auto const func = ReflectionFuncHandle::GetFuncFor(this_);
+  Array ret = Array::CreateVec();
+  if (func->hasExtendedSharedData()) {
+    for (auto const& info : func->getGenericsInfo()) {
+      ret.append(make_tv<KindOfPersistentString>(info.m_typeName));
+    }
+  }
   return ret;
 }
 
@@ -1085,7 +1092,7 @@ static bool HHVM_METHOD(ReflectionMethod, isStaticInPrologue) {
   return func->isStaticInPrologue();
 }
 
-static bool HHVM_METHOD(ReflectionMethod, isConstructor) {
+static bool HHVM_METHOD(ReflectionMethod, isConstructor) {  
   auto const func = ReflectionFuncHandle::GetFuncFor(this_);
   return isConstructor(func);
 }
@@ -1788,6 +1795,19 @@ static Array HHVM_METHOD(ReflectionClass, getReifiedTypeParamInfo) {
     : Array::CreateVec();
 }
 
+static Array HHVM_METHOD(
+  ReflectionClass, getTypeVarNames
+) {
+  auto const cls = ReflectionClassHandle::GetClassFor(this_);
+  Array ret = Array::CreateVec();
+  if (cls->hasExtraData()) {
+    for (auto const& info : cls->getGenericsInfo()) {
+      ret.append(make_tv<KindOfPersistentString>(info.m_typeName));
+    }
+  }
+  return ret;
+}
+
 static Array HHVM_STATIC_METHOD(
   ReflectionClass,
   getClassPropertyInfo,
@@ -1970,6 +1990,18 @@ static String HHVM_METHOD(ReflectionTypeConstant, getAssignedTypeHint) {
   }
 
   return String();
+}
+
+static String HHVM_METHOD(ReflectionTypeConstant, getCanonicalClassname) {
+  if (Cfg::Eval::AuthoritativeMode) {
+    Reflection::ThrowReflectionExceptionObject(s_canonical_class_in_repo_mode);
+  }
+  auto const cnst = ReflectionConstHandle::GetConstFor(this_);
+  return String::attach(const_cast<StringData*>(
+    cnst->preConst && cnst->preConst->cls()
+     ? cnst->preConst->cls()
+     : cnst->cls->name()
+  ));
 }
 
 // private helper for getDeclaringClass
@@ -2354,7 +2386,6 @@ struct ReflectionExtension final : Extension {
     HHVM_FE(hphp_get_extension_info);
     HHVM_FE(hphp_get_property);
     HHVM_FE(hphp_get_static_property);
-    HHVM_FE(hphp_invoke);
     HHVM_FE(hphp_invoke_method);
     HHVM_FE(hphp_set_property);
     HHVM_FE(hphp_set_static_property);
@@ -2383,6 +2414,7 @@ struct ReflectionExtension final : Extension {
     HHVM_ME(ReflectionFunctionAbstract, getModule);
     HHVM_ME(ReflectionFunctionAbstract, returnsReadonly);
     HHVM_ME(ReflectionFunctionAbstract, getParamTypeVarNames);
+    HHVM_ME(ReflectionFunctionAbstract, getTypeVarNames);
 
     HHVM_ME(ReflectionMethod, __init);
     HHVM_ME(ReflectionMethod, isFinal);
@@ -2418,6 +2450,7 @@ struct ReflectionExtension final : Extension {
     HHVM_ME(ReflectionTypeConstant, getAssignedTypeHint);
     HHVM_ME(ReflectionTypeConstant, getDeclaringClassname);
     HHVM_ME(ReflectionTypeConstant, getClassPtr);
+    HHVM_ME(ReflectionTypeConstant, getCanonicalClassname);    
 
     HHVM_ME(ReflectionProperty, __construct);
     HHVM_ME(ReflectionProperty, isPublic);
@@ -2480,6 +2513,7 @@ struct ReflectionExtension final : Extension {
     HHVM_STATIC_ME(ReflectionClass, getClassPropertyInfo);
     HHVM_ME(ReflectionClass, getDynamicPropertyInfos);
     HHVM_ME(ReflectionClass, getConstructorName);
+    HHVM_ME(ReflectionClass, getTypeVarNames);
 
     Native::registerNativeDataInfo<ReflectionFuncHandle>();
     Native::registerNativeDataInfo<ReflectionClassHandle>();

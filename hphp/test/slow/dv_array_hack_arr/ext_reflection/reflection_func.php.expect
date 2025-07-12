@@ -1,4 +1,7 @@
-dict(2) {
+dict(3) {
+  ["__DynamicallyCallable"]=>
+  vec(0) {
+  }
   ["A"]=>
   vec(2) {
     int(1)
@@ -113,9 +116,7 @@ object(ReflectionType) (1) {
     bool(false)
   }
 }
-vec(1) {
-  int(1)
-}
+invoke() on top-level functions is no longer supported
 dict(1) {
   ["Bing"]=>
   vec(0) {

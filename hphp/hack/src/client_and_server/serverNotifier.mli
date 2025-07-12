@@ -14,10 +14,13 @@ type changes =
   | AsyncChanges of SSet.t
       (** contains whatever changes have been pushed up to this moment *)
 
-type clock = ServerNotifierTypes.clock = Watchman of Watchman.clock
+type clock = ServerNotifierTypes.clock =
+  | Watchman of Watchman.clock
+  | Eden of Edenfs_watcher.clock
 [@@deriving show, eq]
 
-val watchman_clock_of_clock : clock -> Watchman.clock
+(** Prints the name of the file watcher used to create the clock. *)
+val show_file_watcher_name : clock -> string
 
 type t
 

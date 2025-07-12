@@ -192,7 +192,7 @@ void t_json_generator::generate_program() {
       if (o_iter != objects.begin()) {
         f_out_ << "," << endl;
       }
-      if ((*o_iter)->is_exception()) {
+      if ((*o_iter)->is<t_exception>()) {
         generate_xception(*o_iter);
       } else {
         generate_struct(*o_iter);
@@ -235,41 +235,40 @@ string t_json_generator::to_string(const t_type* type) {
     type = type->get_true_type();
   }
 
-  if (type->is_primitive_type()) {
-    t_primitive_type::t_primitive tbase =
-        ((t_primitive_type*)type)->primitive_type();
+  if (const auto* primitive = type->try_as<t_primitive_type>()) {
+    t_primitive_type::type tbase = primitive->primitive_type();
     switch (tbase) {
-      case t_primitive_type::TYPE_VOID:
+      case t_primitive_type::type::t_void:
         return "VOID";
-      case t_primitive_type::TYPE_STRING:
-      case t_primitive_type::TYPE_BINARY:
+      case t_primitive_type::type::t_string:
+      case t_primitive_type::type::t_binary:
         return "STRING";
-      case t_primitive_type::TYPE_BOOL:
+      case t_primitive_type::type::t_bool:
         return "BOOL";
-      case t_primitive_type::TYPE_BYTE:
+      case t_primitive_type::type::t_byte:
         return "BYTE";
-      case t_primitive_type::TYPE_I16:
+      case t_primitive_type::type::t_i16:
         return "I16";
-      case t_primitive_type::TYPE_I32:
+      case t_primitive_type::type::t_i32:
         return "I32";
-      case t_primitive_type::TYPE_I64:
+      case t_primitive_type::type::t_i64:
         return "I64";
-      case t_primitive_type::TYPE_DOUBLE:
+      case t_primitive_type::type::t_double:
         return "DOUBLE";
-      case t_primitive_type::TYPE_FLOAT:
+      case t_primitive_type::type::t_float:
         return "FLOAT";
     }
-  } else if (type->is_enum()) {
+  } else if (type->is<t_enum>()) {
     return "ENUM";
-  } else if (type->is_struct_or_union() || type->is_exception()) {
+  } else if (type->is<t_structured>()) {
     return "STRUCT";
-  } else if (type->is_map()) {
+  } else if (type->is<t_map>()) {
     return "MAP";
-  } else if (type->is_set()) {
+  } else if (type->is<t_set>()) {
     return "SET";
-  } else if (type->is_list()) {
+  } else if (type->is<t_list>()) {
     return "LIST";
-  } else if (type->is_typedef()) {
+  } else if (type->is<t_typedef>()) {
     return "TYPEDEF";
   }
 
@@ -294,24 +293,23 @@ string t_json_generator::to_spec_args(const t_type* type) {
     type = type->get_true_type();
   }
 
-  if (type->is_primitive_type()) {
+  if (type->is<t_primitive_type>()) {
     return "null";
   } else if (
-      type->is_struct_or_union() || type->is_exception() || type->is_enum() ||
-      type->is_typedef()) {
+      type->is<t_structured>() || type->is<t_enum>() || type->is<t_typedef>()) {
     return to_spec_args_named(type);
-  } else if (type->is_map()) {
+  } else if (type->is<t_map>()) {
     return R"({ "key_type" : { "type_enum" : ")" +
         to_string(((t_map*)type)->get_key_type()) + R"(", "spec_args" : )" +
         to_spec_args(((t_map*)type)->get_key_type()) +
         R"( }, "val_type" : { "type_enum" : ")" +
         to_string(((t_map*)type)->get_val_type()) + R"(", "spec_args" : )" +
         to_spec_args(((t_map*)type)->get_val_type()) + "} } ";
-  } else if (type->is_set()) {
+  } else if (type->is<t_set>()) {
     return R"({ "type_enum" : ")" + to_string(((t_set*)type)->get_elem_type()) +
         R"(", "spec_args" : )" + to_spec_args(((t_set*)type)->get_elem_type()) +
         "} ";
-  } else if (type->is_list()) {
+  } else if (type->is<t_list>()) {
     return R"({ "type_enum" : ")" +
         to_string(((t_list*)type)->get_elem_type()) + R"(", "spec_args" : )" +
         to_spec_args(((t_list*)type)->get_elem_type()) + "} ";
@@ -638,9 +636,10 @@ void t_json_generator::generate_struct(const t_structured* tstruct) {
   indent_up();
   print_lineno(*tstruct);
   indent(f_out_) << "\"is_exception\" : "
-                 << (tstruct->is_exception() ? "true" : "false") << "," << endl;
+                 << (tstruct->is<t_exception>() ? "true" : "false") << ","
+                 << endl;
   indent(f_out_) << "\"is_union\" : "
-                 << (tstruct->is_union() ? "true" : "false") << "," << endl;
+                 << (tstruct->is<t_union>() ? "true" : "false") << "," << endl;
   print_node_annotations(
       *tstruct,
       /*add_heading_comma=*/false,

@@ -1,6 +1,6 @@
 <?hh
 
-function handler1($name, $target, inout $args) :mixed{
+<<__DynamicallyCallable>> function handler1($name, $target, inout $args) :mixed{
   $args[0] = 'handler1';
   return shape();
 }
@@ -45,7 +45,7 @@ function main() :mixed{
     $args[0] = 'handler6';
     return shape();
   };
-  fb_intercept2('foo', 'handler1');
+  fb_intercept2('foo', HH\dynamic_fun('handler1'));
   fb_intercept2('bar', 'W::handler2');
   fb_intercept2('fiz', vec[new W, 'handler3']);
   fb_intercept2('buz', (new W)->make_closure());

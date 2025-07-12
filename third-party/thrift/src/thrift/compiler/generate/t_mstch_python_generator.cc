@@ -119,6 +119,16 @@ mstch::node adapter_node(
   return node;
 }
 
+bool is_invariant_adapter(
+    const t_const* adapter_annotation, const t_type* true_type) {
+  if (true_type->is<t_primitive_type>() || !adapter_annotation) {
+    return false;
+  }
+
+  auto type_hint = get_annotation_property(adapter_annotation, "typeHint");
+  return boost::algorithm::ends_with(type_hint, "[]");
+}
+
 bool is_invariant_container_type(const t_type* type) {
   // Mapping is invariant in its key type
   // For example, if `Derived` extends `Base`,
@@ -127,31 +137,25 @@ bool is_invariant_container_type(const t_type* type) {
   // Then, we recursively verify whether the map's value type, or the element
   // type of a list or set, contains any such mapping incompatibility.
   const t_type* true_type = type->get_true_type();
-  if (true_type->is_map()) {
+  if (true_type->is<t_map>()) {
     const t_map* map_type = dynamic_cast<const t_map*>(true_type);
     const t_type* key_type = map_type->get_key_type()->get_true_type();
-    return key_type->is_struct_or_union() || key_type->is_exception() ||
-        key_type->is_container() ||
-        is_invariant_container_type(map_type->get_val_type());
-  } else if (true_type->is_list()) {
+    const t_type* val_type = map_type->get_val_type()->get_true_type();
+    return key_type->is<t_structured>() || key_type->is<t_container>() ||
+        is_invariant_adapter(
+               find_structured_adapter_annotation(*key_type), key_type) ||
+        is_invariant_container_type(val_type) ||
+        is_invariant_adapter(
+               find_structured_adapter_annotation(*val_type), val_type);
+  } else if (true_type->is<t_list>()) {
     return is_invariant_container_type(
         dynamic_cast<const t_list*>(true_type)->get_elem_type());
-  } else if (true_type->is_set()) {
+  } else if (true_type->is<t_set>()) {
     return is_invariant_container_type(
         dynamic_cast<const t_set*>(true_type)->get_elem_type());
   }
 
   return false;
-}
-
-bool is_invariant_adapter(
-    const t_const* adapter_annotation, const t_type* true_type) {
-  if (true_type->is_primitive_type() || !adapter_annotation) {
-    return false;
-  }
-
-  auto type_hint = get_annotation_property(adapter_annotation, "typeHint");
-  return boost::algorithm::ends_with(type_hint, "[]");
 }
 
 bool field_has_invariant_type(const t_field* field) {
@@ -248,7 +252,8 @@ class python_mstch_program : public mstch_program {
           {"included_module_mangle", it->ns_mangle},
           {"has_services?", it->has_services},
           {"has_types?", it->has_types},
-          {"is_patch?", it->is_patch}});
+          {"is_patch?", it->is_patch},
+          {"needed_by_patch?", it->needed_by_patch}});
     }
     return a;
   }
@@ -330,9 +335,11 @@ class python_mstch_program : public mstch_program {
     bool has_services;
     bool has_types;
     bool is_patch;
+    bool needed_by_patch;
   };
 
   void gather_included_program_namespaces() {
+    auto needed_includes = needed_includes_by_patch(program_);
     for (const t_program* included_program :
          program_->get_includes_for_codegen()) {
       bool has_types =
@@ -347,7 +354,8 @@ class python_mstch_program : public mstch_program {
               included_program, get_option("root_module_prefix")),
           !included_program->services().empty(),
           has_types,
-          is_patch_program(included_program)};
+          is_patch_program(included_program),
+          static_cast<bool>(needed_includes.count(included_program))};
     }
   }
 
@@ -366,6 +374,7 @@ class python_mstch_program : public mstch_program {
       ns.has_services = false;
       ns.has_types = true;
       ns.is_patch = is_patch_program(prog);
+      ns.needed_by_patch = true;
       include_namespaces_[path] = std::move(ns);
     }
   }
@@ -475,19 +484,19 @@ class python_mstch_program : public mstch_program {
           adapter_type_hint_modules_);
     }
     auto true_type = orig_type->get_true_type();
-    is_typedef = is_typedef == TypeDef::HasTypedef || orig_type->is_typedef()
+    is_typedef = is_typedef == TypeDef::HasTypedef || orig_type->is<t_typedef>()
         ? TypeDef::HasTypedef
         : TypeDef::NoTypedef;
     if (is_typedef == TypeDef::HasTypedef) {
       add_typedef_namespace(true_type);
     }
-    if (true_type->is_list()) {
+    if (true_type->is<t_list>()) {
       visit_type_with_typedef(
           dynamic_cast<const t_list&>(*true_type).get_elem_type(), is_typedef);
-    } else if (true_type->is_set()) {
+    } else if (true_type->is<t_set>()) {
       visit_type_with_typedef(
           dynamic_cast<const t_set&>(*true_type).get_elem_type(), is_typedef);
-    } else if (true_type->is_map()) {
+    } else if (true_type->is<t_map>()) {
       visit_type_with_typedef(
           dynamic_cast<const t_map&>(*true_type).get_key_type(), is_typedef);
       visit_type_with_typedef(
@@ -523,6 +532,7 @@ class python_mstch_service : public mstch_service {
         this,
         {
             {"service:module_path", &python_mstch_service::module_path},
+            {"service:module_mangle", &python_mstch_service::module_mangle},
             {"service:program_name", &python_mstch_service::program_name},
             {"service:supported_functions",
              &python_mstch_service::supported_functions},
@@ -535,6 +545,11 @@ class python_mstch_service : public mstch_service {
 
   mstch::node module_path() {
     return get_py3_namespace_with_name_and_prefix(
+        service_->program(), get_option("root_module_prefix"));
+  }
+
+  mstch::node module_mangle() {
+    return mangle_program_path(
         service_->program(), get_option("root_module_prefix"));
   }
 
@@ -766,7 +781,7 @@ class python_mstch_type : public mstch_type {
   mstch::node program_name() { return get_type_program()->name(); }
 
   mstch::node metadata_path() {
-    if (type_->is_enum()) {
+    if (type_->is<t_enum>()) {
       return get_py3_namespace_with_name_and_prefix(
                  get_type_program(), get_option("root_module_prefix")) +
           ".thrift_enums";
@@ -991,11 +1006,11 @@ class python_mstch_field : public mstch_field {
     }
     if (value->is_empty()) {
       auto true_type = field_->get_type()->get_true_type();
-      if ((true_type->is_list() || true_type->is_set()) &&
+      if ((true_type->is<t_list>() || true_type->is<t_set>()) &&
           value->kind() != t_const_value::CV_LIST) {
         const_cast<t_const_value*>(value)->convert_empty_map_to_list();
       }
-      if (true_type->is_map() && value->kind() != t_const_value::CV_MAP) {
+      if (true_type->is<t_map>() && value->kind() != t_const_value::CV_MAP) {
         const_cast<t_const_value*>(value)->convert_empty_list_to_map();
       }
     }
@@ -1009,8 +1024,9 @@ class python_mstch_field : public mstch_field {
 
   mstch::node is_container_type() {
     const auto* type = field_->get_type();
-    return type->get_true_type()->is_list() ||
-        type->get_true_type()->is_map() || type->get_true_type()->is_set();
+    return type->get_true_type()->is<t_list>() ||
+        type->get_true_type()->is<t_map>() ||
+        type->get_true_type()->is<t_set>();
   }
 
   mstch::node is_invariant_type() { return field_has_invariant_type(field_); }
@@ -1323,7 +1339,7 @@ class python_mstch_const_value : public mstch_const_value {
       return {};
     }
     const auto* type = const_value_->ttype()->get_true_type();
-    if (type->is_enum()) {
+    if (type->is<t_enum>()) {
       return context_.type_factory->make_mstch_object(type, context_);
     }
     return {};
@@ -1356,9 +1372,9 @@ class python_mstch_const_value : public mstch_const_value {
     if (auto ttype = const_value_->ttype()) {
       const auto* type = ttype->get_true_type();
       const t_type* elem_type = nullptr;
-      if (type->is_list()) {
+      if (type->is<t_list>()) {
         elem_type = dynamic_cast<const t_list*>(type)->get_elem_type();
-      } else if (type->is_set()) {
+      } else if (type->is<t_set>()) {
         elem_type = dynamic_cast<const t_set*>(type)->get_elem_type();
       } else {
         return {};
@@ -1371,7 +1387,7 @@ class python_mstch_const_value : public mstch_const_value {
 
   mstch::node value_for_set() {
     if (auto ttype = const_value_->ttype()) {
-      return ttype->get_true_type()->is_set();
+      return ttype->get_true_type()->is<t_set>();
     }
     return false;
   }
@@ -1379,7 +1395,7 @@ class python_mstch_const_value : public mstch_const_value {
   mstch::node map_key_type() {
     if (auto ttype = const_value_->ttype()) {
       const auto* type = ttype->get_true_type();
-      if (type->is_map()) {
+      if (type->is<t_map>()) {
         return context_.type_factory->make_mstch_object(
             dynamic_cast<const t_map*>(type)->get_key_type(), context_, pos_);
       }
@@ -1390,7 +1406,7 @@ class python_mstch_const_value : public mstch_const_value {
   mstch::node map_val_type() {
     if (auto ttype = const_value_->ttype()) {
       const auto* type = ttype->get_true_type();
-      if (type->is_map()) {
+      if (type->is<t_map>()) {
         return context_.type_factory->make_mstch_object(
             dynamic_cast<const t_map*>(type)->get_val_type(), context_, pos_);
       }

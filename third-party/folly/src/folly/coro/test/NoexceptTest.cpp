@@ -18,6 +18,7 @@
 #include <folly/coro/GtestHelpers.h>
 #include <folly/coro/Noexcept.h>
 #include <folly/coro/safe/NowTask.h>
+#include <folly/coro/safe/SafeTask.h>
 
 #if FOLLY_HAS_COROUTINES
 
@@ -95,11 +96,9 @@ NowTask<void> checkFatalOnThrow() {
   //
   // NB: If your metaprogramming task requires this for uniformity, you can of
   // course make it work, and adjust the test to be `EXPECT_DEATH`.
-  static_assert(detail::is_awaitable_try<decltype(co_viaIfAsync(
-                    FOLLY_DECLVAL(Executor::KeepAlive<>), coThrow()))>);
-  static_assert(
-      !detail::is_awaitable_try<decltype(co_viaIfAsync(
-          FOLLY_DECLVAL(Executor::KeepAlive<>), co_fatalOnThrow(coThrow())))>);
+  static_assert(detail::is_awaitable_try<semi_await_awaitable_t<TaskT>>);
+  static_assert(!detail::is_awaitable_try<
+                semi_await_awaitable_t<decltype(co_fatalOnThrow(coThrow()))>>);
   // (2) The opposite order "just works", no exception is thrown.
   auto ew = (co_await co_fatalOnThrow(co_awaitTry(coThrow()))).exception();
   EXPECT_NE(nullptr, ew.template get_exception<MyErr>());
@@ -304,6 +303,25 @@ CO_TEST(NoexceptTest, AsNoexceptOnCancelInt) {
   };
   EXPECT_EQ(42, co_await coCancelSuccess());
 }
+
+// Spot-check the relevant `safe_alias_of` specializations
+static_assert(
+    safe_alias::unsafe_closure_internal ==
+    safe_alias_of_v<detail::NoexceptAwaitable<
+        SafeTask<safe_alias::unsafe_closure_internal>,
+        OnCancel<void>{}>>);
+static_assert(
+    safe_alias::maybe_value ==
+    safe_alias_of_v<detail::NoexceptAwaitable<
+        SafeTask<safe_alias::maybe_value>,
+        OnCancel<void>{}>>);
+static_assert(
+    safe_alias::unsafe_member_internal ==
+    safe_alias_of_v<AsNoexcept<SafeTask<safe_alias::unsafe_member_internal>>>);
+static_assert(
+    safe_alias::unsafe_member_internal ==
+    safe_alias_of_v<AsNoexceptWithExecutor<
+        SafeTaskWithExecutor<safe_alias::unsafe_member_internal>>>);
 
 } // namespace folly::coro
 

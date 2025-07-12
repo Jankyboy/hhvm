@@ -275,7 +275,7 @@ class adapter_or_wrapper_checker {
             structured_wrapper_annotation);
         typedef_name = inner_typedf->name();
         type = inner_typedf->get_type();
-      } else if (type->is_container()) {
+      } else if (type->is<t_container>()) {
         if (const auto* map = dynamic_cast<const t_map*>(type)) {
           type = map->get_val_type();
         } else if (const auto* list = dynamic_cast<const t_list*>(type)) {
@@ -283,7 +283,7 @@ class adapter_or_wrapper_checker {
         } else {
           break;
         }
-      } else if (type->is_struct_or_union()) {
+      } else if (type->is<t_struct>() || type->is<t_union>()) {
         has_wrapper =
             type->has_structured_annotation(structured_wrapper_annotation);
         typedef_name = type->name();
@@ -476,7 +476,7 @@ void validate_exception_message_annotation_is_only_in_exceptions(
   for (const auto& f : node.fields()) {
     if (f.has_structured_annotation(kExceptionMessageUri)) {
       ctx.check(
-          node.is_exception(),
+          node.is<t_exception>(),
           f,
           "@thrift.ExceptionMessage annotation is only allowed in exception definitions. '{}' is not an exception.",
           node.name());
@@ -601,7 +601,7 @@ void validate_boxed_field_attributes(sema_context& ctx, const t_field& node) {
       dynamic_cast<const t_structured&>(*ctx.parent());
 
   if (node.qualifier() != t_field_qualifier::optional &&
-      !parent_node.is_union()) {
+      !parent_node.is<t_union>()) {
     // Field is not optional (and not in a union)
     // Reminder: all fields in a union are effectively optional.
 
@@ -632,7 +632,8 @@ void validate_boxed_field_attributes(sema_context& ctx, const t_field& node) {
 
   if (intern_box) {
     ctx.check(
-        node.type()->get_true_type()->is_struct_or_union(),
+        node.type()->get_true_type()->is<t_struct>() ||
+            node.type()->get_true_type()->is<t_union>(),
         "The `@thrift.InternBox` annotation can only be used with a struct field.");
     // TODO(dokwon): Add support for custom defaults and remove this check.
     ctx.check(
@@ -752,7 +753,7 @@ void validate_field_default_value(sema_context& ctx, const t_field& field) {
   const t_structured& parent_node =
       dynamic_cast<const t_structured&>(*ctx.parent());
 
-  if (parent_node.is_union()) {
+  if (parent_node.is<t_union>()) {
     ctx.warning(
         field,
         "Union field is implicitly optional and should not have custom "
@@ -807,9 +808,9 @@ void validate_field_name(sema_context& ctx, const t_field& field) {
   const auto* strct = dynamic_cast<const t_structured*>(ctx.parent());
   if (field.get_name() == strct->get_name()) {
     std::string parent_structure;
-    if (strct->is_union()) {
+    if (strct->is<t_union>()) {
       parent_structure = "union";
-    } else if (strct->is_exception()) {
+    } else if (strct->is<t_exception>()) {
       parent_structure = "exception";
     } else {
       parent_structure = "struct";
@@ -1120,7 +1121,7 @@ void validate_cpp_deprecated_terse_write_annotation(
     return;
   }
   const t_type* type = field.get_type()->get_true_type();
-  if (type->is_struct_or_union() || type->is_exception()) {
+  if (type->is<t_structured>()) {
     ctx.error(
         field,
         "@cpp.DeprecatedTerseWrite is not supported for structured types.");
@@ -1389,7 +1390,7 @@ void validate_cpp_type_annotation(sema_context& ctx, const Node& node) {
           node.name());
     }
     if (tmplate) {
-      if (!node.type()->get_true_type()->is_container()) {
+      if (!node.type()->get_true_type()->template is<t_container>()) {
         ctx.error(
             "`@cpp.Type{{template=...}}` can only be used on containers, not on `{}`.",
             node.name());
@@ -1418,7 +1419,8 @@ struct ValidateAnnotationPositions {
     }
     if (const auto* s = node.sink()) {
       if (owns_annotations(s->elem_type()) ||
-          owns_annotations(s->final_response_type())) {
+          (s->final_response_type() &&
+           owns_annotations(s->final_response_type()))) {
         err(ctx);
       }
     }
@@ -1665,7 +1667,7 @@ void validate_cursor_serialization_adapter_in_container(
 void validate_py3_enable_cpp_adapter(sema_context& ctx, const t_typedef& node) {
   if (node.has_structured_annotation(kPythonPy3EnableCppAdapterUri)) {
     const auto& true_type = *node.get_true_type();
-    if (!true_type.is_container() && !true_type.is_string_or_binary()) {
+    if (!true_type.is<t_container>() && !true_type.is_string_or_binary()) {
       ctx.error(
           "The @python.Py3EnableCppAdapter annotation can only be used on containers and strings.");
     }
@@ -1680,17 +1682,17 @@ void validate_py3_enable_cpp_adapter(sema_context& ctx, const t_typedef& node) {
 void forbid_exception_as_method_type(
     sema_context& ctx, const t_function& node) {
   ctx.check(
-      !node.return_type()->get_true_type()->is_exception(),
+      !node.return_type()->get_true_type()->is<t_exception>(),
       "Exceptions cannot be used as function return types");
   for (const auto& field : node.params().fields()) {
     ctx.check(
-        !field.type()->get_true_type()->is_exception(),
+        !field.type()->get_true_type()->is<t_exception>(),
         "Exceptions cannot be used as function arguments");
   }
 }
 void forbid_exception_as_const_type(sema_context& ctx, const t_const& node) {
   ctx.check(
-      !node.type()->get_true_type()->is_exception(),
+      !node.type()->get_true_type()->is<t_exception>(),
       "Exceptions cannot be used as const types");
 }
 

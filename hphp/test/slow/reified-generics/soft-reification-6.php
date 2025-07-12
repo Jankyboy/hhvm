@@ -1,6 +1,6 @@
 <?hh
 
-function f<<<__Soft>> reify T>() :mixed{
+<<__DynamicallyCallable>> function f<<<__Soft>> reify T>() :mixed{
   echo "ok\n";
 }
 
@@ -16,7 +16,7 @@ class C {
 
 <<__EntryPoint>>
 function main() :mixed{
-  $x = 'f';
+  $x = HH\dynamic_fun('f');
   $x();
   C::fs();
   (new C())->f();

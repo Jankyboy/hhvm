@@ -1166,7 +1166,7 @@ let class_const_def ~in_enum_class c cls env cc =
       in
       ( env,
         ty,
-        Some (ExpectedTy.make_and_allow_coercion (fst id) Reason.URhint opt_ty),
+        Some (ExpectedTy.make (fst id) Reason.URhint opt_ty),
         et_enforced )
   in
   let check env ty' =
@@ -1304,9 +1304,7 @@ let class_var_def ~is_static ~is_noautodynamic cls env cv =
           )
       in
       Option.iter ty_err_opt ~f:(Typing_error_utils.add_typing_error ~env);
-      let expected =
-        Some (ExpectedTy.make_and_allow_coercion cv.cv_span Reason.URhint cty)
-      in
+      let expected = Some (ExpectedTy.make cv.cv_span Reason.URhint cty) in
       (env, expected)
   in
   (* Next check the expression, passing in expected type if present *)
@@ -1321,9 +1319,12 @@ let class_var_def ~is_static ~is_noautodynamic cls env cv =
       let env =
         match expected with
         | None -> (env, None)
-        | Some ExpectedTy.{ pos = p; reason = ur; ty = cty; coerce } ->
+        | Some
+            ExpectedTy.
+              { pos = p; reason = ur; ty = cty; coerce; ignore_readonly } ->
           Typing_coercion.coerce_type
             ~coerce
+            ~ignore_readonly
             p
             ur
             env
@@ -1786,6 +1787,7 @@ let class_wellformedness_checks env c tc (parents : class_parents) =
   - __Disposable attribute w.r.t. parents
   - individual member checks:
     - subtyping parent members
+    - not redeclaring class properties
     - __Override attribute check
     - enum inclusions
     - abstract members in concrete class

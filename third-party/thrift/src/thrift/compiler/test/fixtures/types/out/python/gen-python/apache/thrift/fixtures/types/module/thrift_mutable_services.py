@@ -6,6 +6,8 @@
 #
 
 from __future__ import annotations
+import builtins
+
 
 from abc import ABCMeta
 import typing as _typing
@@ -18,7 +20,7 @@ from thrift.python.mutable_serializer import serialize_iobuf, deserialize, Proto
 from thrift.python.server import ServiceInterface, RpcKind, PythonUserException
 
 import apache.thrift.fixtures.types.module.thrift_mutable_types as _fbthrift__apache__thrift__fixtures__types__module__thrift_mutable_types
-import apache.thrift.fixtures.types.module.thrift_metadata
+import apache.thrift.fixtures.types.module.thrift_metadata as _fbthrift__apache__thrift__fixtures__types__module__thrift_metadata
 import apache.thrift.fixtures.types.included.thrift_mutable_types as _fbthrift__apache__thrift__fixtures__types__included__thrift_mutable_types
 
 class SomeServiceInterface(
@@ -43,18 +45,18 @@ class SomeServiceInterface(
 
     @staticmethod
     def __get_metadata__() -> _fbthrift_metadata.ThriftMetadata:
-        return apache.thrift.fixtures.types.module.thrift_metadata.gen_metadata_service_SomeService()
+        return _fbthrift__apache__thrift__fixtures__types__module__thrift_metadata.gen_metadata_service_SomeService()
 
     @staticmethod
     def __get_metadata_service_response__() -> _fbthrift_metadata.ThriftServiceMetadataResponse:
-        return apache.thrift.fixtures.types.module.thrift_metadata._fbthrift_metadata_service_response_SomeService()
+        return _fbthrift__apache__thrift__fixtures__types__module__thrift_metadata._fbthrift_metadata_service_response_SomeService()
 
 
 
     async def bounce_map(
             self,
-            m: _fbthrift_python_mutable_containers.MutableMap[int, str]
-        ) -> _fbthrift_python_mutable_containers.MutableMap[int, str]:
+            m: _fbthrift_python_mutable_containers.MutableMap[builtins.int, builtins.str]
+        ) -> _fbthrift_python_mutable_containers.MutableMap[builtins.int, builtins.str]:
         raise NotImplementedError("async def bounce_map is not implemented")
 
     async def _fbthrift__handler_bounce_map(self, args: _fbthrift_iobuf.IOBuf, protocol: Protocol) -> _fbthrift_iobuf.IOBuf:
@@ -66,8 +68,8 @@ class SomeServiceInterface(
 
     async def binary_keyed_map(
             self,
-            r: _fbthrift_python_mutable_containers.MutableList[int]
-        ) -> _fbthrift_python_mutable_containers.MutableMap[bytes, int]:
+            r: _fbthrift_python_mutable_containers.MutableList[builtins.int]
+        ) -> _fbthrift_python_mutable_containers.MutableMap[builtins.bytes, builtins.int]:
         raise NotImplementedError("async def binary_keyed_map is not implemented")
 
     async def _fbthrift__handler_binary_keyed_map(self, args: _fbthrift_iobuf.IOBuf, protocol: Protocol) -> _fbthrift_iobuf.IOBuf:
