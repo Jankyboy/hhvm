@@ -244,6 +244,7 @@ add_library(
     http/structuredheaders/StructuredHeadersDecoder.cpp
     http/structuredheaders/StructuredHeadersEncoder.cpp
     http/structuredheaders/StructuredHeadersUtilities.cpp
+    http/webtransport/WebTransport.cpp
     http/webtransport/WebTransportImpl.cpp
     pools/generators/FileServerListGenerator.cpp
     pools/generators/ServerListGenerator.cpp
@@ -346,6 +347,7 @@ install(
 
 add_subdirectory(test)
 add_subdirectory(http/test)
+add_subdirectory(http/coro/client/samples/cocurl)
 add_subdirectory(http/structuredheaders/test)
 add_subdirectory(http/connpool/test)
 add_subdirectory(http/codec/test)
